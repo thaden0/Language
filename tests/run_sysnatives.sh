@@ -67,6 +67,52 @@ check "fs   --run" "$FS_EXPECT" "$(LEV_FS_BASE="$d1" "$bin" --run "$work/fs.lev"
 d2="$work/ir"; mkdir -p "$d2"
 check "fs   --ir"  "$FS_EXPECT" "$(LEV_FS_BASE="$d2" "$bin" --ir  "$work/fs.lev" 2>&1)"
 
+# --- 3b. isDir (request-stat-isdir.md): dir vs file vs missing, and the edge
+# the request was filed for — an unreadable (mode 000) directory is still
+# correctly classified as a directory, where the old sysListDir(path)!=None
+# probe fails to opendir() it and misclassifies it as a file. stat(2) only
+# needs search permission on the PARENT path components, not the target, so
+# this holds even though the directory itself is locked down. Skipped when
+# run as root: root ignores the mode-000 restriction, so the edge can't be
+# observed (permissions don't restrict root's opendir either).
+if [ "$(id -u)" != "0" ]; then
+  d3="$work/isdir"; mkdir -p "$d3/sub"; : > "$d3/f.txt"; mkdir -p "$d3/locked"
+  chmod 000 "$d3/locked"
+  # isDir alone (LLVM-coverable: sysStat is on the LLVM floor, sysListDir is not).
+  cat > "$work/isdir.lev" <<'EOF'
+void run(string base) {
+    console.writeln("dir=" + std::isDir(base + "/sub").toString());
+    console.writeln("file=" + std::isDir(base + "/f.txt").toString());
+    console.writeln("missing=" + std::isDir(base + "/nope").toString());
+    console.writeln("locked=" + std::isDir(base + "/locked").toString());
+}
+string? base = env::get("LEV_ISDIR_BASE");
+run(base ?? ".");
+EOF
+  ISDIR_EXPECT=$'dir=true\nfile=false\nmissing=false\nlocked=true'
+  check "isDir --run" "$ISDIR_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --run "$work/isdir.lev" 2>&1)"
+  check "isDir --ir"  "$ISDIR_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --ir  "$work/isdir.lev" 2>&1)"
+  if "$bin" --build-native "$work/isdir_llvm" "$work/isdir.lev" >/dev/null 2>&1; then
+    check "isDir llvm" "$ISDIR_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$work/isdir_llvm" 2>/dev/null)"
+  else
+    echo "FAIL llvm (expected isDir to compile natively)"; fail=1
+  fi
+  # The actual regression the request cites: sysListDir(locked)!=None
+  # misclassifies an unreadable directory as a file. Interpreters only
+  # (sysListDir is not on the LLVM/emit-C++ floor).
+  cat > "$work/isdir_list.lev" <<'EOF'
+void run(string base) {
+    console.writeln("locked_list=" + (std::sysListDir(base + "/locked") == None).toString());
+}
+string? base = env::get("LEV_ISDIR_BASE");
+run(base ?? ".");
+EOF
+  LOCKLIST_EXPECT='locked_list=true'
+  check "isDir locked-list --run" "$LOCKLIST_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --run "$work/isdir_list.lev" 2>&1)"
+  check "isDir locked-list --ir"  "$LOCKLIST_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --ir  "$work/isdir_list.lev" 2>&1)"
+  chmod 755 "$d3/locked"   # restore so the EXIT trap's rm -rf can't be blocked
+fi
+
 # --- 4. comptime hermeticity: every sys* native is denied at build time ------
 printf 'comptime int N = std::sysMonotonic();\nconsole.writeln(N.toString());\n' > "$work/ct.lev"
 ct_out=$("$bin" --run "$work/ct.lev" 2>&1); ct_rc=$?

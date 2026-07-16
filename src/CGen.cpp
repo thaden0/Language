@@ -3,6 +3,7 @@
 #include <functional>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 // The embedded mini-runtime: a scalar Value with EXACTLY the oracle's
 // arithmetic and stringification semantics (arithPrim/valueToString for the
@@ -1119,10 +1120,8 @@ std::string CGen::generate() {
     // unchecked prelude method body, or the iterator-protocol's `iterator`/
     // `hasNext`/`next` calls — techdesign-07 §2) carries only a method NAME, so
     // the walk can't follow it as it does a resolved CallDyn. Index every
-    // in-language method by name so such a call marks ALL same-named candidates
+    // in-language method by name so such a call marks its same-named candidates
     // (and pulls their declaring class into the callm dispatch table).
-    // Over-marking a same-named method of an unrelated class only emits dead code
-    // — it can't be misdispatched, since callm keys on the receiver's class id.
     std::unordered_map<std::string, std::vector<std::pair<int, Symbol*>>> methodFns;
     if (mod_.sema && mod_.sema->global)
         for (const auto& [nm, syms] : mod_.sema->global->names)
@@ -1131,15 +1130,55 @@ std::string CGen::generate() {
                     for (const Slot& s : cls->shape.slots)
                         if (s.isMethod && s.decl && mod_.byDecl.count(s.decl))
                             methodFns[std::string(s.name)].push_back({mod_.byDecl.at(s.decl), cls});
+    // SU-1: a by-name (decl-less) CallDyn dispatches on the receiver's runtime
+    // class. A **reference** class can be that receiver only if it was actually
+    // constructed (NewObject → `instClasses`); a never-instantiated reference
+    // class is provably unreachable, so marking its same-named method emits dead
+    // code — harmless for a pure-Leviathan body, but a HARD compile error when it
+    // calls a native this backend can't lower (a plain-stream program dragging in
+    // `TaskGroup::close` → `sysTaskCancel`, which emit-C++ rejects as loop-bound;
+    // the SU-1 `InStream.close()` → `buf.close()` by-name call was the trigger).
+    // **Value types (primitives/structs) are always possible receivers** — they
+    // are inhabited by literals/value construction, never NewObject — so they are
+    // never pruned (they are how `int.toString()` etc. reach callm's table via
+    // `byNameClasses_`). Because instantiation is discovered DURING the walk,
+    // remember each by-name and re-sweep (below) whenever `instClasses` grows.
+    auto isPossibleRecv = [&](Symbol* c) {
+        if (c->isValueType()) return true;                 // primitive/struct: always live
+        for (Symbol* x : instClasses) if (x == c) return true;
+        return false;
+    };
+    std::unordered_set<std::string> byNameSeen;
     auto markByName = [&](const std::string& sname) {
+        byNameSeen.insert(sname);
         auto it = methodFns.find(sname);
         if (it == methodFns.end()) return;
         for (auto& [fnIdx, cls] : it->second) {
+            if (!isPossibleRecv(cls)) continue;
             mark(fnIdx);
             bool seen = false;
             for (Symbol* c : byNameClasses_) if (c == cls) seen = true;
             if (!seen) byNameClasses_.push_back(cls);
         }
+    };
+    // Re-run every remembered by-name mark now that more reference classes may be
+    // known instantiated; `mark` is idempotent so this only adds newly-live
+    // targets. Returns true if it marked anything (drives the fixpoint below).
+    auto byNameSweep = [&]() {
+        bool progressed = false;
+        for (const std::string& sname : byNameSeen) {
+            auto it = methodFns.find(sname);
+            if (it == methodFns.end()) continue;
+            for (auto& [fnIdx, cls] : it->second) {
+                if (!isPossibleRecv(cls) || reachable[fnIdx]) continue;
+                mark(fnIdx);
+                progressed = true;
+                bool seen = false;
+                for (Symbol* c : byNameClasses_) if (c == cls) seen = true;
+                if (!seen) byNameClasses_.push_back(cls);
+            }
+        }
+        return progressed;
     };
     // Drain `work` to fixpoint: follow direct calls, constructor $init, dynamic
     // dispatch (resolved by decl, else by name), and closures; every instantiated
@@ -1177,7 +1216,10 @@ std::string CGen::generate() {
             }
         }
     };
-    drain();
+    // Fixpoint: drain follows calls/instantiations; the sweep then lights up any
+    // by-name target whose class just became known-instantiated, which may itself
+    // instantiate more — loop until neither makes progress.
+    do { drain(); } while (byNameSweep());
 
     // If the program uses collections, seed the in-language Array/Map/Range
     // methods (map/where/reduce/iterator/...) so name-based dynamic dispatch
@@ -1208,7 +1250,7 @@ std::string CGen::generate() {
                     mod_.byDecl.count(m.get()))
                     mark(mod_.byDecl.at(m.get()));
         }
-        drain();          // full expansion: pulls in iterator classes' members too
+        do { drain(); } while (byNameSweep());   // full expansion: iterator classes' members too
     }
 
     // Pre-assign class ids for everything the dispatchers/issub reference, so

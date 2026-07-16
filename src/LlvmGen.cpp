@@ -3254,24 +3254,23 @@ struct Gen {
                 b.CreateCall(rtSetm, {regs[in.b], cstr(in.sname), regs[in.a]});
                 emitThrowCheck((int)pc);
             } else if (op == Op::StoreGlobal && ok) {
-                // global[in.b] = reg[in.a]: release the OLD slot value, store the
-                // new, retain it — §15 slot ownership, exactly as RawSet/SetMember
-                // do for a field slot. bug.md #73: the old parity shortcut with
-                // frozen X64Gen skipped the release on the "globals are write-once"
-                // assumption, but a global grown by repeated `xs = xs.add(...)`
-                // reassignment (COW) leaked every superseded buffer — O(N²) live
-                // bytes, `lvrt: heap exhausted` near N=10k on native. Releasing the
-                // old value reclaims each intermediate; scalar/void slots (incl. the
-                // zero-initialized initial slot) release as a no-op, so nothing else
-                // changes. LLVM-only: X64Gen/ELF is frozen and stdout is unaffected,
-                // so no differential golden moves.
+                // global[in.b] = reg[in.a]: release the OLD global value, store the
+                // new one, retain it. Fixes bug #73 — the earlier parity-with-X64Gen
+                // path (X64Gen.cpp:3504-3510) skipped the release-old on the false
+                // premise that globals are write-once, so reassigning a global
+                // Array<T> grown by `xs = xs.add(...)` leaked every superseded COW
+                // buffer (O(N²) live bytes, `lvrt: heap exhausted` near N≈10k). The
+                // globals array is zero-initialized (see §691), so the FIRST store
+                // releases a zeroed slot — lvrt_release no-ops on that (lv_runtime.c
+                // :274). Retain-new before release-old keeps a self-assign (`xs = xs`)
+                // safe. Mirrors the RawSet field release-old/retain-new above.
                 llvm::Value* g = b.CreateGEP(
                     ArrayType::get(lvTy, mod.nglobals), globalsArray,
                     {i64C(0), i64C(in.b)});
-                copyLV(b, arcScratch, g);                 // save old slot value
-                copyLV(b, g, regs[in.a]);                 // store new
-                b.CreateCall(rtRelease, {arcScratch});    // release old
-                b.CreateCall(rtRetain, {regs[in.a]});     // retain new
+                copyLV(b, arcScratch, g);          // stash old
+                copyLV(b, g, regs[in.a]);          // store new
+                b.CreateCall(rtRetain, {regs[in.a]});
+                b.CreateCall(rtRelease, {arcScratch});   // drop old (no-op if zeroed)
             }
             if (!terminated) b.CreateBr(blocks[pc + 1]);
         }

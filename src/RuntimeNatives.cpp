@@ -963,6 +963,31 @@ static bool lvThreadIsPromiseDerived(Symbol* cls) {
     return false;
 }
 
+// bug #81 (SU-1): an InStream is loop-bound *conditionally* — a plain in-memory
+// stream is ordinary flattenable data and MUST still cross a boundary, but one
+// carrying a producer-attached teardown (`hasDispose == true` — e.g. the
+// `signal::on` subscription, whose `onDispose` reaches a live signalfd + loop
+// watch via `signal::off`) is as loop-bound as a TcpStream/Timer and must
+// reject. So it cannot go on the name-keyed `lvThreadNonTransferable` list;
+// the gate is the object's own `hasDispose` field. (A disposable stream's
+// `onDispose` closure would already trip the nested-closure reject with a
+// generic message; this reject fires first and names the type, and stays
+// correct even if the teardown is ever represented as something other than a
+// closure.)
+static bool lvThreadIsInStream(Symbol* cls) {
+    if (!cls) return false;
+    if (cls->name == "InStream") return true;
+    if (cls->decl)
+        for (const auto& base : cls->decl->bases)
+            if (lvThreadIsInStream(base->resolvedSymbol)) return true;
+    return false;
+}
+static bool lvThreadIsDisposableStream(const std::shared_ptr<Object>& obj) {
+    if (!obj || !lvThreadIsInStream(obj->cls)) return false;
+    auto it = obj->fields.find("hasDispose");
+    return it != obj->fields.end() && it->second.kind == VKind::Bool && it->second.b;
+}
+
 // bug #35 (reject route A): the read-only mirror of lvThreadCopy's Promise
 // reject, applied to a program global's CURRENT value at the spawn call (no
 // copy). A spawn body may reference a Promise via a bare GLOBAL rather than a
@@ -1073,6 +1098,11 @@ static Value lvThreadCopy(const Value& v, bool rootClosureOk,
                 return Value{};
             }
             if (v.obj->cls && lvThreadNonTransferable(v.obj->cls->name)) {
+                err = "value of type " + std::string(v.obj->cls->name) +
+                      " cannot cross a thread boundary (v1)";
+                return Value{};
+            }
+            if (lvThreadIsDisposableStream(v.obj)) {         // bug #81
                 err = "value of type " + std::string(v.obj->cls->name) +
                       " cannot cross a thread boundary (v1)";
                 return Value{};
@@ -1339,9 +1369,10 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
         return true;
     }
     if (name == "sysStat") {
-        // field: 0 = exists (0/1), 1 = size in bytes, 2 = mtime (epoch seconds).
-        // Returns -1 for size/mtime of a missing path. Interim shape until a
-        // Block-backed stat can fill a real structure.
+        // field: 0 = exists (0/1), 1 = size in bytes, 2 = mtime (epoch seconds),
+        // 3 = isDir (1 dir / 0 not-dir / -1 missing, request-stat-isdir.md).
+        // Returns -1 for size/mtime/isDir of a missing path. Interim shape
+        // until a Block-backed stat can fill a real structure.
         const std::string& path = args.size() > 0 ? args[0].s : out.s;
         long long field = args.size() > 1 ? args[1].i : 0;
         struct stat st;
@@ -1350,6 +1381,7 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
         else if (!ok) out = vint(-1);
         else if (field == 1) out = vint((long long)st.st_size);
         else if (field == 2) out = vint((long long)st.st_mtime);
+        else if (field == 3) out = vint(S_ISDIR(st.st_mode) ? 1 : 0);
         else out = vint(-1);
         return true;
     }

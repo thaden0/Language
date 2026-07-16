@@ -1,0 +1,79 @@
+// Command palette (DESIGN-2 §6.4), replacing v0.1's commandbar. A Modal holding a
+// filter Input over a ListView of matches; typing refilters via registry.matching,
+// Up/Down move, Enter runs, Escape closes. The old "type exact name, Enter" path
+// still works because an exact-id match sorts first (§6.4).
+namespace Recon {
+uses Sonar;
+
+class CommandPalette {
+    public Modal modal;
+    public Input filter;
+    public ListView list;
+    public CommandRegistry commands;
+    Array<Command> shown_;
+    new CommandPalette(CommandRegistry reg) {
+        commands = reg;
+        modal = Modal();
+        modal.title("Command Palette");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        filter = Input();
+        filter.setPlaceholder("type to filter commands…");
+        filter.setHeight(Constraint::Fixed(1));
+        list = ListView();
+        list.setHeight(Constraint::Flex(1));
+        modal.setLayout(FlexLayout(Axis::Vertical));
+        modal.add(this.filter);
+        modal.add(this.list);
+        this.filter.onChange((v) => this.refilter(v));
+        this.filter.onSubmit((v) => this.runSelected());
+        this.list.onActivate((i) => this.runIndex(i));
+        this.filter.onKeyCapture((e) => this.onFilterKey(e));
+        this.list.onKeyCapture((e) => this.onListKey(e));
+    }
+
+    void open() {
+        this.filter.setValue("");
+        this.refilter("");
+        this.modal.open();
+        Sonar::app().focus(this.filter);
+    }
+
+    void close() { this.modal.close(); }
+
+    void refilter(string needle) {
+        this.shown_ = this.commands.matching(needle);
+        Array<string> rows = [];
+        for (Command c in this.shown_) {
+            string row = "  " + padTo(c.title, 24) + "  " + c.id;
+            if (!c.chord.isEmpty()) { row = row + "   " + c.chord; }
+            if (!this.commands.enabled(c)) { row = row + "   — " + c.disabledReason; }
+            rows = rows.add(row);
+        }
+        if (rows.isEmpty()) { rows = ["  (no matching commands)"]; }
+        this.list.items(rows);
+        this.list.setSelected(0);
+    }
+
+    void runIndex(int i) {
+        if (i < 0 || i >= this.shown_.length()) { return; }
+        Command c = this.shown_.at(i);
+        string id = c.id;
+        this.close();
+        this.commands.run(id);
+    }
+
+    void runSelected() { this.runIndex(this.list.selected); }
+
+    void onFilterKey(KeyEvent e) {
+        if (e.code == KeyCode::Down)        { this.list.setSelected(this.list.selected + 1); e.handled = true; }
+        else if (e.code == KeyCode::Up)     { this.list.setSelected(this.list.selected - 1); e.handled = true; }
+        else if (e.code == KeyCode::Escape) { this.close(); e.handled = true; }
+    }
+
+    void onListKey(KeyEvent e) {
+        if (e.code == KeyCode::Escape) { this.close(); e.handled = true; }
+    }
+}
+
+}

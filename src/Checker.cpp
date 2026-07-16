@@ -220,6 +220,7 @@ struct SpecializationCloner {
         out->colon = e->colon; out->optChain = e->optChain;
         out->isComptime = e->isComptime; out->isMacroCall = e->isMacroCall;
         out->isRawSegment = e->isRawSegment; out->isQuasiPayload = e->isQuasiPayload;
+        out->isRawString = e->isRawString;
         out->singleQuoted = e->singleQuoted;
         out->charLit = e->charLit; out->argLabel = e->argLabel;
         out->weakField = e->weakField;
@@ -2265,6 +2266,7 @@ static ExprPtr cloneDefaultExpr(const Expr* e) {
     out->span = e->span; out->text = e->text; out->op = e->op;
     out->colon = e->colon; out->optChain = e->optChain;
     out->isRawSegment = e->isRawSegment; out->isQuasiPayload = e->isQuasiPayload;
+    out->isRawString = e->isRawString;
     out->singleQuoted = e->singleQuoted;
     out->charLit = e->charLit;
     out->a = cloneDefaultExpr(e->a.get());

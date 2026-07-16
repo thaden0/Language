@@ -26,6 +26,7 @@ static bool canStartExpr(TokenKind k) {
         case TokenKind::IntLiteral:
         case TokenKind::FloatLiteral:
         case TokenKind::StringLiteral:
+        case TokenKind::RawStringLiteral:
         case TokenKind::LParen:
         case TokenKind::LBracket:
         case TokenKind::Bang:
@@ -451,7 +452,8 @@ ExprPtr Parser::parseMatch() {
         if (accept(TokenKind::KwElse)) {
             arm.isElse = true;
         } else if (at(TokenKind::IntLiteral) || at(TokenKind::FloatLiteral) ||
-                   at(TokenKind::StringLiteral) || at(TokenKind::KwTrue) ||
+                   at(TokenKind::StringLiteral) || at(TokenKind::RawStringLiteral) ||
+                   at(TokenKind::KwTrue) ||
                    at(TokenKind::KwFalse) || at(TokenKind::Minus) ||
                    (at(TokenKind::Identifier) &&
                     peek(1).kind == TokenKind::ColonColon)) {
@@ -510,6 +512,17 @@ ExprPtr Parser::parsePrimary() {
         case TokenKind::StringLiteral: {
             advance();
             return parseInterpolatedString(t);
+        }
+        case TokenKind::RawStringLiteral: {
+            // request-string-literal-tail: `r"..."` — text is `r` + quote +
+            // content + quote; strip the 2-char prefix and the 1-char
+            // closing quote. No interpolation scan, no escape decoding
+            // (Eval/Lower read isRawString and use the text byte-exact).
+            advance();
+            auto e = mkExpr(ExprKind::StringLit, t.span);
+            e->text = t.text.substr(2, t.text.size() - 3);
+            e->isRawString = true;
+            return e;
         }
         case TokenKind::KwTrue:
         case TokenKind::KwFalse: {
@@ -1624,9 +1637,17 @@ std::vector<StmtPtr> Parser::parseStatementsFragment() {
 // `(hole).toString()` Call nodes; zero holes reconstructs a single StringLit
 // whose text is byte-identical to `t.text` (a substr copy, not a special
 // case — see the header comment).
+//
+// request-string-literal-tail: `t` may also be a `"""`/`'''`-delimited
+// multiline literal — same escape/interpolation rules, just a 3-char quote
+// on each side instead of 1 (raw strings never reach here; they're their
+// own TokenKind and skip this function entirely, see parsePrimary).
 ExprPtr Parser::parseInterpolatedString(const Token& t) {
     std::string_view raw = t.text;                 // includes the quotes
-    size_t contentEnd = raw.size() - 1;             // exclusive; raw[contentEnd] is the closing quote
+    size_t quoteLen = (raw.size() >= 6 && raw[0] == raw[1] && raw[1] == raw[2] &&
+                        (raw[0] == '"' || raw[0] == '\''))
+                          ? 3 : 1;
+    size_t contentEnd = raw.size() - quoteLen;      // exclusive; raw[contentEnd..] is the closing quote(s)
     std::vector<ExprPtr> pieces;
 
     auto pushSegment = [&](size_t segStart, size_t segEnd) {
@@ -1641,8 +1662,8 @@ ExprPtr Parser::parseInterpolatedString(const Token& t) {
         pieces.push_back(std::move(seg));
     };
 
-    size_t segStart = 1;
-    size_t i = 1;
+    size_t segStart = quoteLen;
+    size_t i = quoteLen;
     while (i < contentEnd) {
         char c = raw[i];
         if (c == '\\' && i + 1 < contentEnd) { i += 2; continue; }   // an escape pair: not a hole start
@@ -1718,8 +1739,10 @@ ExprPtr Parser::parseInterpolatedString(const Token& t) {
     // Track 03 §1: a simple (single-segment, no interpolation) single-quoted
     // literal is the only shape that can become `char`. Record the quote style
     // now — it is unrecoverable from the quote-stripped raw segment later.
-    if (pieces.size() == 1 && result->kind == ExprKind::StringLit && !raw.empty() &&
-        raw.front() == '\'')
+    // A triple-quoted literal (quoteLen == 3) never qualifies, even if it
+    // happens to decode to one scalar — multiline syntax is not char syntax.
+    if (pieces.size() == 1 && result->kind == ExprKind::StringLit && quoteLen == 1 &&
+        !raw.empty() && raw.front() == '\'')
         result->singleQuoted = true;
     return result;
 }

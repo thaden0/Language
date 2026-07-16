@@ -1,0 +1,22 @@
+// SU-1 (techdesign-stream-unsubscribe.md §7 T1/T3/T5): two subscribers on ONE
+// signal. On the first delivery, sub A prints then CLOSES ITSELF from inside
+// its own callback (strict cutoff, R5); sub B keeps running. A second delivery
+// of the same signal must reach B but NOT the closed A — proving close()
+// stops delivery (T1), broadcast isolation keeps A's close from touching B or
+// the shared fd (T3, the fd stays open so the 2nd signal is still watched, not
+// a default-disposition kill), and a mid-deliver self-close is crash-safe (T5).
+InStream<int> a = signal::on(signal::USR1);
+InStream<int> b = signal::on(signal::USR1);
+int acount = 0;
+int bcount = 0;
+a.subscribe((n) => {
+    acount = acount + 1;
+    console.writeln("a=" + acount.toString());
+    a.close();                       // unsubscribe from inside the callback
+});
+b.subscribe((n) => {
+    bcount = bcount + 1;
+    console.writeln("b=" + bcount.toString());
+    if (bcount == 2) { console.writeln("done"); env::exit(0); }
+});
+console.writeln("READY");

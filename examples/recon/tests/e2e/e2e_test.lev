@@ -1,7 +1,7 @@
-// Headless end-to-end: compose ReconApp with a test renderer, load a collection,
-// select a request, feed a mock response, and paint frames. Proves the whole UI
-// assembles and wires to AppState (no real network — the send path is covered by
-// the hermetic sender test).
+// Headless end-to-end (DESIGN-2 §14): compose the v0.2 ReconApp with a test
+// renderer, load a collection, select a request, feed a mock response, and paint
+// frames. Proves the whole rebuilt UI assembles and wires to AppState (no real
+// network — the send path is covered by the hermetic sender test).
 namespace Recon {
 uses Sonar;
 
@@ -43,7 +43,7 @@ Collection buildCollection() {
 }
 
 void main() {
-    ReconApp recon = ReconApp("", []);
+    ReconApp recon = ReconApp("", [], Theme::Dark());
     TR tr = TR(120, 40);
     recon.app.__useRenderer(tr);
     recon.app.__useInput(SI());
@@ -51,6 +51,8 @@ void main() {
 
     console.writeln("== compose ==");
     console.writeln("app children=" + recon.app.children().length().toString());
+    console.writeln("commands bound=" + recon.commands.bound().length().toString());
+    console.writeln("categories=" + recon.commands.categories().joinToString(","));
 
     Collection col = buildCollection();
     recon.state.collections = [col];
@@ -69,10 +71,11 @@ void main() {
     console.writeln("active url=" + recon.state.active.url);
     console.writeln("panel urlInput=" + recon.reqPanel.urlInput.value);
     console.writeln("active method=" + methodName(recon.state.active.method));
+    console.writeln("method badge=" + recon.reqPanel.method.method());
     console.writeln("body editor=" + recon.reqPanel.bodyEditor.text());
 
     console.writeln("== mock response ==");
-    HttpResponse resp = HttpResponse(200, "{\"token\":\"T\",\"ok\":true}");
+    HttpResponse resp = HttpResponse(200, "{\"token\":\"T\",\"ok\":true,\"n\":[1,2,3]}");
     resp = resp.withHeader("Content-Type", "application/json");
     RunOutcome o = RunOutcome();
     o.ok = true; o.response = resp; o.elapsedMs = 7;
@@ -87,18 +90,40 @@ void main() {
         console.writeln("  " + (t.passed ? "PASS" : "FAIL") + " " + t.label);
     }
     console.writeln("history=" + recon.state.history.entries.length().toString());
+    console.writeln("tests tab label=" + recon.reqPanel.tests.tabLabel());
 
-    console.writeln("== pretty body first line ==");
-    string pretty = prettyBody(resp.body);
-    console.writeln(pretty.split("\n").at(0));
+    console.writeln("== JsonView ==");
+    console.writeln("json rows=" + recon.respPanel.jsonView.visibleRows().length().toString());
+    console.writeln("statusClass=" + statusClass(resp.status));
 
     recon.pump();
     console.writeln("presents=" + tr.presents.toString());
 
     console.writeln("== commands ==");
-    console.writeln("commands=" + recon.commands.names().joinToString(","));
-    console.writeln("toggle redirects ran=" + recon.commands.run("toggle-redirects").toString());
-    console.writeln("followRedirects=" + recon.state.settings.followRedirects.toString());
+    console.writeln("nextRespTab ran=" + recon.commands.run("view.nextRespTab").toString());
+    console.writeln("resp tab=" + recon.respPanel.tabs.selected.toString());
+    console.writeln("send reason idle=[" + recon.commands.reasonFor("request.send") + "]");
+    recon.state.inFlight = true;
+    console.writeln("send reason inflight=[" + recon.commands.reasonFor("request.send") + "]");
+    recon.state.inFlight = false;
+
+    console.writeln("== hints never lie (P1, §14.2) ==");
+    // Every curated bottom-bar hint must resolve to a BOUND command (a non-empty
+    // chord) or be absent — it is structurally impossible to advertise an unbound
+    // command, because the hint text is read from the registry entry.
+    BottomBar probe = BottomBar();
+    bool allBound = true;
+    for (Pair<string,string> h in probe.curatedHints()) {
+        Command? c = recon.commands.byId(h.first);
+        if (c != None) {
+            Command cmd = c ?? Command();
+            if (cmd.chord.isEmpty()) { allBound = false; }
+        }
+    }
+    console.writeln("all curated hints bound=" + allBound.toString());
+    // Every bound command has a chord (tautology of bound()), and help renders a
+    // section per category.
+    console.writeln("help categories=" + recon.commands.categories().length().toString());
 
     console.writeln("== export ==");
     recon.state.configRoot = "build/recon_e2e_export";
@@ -107,7 +132,6 @@ void main() {
     string exported = readAll("build/recon_e2e_export/Demo.exported.json");
     JsonValue? redoc = json::parse(exported);
     console.writeln("export valid json=" + (redoc != None).toString());
-    console.writeln("history labels=" + recon.historyLabels().joinToString(" | "));
 
     recon.teardown();
     __sonarResetApp();

@@ -307,6 +307,24 @@ as-implemented reference, and the git history):
   `Sonar::TestRenderer` collided with the local `TestRenderer` that pre-existing `frame`/`loop`/`runloop`
   tests hand-rolled (under `uses Sonar` the import wins); renamed those to `RecordRenderer` (goldens
   unchanged). Design in `designs/complete/`.
+- **Stream unsubscribe / dispose (SU-1) — LANDED 2026-07-15** (§13): the stream substrate gains
+  deterministic dispose — `InStream<T> : IDisposable` (a `using`-releasable subscription, with an
+  optional producer-attached teardown closure), `StreamBuffer.close()` (push silent-drops, pull
+  throws the distinct `"stream is closed"`), and the `signal::off` free function whose last-out path
+  `sysUnwatch`+`sysSignalClose`s the fd (signal back to default disposition) so a one-shot signal
+  program now **exits by loop drain** instead of the watch pinning the loop. Prelude-only, no native/
+  IR/ABI change; oracle/IR/LLVM full, emit-C++ for the in-memory surface. Landing it surfaced and
+  fixed a latent **emit-C++ reachability defect**: a decl-less by-name method `CallDyn` (the prelude
+  is never checked, so `buf.close()` inside `InStream.close` dispatches by name) over-marked *every*
+  class's same-named method — provably-dead code for a non-instantiated reference class, but a hard
+  compile error once it dragged in `TaskGroup::close`→`sysTaskCancel` (loop-bound, unlowerable on
+  emit-C++). `CGen`'s by-name marking now skips non-instantiated **reference** classes (value types
+  always kept — they reach `callm` via `byNameClasses_`), with a fixpoint as instantiation is
+  discovered. The M4 thread-boundary gap (a disposable `InStream` crossing `spawn`, briefly
+  filed as #81) was then **fixed** with a per-object `hasDispose` gate in both flatten walks
+  (`lvThreadCopy`/`lv_flatten`) — a disposable stream rejects naming the type, a plain
+  in-memory one still crosses; pins in `tests/corpus/tasks/spawn_{disposable,plain}_stream_*`.
+  Design + `techdesign-terminal-floor.md` §8-q1 (closed) in `designs/complete/`.
 
 
 **Backend status — read this before citing a backend.** The **pure x86-64 / ELF backend

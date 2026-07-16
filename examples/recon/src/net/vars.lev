@@ -51,8 +51,17 @@ class VarResolver {
         scopes = scopes.add(ns);
     }
 
-    // interpolate {{name}} and {{$dynamic}} — recursive with a depth cap of 8
-    string resolve(string template) => this.resolveDepth(template, 0);
+    // Which scope resolved a name ("" if unbound). Most-specific-first order.
+    string scopeOf(string name) {
+        for (VarScope s in scopes) {
+            if (s.values.atOrNone(name) != None) { return s.name; }
+        }
+        return "";
+    }
+
+    // interpolate {{name}} and {{$dynamic}} — a thin wrapper over the one scanner
+    // in resolveReport (DESIGN-2 §9.3: one scanner, no drift).
+    string resolve(string template) => resolveReport(template, this).result;
 
     string resolveDepth(string template, int depth) {
         if (depth > 8) { return template; }
@@ -124,6 +133,89 @@ class VarResolver {
         return h.subStr(0, 8) + "-" + h.subStr(8, 4) + "-" + h.subStr(12, 4) + "-"
              + h.subStr(16, 4) + "-" + h.subStr(20, 12);
     }
+}
+
+// --- unresolved-variable report (DESIGN-2 §9.3) ---
+// One {{...}} occurrence and how it resolved.
+class VarHole {
+    public string name     = "";
+    public bool   resolved = false;
+    public bool   dynamic  = false;      // {{$guid}} family
+    public string scope    = "";         // which scope resolved it ("environment", …)
+    new VarHole() { }
+}
+
+// The result of resolving a template plus a per-hole account (for flagging).
+class ResolveReport {
+    public string result = "";
+    public Array<VarHole> holes;
+    new ResolveReport() { }
+    bool clean() {
+        for (VarHole h in this.holes) { if (!h.resolved) { return false; } }
+        return true;
+    }
+    // The unresolved (literal) hole names, for a warning message.
+    Array<string> unresolved() {
+        Array<string> out = [];
+        for (VarHole h in this.holes) { if (!h.resolved) { out = out.add(h.name); } }
+        return out;
+    }
+}
+
+// The single {{...}} scanner: builds the resolved string AND the per-hole report.
+// resolve() delegates here so there is exactly one interpolation code path.
+ResolveReport resolveReport(string template, VarResolver vars) {
+    ResolveReport rep = ResolveReport();
+    StringBuilder out = StringBuilder();
+    int i = 0;
+    int n = template.length();
+    bool changed = false;
+    while (i < n) {
+        int open = template.indexOfFrom("{{", i);
+        if (open < 0) {
+            out.add(template.subStr(i, n - i));
+            i = n;
+        } else {
+            out.add(template.subStr(i, open - i));
+            int close = template.indexOfFrom("}}", open + 2);
+            if (close < 0) {
+                out.add(template.subStr(open, n - open));
+                i = n;
+            } else {
+                string name = template.subStr(open + 2, close - open - 2).trim();
+                VarHole hole = VarHole();
+                hole.name = name;
+                if (name.startsWith("$")) {
+                    hole.dynamic = true;
+                    string replaced = vars.dynamic(name);
+                    hole.resolved = replaced != "{{" + name + "}}";
+                    hole.scope = "dynamic";
+                    if (hole.resolved) { changed = true; }
+                    out.add(replaced);
+                } else {
+                    string? v = vars.lookup(name);
+                    if (v != None) {
+                        hole.resolved = true;
+                        hole.scope = vars.scopeOf(name);
+                        out.add(v ?? "");
+                        changed = true;
+                    } else {
+                        hole.resolved = false;
+                        out.add("{{" + name + "}}");
+                    }
+                }
+                rep.holes = rep.holes.add(hole);
+                i = close + 2;
+            }
+        }
+    }
+    string result = out.toString();
+    // recursive resolution: a resolved value that re-introduced holes resolves again
+    if (changed && result.contains("{{")) {
+        result = vars.resolveDepth(result, 1);
+    }
+    rep.result = result;
+    return rep;
 }
 
 string hexNibble(int n) {

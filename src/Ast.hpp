@@ -166,6 +166,11 @@ struct Expr {
     // ordinary StringLit node so the comptime evaluator needs no parser-only
     // value path; the flag is consumed before lowering because macro calls are.
     bool isQuasiPayload = false;
+    // request-string-literal-tail: a `r"..."`/`r'...'` raw string literal —
+    // `text` is already bare content (quotes and the 'r' prefix stripped by
+    // the parser) and must be used byte-exact, with NO escape decoding and
+    // no interpolation (that is the entire point of "raw").
+    bool isRawString = false;
     // Track 03 §1: set by the parser on a simple (single-segment, no
     // interpolation) SINGLE-quoted string literal — the only literals that can
     // become `char`. The parser strips quotes into a raw segment, so quote style

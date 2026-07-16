@@ -272,6 +272,16 @@ int64_t lv_plat_stat_mtime(const char* path) {
     return (int64_t)st.st_mtime;
 }
 
+/* request-stat-isdir.md: 1 dir / 0 not-dir / -1 absent. stat(2) only needs
+ * search permission on the parent path components, not on the target itself,
+ * so this correctly classifies an unreadable (mode 000) directory as a
+ * directory where an opendir()-based probe would fail and misclassify it. */
+int lv_plat_stat_isdir(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
 /* Create a directory (mode 0755). 0 on success, -1 on any failure — exact
  * byte-parity with the oracle (RuntimeNatives.cpp sysMkdir: mkdir==0?0:-1,
  * so an already-existing path reports -1 too). */

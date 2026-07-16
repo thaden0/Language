@@ -1282,7 +1282,7 @@ Value Evaluator::eval(Expr* e) {
         case ExprKind::StringLit: {
             // F4: an interpolation segment's text is already bare content
             // (no quotes to strip — see Expr::isRawSegment).
-            std::string decoded = e->isQuasiPayload ? std::string(e->text)
+            std::string decoded = (e->isQuasiPayload || e->isRawString) ? std::string(e->text)
                                   : e->isRawSegment ? decodeEscapes(e->text)
                                                    : decodeStringLiteral(e->text);
             // Track 03 §1: the checker flipped this single-scalar literal to char.

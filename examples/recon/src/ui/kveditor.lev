@@ -1,0 +1,182 @@
+// KeyValueEditor (DESIGN-2 §7.3): the one editing pattern for headers, params,
+// urlencoded/formdata fields, and environment variables (F3's fix, reused). A
+// focusable ListView rendering `[x] name    value` (disabled rows shown with an
+// empty box), `a` add · `e`/Enter edit · `d` delete · Space toggle — each via a
+// FormDialog. Operates on its own Array<KVRow>; callers convert to/from their
+// model at load/commit boundaries (decoupled, and the model rows stay classes, N1).
+namespace Recon {
+uses Sonar;
+
+class KVRow {
+    public string name    = "";
+    public string value   = "";
+    public bool   enabled = true;
+    public bool   secret  = false;
+    new KVRow() { }
+    new Of(string n, string v) { name = n; value = v; }
+}
+
+// True when a KeyEvent is the printable char `ch` (code-compared, #77/#50 safe).
+bool kvIsChar(KeyEvent e, char ch) => e.code == KeyCode::Char && e.ch.code() == ch.code();
+
+class KeyValueEditor {
+    public ListView list;
+    Array<KVRow> rows_ = [];
+    bool maskSecret_ = false;
+    () => void onChange;
+    bool hasChange = false;
+
+    new KeyValueEditor() {
+        list = ListView();
+        this.rebuild();
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    KeyValueEditor maskSecrets(bool v) { maskSecret_ = v; this.rebuild(); return this; }
+    void setRows(Array<KVRow> rows) { rows_ = rows; this.rebuild(); }
+    Array<KVRow> rows() => rows_;
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+
+    void rebuild() {
+        Array<string> out = [];
+        for (KVRow r in rows_) {
+            string box = r.enabled ? "[x] " : "[ ] ";
+            string val = (r.secret && maskSecret_) ? "••••" : r.value;
+            out = out.add(box + padTo(r.name, 18) + " " + val);
+        }
+        if (out.isEmpty()) { out = ["  (empty — press a to add)"]; }
+        this.list.items(out);
+    }
+
+    void onKey(KeyEvent e) {
+        int sel = this.list.selected;
+        char kA = 'a'; char kE = 'e'; char kD = 'd'; char kSpace = ' ';
+        if (kvIsChar(e, kA))      { this.add();        e.handled = true; }
+        else if (kvIsChar(e, kE)) { this.edit(sel);    e.handled = true; }
+        else if (kvIsChar(e, kD)) { this.delete(sel);  e.handled = true; }
+        else if (kvIsChar(e, kSpace)) { this.toggle(sel); e.handled = true; }
+        else if (e.code == KeyCode::Enter) { this.edit(sel); e.handled = true; }
+    }
+
+    void add() {
+        FormDialog dlg = FormDialog("Add");
+        dlg.field("Name", "", false);
+        dlg.field("Value", "", false);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptAdd(vals));
+        dlg.open();
+    }
+    void acceptAdd(Array<string> vals) {
+        if (vals.length() < 2) { return; }
+        rows_ = rows_.add(KVRow::Of(vals.at(0), vals.at(1)));
+        this.rebuild();
+        this.list.setSelected(rows_.length() - 1);
+        this.fireChange();
+    }
+
+    void edit(int i) {
+        if (i < 0 || i >= rows_.length()) { return; }
+        KVRow r = rows_.at(i);
+        FormDialog dlg = FormDialog("Edit");
+        dlg.field("Name", r.name, false);
+        dlg.field("Value", r.value, r.secret && maskSecret_);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptEdit(i, vals));
+        dlg.open();
+    }
+    void acceptEdit(int i, Array<string> vals) {
+        if (i < 0 || i >= rows_.length() || vals.length() < 2) { return; }
+        KVRow r = rows_.at(i);
+        r.name = vals.at(0);
+        r.value = vals.at(1);
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void delete(int i) {
+        if (i < 0 || i >= rows_.length()) { return; }
+        rows_ = rows_.removeAt(i);
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void toggle(int i) {
+        if (i < 0 || i >= rows_.length()) { return; }
+        KVRow r = rows_.at(i);
+        r.enabled = !r.enabled;
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void toggleSecret(int i) {
+        if (i < 0 || i >= rows_.length()) { return; }
+        KVRow r = rows_.at(i);
+        r.secret = !r.secret;
+        this.rebuild();
+        this.fireChange();
+    }
+}
+
+// --- adapters between KVRow and the model row types ----------------------------
+
+Array<KVRow> headersToKV(Array<HeaderEntry> hs) {
+    Array<KVRow> out = [];
+    for (HeaderEntry h in hs) {
+        KVRow r = KVRow::Of(h.name, h.value);
+        r.enabled = h.enabled;
+        out = out.add(r);
+    }
+    return out;
+}
+Array<HeaderEntry> kvToHeaders(Array<KVRow> rows) {
+    Array<HeaderEntry> out = [];
+    for (KVRow r in rows) {
+        HeaderEntry h = HeaderEntry::Of(r.name, r.value);
+        h.enabled = r.enabled;
+        out = out.add(h);
+    }
+    return out;
+}
+
+Array<KVRow> fieldsToKV(Array<FormField> fs) {
+    Array<KVRow> out = [];
+    for (FormField f in fs) {
+        KVRow r = KVRow::Of(f.key, f.value);
+        r.enabled = f.enabled;
+        out = out.add(r);
+    }
+    return out;
+}
+Array<FormField> kvToFields(Array<KVRow> rows) {
+    Array<FormField> out = [];
+    for (KVRow r in rows) {
+        FormField f = FormField::Of(r.name, r.value);
+        f.enabled = r.enabled;
+        out = out.add(f);
+    }
+    return out;
+}
+
+Array<KVRow> varsToKV(Array<Variable> vs) {
+    Array<KVRow> out = [];
+    for (Variable v in vs) {
+        KVRow r = KVRow::Of(v.key, v.value);
+        r.enabled = v.enabled;
+        r.secret = v.secret;
+        out = out.add(r);
+    }
+    return out;
+}
+Array<Variable> kvToVars(Array<KVRow> rows) {
+    Array<Variable> out = [];
+    for (KVRow r in rows) {
+        Variable v = Variable::Of(r.name, r.value);
+        v.enabled = r.enabled;
+        v.secret = r.secret;
+        out = out.add(v);
+    }
+    return out;
+}
+
+}

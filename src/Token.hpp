@@ -12,6 +12,8 @@ enum class TokenKind {
     IntLiteral,
     FloatLiteral,
     StringLiteral,
+    RawStringLiteral, // r"..." / r'...' (request-string-literal-tail): no escape
+                      // processing at all, single-line only
     QuasiLiteral,   // `...` quasiquote template (payload re-lexed by fragments)
 
     // Keywords
@@ -140,6 +142,17 @@ double parseFloatLiteral(std::string_view text);
 // before this existed). A malformed `\x` (not followed by two hex digits)
 // is likewise left alone: `x` passes through and the following characters
 // are read as ordinary content, not consumed.
+//
+// request-string-literal-tail: `\u{H+}` (1-6 hex digits) inserts the UTF-8
+// encoding of that Unicode scalar — the natural sibling of `\xNN`, reusing
+// char's own scalar-validity rule (surrogates D800-DFFF and anything past
+// 0x10FFFF are not valid scalars). A surrogate/out-of-range codepoint
+// decodes to U+FFFD rather than throwing (the same "invalid data never
+// crashes" replacement policy as UTF-8 decode, RuntimeValue.hpp's
+// utf8DecodeAt) — this is a compile-time literal, not a runtime failure, so
+// there is nothing to catch. A malformed `\u{...}` (no digits, no closing
+// '}', or more than 6 hex digits before one) is left alone exactly like a
+// malformed `\x`: `u` passes through and `{...}` is read as ordinary content.
 std::string decodeEscapes(std::string_view content);
 
 // Strip a string-literal TOKEN's surrounding quotes, then decodeEscapes —

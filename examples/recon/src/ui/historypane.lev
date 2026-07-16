@@ -1,0 +1,63 @@
+// History pane (DESIGN-2 §10.1, F7): a ListView over History.entries, rows
+// `GET   200  /path   143 ms   2m ago` (method badge, status, truncated path,
+// fmtMs, fmtAgo), newest first (the model order). Enter re-opens the entry; d
+// deletes; D clears. Selection never auto-sends (P6).
+namespace Recon {
+uses Sonar;
+
+class HistoryPane {
+    public ListView list;
+    public AppState state;
+    (int) => void onOpen;
+    bool hasOpen = false;
+    new HistoryPane(AppState st) {
+        state = st;
+        list = ListView();
+        this.rebuild();
+        this.list.onActivate((i) => this.fireOpen(i));
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void setOnOpen((int) => void cb) { onOpen = cb; hasOpen = true; }
+    void fireOpen(int i) { if (this.hasOpen) { var cb = this.onOpen; cb(i); } }
+
+    void rebuild() {
+        int now = std::sysNow();
+        Array<string> rows = [];
+        for (HistoryEntry e in this.state.history.entries) {
+            rows = rows.add(methodBadge(e.method) + " " + padTo(e.status.toString(), 4)
+                + padTo(truncateEnd(pathOfUrl(e.url), 20), 21)
+                + padTo(fmtMs(e.elapsedMs), 8) + " " + fmtAgo(now, e.timestamp));
+        }
+        if (rows.isEmpty()) { rows = ["  Sends will appear here. Enter re-opens one."]; }
+        this.list.items(rows);
+    }
+
+    void onKey(KeyEvent e) {
+        char kD = 'd'; char kClear = 'D';
+        if (kvIsChar(e, kD))          { this.deleteAt(this.list.selected); e.handled = true; }
+        else if (kvIsChar(e, kClear)) { this.clearAll(); e.handled = true; }
+    }
+
+    void deleteAt(int i) {
+        if (i < 0 || i >= this.state.history.entries.length()) { return; }
+        this.state.history.entries = this.state.history.entries.removeAt(i);
+        this.rebuild();
+    }
+    void clearAll() {
+        this.state.history.entries = [];
+        this.rebuild();
+    }
+}
+
+// The path (+query) portion of a URL for a compact history row.
+string pathOfUrl(string url) {
+    int sep = url.indexOf("://");
+    string rest = url;
+    if (sep >= 0) { rest = url.subStr(sep + 3, url.length() - sep - 3); }
+    int slash = rest.indexOf("/");
+    if (slash < 0) { return "/"; }
+    return rest.subStr(slash, rest.length() - slash);
+}
+
+}

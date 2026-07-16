@@ -1,88 +1,172 @@
-// Request builder panel (DESIGN §9.1). Builder class owning a framework
-// Container tree: URL row (method + Input + Send) over Tabs(Headers | Body).
+// Request builder panel v2 (DESIGN-2 §7). Composes the method selector, URL row,
+// Send button, the variable-preview strip (§9.3, shown only when holes exist), and
+// the full five-tab set: Params · Headers · Auth · Body · Tests. Compose-only (no
+// Container subclassing). loadFrom/commitTo sync the widgets to RequestSpec.
 namespace Recon {
 uses Sonar;
 
 class RequestPanel {
     public Container root;
-    public Text methodLabel;
+    public MethodSelector method;
     public Input urlInput;
     public Button sendBtn;
+    public RichText previewStrip;
     public Tabs tabs;
-    public HeaderTableSource headerSrc;
-    public TableView headersTable;
+    public ParamsPane params;
+    public KeyValueEditor headers;
+    public AuthPane auth;
     public TextArea bodyEditor;
+    public RadioGroup bodyMode;
+    public TestsPane tests;
     public AppState state;
     () => void onSend;
     bool hasOnSend = false;
 
     new RequestPanel(AppState st) {
         state = st;
-        // URL row
+
         Container urlRow = Container();
         urlRow.setLayout(FlexLayout(Axis::Horizontal));
         urlRow.setHeight(Constraint::Fixed(1));
-        methodLabel = Text();
-        methodLabel.text("GET ");
-        methodLabel.setWidth(Constraint::Fixed(6));
+        method = MethodSelector();
+        method.setWidth(Constraint::Fixed(7));
         urlInput = Input();
-        urlInput.setPlaceholder("https://host/path");
+        urlInput.setPlaceholder("https://{{host}}/path");
         urlInput.setWidth(Constraint::Flex(1));
         sendBtn = Button();
         sendBtn.setLabel("Send");
         sendBtn.setWidth(Constraint::Fixed(8));
-        urlRow.add(methodLabel);
-        urlRow.add(urlInput);
-        urlRow.add(sendBtn);
+        urlRow.add(this.method);
+        urlRow.add(this.urlInput);
+        urlRow.add(this.sendBtn);
 
-        // Tabs
-        headerSrc = HeaderTableSource();
-        headersTable = TableView();
-        headersTable.setColumns([
-            TableColumn("", Constraint::Fixed(4), Align::Start),
-            TableColumn("Name", Constraint::Flex(1), Align::Start),
-            TableColumn("Value", Constraint::Flex(2), Align::Start)
-        ]);
-        headersTable.setSource(headerSrc);
+        previewStrip = RichText();
+        previewStrip.setHeight(Constraint::Fixed(0));
+
+        params = ParamsPane();
+        headers = KeyValueEditor();
+        auth = AuthPane(st);
+        tests = TestsPane(st);
+
+        Container bodyBox = Container();
+        bodyBox.setLayout(FlexLayout(Axis::Vertical));
+        bodyMode = RadioGroup();
+        bodyMode.setOptions(["None", "Raw", "Form (urlencoded)", "Multipart", "GraphQL"]);
+        bodyMode.setHeight(Constraint::Fixed(5));
         bodyEditor = TextArea();
+        bodyEditor.rawLanguage = "json";
+        bodyEditor.setHeight(Constraint::Flex(1));
+        bodyBox.add(this.bodyMode);
+        bodyBox.add(this.bodyEditor);
 
         tabs = Tabs();
-        tabs.add("Headers", headersTable);
-        tabs.add("Body", bodyEditor);
+        tabs.add("Params", this.params.view());
+        tabs.add("Headers", this.headers.list);
+        tabs.add("Auth", this.auth.view());
+        tabs.add("Body", bodyBox);
+        tabs.add("Tests", this.tests.view());
 
         root = Container();
         root.setLayout(FlexLayout(Axis::Vertical));
         root.add(urlRow);
-        root.add(tabs);
+        root.add(this.previewStrip);
+        root.add(this.tabs);
 
-        // handlers (explicit this., bug #53)
-        this.urlInput.onSubmit((v) => this.fireSend());
+        this.urlInput.onSubmit((v) => this.onUrlSubmit(v));
         this.sendBtn.onPress(() => this.fireSend());
+        this.method.setOnSelect((m) => this.onMethodChange(m));
+        this.headers.setOnChange(() => this.state.markDirty());
+        this.params.setOnChange(() => this.onParamsChanged());
+        this.auth.setOnChange(() => this.state.markDirty());
+        this.tests.setOnChange(() => this.state.markDirty());
     }
 
     void setOnSend(() => void cb) { onSend = cb; hasOnSend = true; }
     void fireSend() { if (this.hasOnSend) { var cb = this.onSend; cb(); } }
 
-    // Load a request into the widgets.
-    void loadFrom(RequestSpec r) {
-        this.methodLabel.text(methodName(r.method) + " ");
-        this.urlInput.setValue(r.url);
-        this.bodyEditor.setText(r.body.raw);
-        this.headerSrc.rows = r.headers;
-        this.headersTable.refresh();
+    void onMethodChange(string m) {
+        this.state.active.method = methodFromName(m);
+        this.state.markDirty();
     }
 
-    // Read widget edits back into the request model (called before a send).
+    void onUrlSubmit(string v) {
+        this.state.active.url = v;
+        this.params.loadFrom(this.state.active);    // URL → table (§7.2 sync point)
+        this.refreshPreview();
+        this.fireSend();
+    }
+
+    void onParamsChanged() {
+        this.urlInput.setValue(this.state.active.url);   // table → URL reflected
+        this.refreshPreview();
+        this.state.markDirty();
+    }
+
+    int bodyModeIndex(BodyMode m) {
+        if (m == BodyMode::Raw)        { return 1; }
+        if (m == BodyMode::UrlEncoded) { return 2; }
+        if (m == BodyMode::FormData)   { return 3; }
+        if (m == BodyMode::GraphQL)    { return 4; }
+        return 0;
+    }
+    BodyMode bodyModeFromIndex(int i) {
+        if (i == 1) { return BodyMode::Raw; }
+        if (i == 2) { return BodyMode::UrlEncoded; }
+        if (i == 3) { return BodyMode::FormData; }
+        if (i == 4) { return BodyMode::GraphQL; }
+        return BodyMode::NoBody;
+    }
+
+    void loadFrom(RequestSpec r) {
+        this.method.setMethod(methodName(r.method));
+        this.urlInput.setValue(r.url);
+        this.headers.setRows(headersToKV(r.headers));
+        this.params.loadFrom(r);
+        this.auth.loadFrom(r);
+        this.tests.loadFrom(r);
+        this.bodyEditor.setText(r.body.raw);
+        this.bodyMode.selectRow(this.bodyModeIndex(r.body.mode));
+        this.refreshPreview();
+    }
+
     void commitTo(RequestSpec r) {
         r.url = this.urlInput.value;
-        if (r.body.mode == BodyMode::Raw || r.body.mode == BodyMode::NoBody) {
+        r.method = methodFromName(this.method.method());
+        r.headers = kvToHeaders(this.headers.rows());
+        this.params.commitTo(r);
+        this.auth.commitTo(r);
+        r.body.mode = this.bodyModeFromIndex(this.bodyMode.selected);
+        if (r.body.mode == BodyMode::Raw || r.body.mode == BodyMode::GraphQL
+            || r.body.mode == BodyMode::NoBody) {
             string t = this.bodyEditor.text();
-            if (!t.isEmpty()) {
-                r.body.mode = BodyMode::Raw;
-                r.body.raw = t;
-            }
+            r.body.raw = t;
+            if (r.body.mode == BodyMode::NoBody && !t.isEmpty()) { r.body.mode = BodyMode::Raw; }
         }
     }
+
+    // The variable-preview strip: hidden when the URL has no {{holes}} (§9.3).
+    void refreshPreview() {
+        VarResolver vars = this.state.resolver();
+        ResolveReport rep = resolveReport(this.urlInput.value, vars);
+        if (rep.holes.isEmpty()) {
+            this.previewStrip.setSpans([]);
+            this.previewStrip.setHeight(Constraint::Fixed(0));
+            return;
+        }
+        this.previewStrip.setHeight(Constraint::Fixed(1));
+        Array<Span> spans = [Span::Of(" ", "statusline.meta")];
+        for (VarHole h in rep.holes) {
+            if (h.resolved) {
+                string? v = vars.lookup(h.name);
+                spans = spans.add(Span::Of("{{" + h.name + "}}→" + (v ?? "") + "  ", "request.url.hole.resolved"));
+            } else {
+                spans = spans.add(Span::Of("{{" + h.name + "}}  ", "request.url.hole.unresolved"));
+            }
+        }
+        this.previewStrip.setSpans(spans);
+    }
+
+    void refreshTestsLabel() { this.tests.rebuild(); }
 }
 
 }
