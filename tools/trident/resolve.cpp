@@ -1,4 +1,5 @@
 #include "resolve.hpp"
+#include "checksum.hpp"
 #include "discover.hpp"
 #include "fetch.hpp"
 #include "hash.hpp"
@@ -385,10 +386,57 @@ bool parseRequireEdge(const std::string& text, Require& out) {
     return true;
 }
 
+// The hermetic, network-free provider for `trident vendor`/`--vendor`
+// (techdesign-package-manager.md §6 P2.2, GT4): every module's sources are
+// read straight from `vendorDir/<serializeModuleId>/` — no git, no
+// $TRIDENT_HOME store. Only `materialize()` is ever actually reached: vendor
+// mode requires a consistent lock (resolveVcsDeps enforces this below before
+// constructing one), so MVS's `manifestOf()`/`versions()` are never called.
+class VendorProvider : public ModuleProvider {
+public:
+    explicit VendorProvider(std::string vendorDir) : vendorDir_(std::move(vendorDir)) {}
+
+    bool manifestOf(const ModuleId&, const Version&, ProjectManifest&, std::string& err) override {
+        err = "internal error: vendor mode must resolve entirely from the lock — "
+             "manifestOf() should never be called";
+        return false;
+    }
+
+    bool materialize(const ModuleId& mod, const Version&, std::string& storeDir,
+                     std::string& contentHash, std::string& err) override {
+        storeDir = vendorDir_ + "/" + serializeModuleId(mod);
+        struct stat st;
+        if (::stat(storeDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            err = "module '" + serializeModuleId(mod) + "' is not vendored under '" +
+                 vendorDir_ + "' (run `trident vendor` first)";
+            return false;
+        }
+        std::vector<std::string> files;
+        listFilesRecursive(storeDir, files);
+        std::string base = storeDir + "/";
+        std::vector<StoreFile> sf;
+        sf.reserve(files.size());
+        for (const std::string& f : files) {
+            std::string rel = f.compare(0, base.size(), base) == 0 ? f.substr(base.size()) : f;
+            sf.push_back({rel, f});
+        }
+        return canonicalContentHash(sf, contentHash, err);
+    }
+
+    bool versions(const ModuleId&, std::vector<Version>&, std::string& err) override {
+        err = "internal error: vendor mode must resolve entirely from the lock — "
+             "versions() should never be called";
+        return false;
+    }
+
+private:
+    std::string vendorDir_;
+};
+
 }  // namespace
 
 VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDeps,
-                             const std::string& lockPath) {
+                             const std::string& lockPath, const std::string& vendorDir) {
     VcsResolution vr;
 
     std::vector<Require> rootRequires;
@@ -404,14 +452,25 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
         return vr;       // and no git prerequisite for a project with none
     }
 
-    // No dispatching provider is needed here (contrast the design's "a
-    // provider that dispatches per dep kind"): rootRequires above already
-    // contains ONLY Vcs-kind deps (Local-kind ones stay entirely on the
-    // loadDepsRec path, never touching MVS), and P2.1a's mvs.cpp treats
-    // every dep reached via manifestOf() as Vcs unconditionally (logged
-    // there) — so every ModuleId this MVS run ever visits is Git-backed.
-    // LocalProvider (P2.0) remains a proven-but-unwired-into-MVS seam.
-    GitProvider provider;
+    if (!vendorDir.empty() && lockPath.empty()) {
+        vr.err = "internal error: vendor mode requires a lock path";
+        return vr;
+    }
+
+    // No dispatching provider is needed for MVS itself (contrast the
+    // design's "a provider that dispatches per dep kind"): rootRequires
+    // above already contains ONLY Vcs-kind deps (Local-kind ones stay
+    // entirely on the loadDepsRec path, never touching MVS), and P2.1a's
+    // mvs.cpp treats every dep reached via manifestOf() as Vcs
+    // unconditionally (logged there) — so every ModuleId this MVS run ever
+    // visits is Git-backed. LocalProvider (P2.0) remains a
+    // proven-but-unwired-into-MVS seam. `fetchProvider` (P2.2) is the
+    // separate choice of WHERE the final materialize() step below reads
+    // from — GitProvider normally, or VendorProvider under `--vendor`.
+    GitProvider gitProvider;
+    VendorProvider vendorProvider(vendorDir);
+    ModuleProvider& fetchProvider = vendorDir.empty()
+        ? static_cast<ModuleProvider&>(gitProvider) : static_cast<ModuleProvider&>(vendorProvider);
 
     // §3.4: "trident build/run/check use the lock verbatim when it is
     // present and consistent... never a silent re-resolve." A non-empty
@@ -421,9 +480,11 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
     // calls) and use the lock's selection as-is. `add`/`lock`/`update`/
     // `fetch` (commands.cpp) pass "" instead — their whole point is
     // recomputing the lock, so they must never short-circuit off a
-    // possibly-stale one.
+    // possibly-stale one. `lockHashByModule` caches each module's lock-
+    // pinned hash for the P2.2 integrity check in the materialize loop below.
     std::vector<BuildListEntry> selected;
     bool usedLock = false;
+    std::map<ModuleId, std::string> lockHashByModule;
     if (!lockPath.empty()) {
         std::string lockText;
         Lockfile lock;
@@ -438,6 +499,7 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
                 std::string hexHash = m.hash.compare(0, 7, "sha256:") == 0 ? m.hash.substr(7) : m.hash;
                 e.contentHash = hexHash;
                 e.storeDir = storeRoot() + "/" + hexHash;
+                lockHashByModule[m.mod] = hexHash;
                 for (const std::string& reqText : m.requires_) {
                     Require r;
                     if (parseRequireEdge(reqText, r)) e.requires_.push_back(r);
@@ -449,7 +511,13 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
     }
 
     if (!usedLock) {
-        MvsResult mvs = selectVersions(rootRequires, provider);
+        if (!vendorDir.empty()) {
+            vr.err = "vendor mode requires a valid, up-to-date trident.lock — run `trident "
+                    "lock` (with network) first, then `trident vendor`, then rebuild with "
+                    "--vendor";
+            return vr;
+        }
+        MvsResult mvs = selectVersions(rootRequires, gitProvider);
         if (!mvs.ok) {
             vr.err = mvs.err;
             return vr;
@@ -461,14 +529,40 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
     // hit when `usedLock` found it already fetched, a real (network) fetch
     // only on a genuinely cold cache, matching ordinary package-manager UX
     // (a present lock pins WHAT to fetch; it does not forbid fetching it).
+    // P2.2 GT4: every fetch is then verified — against the checksum DB
+    // (tamper-evident across time/machines; skipped in vendor mode, which by
+    // design depends on nothing outside `vendorDir`) and, when the lock was
+    // used verbatim, against the lock's own pinned hash — either mismatch is
+    // a loud error, never a silent acceptance.
     for (BuildListEntry e : selected) {
         std::string storeDir, contentHash, merr;
-        if (!provider.materialize(e.mod, e.selected, storeDir, contentHash, merr)) {
+        if (!fetchProvider.materialize(e.mod, e.selected, storeDir, contentHash, merr)) {
             vr.err = "materializing " + e.mod.path + "@" + formatSemVer(e.selected) + ": " + merr;
             return vr;
         }
         e.storeDir = storeDir;
         e.contentHash = contentHash;
+
+        if (vendorDir.empty()) {
+            std::string cerr;
+            if (!checksumDbVerifyOrRecord(checksumDbPath(), e.mod, e.selected, contentHash, cerr)) {
+                vr.err = "checksum verification failed for " + e.mod.path + "@" +
+                        formatSemVer(e.selected) + ": " + cerr;
+                return vr;
+            }
+        }
+
+        if (usedLock) {
+            auto it = lockHashByModule.find(e.mod);
+            if (it != lockHashByModule.end() && it->second != contentHash) {
+                vr.err = "content for " + e.mod.path + "@" + formatSemVer(e.selected) +
+                        " does not match trident.lock (expected sha256:" + it->second +
+                        ", got sha256:" + contentHash + ") — possible tampering; if this is "
+                        "an intentional dependency change, run `trident lock`";
+                return vr;
+            }
+        }
+
         vr.buildList.push_back(std::move(e));
     }
     vr.ok = true;
@@ -476,7 +570,7 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
 }
 
 ResolvedProject resolveProject(const std::string& manifestPath, const std::string& aliasDir,
-                               bool includeDevDeps) {
+                               bool includeDevDeps, const std::string& vendorDir) {
     ResolvedProject rp;
 
     std::string mtext;
@@ -525,7 +619,8 @@ ResolvedProject resolveProject(const std::string& manifestPath, const std::strin
     // local deps (§3.3 rule 4) — leviathan's phantom-dep enforcement and the
     // plan writer need no change to carry them.
     std::map<ModuleId, std::string> storeDirByModule;
-    VcsResolution vr = resolveVcsDeps(rp.manifest, includeDevDeps, lockfilePathFor(manifestPath));
+    VcsResolution vr = resolveVcsDeps(rp.manifest, includeDevDeps, lockfilePathFor(manifestPath),
+                                      vendorDir);
     if (!vr.ok) {
         std::fprintf(stderr, "error: %s\n", vr.err.c_str());
         return rp;
