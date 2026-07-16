@@ -1835,9 +1835,12 @@ int Lowerer::lowerExpr(Expr* e) {
         case ExprKind::StringLit: {
             int r = newReg();
             // F4: an interpolation segment's text is already bare content
-            // (no quotes to strip — see Expr::isRawSegment).
-            std::string decoded = e->isRawSegment ? decodeEscapes(e->text)
-                                                  : decodeStringLiteral(e->text);
+            // (no quotes to strip — see Expr::isRawSegment). request-string-
+            // literal-tail: a raw string's text is already bare content too,
+            // but byte-exact (no escape decoding at all — see Expr::isRawString).
+            std::string decoded = e->isRawString ? std::string(e->text)
+                                  : e->isRawSegment ? decodeEscapes(e->text)
+                                                    : decodeStringLiteral(e->text);
             // Track 03 §1: the checker flipped this single-scalar literal to char.
             if (e->charLit) {
                 size_t len; bool boundary;

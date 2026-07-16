@@ -117,6 +117,43 @@ def mode_signal(signo, want, cmd):
     print(f"signal want={want!r} got={out.strip()!r} -> {'ok' if ok else 'FAIL'}")
     return ok
 
+# SU-1 unsubscribe isolation: send <signo> TWICE (gap between), then collect all
+# output. Assert every string in <wantcsv> appears and every string in <nocsv>
+# does NOT — proving a subscriber closed on the first delivery skips the second
+# while a sibling keeps receiving (and the shared fd stays open, so the second
+# signal is watched, not a default-disposition kill).
+def mode_signal_twice(signo, wantcsv, nocsv, cmd):
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.0)
+    if p.poll() is not None:
+        print(f"signal2 FAIL early-exit {p.stdout.read()!r}"); return False
+    p.send_signal(int(signo))
+    time.sleep(0.6)
+    p.send_signal(int(signo))
+    try:
+        out, _ = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill(); print("signal2 FAIL timeout"); return False
+    want = [w for w in wantcsv.split(",") if w]
+    no   = [w for w in nocsv.split(",") if w]
+    ok = all(w in out for w in want) and all(w not in out for w in no)
+    print(f"signal2 want={want} no={no} got={out.strip()!r} -> {'ok' if ok else 'FAIL'}")
+    return ok
+
+# SU-1 loop-drain exit: run with NO signal; the program subscribes under `using`
+# and lets the scope close it, releasing the last watch. Assert it EXITS on its
+# own (a live signal watch would pin the loop forever) with the wanted output.
+def mode_drain_exit(wantcsv, cmd):
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        out, _ = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill(); print("drain FAIL hang (loop not drained)"); return False
+    want = [w for w in wantcsv.split(",") if w]
+    ok = p.returncode == 0 and all(w in out for w in want)
+    print(f"drain rc={p.returncode} want={want} got={out.strip()!r} -> {'ok' if ok else 'FAIL'}")
+    return ok
+
 def main():
     head, cmd = split(sys.argv[1:])
     mode = head[0]
@@ -124,6 +161,8 @@ def main():
     elif mode == "winch":  ok = mode_winch(cmd)
     elif mode == "rawkill": ok = mode_rawkill(cmd)
     elif mode == "signal": ok = mode_signal(head[1], head[2], cmd)
+    elif mode == "signal2": ok = mode_signal_twice(head[1], head[2], head[3], cmd)
+    elif mode == "drain": ok = mode_drain_exit(head[1], cmd)
     else: print("unknown mode", mode); ok = False
     sys.exit(0 if ok else 1)
 

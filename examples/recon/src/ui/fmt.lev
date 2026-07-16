@@ -1,0 +1,103 @@
+// Pure formatting helpers (DESIGN-2 §4.3). Every function is pure and takes the
+// clock as a parameter (`now` is never read inside) so the corpus can pin every
+// output byte-for-byte. Owned by U1; consumed by the status line, history pane,
+// notice log, and JSON view footer.
+namespace Recon {
+
+// The theme-key suffix for an HTTP status class (DESIGN-2 §4.3).
+//   2xx -> "ok"  3xx -> "redirect"  4xx -> "clienterr"  5xx -> "servererr"  else -> "neutral"
+string statusClass(int status) {
+    if (status >= 200 && status < 300) { return "ok"; }
+    if (status >= 300 && status < 400) { return "redirect"; }
+    if (status >= 400 && status < 500) { return "clienterr"; }
+    if (status >= 500 && status < 600) { return "servererr"; }
+    return "neutral";
+}
+
+// A status dot glyph paired with the class (P7 non-color channel is the text).
+string statusGlyph(int status) => "●";   // ●
+
+// Elapsed time: "143 ms" under a second, "2.4 s" above (one decimal).
+string fmtMs(int ms) {
+    if (ms < 0) { return "0 ms"; }
+    if (ms < 1000) { return ms.toString() + " ms"; }
+    int whole = ms / 1000;
+    int tenths = (ms % 1000) / 100;
+    return whole.toString() + "." + tenths.toString() + " s";
+}
+
+// Byte counts: "340 B", "1.2 KB", "3.4 MB" (one decimal above the threshold).
+string fmtBytes(int n) {
+    if (n < 0) { return "0 B"; }
+    if (n < 1024) { return n.toString() + " B"; }
+    if (n < 1048576) { return oneDecimal(n, 1024) + " KB"; }
+    return oneDecimal(n, 1048576) + " MB";
+}
+
+// n/unit rendered with one decimal place, no floating point (backend-robust).
+string oneDecimal(int n, int unit) {
+    int whole = n / unit;
+    int tenths = ((n % unit) * 10) / unit;
+    return whole.toString() + "." + tenths.toString();
+}
+
+// Relative time from an ISO-8601 timestamp: "just now", "5s ago", "2m ago",
+// "3h ago", "2d ago". `nowMs` is always supplied (never read the clock here).
+string fmtAgo(int nowMs, string thenIso) {
+    DateTime? p = datetime::parseIso8601(thenIso);
+    if (p == None) { return thenIso; }
+    DateTime then = p ?? DateTime::ofEpochMs(0);
+    int deltaMs = nowMs - then.epochMs;
+    if (deltaMs < 0) { deltaMs = 0; }
+    int secs = deltaMs / 1000;
+    if (secs < 5)    { return "just now"; }
+    if (secs < 60)   { return secs.toString() + "s ago"; }
+    int mins = secs / 60;
+    if (mins < 60)   { return mins.toString() + "m ago"; }
+    int hours = mins / 60;
+    if (hours < 24)  { return hours.toString() + "h ago"; }
+    int days = hours / 24;
+    return days.toString() + "d ago";
+}
+
+// Truncate a string to `w` cells, dropping the middle with an ellipsis so both
+// ends stay legible ("/very/long/path" -> "/very…/path"). Cell-accurate for BMP.
+string truncateMiddle(string text, int w) {
+    Array<char> chars = text.chars();
+    int n = chars.length();
+    if (n <= w) { return text; }
+    if (w <= 1) { return "…"; }
+    int keep = w - 1;                 // one cell for the ellipsis
+    int head = (keep + 1) / 2;
+    int tail = keep - head;
+    StringBuilder out = StringBuilder();
+    for (int i = 0; i < head; i = i + 1) { out.add(chars.at(i).toString()); }
+    out.add("…");
+    for (int i = n - tail; i < n; i = i + 1) { out.add(chars.at(i).toString()); }
+    return out.toString();
+}
+
+// Truncate on the right with a trailing ellipsis ("longtext" -> "longt…").
+string truncateEnd(string text, int w) {
+    Array<char> chars = text.chars();
+    int n = chars.length();
+    if (n <= w) { return text; }
+    if (w <= 1) { return "…"; }
+    StringBuilder out = StringBuilder();
+    for (int i = 0; i < w - 1; i = i + 1) { out.add(chars.at(i).toString()); }
+    out.add("…");
+    return out.toString();
+}
+
+// Left-pad/truncate to exactly `w` cells (badge columns align — DESIGN-2 §4.2).
+// Recon uses narrow (width-1) BMP glyphs only (§4.7), so scalar count == cells.
+string padTo(string text, int w) {
+    int cw = text.chars().length();
+    if (cw >= w) { return truncateEnd(text, w); }
+    StringBuilder out = StringBuilder();
+    out.add(text);
+    for (int i = cw; i < w; i = i + 1) { out.add(" "); }
+    return out.toString();
+}
+
+}

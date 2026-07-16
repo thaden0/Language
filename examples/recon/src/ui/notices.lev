@@ -1,0 +1,101 @@
+// Feedback: a docked one-row notice line + a notices log (DESIGN-2 §9.1). A docked
+// line (not floating toasts) has no focus-save/restore or stale-shrink risk and is
+// the established TUI idiom. Every user-facing failure produces exactly one notice
+// (N5, §9.2). Notices are reference classes held in an AppState instance field
+// (#73-safe). The line renders through the RichText leaf (full-width bg, #4 belt).
+namespace Recon {
+uses Sonar;
+
+class NoticeLine {
+    public RichText row;
+    public AppState state;
+    new NoticeLine(AppState st) {
+        state = st;
+        row = RichText();
+        row.setBgKey("default");
+        row.setHeight(Constraint::Fixed(1));
+    }
+
+    // The newest live (non-expired) notice, or None when the row should collapse.
+    Notice? current(int nowMs) {
+        Array<Notice> ns = this.state.notices;
+        if (ns.isEmpty()) { return None; }
+        Notice last = ns.at(ns.length() - 1);
+        int life = last.lifespanMs();
+        if (life > 0 && nowMs - last.atMs > life) { return None; }
+        return last;
+    }
+
+    // How many notices arrived within the current one's window (for "+N more").
+    int recentCount(int nowMs) {
+        Array<Notice> ns = this.state.notices;
+        if (ns.isEmpty()) { return 0; }
+        Notice last = ns.at(ns.length() - 1);
+        int within = 0;
+        for (Notice n in ns) {
+            if (last.atMs - n.atMs <= 4000) { within = within + 1; }
+        }
+        return within;
+    }
+
+    void update(int nowMs) {
+        Notice? c = this.current(nowMs);
+        if (c == None) { this.row.setSpans([]); this.row.setHeight(Constraint::Fixed(0)); return; }
+        Notice n = c ?? Notice();
+        this.row.setHeight(Constraint::Fixed(1));
+        Array<Span> spans = [Span::Of(" " + n.glyph() + " ", n.styleKey()), Span::Of(n.text, n.styleKey())];
+        int more = this.recentCount(nowMs);
+        if (more > 1) { spans = spans.add(Span::Of("   +" + (more - 1).toString() + " more", n.styleKey())); }
+        this.row.setSpans(spans);
+    }
+
+    // Whether an error notice is sticky-live (any keypress clears it — a P2 exception).
+    void dismissSticky() {
+        // remove a trailing error notice so the row collapses on the next frame
+        Array<Notice> ns = this.state.notices;
+        if (ns.isEmpty()) { return; }
+        Notice last = ns.at(ns.length() - 1);
+        if (last.level == "error") {
+            this.state.notices = ns.slice(0, ns.length() - 1);
+        }
+    }
+}
+
+// The notices log modal (§9.1): the recent 50 rows with relative timestamps.
+class NoticesLog {
+    public Modal modal;
+    public ListView list;
+    public AppState state;
+    new NoticesLog(AppState st) {
+        state = st;
+        modal = Modal();
+        modal.title("Notices");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        list = ListView();
+        modal.add(this.list);
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void open(int nowMs) {
+        Array<string> rows = [];
+        Array<Notice> ns = this.state.notices;
+        // newest first
+        for (int i = ns.length() - 1; i >= 0; i = i - 1) {
+            Notice n = ns.at(i);
+            rows = rows.add("  " + padTo(n.glyph(), 2) + padTo(fmtAgo(nowMs, isoOf(n.atMs)), 10) + n.text);
+        }
+        if (rows.isEmpty()) { rows = ["  (no notices yet)"]; }
+        this.list.items(rows);
+        this.modal.open();
+        Sonar::app().focus(this.list);
+    }
+
+    void onKey(KeyEvent e) {
+        if (e.code == KeyCode::Escape) { this.modal.close(); e.handled = true; }
+    }
+}
+
+string isoOf(int ms) => DateTime::ofEpochMs(ms).iso8601();
+
+}

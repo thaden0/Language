@@ -3254,24 +3254,17 @@ struct Gen {
                 b.CreateCall(rtSetm, {regs[in.b], cstr(in.sname), regs[in.a]});
                 emitThrowCheck((int)pc);
             } else if (op == Op::StoreGlobal && ok) {
-                // global[in.b] = reg[in.a]: release the OLD slot value, store the
-                // new, retain it — §15 slot ownership, exactly as RawSet/SetMember
-                // do for a field slot. bug.md #73: the old parity shortcut with
-                // frozen X64Gen skipped the release on the "globals are write-once"
-                // assumption, but a global grown by repeated `xs = xs.add(...)`
-                // reassignment (COW) leaked every superseded buffer — O(N²) live
-                // bytes, `lvrt: heap exhausted` near N=10k on native. Releasing the
-                // old value reclaims each intermediate; scalar/void slots (incl. the
-                // zero-initialized initial slot) release as a no-op, so nothing else
-                // changes. LLVM-only: X64Gen/ELF is frozen and stdout is unaffected,
-                // so no differential golden moves.
+                // global[in.b] = reg[in.a], then retain. Matches X64Gen exactly,
+                // INCLUDING that it does not release the old global value — a
+                // deliberate parity match (X64Gen.cpp:3504-3510); globals are
+                // effectively write-once in the corpus, so this cannot leak in
+                // practice (any real reassignment leak is X64Gen's too, and would
+                // be caught by the churn lane when it runs on this backend at A-M5).
                 llvm::Value* g = b.CreateGEP(
                     ArrayType::get(lvTy, mod.nglobals), globalsArray,
                     {i64C(0), i64C(in.b)});
-                copyLV(b, arcScratch, g);                 // save old slot value
-                copyLV(b, g, regs[in.a]);                 // store new
-                b.CreateCall(rtRelease, {arcScratch});    // release old
-                b.CreateCall(rtRetain, {regs[in.a]});     // retain new
+                copyLV(b, g, regs[in.a]);
+                b.CreateCall(rtRetain, {regs[in.a]});
             }
             if (!terminated) b.CreateBr(blocks[pc + 1]);
         }

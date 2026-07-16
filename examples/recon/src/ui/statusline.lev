@@ -1,0 +1,59 @@
+// Response status line (DESIGN-2 §8.1). One row pinned above the response tabs:
+// idle (blank — the empty-state card owns the space), in-flight (spinner + elapsed
+// + "Esc to cancel"), settled-ok (colored status + meta), or settled-failed (the
+// §9.2 taxonomy line). Renders through a RichText leaf; the App.every ticker (armed
+// in beginInFlight) drives the spinner/elapsed refresh.
+namespace Recon {
+uses Sonar;
+
+Array<string> spinnerFrames() => ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+class StatusLine {
+    public RichText row;
+    new StatusLine() {
+        row = RichText();
+        row.setBgKey("default");
+        row.setHeight(Constraint::Fixed(1));
+    }
+
+    void update(AppState st, int nowMs) {
+        this.row.setSpans(this.spansFor(st, nowMs));
+    }
+
+    Array<Span> spansFor(AppState st, int nowMs) {
+        if (st.inFlight) {
+            int elapsed = nowMs - st.inFlightStartMs;
+            if (elapsed < 0) { elapsed = 0; }
+            Array<string> frames = spinnerFrames();
+            int fi = (nowMs / 100) % frames.length();
+            return [
+                Span::Of(frames.at(fi) + " sending… ", "statusline.inflight"),
+                Span::Of(fmtMs(elapsed), "statusline.meta"),
+                Span::Of("  ∙  Esc to cancel", "statusline.meta")
+            ];
+        }
+        if (st.lastOutcome == None) { return []; }        // never sent -> blank
+        RunOutcome o = st.lastOutcome ?? RunOutcome();
+        if (o.timedOut)  { return [Span::Of("◌ timed out after " + fmtMs(o.elapsedMs), "status.redirect")]; }
+        if (o.cancelled) { return [Span::Of("◌ cancelled", "status.redirect")]; }
+        if (!o.error.isEmpty()) {
+            return [
+                Span::Of("✗ ", "notice.error"),
+                Span::Of(o.error, "notice.error"),
+                Span::Of("  ∙  " + fmtMs(o.elapsedMs), "statusline.meta")
+            ];
+        }
+        if (st.lastResponse == None) { return []; }
+        HttpResponse r = st.lastResponse ?? HttpResponse(0, "");
+        string cls = statusClass(r.status);
+        Array<Span> spans = [
+            Span::Of("● " + r.status.toString() + " " + r.reason(), "status." + cls),
+            Span::Of("  ∙  " + fmtMs(o.elapsedMs), "statusline.meta"),
+            Span::Of("  ∙  " + fmtBytes(r.body.length()), "statusline.meta"),
+            Span::Of("  ∙  " + truncateEnd(st.active.url, 50), "statusline.meta")
+        ];
+        return spans;
+    }
+}
+
+}

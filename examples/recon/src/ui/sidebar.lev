@@ -1,14 +1,22 @@
-// Collection sidebar (DESIGN §9.1). A TreeView over ReconTreeSource, wired to
-// load the selected request into AppState. Plain builder class.
+// Collection sidebar v2 (DESIGN-2 §10.1). A two-tab strip (Collections | History):
+// the Collections tab is the TreeView over ReconTreeSource with node ops (F2
+// rename, Delete delete — F25), the History tab is the HistoryPane (F7). ^H jumps
+// to History. Plain builder class (compose-only).
 namespace Recon {
 uses Sonar;
 
 class Sidebar {
+    public Tabs tabs;
     public TreeView tree;
     public ReconTreeSource source;
+    public HistoryPane history;
     public AppState state;
+    TreeNodeId lastNode_ = TreeNodeId(0 - 1);
+    bool hasNode_ = false;
     (CollectionItem) => void onOpen;
     bool hasOnOpen = false;
+    () => void onChange;
+    bool hasChange = false;
 
     new Sidebar(AppState st) {
         state = st;
@@ -16,26 +24,110 @@ class Sidebar {
         tree = TreeView();
         tree.setTitle("Collections");
         tree.setBorder(BorderStyle::Single);
-        tree.setSource(source);
-        // EXPLICIT this. inside handlers (bug #53)
-        tree.onSelect((n) => this.handleSelect(n));
+        tree.setSource(this.source);
+        this.tree.onSelect((n) => this.handleSelect(n));
+        this.tree.onKeyCapture((e) => this.onTreeKey(e));
+
+        history = HistoryPane(st);
+        this.history.setOnOpen((i) => this.openHistory(i));
+
+        tabs = Tabs();
+        tabs.add("Collections", this.tree);
+        tabs.add("History", this.history.list);
     }
 
     void setOnOpen((CollectionItem) => void cb) { onOpen = cb; hasOnOpen = true; }
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+
+    void showCollections() { this.tabs.select(0); }
+    void showHistory() { this.tabs.select(1); this.history.rebuild(); }
 
     void loadCollection(Collection col) {
-        source.build(col);
-        state.activeCollection = col;
-        tree.refresh();
+        this.source.build(col);
+        this.state.activeCollection = col;
+        this.tree.refresh();
     }
 
+    void refreshHistory() { this.history.rebuild(); }
+
     void handleSelect(TreeNodeId n) {
+        this.lastNode_ = n;
+        this.hasNode_ = true;
         CollectionItem item = this.source.itemFor(n);
         if (!item.isFolder && item.request != None) {
             this.state.loadRequest(item, this.source.collection, None);
             if (this.hasOnOpen) { var cb = this.onOpen; cb(item); }
         }
     }
+
+    // Re-open a history entry into the editing surface (§10.1).
+    void openHistory(int i) {
+        if (i < 0 || i >= this.state.history.entries.length()) { return; }
+        HistoryEntry e = this.state.history.entries.at(i);
+        RequestSpec r = RequestSpec();
+        r.method = methodFromName(e.method);
+        r.url = e.url;
+        this.state.active = r;
+        if (this.hasOnOpen) {
+            CollectionItem synthetic = CollectionItem::Request("(history)");
+            synthetic.request = r;
+            var cb = this.onOpen;
+            cb(synthetic);
+        }
+    }
+
+    void onTreeKey(KeyEvent e) {
+        if (e.code == KeyCode::F2) { this.renameSelected(); e.handled = true; }
+        else if (e.code == KeyCode::Delete) { this.deleteSelected(); e.handled = true; }
+    }
+
+    CollectionItem? selectedItem() {
+        if (!this.hasNode_) { return None; }
+        return this.source.itemFor(this.lastNode_);
+    }
+
+    void renameSelected() {
+        CollectionItem? s = this.selectedItem();
+        if (s == None) { return; }
+        CollectionItem item = s ?? CollectionItem();
+        PromptDialog dlg = PromptDialog("Rename", "New name:", item.name);
+        dlg.setOnAccept((v) => this.applyRename(item, v));
+        dlg.open(Sonar::app());
+    }
+    void applyRename(CollectionItem item, string name) {
+        if (name.isEmpty()) { return; }
+        item.name = name;
+        if (item.request != None) { RequestSpec r = item.request ?? RequestSpec(); r.name = name; }
+        this.source.build(this.source.collection);
+        this.tree.refresh();
+        this.state.markDirty();
+        this.fireChange();
+    }
+
+    void deleteSelected() {
+        CollectionItem? s = this.selectedItem();
+        if (s == None) { return; }
+        CollectionItem item = s ?? CollectionItem();
+        removeItemFromTree(this.source.collection.root, item);
+        this.source.build(this.source.collection);
+        this.tree.refresh();
+        this.state.markDirty();
+        this.fireChange();
+    }
+}
+
+// Recursively remove `target` from a folder's children (by identity).
+bool removeItemFromTree(CollectionItem parent, CollectionItem target) {
+    Array<CollectionItem> kept = [];
+    bool removed = false;
+    for (CollectionItem c in parent.children) {
+        if (c == target) { removed = true; continue; }
+        if (c.isFolder && removeItemFromTree(c, target)) { removed = true; }
+        kept = kept.add(c);
+    }
+    parent.children = kept;
+    return removed;
 }
 
 }

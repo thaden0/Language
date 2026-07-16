@@ -1,0 +1,13 @@
+// SU-1 (techdesign-stream-unsubscribe.md §7 T2/T4): a one-shot program that
+// subscribes to a signal under `using` and lets the scope close it. The last
+// subscriber leaving unwatches + closes the signalfd (R6), so no live watch
+// pins the event loop — the program drains and EXITS on its own with no signal
+// ever sent. Before SU-1, signal::on left the fd/watch alive for the whole run
+// and this program would hang forever. Also exercises `using` teardown on the
+// ordinary fall-through edge.
+void watch() {
+    using InStream<int> w = signal::on(signal::WINCH);
+    console.writeln("subscribed");
+}
+watch();
+console.writeln("after-scope");

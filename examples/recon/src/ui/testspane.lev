@@ -1,0 +1,206 @@
+// Tests tab (DESIGN-2 §7.6): the identity feature gets a UI. Two lists —
+// Assertions and Extractions — each with a/e/d via FormDialogs. After a send, rows
+// go live: each assertion prefixes ✓/✗ (by position — the runner evaluates the
+// plan in order), and the tab label becomes Tests ✓3 / Tests ✗1 (§8). Rows created
+// from the response inspector (§8.3) land here pre-filled via addAssertion().
+namespace Recon {
+uses Sonar;
+
+class TestsPane {
+    public Container root;
+    public ListView assertList;
+    public ListView extractList;
+    public RequestSpec? bound_ = None;
+    AppState state;
+    () => void onChange;
+    bool hasChange = false;
+
+    new TestsPane(AppState st) {
+        state = st;
+        root = Container();
+        root.setLayout(FlexLayout(Axis::Vertical));
+        Text aLbl = Text();
+        aLbl.text(" Assertions   a add · e edit · d delete");
+        aLbl.setHeight(Constraint::Fixed(1));
+        assertList = ListView();
+        assertList.setHeight(Constraint::Flex(1));
+        Text eLbl = Text();
+        eLbl.text(" Extractions   a add · e edit · d delete");
+        eLbl.setHeight(Constraint::Fixed(1));
+        extractList = ListView();
+        extractList.setHeight(Constraint::Flex(1));
+        root.add(aLbl);
+        root.add(this.assertList);
+        root.add(eLbl);
+        root.add(this.extractList);
+        this.assertList.onKeyCapture((e) => this.onAssertKey(e));
+        this.extractList.onKeyCapture((e) => this.onExtractKey(e));
+    }
+
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+    IComponent view() => this.root;
+
+    void loadFrom(RequestSpec r) { bound_ = r; this.rebuild(); }
+
+    RequestSpec req() => this.bound_ ?? RequestSpec();
+
+    string assertLabel(Assertion a) => a.source + " " + a.arg + " " + a.op + " " + a.expected;
+
+    void rebuild() {
+        RequestSpec r = this.req();
+        Array<string> arows = [];
+        for (int i = 0; i < r.tests.assertions.length(); i = i + 1) {
+            Assertion a = r.tests.assertions.at(i);
+            string mark = "  ";
+            if (i < this.state.lastTests.length()) {
+                TestResult tr = this.state.lastTests.at(i);
+                mark = tr.passed ? "✓ " : "✗ ";
+            }
+            arows = arows.add(mark + this.assertLabel(a));
+        }
+        if (arows.isEmpty()) { arows = ["  (no assertions — press a to add, or press a on a JSON value)"]; }
+        this.assertList.items(arows);
+
+        Array<string> erows = [];
+        for (Extraction x in r.tests.extractions) {
+            erows = erows.add("  " + x.source + " " + x.arg + " → " + x.scope + "." + x.varName);
+        }
+        if (erows.isEmpty()) { erows = ["  (no extractions)"]; }
+        this.extractList.items(erows);
+    }
+
+    // The tab label suffix ("Tests ✓3" / "Tests ✗1" / "Tests").
+    string tabLabel() {
+        int pass = 0;
+        int fail = 0;
+        for (TestResult tr in this.state.lastTests) {
+            if (tr.passed) { pass = pass + 1; } else { fail = fail + 1; }
+        }
+        if (fail > 0) { return "Tests ✗" + fail.toString(); }
+        if (pass > 0) { return "Tests ✓" + pass.toString(); }
+        return "Tests";
+    }
+
+    // --- assertions ---
+    void onAssertKey(KeyEvent e) {
+        int sel = this.assertList.selected;
+        char kA = 'a'; char kE = 'e'; char kD = 'd';
+        if (kvIsChar(e, kA))      { this.addAssertionDialog(); e.handled = true; }
+        else if (kvIsChar(e, kE)) { this.editAssertion(sel);  e.handled = true; }
+        else if (kvIsChar(e, kD)) { this.deleteAssertion(sel); e.handled = true; }
+        else if (e.code == KeyCode::Enter) { this.editAssertion(sel); e.handled = true; }
+    }
+
+    void addAssertionDialog() {
+        FormDialog dlg = FormDialog("Add assertion");
+        dlg.field("Source", "jsonpath", false);
+        dlg.field("Arg", "$.", false);
+        dlg.field("Op", "equals", false);
+        dlg.field("Expected", "", false);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptAddAssertion(vals));
+        dlg.open();
+    }
+    void acceptAddAssertion(Array<string> vals) {
+        if (vals.length() < 4) { return; }
+        this.addAssertion(vals.at(0), vals.at(1), vals.at(2), vals.at(3));
+    }
+    // Public: also used by the response inspector's assert-from-response (§8.3).
+    void addAssertion(string source, string arg, string op, string expected) {
+        RequestSpec r = this.req();
+        r.tests.assertions = r.tests.assertions.add(Assertion::Of(source, arg, op, expected));
+        this.rebuild();
+        this.fireChange();
+    }
+    void editAssertion(int i) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.assertions.length()) { return; }
+        Assertion a = r.tests.assertions.at(i);
+        FormDialog dlg = FormDialog("Edit assertion");
+        dlg.field("Source", a.source, false);
+        dlg.field("Arg", a.arg, false);
+        dlg.field("Op", a.op, false);
+        dlg.field("Expected", a.expected, false);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptEditAssertion(i, vals));
+        dlg.open();
+    }
+    void acceptEditAssertion(int i, Array<string> vals) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.assertions.length() || vals.length() < 4) { return; }
+        Assertion a = r.tests.assertions.at(i);
+        a.source = vals.at(0); a.arg = vals.at(1); a.op = vals.at(2); a.expected = vals.at(3);
+        this.rebuild();
+        this.fireChange();
+    }
+    void deleteAssertion(int i) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.assertions.length()) { return; }
+        r.tests.assertions = r.tests.assertions.removeAt(i);
+        this.rebuild();
+        this.fireChange();
+    }
+
+    // --- extractions ---
+    void onExtractKey(KeyEvent e) {
+        int sel = this.extractList.selected;
+        char kA = 'a'; char kE = 'e'; char kD = 'd';
+        if (kvIsChar(e, kA))      { this.addExtractionDialog(); e.handled = true; }
+        else if (kvIsChar(e, kE)) { this.editExtraction(sel);   e.handled = true; }
+        else if (kvIsChar(e, kD)) { this.deleteExtraction(sel); e.handled = true; }
+        else if (e.code == KeyCode::Enter) { this.editExtraction(sel); e.handled = true; }
+    }
+    void addExtractionDialog() {
+        FormDialog dlg = FormDialog("Add extraction");
+        dlg.field("Source", "jsonpath", false);
+        dlg.field("Arg", "$.", false);
+        dlg.field("Var name", "", false);
+        dlg.field("Scope", "environment", false);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptAddExtraction(vals));
+        dlg.open();
+    }
+    void acceptAddExtraction(Array<string> vals) {
+        if (vals.length() < 4) { return; }
+        this.addExtraction(vals.at(0), vals.at(1), vals.at(2), vals.at(3));
+    }
+    void addExtraction(string source, string arg, string varName, string scope) {
+        RequestSpec r = this.req();
+        Extraction x = Extraction::Of(source, arg, varName);
+        x.scope = scope;
+        r.tests.extractions = r.tests.extractions.add(x);
+        this.rebuild();
+        this.fireChange();
+    }
+    void editExtraction(int i) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.extractions.length()) { return; }
+        Extraction x = r.tests.extractions.at(i);
+        FormDialog dlg = FormDialog("Edit extraction");
+        dlg.field("Source", x.source, false);
+        dlg.field("Arg", x.arg, false);
+        dlg.field("Var name", x.varName, false);
+        dlg.field("Scope", x.scope, false);
+        dlg.buttons();
+        dlg.setOnAccept((vals) => this.acceptEditExtraction(i, vals));
+        dlg.open();
+    }
+    void acceptEditExtraction(int i, Array<string> vals) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.extractions.length() || vals.length() < 4) { return; }
+        Extraction x = r.tests.extractions.at(i);
+        x.source = vals.at(0); x.arg = vals.at(1); x.varName = vals.at(2); x.scope = vals.at(3);
+        this.rebuild();
+        this.fireChange();
+    }
+    void deleteExtraction(int i) {
+        RequestSpec r = this.req();
+        if (i < 0 || i >= r.tests.extractions.length()) { return; }
+        r.tests.extractions = r.tests.extractions.removeAt(i);
+        this.rebuild();
+        this.fireChange();
+    }
+}
+
+}

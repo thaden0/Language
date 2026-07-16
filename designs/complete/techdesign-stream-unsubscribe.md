@@ -1,6 +1,7 @@
 # Tech Design: Stream Unsubscribe / Dispose (`InStream<T> : IDisposable`)
 
-**Status:** PROPOSED — ready for implementation. **Date:** 2026-07-12. **Feature ID:** SU-1.
+**Status:** LANDED IN FULL — 2026-07-15 (oracle/IR/LLVM; emit-C++ in-memory surface; see §11).
+**Date:** 2026-07-12. **Feature ID:** SU-1.
 **Request:** `designs/requests/accepted/request-stream-unsubscribe.md`.
 **Research substrate:** `docs/stream-unsubscribe-research.md` (the dossier; every `file:line` below
 was verified there against `agent2` @ 2026-07-12 — re-verify at implementation, lines drift).
@@ -442,4 +443,71 @@ method** for consumer-side detach. Convergence rulings so the two never collide:
 
 ## 11. Implementation log
 
-*(implementer appends here, per milestone)*
+- **2026-07-15 — LANDED IN FULL (M1–M4), oracle / IR / LLVM, plus emit-C++ for the
+  in-memory surface.** Prelude change is exactly §4 (`src/Resolver.cpp`):
+  `StreamBuffer.closed`/`close()` (push silent-drop, distinct `"stream is closed"` on
+  pull/setHandler), `InStream<T> : IDisposable` with a producer-attached `onDispose`
+  closure (flip-`hasDispose`-before-run, so double-close / reentrant-close / manual-then-
+  `using` all no-op), the `SignalState` `watchIds`/`subIds`/`nextId` columns, the R4
+  re-resolve-idx-every-drain-iteration hardening of `deliver`, `on` keeping the watch id +
+  assigning a sub id + attaching the teardown, and the new free function `signal::off`
+  (R6 teardown order: `sysUnwatch` → `sysSignalClose` → drop all five parallel-array rows;
+  idempotent by construction). No native, no IR op, no ABI change — as predicted.
+
+- **STOP condition #7 hit and RESOLVED at the source (not improvised).** Adding
+  `InStream.close()` broke emit-C++ for *any* program that merely constructs an `InStream`
+  (even a plain in-memory one) with `native backend: native 'sysTaskCancel'`. Root cause is
+  NOT a stream defect: the prelude is never type-checked (`[[leviathan-prelude-not-checked]]`),
+  so `buf.close()` inside `InStream.close` lowers as a **decl-less by-name `CallDyn`**. The
+  emit-C++ reachability walk (`src/CGen.cpp`) over-marks *every* class's `close()/0` to cover
+  a dynamic dispatch — a documented "harmless dead code" step (bug #27/#28) — which now drags
+  in `TaskGroup::close`, whose `sysTaskCancel` emit-C++ structurally can't lower (loop-bound,
+  same boundary as the signal stream). The invariant "over-marking only emits dead code" is
+  false when the dead method calls a backend-unsupported native.
+  **Fix (surgical, provably behavior-preserving):** a by-name `CallDyn` dispatches on the
+  receiver's runtime class, so a **reference** class can be a target only if it was actually
+  constructed (`NewObject` → `instClasses`); a never-instantiated reference class is provably
+  unreachable and is no longer marked. **Value types (primitives/structs) are always kept**
+  (`isValueType()`) — they are inhabited by literals, never `NewObject`, and are how
+  `int.toString()` etc. reach `callm`'s table via `byNameClasses_`; the first cut used the
+  bare `isValue` (struct-only) flag and regressed `datetime`/`encoding` cpp by pruning
+  primitive-mask methods — caught by ctest, fixed by switching to `isValueType()`.
+  Instantiation is discovered during the walk, so by-names are remembered and re-swept to a
+  fixpoint as `instClasses` grows (iterator-protocol classes still light up correctly). LLVM
+  has the identical over-marking but *supports* `sysTaskCancel`, so it emits the same method
+  as harmless dead code — left unchanged (no gratuitous backend work; STOP #2 spirit).
+
+- **M4 thread-boundary (branch a — FIXED 2026-07-15, was filed as #81).** The spawn flatten
+  walk rejects loop-bound carriers by an explicit class-name list
+  (`RuntimeNatives.cpp` `lvThreadNonTransferable`, `runtime/lv_runtime.c` `lv_flatten`). A
+  disposable `InStream` is such a carrier (a live fd + watch behind its `onDispose` teardown),
+  but a plain in-memory `InStream` MUST still copy across `spawn`, so a name-keyed reject
+  can't express it. Initially deferred as branch (b) (filed #81); then implemented as a
+  **per-object `hasDispose` gate**: in the object case of both flatten walks, an
+  `InStream`-derived object whose `hasDispose == true` rejects with
+  `"value of type InStream cannot cross a thread boundary (v1)"` (before the field walk, so it
+  names the type rather than tripping the generic nested-closure reject on `onDispose`), while
+  a plain stream (`hasDispose == false`) flattens normally. Robust even if the teardown is
+  ever represented as something other than a closure. Interpreter helpers
+  `lvThreadIsInStream`/`lvThreadIsDisposableStream`; LLVM reads the field via `lvrt_getfield`.
+  **Known residual (NOT InStream-specific, out of scope):** a loop-bound carrier reached
+  through a bare GLOBAL rather than a captured local still bypasses the walk — the capture
+  flatten only scans referenced globals for *Promises* (bug #35's route A), so a global
+  `Timer`/`TcpStream`/disposable `InStream` all fall through identically. Pins:
+  `tests/corpus/tasks/spawn_disposable_stream_rejected.lev` (+ `tasks_llvm/` symlink) and
+  `spawn_plain_stream_crosses.lev` (the happy-path guard), oracle/IR/LLVM byte-identical.
+
+- **Tests.** Extends the terminal-floor harness (CTest `terminal_floor`):
+  `tests/corpus/floor/unsub_inmem.lev` (M1 in-memory close semantics — the one lane emit-C++
+  now compiles, byte-identical on all four engines), `unsub_isolation.lev` (T1+T3+T5: two
+  USR1 subs, A self-closes from inside its own callback, a 2nd USR1 reaches B but not the
+  closed A — proving close-stops-delivery, broadcast isolation keeps the shared fd open, and
+  mid-deliver self-close is crash-safe), and `unsub_drain.lev` (T2+T4: `using` last-out
+  teardown releases the watch so a one-shot program EXITS by loop drain instead of hanging).
+  `tests/floor_pty.py` gains `signal2` (send-twice) and `drain` (no-signal exit) driver modes.
+  All green on oracle / IR / LLVM (and the in-memory file on emit-C++); full `terminal_floor`
+  suite passes with 0 skipped. Idempotency / double-close / manual-then-`using` verified in a
+  scratch smoke on all four engines.
+
+- **Docs.** `reference.md` §6.6 (close semantics, `signal::off`, the `IDisposable` conformer
+  list in §6.6.65) updated; `techdesign-terminal-floor.md` §8 open question #1 marked closed.

@@ -1039,7 +1039,7 @@ namespace std {
     int sysOpen(string path, int flags);
     int sysClose(int fd);
     string sysRead(int fd, int max);
-    int sysStat(string path, int field);   // 0=exists, 1=size, 2=mtime
+    int sysStat(string path, int field);   // 0=exists, 1=size, 2=mtime, 3=isDir
     // The process argument vector, argv[0] first (argv.md). A pure Array<string>
     // materialized fresh per call — an exec-time process fact, not a stream, so
     // it rides the floor like sysStat rather than the event loop. Denied in
@@ -2388,6 +2388,10 @@ namespace std {
     bool fileExists(string path) => sysStat(path, 0) == 1;
     int fileSize(string path) => sysStat(path, 1);
     int fileModified(string path) => sysStat(path, 2);
+    // request-stat-isdir.md: one stat(2) word instead of a per-entry sysListDir
+    // probe; also correct on an unreadable directory, which a listDir-based
+    // probe misclassifies as a file.
+    bool isDir(string path) => sysStat(path, 3) == 1;
 
     // Open-mode flags: plain values whose (|) is an ordinary operator method —
     // `std::read | std::write` is operators-as-methods, NOT a union type.
@@ -2582,8 +2586,9 @@ class StreamBuffer<T> {
 // closure rides alongside the buffer (the TcpStream onClose/hasCloseCb
 // pattern), so `using` works uniformly on every stream (real teardown only
 // where a producer attached one; a plain in-memory stream just closes its
-// buffer).
-class InStream<T> {
+// buffer). SU-1: : IDisposable so `using InStream<int> w = signal::on(sig);`
+// releases the subscription (and, on last-out, its fd/watch) on scope exit.
+class InStream<T> : IDisposable {
     StreamBuffer<T> buf;
     () => void onDispose;
     bool hasDispose = false;

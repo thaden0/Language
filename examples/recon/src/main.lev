@@ -1,29 +1,27 @@
-// Recon entry point (DESIGN §10.4). Top-level main() so `entry = "main"` resolves
-// it (the toolchain synthesizes a top-level `main();` call). Reads env at the top
-// level (bug #68), composes the DI root, and launches.
+// Recon entry point (DESIGN-2 §11). Top-level main() so `entry = "main"` resolves
+// it. Reads env at the top level (architecture guidance, ex-#68), builds the theme
+// from settings, composes the DI root, and launches.
 uses Sonar;
 uses Recon;
 
 void main() {
-    // env reads at the TOP LEVEL (bug #68), then pass values down.
     string home = env::get("HOME") ?? ".";
     string cfg = home + "/.config/recon";
     std::sysMkdir(home + "/.config");
     ensureDirs(cfg);
 
-    Array<string> args = env::args();          // optional: a collection path to open on launch
+    Array<string> args = env::args();          // optional collection/environment paths to open
 
-    // DI composition root (follow the shipped Sonar examples' setter/bind mix).
-    bind ITheme       => loadReconTheme(cfg);
+    // Build the live theme from persisted settings (§4.4). The SAME Theme instance
+    // is bound and passed to ReconApp so a settings-dialog theme switch can call
+    // setTheme() on it in place and repaint every component.
+    Settings settings = loadSettings(cfg);
+    Theme theme = reconThemeFor(settings.themeName);
+
+    bind ITheme       => theme;
     bind IRenderer    => AnsiRenderer();
     bind IInputSource => StdinSource();
 
-    ReconApp recon = ReconApp(cfg, args);
+    ReconApp recon = ReconApp(cfg, args, theme);
     recon.run();                               // App.run() — blocks until quit(); teardown via using
-}
-
-// The shipped Recon theme (TOML), or a built-in fallback.
-Theme loadReconTheme(string cfg) {
-    // built-in default; a full impl would import() the packaged themes/recon.toml
-    return Theme::Dark();
 }

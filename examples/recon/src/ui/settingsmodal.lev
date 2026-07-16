@@ -1,0 +1,112 @@
+// Settings & themes (DESIGN-2 §10.6, F21). A Modal form over Settings. Theme
+// selection applies live via the onTheme callback (setTheme) so the user previews
+// before closing; Cancel restores. Accepted values persist via the existing
+// saveSettings (wired through onSave).
+namespace Recon {
+uses Sonar;
+
+class SettingsModal {
+    public Modal modal;
+    public RadioGroup themeRadio;
+    public Input timeoutI;
+    public CheckBox followRedirects;
+    public CheckBox warnUnresolved;
+    public CheckBox clearCookies;
+    public CheckBox lineNumbers;
+    public AppState state;
+    (string) => void onTheme;
+    bool hasTheme = false;
+    () => void onSave;
+    bool hasSave = false;
+    string savedTheme_ = "recon";
+    Array<string> themes_ = ["recon", "dark", "light", "highContrast"];
+
+    new SettingsModal(AppState st) {
+        state = st;
+        modal = Modal();
+        modal.title("Settings");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        modal.setLayout(FlexLayout(Axis::Vertical));
+
+        Text tl = Text(); tl.text(" Theme (applies live):"); tl.setHeight(Constraint::Fixed(1));
+        themeRadio = RadioGroup();
+        themeRadio.setOptions(this.themes_);
+        themeRadio.setHeight(Constraint::Fixed(4));
+        Text ttl = Text(); ttl.text(" Default timeout (ms):"); ttl.setHeight(Constraint::Fixed(1));
+        timeoutI = Input();
+        timeoutI.setPlaceholder("30000");
+        timeoutI.setHeight(Constraint::Fixed(1));
+        followRedirects = CheckBox(); followRedirects.setLabel("Follow redirects");
+        warnUnresolved = CheckBox();  warnUnresolved.setLabel("Warn on unresolved variables");
+        clearCookies = CheckBox();    clearCookies.setLabel("Clear session cookies on exit");
+        lineNumbers = CheckBox();     lineNumbers.setLabel("Editor line numbers");
+
+        modal.add(tl);
+        modal.add(this.themeRadio);
+        modal.add(ttl);
+        modal.add(this.timeoutI);
+        modal.add(this.followRedirects);
+        modal.add(this.warnUnresolved);
+        modal.add(this.clearCookies);
+        modal.add(this.lineNumbers);
+
+        Container btns = Container();
+        btns.setLayout(FlexLayout(Axis::Horizontal));
+        btns.setHeight(Constraint::Fixed(1));
+        Button save = Button(); save.setLabel("Save"); save.onPress(() => this.save());
+        Button cancel = Button(); cancel.setLabel("Cancel"); cancel.onPress(() => this.cancel());
+        btns.add(save);
+        btns.add(cancel);
+        modal.add(btns);
+
+        this.themeRadio.onSelect((i) => this.previewTheme(i));
+        this.modal.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void setOnTheme((string) => void cb) { onTheme = cb; hasTheme = true; }
+    void setOnSave(() => void cb) { onSave = cb; hasSave = true; }
+
+    int themeIndex(string n) { int i = this.themes_.indexOf(n); return i < 0 ? 0 : i; }
+
+    void open() {
+        Settings s = this.state.settings;
+        savedTheme_ = s.themeName;
+        this.themeRadio.selectRow(this.themeIndex(s.themeName));
+        this.timeoutI.setValue(s.defaultTimeoutMs.toString());
+        this.followRedirects.setChecked(s.followRedirects);
+        this.warnUnresolved.setChecked(s.warnUnresolved);
+        this.clearCookies.setChecked(s.clearSessionCookiesOnExit);
+        this.lineNumbers.setChecked(s.editorLineNumbers);
+        this.modal.open();
+        Sonar::app().focus(this.themeRadio);
+    }
+
+    void previewTheme(int i) {
+        if (i < 0 || i >= this.themes_.length()) { return; }
+        if (this.hasTheme) { var cb = this.onTheme; cb(this.themes_.at(i)); }
+    }
+
+    void save() {
+        Settings s = this.state.settings;
+        int ti = this.themeRadio.selected < 0 ? 0 : this.themeRadio.selected;
+        s.themeName = this.themes_.at(ti);
+        int? t = this.timeoutI.value.toInt();
+        if (t != None) { s.defaultTimeoutMs = t ?? 30000; }
+        s.followRedirects = this.followRedirects.checked;
+        s.warnUnresolved = this.warnUnresolved.checked;
+        s.clearSessionCookiesOnExit = this.clearCookies.checked;
+        s.editorLineNumbers = this.lineNumbers.checked;
+        this.modal.close();
+        if (this.hasSave) { var cb = this.onSave; cb(); }
+    }
+
+    void cancel() {
+        if (this.hasTheme) { var cb = this.onTheme; cb(this.savedTheme_); }   // restore preview
+        this.modal.close();
+    }
+
+    void onKey(KeyEvent e) { if (e.code == KeyCode::Escape) { this.cancel(); e.handled = true; } }
+}
+
+}

@@ -1,44 +1,24 @@
-// Command registry (DESIGN §9.6). Commands are named closures; the command bar
-// and keymap both run them. Parallel arrays (not a Map of closures) keep clear
-// of the Map-value footguns and give stable ordering for the palette.
+// Keymap wiring only (DESIGN-2 §6.2, §11.3). The CommandRegistry moved to
+// commands.lev (naming honesty); this file binds exactly the registry's bound()
+// chords, so a hint can never advertise an unbound chord (P1). Global chords are
+// Ctrl-letters and F-keys only (N4 — a bare printable would steal typing, R11).
 namespace Recon {
 uses Sonar;
 
-class CommandRegistry {
-    Array<string> names_;
-    Array<() => void> actions_;
-    Array<string> descs_;
-    new CommandRegistry() { }
+// Bind one command id to a chord. A dedicated helper so `id` is a distinct
+// parameter per call (no loop-capture aliasing).
+void bindCommand(App app, CommandRegistry reg, string chord, string id) {
+    app.keymap().bind(chord, () => reg.run(id));
+}
 
-    void register(string name, string desc, () => void action) {
-        names_ = names_.add(name);
-        descs_ = descs_.add(desc);
-        actions_ = actions_.add(action);
+// Bind every bound() command plus the Escape cascade (P5). Escape is not a
+// command: overlays self-close on Escape (their own capture handlers), so a
+// global Escape only fires when nothing consumed it — then it cancels in-flight.
+void wireKeymap(App app, CommandRegistry reg, () => void onEscape) {
+    for (Command c in reg.bound()) {
+        bindCommand(app, reg, c.chord, c.id);
     }
-
-    bool run(string name) {
-        int idx = names_.indexOf(name);
-        if (idx >= 0) { var f = actions_.at(idx); f(); return true; }
-        return false;
-    }
-
-    Array<string> names() => names_;
-    Array<string> labels() {
-        Array<string> out = [];
-        for (int i = 0; i < names_.length(); i = i + 1) {
-            out = out.add(names_.at(i) + "  —  " + descs_.at(i));
-        }
-        return out;
-    }
-    // filter by a prefix (for the command bar)
-    Array<string> matching(string prefix) {
-        Array<string> out = [];
-        string p = prefix.toLower();
-        for (string n in names_) {
-            if (p.isEmpty() || n.toLower().contains(p)) { out = out.add(n); }
-        }
-        return out;
-    }
+    app.keymap().bind("Escape", onEscape);
 }
 
 }

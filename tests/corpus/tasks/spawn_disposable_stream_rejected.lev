@@ -1,0 +1,20 @@
+// bug #81 pin (SU-1): a DISPOSABLE InStream — one returned by `signal::on`, whose
+// producer-attached `onDispose` teardown reaches a live signalfd + loop watch via
+// `signal::off` — is loop-bound and may NOT cross a thread boundary, exactly like a
+// TcpStream/Timer. Capturing one into a `std::spawn` body rejects loudly and
+// byte-identically on oracle/IR/LLVM at the spawn call (the flatten walk's
+// per-object `hasDispose` gate), naming the type. A plain in-memory InStream still
+// crosses freely — see spawn_plain_stream_crosses.lev (the happy path this must not
+// break).
+//
+// `w` is a LOCAL: a spawn body reaching a loop-bound carrier through a bare GLOBAL
+// bypasses the capture flatten (the reference is only scanned for Promises — bug
+// #35's route A — not for every carrier; the same pre-existing hole a global Timer
+// or TcpStream falls through). Keep a disposable stream on its owning thread and
+// pass results via a Channel.
+int run() {
+    InStream<int> w = signal::on(signal::WINCH);
+    std::spawn(() => { return w.hasData() ? 1 : 0; });
+    return 0;
+}
+run();

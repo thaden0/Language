@@ -4,5 +4,7 @@ sources = [
     "net_test.lev",
     "../../src/net/url.lev",
     "../../src/net/vars.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
     "../../src/model/environment.lev",
 ]

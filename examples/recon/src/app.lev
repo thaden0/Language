@@ -4,6 +4,31 @@
 // pane so the next frame repaints (Sonar is retained-mode).
 namespace Recon {
 
+// A user-facing feedback message (DESIGN-2 §9.1). Headless (no Sonar) so AppState
+// — the single hub — stays dependency-light; the NoticeLine/NoticesLog UI over it
+// lives in ui/notices.lev.
+class Notice {
+    public string level = "info";     // info | success | warn | error
+    public string text  = "";
+    public int    atMs  = 0;
+    new Notice() { }
+    new Of(string lvl, string t, int ms) { level = lvl; text = t; atMs = ms; }
+
+    string glyph() {
+        if (level == "success") { return "✓"; }
+        if (level == "warn")    { return "!"; }
+        if (level == "error")   { return "✗"; }
+        return "∙";
+    }
+    string styleKey() => "notice." + level;
+    // expiry window in ms; error is sticky (0 == never auto-expires here)
+    int lifespanMs() {
+        if (level == "warn")  { return 8000; }
+        if (level == "error") { return 0; }
+        return 4000;
+    }
+}
+
 class AppState {
     public Array<Collection>  collections;
     public Array<Environment> environments;
@@ -19,14 +44,36 @@ class AppState {
     public RunOutcome? lastOutcome = None;
     public Array<TestResult> lastTests;
     public bool inFlight = false;
+    public int  inFlightStartMs = 0;           // set in beginInFlight (status line elapsed)
     public string configRoot = "";             // resolved in main(), injected here (§8)
     public string lastError = "";
+
+    // DESIGN-2 additions (§11.2): document dirty state, docked notices, the
+    // in-flight ticker token, and the auto-created scratch collection (§10.5).
+    public bool dirty = false;
+    public Array<Notice> notices;              // capped 50, newest last (§9.1, #73-safe)
+    public int  tickerToken = 0 - 1;
+    public Collection? scratch = None;
 
     new AppState() {
         active = RequestSpec();
         sessions = SessionSet();
         history = History();
         settings = Settings();
+    }
+
+    void markDirty() { dirty = true; }
+    void clearDirty() { dirty = false; }
+
+    // Append a notice (capped at 50, newest last). Grows a local then assigns once
+    // (N2: never element-wise-grow a namespace-global array; this is an instance
+    // field, so it is #73-safe regardless — the pattern is kept for clarity).
+    void addNotice(string level, string text, int atMs) {
+        Notice nt = Notice();
+        nt.level = level; nt.text = text; nt.atMs = atMs;
+        Array<Notice> next = notices.add(nt);
+        if (next.length() > 50) { next = next.slice(next.length() - 50, next.length()); }
+        notices = next;
     }
 
     // build the scope chain: environment > active collection > global (§10.1)
@@ -118,7 +165,7 @@ class AppState {
         return pr;
     }
 
-    void beginInFlight() { inFlight = true; lastError = ""; }
+    void beginInFlight() { inFlight = true; lastError = ""; inFlightStartMs = std::sysNow(); }
 
     // record response, run tests, capture cookies, append history (§10.2 step 4)
     void onOutcome(RunOutcome o) {

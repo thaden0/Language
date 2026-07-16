@@ -10,6 +10,7 @@ const char* tokenKindName(TokenKind k) {
         case TokenKind::IntLiteral:    return "IntLiteral";
         case TokenKind::FloatLiteral:  return "FloatLiteral";
         case TokenKind::StringLiteral: return "StringLiteral";
+        case TokenKind::RawStringLiteral: return "RawStringLiteral";
         case TokenKind::QuasiLiteral:  return "QuasiLiteral";
         case TokenKind::KwNamespace:   return "KwNamespace";
         case TokenKind::KwClass:       return "KwClass";
@@ -170,6 +171,27 @@ bool isHexDigitChar(char c) {
 int hexDigitValue(char c) {
     return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;   // (c|0x20): fold to lowercase
 }
+// Encode one Unicode scalar to UTF-8 (mirrors RuntimeValue.hpp's utf8Encode —
+// duplicated rather than shared because that header sits above Token in the
+// dependency graph; this file stays a leaf).
+void appendUtf8(std::string& out, long long cp) {
+    unsigned long c = (unsigned long)cp;
+    if (c <= 0x7F) {
+        out.push_back((char)c);
+    } else if (c <= 0x7FF) {
+        out.push_back((char)(0xC0 | (c >> 6)));
+        out.push_back((char)(0x80 | (c & 0x3F)));
+    } else if (c <= 0xFFFF) {
+        out.push_back((char)(0xE0 | (c >> 12)));
+        out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (c & 0x3F)));
+    } else {
+        out.push_back((char)(0xF0 | (c >> 18)));
+        out.push_back((char)(0x80 | ((c >> 12) & 0x3F)));
+        out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (c & 0x3F)));
+    }
+}
 }  // namespace
 
 std::string decodeEscapes(std::string_view content) {
@@ -183,6 +205,24 @@ std::string decodeEscapes(std::string_view content) {
                 out.push_back((char)((hexDigitValue(content[i + 1]) << 4) | hexDigitValue(content[i + 2])));
                 i += 2;
                 continue;
+            }
+            if (n == 'u' && i + 1 < content.size() && content[i + 1] == '{') {
+                size_t j = i + 2;
+                long long cp = 0;
+                int digits = 0;
+                while (j < content.size() && isHexDigitChar(content[j]) && digits < 6) {
+                    cp = (cp << 4) | hexDigitValue(content[j]);
+                    ++j;
+                    ++digits;
+                }
+                if (digits > 0 && j < content.size() && content[j] == '}') {
+                    bool surrogate = cp >= 0xD800 && cp <= 0xDFFF;
+                    appendUtf8(out, (cp > 0x10FFFF || surrogate) ? 0xFFFD : cp);
+                    i = j;
+                    continue;
+                }
+                // malformed (no hex digits, missing '}', or >6 digits) — left
+                // alone, same compat rule as a malformed `\x` below.
             }
             switch (n) {
                 case 'n': out.push_back('\n'); break;

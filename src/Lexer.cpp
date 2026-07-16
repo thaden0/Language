@@ -123,6 +123,35 @@ Token Lexer::lexString(uint32_t start, char quote) {
     return make(TokenKind::Error, start);
 }
 
+Token Lexer::lexRawString(uint32_t start, char quote) {
+    // 'r' and the opening quote already consumed: backslash is an ordinary
+    // character here, so there is no escape pair to skip over — the next
+    // occurrence of `quote`, however it got there, always closes the literal.
+    while (!atEnd()) {
+        char c = peek();
+        if (c == quote) { ++pos_; return make(TokenKind::RawStringLiteral, start); }
+        if (c == '\n') break;                      // unterminated
+        ++pos_;
+    }
+    sink_.error({start, pos_ - start}, "unterminated raw string literal");
+    return make(TokenKind::Error, start);
+}
+
+Token Lexer::lexTripleString(uint32_t start, char quote) {
+    // all three opening quote chars already consumed
+    while (!atEnd()) {
+        char c = peek();
+        if (c == '\\') { pos_ += 2; continue; }  // skip escaped char
+        if (c == quote && peek(1) == quote && peek(2) == quote) {
+            pos_ += 3;
+            return make(TokenKind::StringLiteral, start);
+        }
+        ++pos_;
+    }
+    sink_.error({start, pos_ - start}, "unterminated multiline string literal");
+    return make(TokenKind::Error, start);
+}
+
 std::vector<Token> Lexer::tokenizeRange(uint32_t begin, uint32_t end) {
     pos_ = begin;
     limit_ = end;
@@ -187,7 +216,15 @@ std::vector<Token> Lexer::tokenize() {
 
             case '"':
             case '\'':
-                tokens.push_back(lexString(start, c));
+                // request-string-literal-tail: `"""`/`'''` opens a multiline
+                // string (peek/peek(1) are the two chars right after the one
+                // `c` already consumed, so three-in-a-row means a triple-quote).
+                if (peek() == c && peek(1) == c) {
+                    pos_ += 2;
+                    tokens.push_back(lexTripleString(start, c));
+                } else {
+                    tokens.push_back(lexString(start, c));
+                }
                 break;
 
             case '@': tokens.push_back(make(TokenKind::At, start)); break;
@@ -213,6 +250,15 @@ std::vector<Token> Lexer::tokenize() {
                 if (isDigit(c)) {
                     pos_ = start;
                     tokens.push_back(lexNumber(start));
+                } else if (c == 'r' && (peek() == '"' || peek() == '\'')) {
+                    // request-string-literal-tail: `r"..."`/`r'...'` — a bare
+                    // 'r' can never itself be followed immediately by a quote
+                    // char (identifiers can't contain quotes), so this exact
+                    // adjacency was never a legal two-token sequence before;
+                    // repurposing it as the raw-string prefix is unambiguous.
+                    char q = peek();
+                    ++pos_;
+                    tokens.push_back(lexRawString(start, q));
                 } else if (isIdentStart(c)) {
                     pos_ = start;
                     tokens.push_back(lexIdentifier(start));

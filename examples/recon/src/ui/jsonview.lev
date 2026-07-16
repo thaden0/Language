@@ -1,0 +1,296 @@
+// JsonView (DESIGN-2 §8.2) — a focusable, scrollable JSON tree over a parsed
+// JsonValue, the Body tab's default. A fold-tree flattened to visible rows with a
+// stable pre-order node id (fold state is data, keyed by id). Keys move the cursor,
+// fold/unfold, search, and build an assertion/extraction from the selected value
+// (§8.3). A leaf (paints via paintContent) with a full-width bg every row (#4 belt).
+namespace Recon {
+uses Sonar;
+
+class JsonRow {
+    public int    depth     = 0;
+    public string key       = "";      // "$" | object key | "[i]"
+    public string preview   = "";      // leaf value text, or container summary when folded
+    public string valueKind = "";      // json.string|number|bool|null (leaf styling)
+    public string path      = "";      // "$.meta.page" (eval/jsonpath.lev dialect)
+    public bool   container = false;
+    public int    nodeId    = 0;
+    new JsonRow() { }
+}
+
+class JsonView : Focusable, Styleable {
+    Array<JsonRow> full_ = [];         // every node, pre-order, nodeId == index
+    Map<int,bool> folded_;             // nodeId -> folded
+    int cursor_ = 0;                   // index into the VISIBLE rows
+    int scrollY_ = 0;
+    bool hasJson_ = false;
+    string rawFallback_ = "";
+    string search_ = "";
+    (string, string) => void onAssert;
+    bool hasAssert = false;
+    (string, string) => void onExtract;
+    bool hasExtract = false;
+
+    new JsonView() {
+        setTabStop(true);
+        this.onKey((e) => this.onKeyDown(e));
+    }
+
+    void setOnAssert((string, string) => void cb) { onAssert = cb; hasAssert = true; }
+    void setOnExtract((string, string) => void cb) { onExtract = cb; hasExtract = true; }
+
+    // Parse a body into the tree (or fall back to a raw view when it isn't JSON).
+    void setBody(string body) {
+        this.search_ = "";
+        this.cursor_ = 0;
+        this.scrollY_ = 0;
+        if (body.length() > 524288) { this.hasJson_ = false; this.rawFallback_ = body; this.invalidate(); return; }
+        JsonValue? parsed = json::parse(body);
+        if (parsed == None) { this.hasJson_ = false; this.rawFallback_ = body; this.invalidate(); return; }
+        JsonValue v = parsed ?? JsonValue::ofNull();
+        this.hasJson_ = true;
+        this.full_ = [];
+        Map<int,bool> freshFold;
+        this.folded_ = freshFold;
+        this.walk(v, "$", "$", 0);
+        this.invalidate();
+    }
+
+    void walk(JsonValue v, string key, string path, int depth) {
+        int id = this.full_.length();
+        JsonRow row = JsonRow();
+        row.depth = depth; row.key = key; row.path = path; row.nodeId = id;
+        bool isObj = v.isObject();
+        bool isArr = v.isArray();
+        row.container = isObj || isArr;
+        if (row.container) {
+            row.preview = this.summary(v);
+            this.full_ = this.full_.add(row);
+            if (isObj) {
+                Map<string,JsonValue>? mo = v.asObject();
+                Map<string,JsonValue> m;
+                if (mo != None) { m = mo ?? m; }
+                for (string k in m.keys()) {
+                    this.walk(m.atOr(k, JsonValue::ofNull()), k, path + "." + k, depth + 1);
+                }
+            } else {
+                Array<JsonValue>? ao = v.asArray();
+                Array<JsonValue> a = ao ?? [];
+                for (int i = 0; i < a.length(); i = i + 1) {
+                    this.walk(a.at(i), "[" + i.toString() + "]", path + "[" + i.toString() + "]", depth + 1);
+                }
+            }
+        } else {
+            row.preview = this.leafText(v);
+            row.valueKind = this.leafKind(v);
+            this.full_ = this.full_.add(row);
+        }
+    }
+
+    string summary(JsonValue v) {
+        if (v.isArray()) { return "[ … ] " + v.size().toString() + " items"; }
+        return "{ … } " + v.size().toString() + " keys";
+    }
+    string leafText(JsonValue v) {
+        if (v.isStr())  { string? s = v.asStr(); return s ?? ""; }
+        if (v.isNum())  { float? n = v.asNum(); float f = n ?? 0.0; return numClean(f); }
+        if (v.isBool()) { bool? b = v.asBool(); return (b ?? false).toString(); }
+        return "null";
+    }
+    string leafKind(JsonValue v) {
+        if (v.isStr())  { return "json.string"; }
+        if (v.isNum())  { return "json.number"; }
+        if (v.isBool()) { return "json.bool"; }
+        return "json.null";
+    }
+
+    bool isFolded(int id) => this.folded_.atOr(id, false);
+
+    // Visible rows: skip any row whose ancestor is folded (single pre-order pass).
+    Array<JsonRow> visibleRows() {
+        Array<JsonRow> out = [];
+        int hideBelow = 1000000;
+        for (JsonRow r in this.full_) {
+            if (r.depth > hideBelow) { continue; }
+            hideBelow = 1000000;
+            out = out.add(r);
+            if (r.container && this.isFolded(r.nodeId)) { hideBelow = r.depth; }
+        }
+        return out;
+    }
+
+    Size contentDesired(Size avail) => Size(avail.w < 1 ? 1 : avail.w, 10);
+
+    void paintContent(Surface s) {
+        Rect content = box.inset(this.chrome());
+        if (content.isEmpty()) { return; }
+        char space = ' ';
+        Style bg = resolveOrDefault(this, "default");
+        s.fill(content, space, bg);
+        if (!this.hasJson_) {
+            this.paintRaw(s, content, bg);
+            return;
+        }
+        Array<JsonRow> rows = this.visibleRows();
+        int footerY = content.bottom() - 1;
+        int bodyH = content.h() - 1;
+        if (bodyH < 1) { bodyH = 1; }
+        this.clampScroll(rows.length(), bodyH);
+        int i = this.scrollY_;
+        int y = content.y();
+        while (i < rows.length() && y < footerY) {
+            this.paintRow(s, content, rows.at(i), y, i == this.cursor_, bg);
+            i = i + 1;
+            y = y + 1;
+        }
+        // footer: selected path + hints
+        Style meta = resolveOrDefault(this, "statusline.meta").over(bg);
+        s.fill(Rect(Point(content.x(), footerY), Size(content.w(), 1)), space, bg);
+        string pathTxt = "";
+        if (this.cursor_ >= 0 && this.cursor_ < rows.length()) { pathTxt = rows.at(this.cursor_).path; }
+        s.writeText(content.x(), footerY, clipToWidth(pathTxt, content.w() - 24), meta);
+        string hints = "/ search  a assert  x extract";
+        s.writeText(content.right() - hints.chars().length() - 1, footerY, hints, meta);
+    }
+
+    void paintRow(Surface s, Rect content, JsonRow r, int y, bool isCursor, Style pageBg) {
+        char space = ' ';
+        Style rowBg = isCursor ? resolveOrDefault(this, "editor.cursorline") : pageBg;
+        s.fill(Rect(Point(content.x(), y), Size(content.w(), 1)), space, rowBg);
+        int x = content.x() + r.depth * 2;
+        int maxX = content.right();
+        string fold = r.container ? (this.isFolded(r.nodeId) ? "▸ " : "▾ ") : "  ";
+        s.writeText(x, y, fold, resolveOrDefault(this, "json.fold").over(rowBg));
+        x = x + 2;
+        if (r.key != "$") {
+            string k = r.key;
+            Style ks = resolveOrDefault(this, "json.key").over(rowBg);
+            if (this.matches(k)) { ks = resolveOrDefault(this, "json.match").over(rowBg); }
+            s.writeText(x, y, clipToWidth(k, maxX - x), ks);
+            x = x + k.chars().length();
+        } else {
+            s.writeText(x, y, "$", resolveOrDefault(this, "json.punct").over(rowBg));
+            x = x + 1;
+        }
+        if (x >= maxX) { return; }
+        if (r.container) {
+            if (this.isFolded(r.nodeId)) {
+                string sep = ": ";
+                s.writeText(x, y, sep, resolveOrDefault(this, "json.punct").over(rowBg)); x = x + 2;
+                s.writeText(x, y, clipToWidth(r.preview, maxX - x), resolveOrDefault(this, "json.fold").over(rowBg));
+            }
+        } else {
+            string sep = r.key == "$" ? " " : ": ";
+            s.writeText(x, y, sep, resolveOrDefault(this, "json.punct").over(rowBg)); x = x + sep.chars().length();
+            Style vs = resolveOrDefault(this, r.valueKind).over(rowBg);
+            if (this.matches(r.preview)) { vs = resolveOrDefault(this, "json.match").over(rowBg); }
+            s.writeText(x, y, clipToWidth(r.preview, maxX - x), vs);
+        }
+    }
+
+    void paintRaw(Surface s, Rect content, Style bg) {
+        Array<string> lines = this.rawFallback_.split("\n");
+        int i = this.scrollY_;
+        int y = content.y();
+        while (i < lines.length() && y < content.bottom()) {
+            s.writeText(content.x(), y, clipToWidth(lines.at(i), content.w()), bg);
+            i = i + 1; y = y + 1;
+        }
+    }
+
+    bool matches(string text) {
+        if (this.search_.isEmpty()) { return false; }
+        return text.toLower().contains(this.search_.toLower());
+    }
+
+    void clampScroll(int count, int viewportH) {
+        if (this.cursor_ < 0) { this.cursor_ = 0; }
+        if (this.cursor_ >= count) { this.cursor_ = count - 1; }
+        if (this.cursor_ < 0) { this.cursor_ = 0; }
+        if (this.cursor_ < this.scrollY_) { this.scrollY_ = this.cursor_; }
+        if (this.cursor_ >= this.scrollY_ + viewportH) { this.scrollY_ = this.cursor_ - viewportH + 1; }
+        if (this.scrollY_ < 0) { this.scrollY_ = 0; }
+    }
+
+    void onKeyDown(KeyEvent e) {
+        char kSlash = '/'; char kA = 'a'; char kX = 'x';
+        if (e.code == KeyCode::Down)       { this.cursor_ = this.cursor_ + 1; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::Up)    { this.cursor_ = this.cursor_ - 1; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::PageDown) { this.cursor_ = this.cursor_ + 10; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::PageUp)   { this.cursor_ = this.cursor_ - 10; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::Home)  { this.cursor_ = 0; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::End)   { this.cursor_ = this.visibleRows().length() - 1; e.handled = true; this.invalidate(); }
+        else if (e.code == KeyCode::Enter) { this.toggleFold(); e.handled = true; }
+        else if (e.isChar(' ')) { this.toggleFold(); e.handled = true; }
+        else if (e.code == KeyCode::Right) { this.setFold(false); e.handled = true; }
+        else if (e.code == KeyCode::Left)  { this.setFold(true);  e.handled = true; }
+        else if (e.isChar(kSlash)) { this.openSearch(); e.handled = true; }
+        else if (e.isChar(kA)) { this.assertHere(); e.handled = true; }
+        else if (e.isChar(kX)) { this.extractHere(); e.handled = true; }
+    }
+
+    JsonRow? cursorRow() {
+        Array<JsonRow> rows = this.visibleRows();
+        if (this.cursor_ < 0 || this.cursor_ >= rows.length()) { return None; }
+        return rows.at(this.cursor_);
+    }
+
+    void toggleFold() {
+        JsonRow? c = this.cursorRow();
+        if (c == None) { return; }
+        JsonRow r = c ?? JsonRow();
+        if (!r.container) { return; }
+        this.folded_[r.nodeId] = !this.isFolded(r.nodeId);
+        this.invalidate();
+    }
+    void setFold(bool folded) {
+        JsonRow? c = this.cursorRow();
+        if (c == None) { return; }
+        JsonRow r = c ?? JsonRow();
+        if (r.container) { this.folded_[r.nodeId] = folded; this.invalidate(); }
+    }
+
+    void openSearch() {
+        PromptDialog dlg = PromptDialog("Search", "find:", this.search_);
+        dlg.setOnAccept((v) => this.runSearch(v));
+        dlg.open(Sonar::app());
+    }
+    void runSearch(string term) {
+        this.search_ = term;
+        // jump to the first match (auto-unfold ancestors: fold state is data)
+        Array<JsonRow> rows = this.full_;
+        for (int i = 0; i < this.visibleRows().length(); i = i + 1) {
+            JsonRow r = this.visibleRows().at(i);
+            if (this.matches(r.key) || this.matches(r.preview)) { this.cursor_ = i; break; }
+        }
+        this.invalidate();
+    }
+
+    void assertHere() {
+        JsonRow? c = this.cursorRow();
+        if (c == None || !this.hasAssert) { return; }
+        JsonRow r = c ?? JsonRow();
+        var cb = this.onAssert;
+        cb(r.path, r.container ? "" : r.preview);
+    }
+    void extractHere() {
+        JsonRow? c = this.cursorRow();
+        if (c == None || !this.hasExtract) { return; }
+        JsonRow r = c ?? JsonRow();
+        var cb = this.onExtract;
+        cb(r.path, lastPathSegment(r.path));
+    }
+}
+
+// "$.meta.page" -> "page"; "$[0]" -> "0"; "$" -> "value".
+string lastPathSegment(string path) {
+    int dot = path.lastIndexOf(".");
+    int br = path.lastIndexOf("[");
+    int cut = dot > br ? dot : br;
+    if (cut < 0) { return "value"; }
+    string seg = path.subStr(cut + 1, path.length() - cut - 1);
+    seg = seg.replace("]", "");
+    if (seg.isEmpty()) { return "value"; }
+    return seg;
+}
+
+}
