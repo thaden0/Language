@@ -41,7 +41,7 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
-| A `struct` with no explicit `(==)` compares unequal to a field-identical instance (not field-wise by default) | #77 (ruled 2026-07-15: canonical field-wise synthesis — `designs/techdesign-struct-equality.md`; impl deferred) | define an explicit `(==)` on the struct, or compare field-by-field, until the synthesis lands | `harpoon/src/assert.lev`'s `assertEqual<T>` doc comment |
+| _(cluster clear — #77 struct default `==` field-wise and #78 uses-import local shadow both FIXED 2026-07-15)_ | | | |
 
 ## By design — permanent semantics that read like bugs
 

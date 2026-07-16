@@ -1557,8 +1557,12 @@ std::string CGen::genDispatchers(const std::vector<Symbol*>& instClasses) {
     }
     getm += "  }\n  return objget(o, key);\n}\n";
     setm += "  }\n  objset(o, key, val);\n}\n";
+    // bug #77: a struct with no explicit (==) is field-wise by default
+    // (info.md §9); a class with no (==) is reference identity. keyEq already
+    // does the field-wise recursion for Map keys — reuse it here.
     opm += "  }\n"
-           "  if (op == 1 || op == 2) { bool same = r.k == 5 && l.o == r.o; "
+           "  if (op == 1 || op == 2) { bool same = (l.o && isValueClass(l.o->cls)) "
+           "? keyEq(l, r) : (r.k == 5 && l.o == r.o); "
            "return vb(op == 1 ? same : !same); }\n"
            "  return V{};\n}\n";
 

@@ -42,9 +42,10 @@ as-implemented reference, and the git history):
   now retired), interface-typed `using` now dispatches `close()` on the runtime class
   (teardown was silently skipped), and the rule engine gained `$C.name`/`$m.name`
   string reification, `$for`-bound-method selector splicing (`t.$m()`), and
-  type-position `$C` hygiene (reference.md §5.2/§6.9). Two bugs found but NOT fixed
-  (kept open): #77 (struct `==` isn't field-wise by default) and #78 (a bulk `uses`
-  import silently wins over a same-named local top-level function).
+  type-position `$C` hygiene (reference.md §5.2/§6.9). Two bugs found and since FIXED
+  (2026-07-15): #77 (struct `==` is now field-wise by default, info.md §9 / reference.md
+  §equality) and #78 (a file's own top-level function now wins ties over a same-named
+  bulk-`uses` import).
 - **`enum`** (Track 03 §2) — closed, `int`-carried value type; `::`-member access,
   `code()`/`toString()`/`fromCode`, exhaustive `match`. Desugars to a value `struct` +
   const globals, so it is **full-coverage on all four active engines** (reference.md §4.2c).
@@ -822,8 +823,11 @@ A `struct` differs from a reference `class` on exactly the axes that make it a *
 - **Copied, not aliased.** Binding, passing, returning, or storing a struct copies it (deep — a
   struct field copies too; a reference-class field is shared). Two variables never observe each
   other's mutations. A `class` keeps reference identity.
-- **No identity.** A struct is its fields; there is no object to be `==` by reference. (Equality
-  is field-wise / by a defined `(==)`.)
+- **No identity.** A struct is its fields; there is no object to be `==` by reference. Equality
+  is **field-wise by default** (each field compared recursively — a struct field field-wise, a
+  reference-class field by identity), and a defined `(==)` overrides that. This is the same
+  comparison a struct uses as a `Map` key (§keys). A `class` with no `(==)`, by contrast, is
+  reference identity.
 - **`mutating` methods.** Because the receiver is a value, a method that writes `this` must be
   marked `mutating`; a plain method that tries to assign a field is a compile error. Constructors
   and `set` accessors are mutating by definition.

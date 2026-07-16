@@ -1071,7 +1071,13 @@ Value Evaluator::combine(TokenKind op, const Value& l, const Value& r,
                 return vbool(!callFunction(eq, args, l.obj, l.obj->cls).b);
             }
         if (op == TokenKind::EqEq || op == TokenKind::BangEq) {
-            bool same = r.kind == VKind::Object && l.obj == r.obj;
+            // bug #77: a struct with no explicit (==) is field-wise by default
+            // (info.md §9 — "a struct IS its fields"); a class with no (==)
+            // compares by reference identity. Reuse the same field-wise recursion
+            // Map keys already use (keyEquals) so the two stay consistent.
+            bool same = l.obj->cls && l.obj->cls->isValue
+                          ? keyEquals(l, r)
+                          : (r.kind == VKind::Object && l.obj == r.obj);
             return vbool(op == TokenKind::EqEq ? same : !same);
         }
         return throwRuntime(std::string("no operator '") + opSymbol(op) + "' on '" +

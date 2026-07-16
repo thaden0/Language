@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #77 |
+| P1       | — |
 | P2       | — |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
@@ -96,59 +96,3 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
----
-
-## #77 [P1] A `struct` with no explicit `(==)` compares unequal to a field-identical instance — bare `==` is not field-wise by default
-
-**STATUS: semantics RULED 2026-07-15 (owner).** Struct `==` is field-wise by
-default via the **canonical relation** (float fields: all NaNs one class, ±0
-one class); explicit `(==)` overrides; a struct with a non-comparable field
-gets a **loud compile error**, never a silent `false`. Full architecture in
-`designs/techdesign-struct-equality.md` (two relations: IEEE operators /
-canonical value contexts; canon/hash/totalOrder; `float::NaN` match arms).
-**Implementation deferred by owner (cost-gated)** — design-doc-only for now.
-
-**Priority justification:** P1.1 — with the ruling in place the semantics cap
-(override 2) is lifted: every engine consistently returns `false` for a
-field-identical struct compare the ruling defines as `true` — a silent wrong
-value for checker-accepted code, exit 0, no diagnostic. Not P0.1: `.expected`
-goldens encode no struct-`==` output today, so the oracle poisons nothing.
-
-**Symptom.**
-
-```lev
-struct Point { int x; int y; new Point(int px, int py) { x = px; y = py; } }
-void main() {
-    Point a = Point(1, 2);
-    Point b = Point(1, 2);
-    console.writeln(a == b);   // false on BOTH oracle and IR
-}
-main();
-```
-
-Two `Point` instances with identical field values compare `false`. Adding
-an explicit `bool (==)(Point other) => x == other.x && y == other.y;`
-method makes the same comparison correctly report `true` — so struct
-equality works fully once defined, it just isn't field-wise **by default**.
-
-**Root cause (pointer).** Not traced — plausibly intentional (structs may
-simply not synthesize a default `(==)`, the same way C#/Rust require
-`#[derive(PartialEq)]`/explicit `Equals` opt-in), in which case this is a
-documentation clarification, not a code fix. Flagged here rather than
-assumed either way, per the semantics-ruling cap.
-
-**Workaround (verified, adopted by `harpoon/src/assert.lev`'s
-`assertEqual<T>`).** The generic duck-typed overload is kept (it works
-correctly for classes — reference identity — and enums — carrier compare,
-both confirmed on all engines), but a struct passed to it without its own
-`(==)` will almost always report "not equal" even when the caller expects
-equal. Documented in `assert.lev`: give the struct an explicit `(==)`, or
-compare with `assertTrue(a == b, msg)` once that operator exists, or field
--by-field with the scalar ladder — never rely on bare `assertEqual(struct,
-struct)` for a struct that hasn't defined `(==)`.
-
-**Found:** M1 self-test for `designs/techdesign-unit-test-library.md`
-(`harpoon/tests/main.lev`), 2026-07-15 — `assertEqual(Point(1,2),
-Point(1,2))` failed unexpectedly, tracing back to this.
-
----
