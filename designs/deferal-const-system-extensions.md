@@ -1,6 +1,7 @@
 # Deferral Resolution — `const` System Extensions
 
-**Status: design ready, not implemented.** **Date:** 2026-07-07.
+**Status: OQ2 + OQ3/OQ4 landed (2026-07-16); OQ1 designed, not yet implemented.**
+**Date:** 2026-07-07 (design); 2026-07-16 (OQ2/M-doc landed — see §8).
 **Resolves / tracks:** the four open questions logged at the tail of the landed
 `const` feature — [`designs/complete/const.md` §9](designs/complete/const.md)
 (lines 289–303) plus the §4 interface note (lines 181–184). `const` itself
@@ -338,4 +339,34 @@ pattern.
 
 ## 8. Implementation log
 
-*(empty — filled by the implementing agent per overview §4.2)*
+**2026-07-16 — M-OQ2 (sectional `const:`) + M-doc (OQ3/OQ4 rulings) landed.**
+Pure front-end sugar, zero AST-enum/IR/Eval/Lower/backend edits (§5 invariant held).
+
+- **Parser** (`src/Parser.cpp`): `parseClass`'s member loop gained a `bool constSection`
+  sticky flag orthogonal to the existing `Access section`, set by a `const :` label
+  recognized at the same member-list position as `public:`/`private:` (an access label
+  no longer clears it and vice-versa — orthogonal axes, §3.2 step 2 / problem #5).
+  `parseClassMember`/`parseClassMemberInner` gained a defaulted `bool sectionConst = false`
+  parameter (the two splice/attr callers are unaffected); the inner seeds `isConst` from
+  it and the modifier loop now accepts `var` as a per-member override that clears `isConst`
+  (`var` at member position previously failed to parse — it now means "explicitly mutable,
+  overriding a `const:` section"). Header signatures updated in `src/Parser.hpp`.
+- **Differential acceptance (the §7 STOP oracle):** a class using `const:` lowers
+  **byte-identically** under `--run` and `--ir` to the hand-written per-member `const`
+  equivalent — verified (`diff` empty). Pure sugar confirmed; the invariant holds.
+- **Tests:** positive corpus `tests/corpus/const_section.lev` (+`.expected`, auto-globbed
+  by `corpus_treewalk`/`corpus_ir`) exercises the section, the `var` override, and
+  `const:`-sticky-across-`public:`; five `test_checker.cpp` cases pin the compile-rejects
+  (section member reassignment, sticky-across-access reassignment) and the clean cases
+  (`var` override, bare `var` field, per-member `const` in a normal class). Full suite
+  green (`checkertests` 304/0, top-level corpus + composition lanes 100%).
+- **M-doc:** `const.md` §9.1–§9.4 now point here — §9.2 marked **Implemented**, §9.3/§9.4
+  record the declined-ruling reconsideration criteria (§4.1/§4.2).
+
+**Remaining: M-OQ1 (definite single assignment).** Not started. It is the substantive
+milestone — a checker-only definite-assignment analysis (§2.2) with the {loop, try, match}
+exclusion fence (§2.3, a STOP condition per problem #4) and a thorough read-before-assign /
+double-assign compile-reject corpus. The lowering precondition is verified: a **non-const**
+no-init local assigned on both `if/else` arms already lowers correctly on `--run`/`--ir`,
+so OQ1 adds no backend surface (const is erased after the checker). Sequenced "when a
+program actually wants the `if/else`-init pattern" (§7); non-blocking.
