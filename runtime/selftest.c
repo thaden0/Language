@@ -1167,6 +1167,109 @@ static void test_sockets(void) {
     fprintf(stderr, "OK: sockets (tcp connect/listen/accept/send/recv, EOF->None)\n");
 }
 
+/* --- G-LANG-2 process floor (techdesign-spawn-llvm.md §7.4/§7.5) ------------
+ * Pins the plat floor + the lvrt marshaling independently of codegen; the
+ * valgrind lane settles D1's ARC convention empirically. The reap loops below
+ * poll lv_plat_reap directly WITHOUT a pidfd — §7.5's pidfd-fallback lane. */
+static int lv_test_reap_poll(int pid) {
+    int code = -1;
+    for (int i = 0; i < 5000 && code < 0; i++) {
+        code = lv_plat_reap(pid);
+        if (code < 0) usleep(1000);
+    }
+    return code;
+}
+
+static void test_process_floor(void) {
+    /* cycle 1: /bin/echo — spawn, drain stdout, reap 0 */
+    char* argv1[] = { (char*)"/bin/echo", (char*)"spawnok", NULL };
+    int fds1[3];
+    int pid1 = lv_plat_spawn("/bin/echo", argv1, fds1);
+    CHECK(pid1 > 0);
+    char buf[64]; int64_t got = -1;
+    for (int i = 0; i < 5000; i++) {
+        got = lv_plat_read(fds1[1], buf, sizeof buf);
+        if (got >= 0) break;                  /* -1 = EAGAIN (O_NONBLOCK), retry */
+        usleep(1000);
+    }
+    CHECK(got == 8 && memcmp(buf, "spawnok\n", 8) == 0);
+    CHECK(lv_test_reap_poll(pid1) == 0);
+    int pfd1 = lv_plat_pidfd_open(pid1);      /* already reaped: -1 or a dead pidfd */
+    if (pfd1 >= 0) lv_plat_close(pfd1);
+    lv_plat_close(fds1[0]); lv_plat_close(fds1[1]); lv_plat_close(fds1[2]);
+
+    /* cycle 2: /bin/cat — stdin round trip, then kill(SIGTERM) -> 128+15 = 143.
+     * The echo-back FIRST is load-bearing, not decoration: it proves the child
+     * has actually exec'd into cat before the kill (under valgrind the fork's
+     * pre-exec window is slow, and a SIGTERM landing inside the forked-valgrind
+     * image doesn't die as a clean signal-terminated cat). */
+    char* argv2[] = { (char*)"/bin/cat", NULL };
+    int fds2[3];
+    int pid2 = lv_plat_spawn("/bin/cat", argv2, fds2);
+    CHECK(pid2 > 0);
+    CHECK(lv_plat_write(fds2[0], "ping\n", 5) == 5);
+    got = -1;
+    for (int i = 0; i < 5000; i++) {
+        got = lv_plat_read(fds2[1], buf, sizeof buf);
+        if (got >= 0) break;                  /* -1 = EAGAIN, cat not through yet */
+        usleep(1000);
+    }
+    CHECK(got == 5 && memcmp(buf, "ping\n", 5) == 0);
+    CHECK(lv_plat_kill(pid2, 15) == 0);
+    CHECK(lv_test_reap_poll(pid2) == 143);
+    lv_plat_close(fds2[0]); lv_plat_close(fds2[1]); lv_plat_close(fds2[2]);
+    CHECK(lv_plat_kill(-1, 15) == -1);        /* broadcast forms refused at the floor */
+    CHECK(lv_plat_kill(pid2, -1) == -1);
+
+    /* fd hygiene: both cycles fully released their numbers, so a third spawn
+     * reuses cycle 2's exact fd triple (the lowest-available rule). */
+    int fds3[3];
+    int pid3 = lv_plat_spawn("/bin/echo", argv1, fds3);
+    CHECK(pid3 > 0);
+    CHECK(fds3[0] == fds2[0] && fds3[1] == fds2[1] && fds3[2] == fds2[2]);
+    CHECK(lv_test_reap_poll(pid3) >= 0);
+    lv_plat_close(fds3[0]); lv_plat_close(fds3[1]); lv_plat_close(fds3[2]);
+
+    /* lvrt marshaling (D1's ARC convention): fresh rc-0 Array<int> of 4,
+     * retained/released exactly like codegen's retainDst() + register death. */
+    LvValue pathV; lvrt_str_new(&pathV, "/bin/echo", 9);
+    LvValue argsV; lvrt_arr_new(&argsV, 1);
+    LvValue a0;    lvrt_str_new(&a0, "m", 1);
+    ((int64_t*)(intptr_t)(argsV.payload + 8))[0] = a0.tag;   /* element store */
+    ((int64_t*)(intptr_t)(argsV.payload + 8))[1] = a0.payload;
+    lvrt_retain(&a0);                          /* buffer owns element */
+    LvValue sp; lvrt_sysspawn(&sp, &pathV, &argsV);
+    CHECK(sp.tag == LV_ARR && lv_test_len(sp.payload) == 4);
+    int mpid = (int)((int64_t*)(intptr_t)(sp.payload + 8))[1];
+    int min_ = (int)((int64_t*)(intptr_t)(sp.payload + 8 + 16))[1];
+    int mout = (int)((int64_t*)(intptr_t)(sp.payload + 8 + 32))[1];
+    int merr = (int)((int64_t*)(intptr_t)(sp.payload + 8 + 48))[1];
+    CHECK(mpid > 0);
+    got = -1;
+    for (int i = 0; i < 5000; i++) {
+        got = lv_plat_read(mout, buf, sizeof buf);
+        if (got >= 0) break;
+        usleep(1000);
+    }
+    CHECK(got == 2 && memcmp(buf, "m\n", 2) == 0);
+    CHECK(lv_test_reap_poll(mpid) == 0);
+    lv_plat_close(min_); lv_plat_close(mout); lv_plat_close(merr);
+    lvrt_retain(&sp);    lvrt_release(&sp);    /* the sysArgs convention: rc-0 fresh */
+    lvrt_retain(&pathV); lvrt_release(&pathV);
+    lvrt_retain(&argsV); lvrt_release(&argsV); /* recursively drops the element */
+
+    /* empty path -> [] spawn failure (frozen contract) */
+    LvValue emptyV; lvrt_str_new(&emptyV, "", 0);
+    LvValue noargs; lvrt_arr_new(&noargs, 0);
+    LvValue sf; lvrt_sysspawn(&sf, &emptyV, &noargs);
+    CHECK(sf.tag == LV_ARR && lv_test_len(sf.payload) == 0);
+    lvrt_retain(&sf); lvrt_release(&sf);
+    lvrt_retain(&emptyV); lvrt_release(&emptyV);
+    lvrt_retain(&noargs); lvrt_release(&noargs);
+
+    fprintf(stderr, "OK: process floor (spawn/drain/reap/kill/pidfd, fd hygiene, [] on empty path)\n");
+}
+
 /* ==========================================================================
  * LA-30 §9 — task-substrate selftest additions
  * (designs/suspension/techdesign-01-task-substrate.md; engine-free, same
@@ -1628,6 +1731,7 @@ int main(void) {
     test_event_loop();
     test_sys_file_natives();
     test_sockets();
+    test_process_floor();   /* G-LANG-2 (techdesign-spawn-llvm.md §7.4) */
 
     /* LA-30 §9 — task substrate */
     test_tasks_basic();

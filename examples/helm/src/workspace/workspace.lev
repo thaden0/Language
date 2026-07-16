@@ -1,0 +1,118 @@
+// H02 — the Workspace (designs/helm/techdesign-00-overview.md §5, G-H1).
+//
+// The Workspace owns the project root and the set of open documents (the
+// editor group's model), plus the file-watching hook (v1 polls on focus, §13.4).
+// For the G-H1 read-only viewer an open document is a plain immutable snapshot
+// (`OpenDoc`): path + decoded content + the mtime it was read at. When H04 lands
+// (the piece-table `TextBuffer`), the open-set becomes editable buffers and
+// `OpenDoc` is superseded — kept deliberately minimal so that swap is clean.
+//
+// No Sonar dependency here: this is pure model + prelude file I/O, so it tests
+// headlessly on oracle + IR.
+
+namespace Helm {
+
+    // Read a whole file as text ("" for an empty file). Throws FileException on
+    // a missing/unreadable path (callers guard with std::fileExists first).
+    string readTextFile(string path) {
+        using File f = File(path, std::read);
+        return f.read(f.size());
+    }
+
+    // An immutable read-only view of a file (G-H1). H04 replaces this with a
+    // mutable TextBuffer in the open-set.
+    class OpenDoc {
+        string path;
+        string name;
+        string content;
+        int    mtime;      // std::fileModified at read time (external-change key)
+        new OpenDoc(string p, string n, string c, int m) {
+            path = p; name = n; content = c; mtime = m;
+        }
+        Array<string> lines() => content.split("\n");
+        int lineCount() => content.split("\n").length();
+    }
+
+    class Workspace {
+        string          root_;
+        Array<OpenDoc>  open_   = [];
+        int             active_ = 0 - 1;   // index into open_, -1 = nothing open
+
+        new Workspace(string root) { root_ = stripTrailingSlash(root); }
+
+        string root() => root_;
+        int    openCount() => open_.length();
+
+        int indexOfPath(string path) {
+            int i = 0;
+            for (OpenDoc d in open_) { if (d.path == path) return i; i = i + 1; }
+            return 0 - 1;
+        }
+        bool isOpen(string path) => this.indexOfPath(path) >= 0;
+
+        // Open a file (idempotent: re-opening an already-open file just focuses
+        // it). Reads the bytes once, records the mtime for change detection, and
+        // makes it the active document.
+        OpenDoc open(string path) {
+            int at = this.indexOfPath(path);
+            if (at >= 0) { active_ = at; return open_[at]; }
+            OpenDoc d = OpenDoc(path, basename(path), readTextFile(path), std::fileModified(path));
+            open_ = open_.add(d);
+            active_ = open_.length() - 1;
+            return d;
+        }
+
+        // Focus an already-open document; false if it isn't open.
+        bool activate(string path) {
+            int at = this.indexOfPath(path);
+            if (at < 0) return false;
+            active_ = at;
+            return true;
+        }
+
+        OpenDoc? active() {
+            if (active_ < 0) return None;
+            return open_[active_];
+        }
+        string activePath() {
+            if (active_ < 0) return "";
+            return open_[active_].path;
+        }
+
+        // Close a document; focus falls to the last remaining one (or nothing).
+        void close(string path) {
+            int at = this.indexOfPath(path);
+            if (at < 0) return;
+            Array<OpenDoc> keep = [];
+            int i = 0;
+            for (OpenDoc d in open_) { if (i != at) keep = keep.add(d); i = i + 1; }
+            open_ = keep;
+            if (active_ == at)      active_ = open_.length() - 1;
+            else if (active_ > at)  active_ = active_ - 1;
+        }
+
+        Array<string> openPaths() {
+            Array<string> ps = [];
+            for (OpenDoc d in open_) ps = ps.add(d.path);
+            return ps;
+        }
+
+        // File-watching hook (v1 polls on focus, open question §13.4): has the
+        // on-disk file changed since we opened it?
+        bool isStale(string path) {
+            int at = this.indexOfPath(path);
+            if (at < 0) return false;
+            return std::fileModified(path) != open_[at].mtime;
+        }
+
+        // Re-read a document from disk (e.g. after isStale), preserving its slot.
+        bool reload(string path) {
+            int at = this.indexOfPath(path);
+            if (at < 0) return false;
+            OpenDoc old = open_[at];
+            open_ = open_.with(at, OpenDoc(path, old.name, readTextFile(path), std::fileModified(path)));
+            return true;
+        }
+    }
+
+}

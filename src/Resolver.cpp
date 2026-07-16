@@ -6091,20 +6091,49 @@ void Resolver::run(Program& program) {
             cls->scope->parent = sema_.fileScopeFor(cls->decl->span.offset);
     }
 
-    // Likewise re-parent each TOP-LEVEL namespace scope to its file's overlay, so
-    // a top-of-file `uses B` is visible to code inside a reopened `namespace A {
+    // Likewise make each TOP-LEVEL namespace scope see its files' overlays, so a
+    // top-of-file `uses B` is visible to code inside a reopened `namespace A {
     // ... }` block — the namespace scope chain otherwise runs straight to global,
-    // bypassing the overlay where `uses` names live (bug.md #45). The parent-==
-    // global guard re-parents each shared namespace scope once (to its first
-    // block's overlay); nested namespaces keep resolving through their encloser.
+    // bypassing the overlay where `uses` names live (bug.md #45).
+    //
+    // A namespace reopened across files (`namespace Helm` in both proc.lev and
+    // command.lev) has ONE shared scope but N blocks, each in its own file with
+    // its own top-of-file `uses`. Parenting that single scope to just the FIRST
+    // block's overlay made the whole namespace see only that one file's imports:
+    // if the first block's file lacked a `uses Sonar` that a later block relies
+    // on, every unqualified cross-dependency type in the namespace failed to
+    // resolve, order-dependently (regression floor:
+    // tests/corpus/project/reopen_ns_uses_order). So instead give each reopened
+    // namespace its OWN aggregate overlay (parent == global) and fold in the
+    // file overlays of EVERY block, making import visibility order-independent.
+    // The parent-== global guard makes one aggregate per shared namespace scope;
+    // nested namespaces keep resolving through their encloser.
+    std::unordered_map<Symbol*, Scope*> nsAgg;
+    std::unordered_map<Symbol*, std::vector<Scope*>> nsBlockOverlays;
     for (StmtPtr& item : program.items) {
         if (item->kind != StmtKind::Namespace) continue;
         Symbol* ns = findLocal(sema_.global, item->name, SymbolKind::Namespace);
-        if (ns && ns->scope && ns->scope->parent == sema_.global)
-            ns->scope->parent = sema_.fileScopeFor(item->span.offset);
+        if (!ns || !ns->scope) continue;
+        Scope* fileOv = sema_.fileScopeFor(item->span.offset);
+        std::vector<Scope*>& ovs = nsBlockOverlays[ns];
+        if (std::find(ovs.begin(), ovs.end(), fileOv) == ovs.end()) ovs.push_back(fileOv);
+        if (ns->scope->parent == sema_.global) {
+            Scope* agg = sema_.newScope(sema_.global);
+            ns->scope->parent = agg;
+            nsAgg[ns] = agg;
+        }
     }
 
     processImports(program.items, sema_.global);   // resolve `uses` before type resolution
+
+    // Populate each namespace's aggregate overlay from ALL its blocks' file
+    // overlays (which processImports has now filled). File overlays hold only
+    // imported names, so this copies imports and nothing else.
+    for (auto& [ns, agg] : nsAgg)
+        for (Scope* ov : nsBlockOverlays[ns])
+            for (auto& [name, syms] : ov->names)
+                for (Symbol* sym : syms)
+                    agg->names[name].push_back(sym);
 
     resolveTypesIn(preludeProgram_.items, sema_.global);
     resolveTypesIn(program.items, sema_.global);

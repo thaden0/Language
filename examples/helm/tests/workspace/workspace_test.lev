@@ -1,0 +1,46 @@
+// H02 golden — Workspace open-set: open/switch/close, active tracking, read-only
+// document content + line counts, and the stale-check hook. Reads committed
+// fixtures under fixtures/ (cwd is the test dir at run time). Oracle + IR.
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    void main() {
+        Workspace ws = Workspace("fixtures");
+        console.writeln("root: " + ws.root());                 // fixtures
+        console.writeln("openCount: " + ws.openCount().toString()); // 0
+
+        section("open one");
+        OpenDoc d1 = ws.open("fixtures/one.txt");
+        console.writeln("name: " + d1.name);                   // one.txt
+        console.writeln("lineCount: " + d1.lineCount().toString()); // 3
+        for (string ln in d1.lines()) console.writeln("| " + ln);   // alpha/beta/gamma
+        console.writeln("openCount: " + ws.openCount().toString()); // 1
+        console.writeln("active: " + ws.activePath());         // fixtures/one.txt
+        console.writeln("stale: " + yn(ws.isStale("fixtures/one.txt"))); // n
+
+        section("open two, switch");
+        ws.open("fixtures/two.txt");
+        console.writeln("openCount: " + ws.openCount().toString()); // 2
+        console.writeln("active: " + ws.activePath());         // fixtures/two.txt
+        console.writeln("isOpen one: " + yn(ws.isOpen("fixtures/one.txt"))); // y
+        console.writeln("activate one: " + yn(ws.activate("fixtures/one.txt"))); // y
+        console.writeln("active: " + ws.activePath());         // fixtures/one.txt
+        ws.open("fixtures/one.txt");                            // idempotent re-open
+        console.writeln("openCount: " + ws.openCount().toString()); // still 2
+
+        section("paths");
+        for (string p in ws.openPaths()) console.writeln("- " + p); // one.txt, two.txt
+
+        section("close active");
+        ws.close("fixtures/one.txt");
+        console.writeln("openCount: " + ws.openCount().toString()); // 1
+        console.writeln("active: " + ws.activePath());         // fixtures/two.txt
+        console.writeln("isOpen one: " + yn(ws.isOpen("fixtures/one.txt"))); // n
+        ws.close("fixtures/two.txt");
+        console.writeln("openCount: " + ws.openCount().toString()); // 0
+        console.writeln("active none: " + yn(ws.active() == None)); // y
+    }
+
+}

@@ -1,0 +1,71 @@
+// Helm entry point (designs/helm/techdesign-00-overview.md). Bare top-level
+// main() so `entry = "main"` resolves it, `uses Helm;` to reach the package's
+// own namespace (recon/src/main.lev precedent).
+//
+// Gates landed so far: G-H0 (subprocess bridge H09 + command registry H03) and
+// G-H1 (workspace H02 + file tree H05, read-only). Until the Sonar retained-UI
+// shell (H01) lands, `main` is a headless driver: it registers the command
+// surface and, given a workspace directory, prints its file tree (the explorer)
+// and can build it (H11 wires the streamed build into a real panel).
+uses Sonar;
+uses Helm;
+
+// `Process` needs an explicit path (no PATH search — reference §6.6.59). Point
+// HELM_TRIDENT at the trident binary; a workspace path is passed to trident
+// explicitly, so no cwd is needed.
+string tridentPath() => env::get("HELM_TRIDENT") ?? "/usr/bin/trident";
+
+void runBuild(string ws) {
+    Proc p = Proc(tridentPath(), ["build", ws], "");
+    ProcStreamer st = ProcStreamer(p, (e) => {
+        if (e.isExit())        console.writeln("[exit " + e.code.toString() + "]");
+        else if (e.isStderr()) console.writeln("! " + e.line);
+        else                   console.writeln("  " + e.line);
+    });
+    st.run(20);
+}
+
+void printTree(FileTree ft, TreeNodeId n, int depth) {
+    string indent = "";
+    for (int i in 0..depth - 1) indent = indent + "  ";
+    console.writeln(indent + ft.labelAt(n));
+    if (ft.hasChildren(n)) {
+        int c = ft.childCount(n);
+        for (int i in 0..c - 1) printTree(ft, ft.childAt(n, i), depth + 1);
+    }
+}
+
+CommandRegistry helmCommands(string ws) {
+    CommandRegistry reg = CommandRegistry();
+    reg.register("helm.build", "Build Workspace", "Build", () => runBuild(ws));
+    reg.setKey("helm.build", "^B");
+    reg.register("helm.quit",  "Quit",            "File",  () => {});
+    reg.setKey("helm.quit", "^Q");
+    return reg;
+}
+
+void main() {
+    console.writeln("Helm 0.1.0-dev — a terminal IDE for Leviathan (G-H0/G-H1)");
+
+    // Pick the first argument that names a real directory. argv[0] may be the
+    // program/package name under some run modes, so probe rather than index [0].
+    string dir = "";
+    for (string a in env::args()) { if (std::isDir(a)) { dir = a; break; } }
+
+    if (dir.isEmpty()) {
+        CommandRegistry reg = helmCommands(".");
+        console.writeln("usage: helm <workspace-dir>   (open a trident workspace)");
+        console.writeln("commands:");
+        for (Command c in reg.commands())
+            console.writeln("  " + c.id + " [" + c.key + "]  " + c.title);
+        return;
+    }
+
+    Workspace ws = Workspace(dir);
+    CommandRegistry reg = helmCommands(ws.root());
+    console.writeln("workspace: " + ws.root());
+    console.writeln("commands:  " + reg.count().toString());
+    console.writeln("files:");
+    FileTree ft = FileTree(ws.root());
+    printTree(ft, ft.rootAt(0), 1);
+}

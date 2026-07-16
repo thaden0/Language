@@ -1,0 +1,232 @@
+// H09 — the subprocess bridge (designs/helm/techdesign-00-overview.md §7.1).
+//
+// Helm shells out to `leviathan`/`trident`/`harpoon` and the integrated
+// terminal's children. This module is the single seam over the language's
+// `Process` (reference §6.6.59): it frames raw stdout/stderr chunks into lines
+// and delivers immutable `ProcEvent` messages to the UI.
+//
+// DESIGN vs REALITY (recorded in the doc's §14 log): H-C4 specifies
+// `Channel<ProcEvent> start()` with "a spawn`ed reader task". The language
+// forbids this: `Process` is a **fd-/loop-bound carrier** that CANNOT cross a
+// `std::spawn` boundary (reference §6.6.66's flattenability list rejects it),
+// and its I/O is already event-loop driven on the UI thread. So there is no
+// worker task and no cross-thread Channel — the "reader" is `Process`'s own
+// onStdout/onStderr/exitCode callbacks, which enqueue onto an in-process
+// `ProcEventQueue` the UI drains synchronously at frame start. The single-
+// writer rule (H-R1) holds trivially: everything runs on the one thread.
+//
+// Floor note: `Process` runs on the oracle + IR interpreters only; compiled
+// backends defer the spawn natives cleanly. Helm's compiler/build/test/terminal
+// features therefore run on the interpreter engines in v1 (this is G-LANG-2:
+// the process floor is not yet lowered on LLVM).
+
+namespace Helm {
+
+    // ProcEvent tags. Plain int consts (never a user enum in a Map/Array — the
+    // Sonar keymap corpus hit bug #40/#41 there); read through the accessors.
+    const int ProcStdout = 0;
+    const int ProcStderr = 1;
+    const int ProcExit   = 2;
+
+    // An immutable message from a child process. A `class` row — individually
+    // heap-allocated, never packed inline in an `Array<struct>` (footgun #5).
+    class ProcEvent {
+        int    kind;
+        string line;   // Stdout/Stderr payload, one line, no trailing newline
+        int    code;   // Exit status (128+signal if signalled; 127 = exec failed)
+
+        new Stdout(string l) { kind = ProcStdout; line = l;  code = 0; }
+        new Stderr(string l) { kind = ProcStderr; line = l;  code = 0; }
+        new Exit(int c)      { kind = ProcExit;   line = ""; code = c; }
+
+        bool isStdout() => kind == ProcStdout;
+        bool isStderr() => kind == ProcStderr;
+        bool isExit()   => kind == ProcExit;
+    }
+
+    // The UI-drained, single-thread event queue. Producers are the Process
+    // callbacks; the consumer is the UI's frame-start drain (a `renderFrame`
+    // hook, where SonarApp.__sweepBindings already runs).
+    class ProcEventQueue {
+        Array<ProcEvent> pending_ = [];
+
+        void push(ProcEvent e) { pending_ = pending_.add(e); }
+
+        // Non-blocking: hand back everything queued since the last drain and
+        // clear the buffer. Never parks — the UI calls it once per frame.
+        Array<ProcEvent> drain() {
+            Array<ProcEvent> out = pending_;
+            pending_ = [];
+            return out;
+        }
+
+        bool hasPending() => pending_.length() > 0;
+    }
+
+    // Frames a byte stream into whole lines. `Process.onStdout` hands over
+    // arbitrary chunks (a line may span two chunks, or one chunk may carry
+    // several lines); this holds the partial trailing line until its newline
+    // arrives. `flush()` releases any un-terminated remainder at EOF.
+    class LineFramer {
+        string buf_ = "";
+
+        // Append a chunk; return the lines it completed (each without '\n').
+        Array<string> feed(string chunk) {
+            buf_ = buf_ + chunk;
+            Array<string> lines = [];
+            // split("\n") keeps empty segments, so "a\nb" -> ["a","b"] and
+            // "a\n" -> ["a",""]. The final segment is always the new partial
+            // buffer; every earlier segment is a completed line.
+            Array<string> parts = buf_.split("\n");
+            int n = parts.length();
+            for (int i in 0..n - 2) {
+                string ln = parts[i];
+                // Normalise CRLF: drop one trailing '\r' per line.
+                if (ln.endsWith("\r")) ln = ln.subStr(0, ln.length() - 1);
+                lines = lines.add(ln);
+            }
+            buf_ = parts[n - 1];
+            return lines;
+        }
+
+        // The trailing line with no terminating newline (empty if the stream
+        // ended exactly on a newline).
+        string flush() {
+            string r = buf_;
+            if (r.endsWith("\r")) r = r.subStr(0, r.length() - 1);
+            buf_ = "";
+            return r;
+        }
+
+        bool hasRemainder() => !buf_.isEmpty();
+    }
+
+    // A running (or finished) child process, bridged to a ProcEventQueue.
+    //
+    //   Proc p = Proc("/usr/bin/leviathan", ["--plan", plan, "--run"], workspaceDir);
+    //   ProcEventQueue q = p.start();
+    //   ... each frame: for (ProcEvent e in q.drain()) applyToUi(e);
+    //
+    // cwd handling: the language `Process` floor has no chdir, so a non-empty
+    // cwd is honoured by launching through `/usr/bin/env -C <cwd> <exe> ...`
+    // (coreutils; argv-clean, no shell quoting). An empty cwd spawns `exe`
+    // directly and the child inherits Helm's cwd. Most callers instead pass an
+    // explicit workspace path to `trident`/`leviathan` (both accept one), which
+    // is the primary path and needs no cwd at all.
+    class Proc {
+        string     exe_;
+        Array<string> args_;
+        string     cwd_;
+
+        Process?         proc_  = None;
+        ProcEventQueue   queue_  = ProcEventQueue();
+        LineFramer       outFr_  = LineFramer();
+        LineFramer       errFr_  = LineFramer();
+        bool             running_ = false;
+        bool             started_ = false;
+
+        new Proc(string exe, Array<string> args, string cwd) {
+            exe_ = exe; args_ = args; cwd_ = cwd;
+        }
+
+        // Build the real argv, folding cwd into an `env -C` prefix when set.
+        string spawnPath() => cwd_.isEmpty() ? exe_ : "/usr/bin/env";
+
+        Array<string> spawnArgs() {
+            if (cwd_.isEmpty()) return args_;
+            Array<string> a = ["-C", cwd_, exe_];
+            return a.concat(args_);
+        }
+
+        // Launch the child and wire its streams into the queue. Idempotent: a
+        // second call is a no-op. Returns the queue the UI drains.
+        ProcEventQueue start() {
+            if (started_) return queue_;
+            started_ = true;
+            Process p = Process(spawnPath(), spawnArgs());
+            proc_ = p;
+            running_ = true;
+            // Explicit `this.` receivers throughout — a bare implicit-`this`
+            // call from a lambda stored in the Process's handler list segfaults
+            // on native and loses mutations on IR (bug #53).
+            p.onStdout((s) => this.onOut(s));
+            p.onStderr((s) => this.onErr(s));
+            p.exitCode().then((code) => this.onExit(code));
+            return queue_;
+        }
+
+        void onOut(string chunk) {
+            for (string ln in outFr_.feed(chunk)) queue_.push(ProcEvent::Stdout(ln));
+        }
+
+        void onErr(string chunk) {
+            for (string ln in errFr_.feed(chunk)) queue_.push(ProcEvent::Stderr(ln));
+        }
+
+        void onExit(int code) {
+            // Flush any un-terminated trailing lines before the Exit marker so
+            // no output is lost when a process ends without a final newline.
+            if (outFr_.hasRemainder()) queue_.push(ProcEvent::Stdout(outFr_.flush()));
+            if (errFr_.hasRemainder()) queue_.push(ProcEvent::Stderr(errFr_.flush()));
+            running_ = false;
+            queue_.push(ProcEvent::Exit(code));
+        }
+
+        // stdin (terminal input; a stdin-source compiler mode later).
+        void write(string bytes) {
+            if (proc_ != None) { Process p = proc_; p.write(bytes); }
+        }
+        void closeStdin() {
+            if (proc_ != None) { Process p = proc_; p.closeStdin(); }
+        }
+
+        // Cancellation. The `Process` floor exposes only SIGTERM (`kill()`); an
+        // explicit signal number is best-effort mapped onto it (the build
+        // spinner's ^C). A finer signal set is a G-LANG-2 item.
+        void signal(int sig) {
+            if (proc_ != None) { Process p = proc_; p.kill(); }
+        }
+
+        bool running() => running_;
+    }
+
+    // A headless driver that drains a Proc's queue on a repeating tick and hands
+    // each event to a sink closure, cancelling the tick once the child has
+    // exited and the queue is empty. The real IDE drains from its own frame loop
+    // (renderFrame hook); this stands in for that in spikes/tests/CLI use.
+    //
+    // The sink is held in a one-element Array<closure> (the sanctioned safe
+    // shape for a stored closure — Sonar's Button.pressHandlers_ precedent),
+    // not a bare closure field, to avoid any auto-construct hazard.
+    class ProcStreamer {
+        Proc                        proc_;
+        ProcEventQueue              queue_;
+        Array<(ProcEvent) => void>  sink_ = [];
+        std::Timer?                 tick_ = None;
+        bool                        done_ = false;
+
+        new ProcStreamer(Proc p, (ProcEvent) => void sink) {
+            proc_  = p;
+            queue_ = p.start();
+            sink_  = sink_.add(sink);
+        }
+
+        void run(int intervalMs) {
+            std::Timer t = std::every(intervalMs);
+            tick_ = t;
+            t.subscribe((n) => this.pump());
+        }
+
+        void pump() {
+            (ProcEvent) => void s = sink_[0];
+            for (ProcEvent e in queue_.drain()) s(e);
+            if (!proc_.running() && !queue_.hasPending()) {
+                done_ = true;
+                if (tick_ != None) { std::Timer t = tick_; t.cancel(); }
+            }
+        }
+
+        bool done() => done_;
+    }
+
+}

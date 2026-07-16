@@ -1,0 +1,65 @@
+// H05 golden — FileTree as an ITreeSource: lazy directory listing (dirs-first,
+// alphabetical), then file ops (create/rename/delete) in a scratch dir the test
+// makes and cleans up. Reads committed fixtures under fixtures/proj. Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    // Depth-first print of the tree through the ITreeSource surface.
+    void walk(FileTree ft, TreeNodeId n, int depth) {
+        string indent = "";
+        for (int i in 0..depth - 1) indent = indent + "  ";
+        console.writeln(indent + ft.labelAt(n));
+        if (ft.hasChildren(n)) {
+            int c = ft.childCount(n);
+            for (int i in 0..c - 1) walk(ft, ft.childAt(n, i), depth + 1);
+        }
+    }
+
+    TreeNodeId? findChild(FileTree ft, TreeNodeId parent, string label) {
+        int c = ft.childCount(parent);
+        for (int i in 0..c - 1) {
+            TreeNodeId ch = ft.childAt(parent, i);
+            if (ft.labelAt(ch) == label) return ch;
+        }
+        return None;
+    }
+
+    void main() {
+        section("listing");
+        FileTree ft = FileTree("fixtures/proj");
+        walk(ft, ft.rootAt(0), 0);
+        // spot-check the source surface directly
+        TreeNodeId root = ft.rootAt(0);
+        console.writeln("rootCount: " + ft.rootCount().toString());   // 1
+        console.writeln("root label: " + ft.labelAt(root));           // proj/
+        console.writeln("root childCount: " + ft.childCount(root).toString()); // 4
+        console.writeln("hasChildren(root): " + yn(ft.hasChildren(root)));     // y
+
+        section("file ops");
+        string scratch = "scratch_ft";
+        std::sysMkdir(scratch);
+        FileTree ft2 = FileTree(scratch);
+        console.writeln("mkdir d1: "  + yn(ft2.createDir(ft2.rootAt(0), "d1")));
+        console.writeln("touch f1: "  + yn(ft2.createFile(ft2.rootAt(0), "f1.txt")));
+        walk(ft2, ft2.rootAt(0), 0);                                  // scratch_ft/ d1/ f1.txt
+
+        console.writeln("-- rename --");
+        TreeNodeId? f1 = findChild(ft2, ft2.rootAt(0), "f1.txt");
+        if (f1 != None) { TreeNodeId t = f1; console.writeln("rename f1->f2: " + yn(ft2.renameNode(t, "f2.txt"))); }
+        walk(ft2, ft2.rootAt(0), 0);                                  // scratch_ft/ d1/ f2.txt
+
+        console.writeln("-- delete --");
+        TreeNodeId? f2 = findChild(ft2, ft2.rootAt(0), "f2.txt");
+        if (f2 != None) { TreeNodeId t = f2; console.writeln("rm f2: " + yn(ft2.removeNode(t))); }
+        TreeNodeId? d1 = findChild(ft2, ft2.rootAt(0), "d1/");
+        if (d1 != None) { TreeNodeId t = d1; console.writeln("rm d1: " + yn(ft2.removeNode(t))); }
+        walk(ft2, ft2.rootAt(0), 0);                                  // scratch_ft/ (empty)
+
+        std::sysRemove(scratch);                                       // clean up the scratch dir
+    }
+
+}

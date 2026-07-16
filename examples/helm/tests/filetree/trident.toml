@@ -1,0 +1,12 @@
+name    = "helm-filetree-test"
+entry   = "Helm::main"
+sources = [
+    "filetree_test.lev",
+    "../../src/explorer/filetree.lev",
+    "../../src/workspace/paths.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

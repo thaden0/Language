@@ -1,0 +1,22 @@
+== framer ==
+L:hello
+L:world
+false
+G:a
+G:b
+true
+flush:c
+false
+== echo ==
+OUT:hello world
+EXIT:0
+done
+== sh ==
+OUT:out
+ERR:err
+EXIT:3
+done
+== pwd ==
+OUT:/tmp
+EXIT:0
+done

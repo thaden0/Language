@@ -1,0 +1,8 @@
+# Regression: a namespace reopened across files must see EVERY block's file-level
+# `uses`, not just the first block's. Here the glob-FIRST App block (a_base.lev)
+# has no `uses`, while a later block (b_make.lev) relies on a top-of-file
+# `uses Lib` to name `Widget` unqualified. Before the fix the whole App namespace
+# saw only a_base.lev's (empty) imports and `Widget` failed to resolve.
+name    = "reopen_ns_uses_order"
+entry   = "main"
+sources = ["lib.lev", "a_base.lev", "b_make.lev", "main.lev"]

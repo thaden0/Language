@@ -389,3 +389,12 @@ what remains is standing policy (X64Gen frozen; per-consumer LLVM coverage for
 env/random/dirs/tty/DNS/spawn; F6 phase 2 on the roadmap), not unstarted
 design work. Moved to `designs/complete/` per the exit-codes precedent, with
 this log as the record.
+
+**2026-07-16 — F7 promoted to LLVM (G-LANG-2 process half; the per-consumer
+policy exercised, Helm the forcing consumer).** The four spawn natives landed
+on `--build-native` via a new `runtime/lv_proc.c` + `lv_plat_spawn/pidfd_open/
+reap/kill` floor rows, byte-identical to this track's oracle; `run_sysnatives.sh`
+§10's LLVM leg flipped from "clean spawn deferral" to covered (the F5/sysMonotonic
+precedent), the spawn golden moved to `tests/corpus/sys_spawn/` with an LLVM lane,
+and emit-C++'s deliberate deferral stays asserted. Design + log:
+`designs/techdesign-spawn-llvm.md`.

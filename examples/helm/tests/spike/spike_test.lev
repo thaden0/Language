@@ -1,0 +1,54 @@
+// G-H0 spike (design §10): the spine end-to-end — a *named command* fires
+// (as the palette/menu/keymap would), its handler spawns a child through the
+// subprocess bridge, and a ProcStreamer drains the events into an "Output"
+// sink. This is the "run a build, stream to Output" loop with a deterministic
+// child (/bin/sh printing our own text) standing in for `trident build`.
+//
+// Interpreter-only (Process): golden on oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    // The Output panel stand-in: an appendable line log a closure can write to
+    // (a class so the closure's appends are observed — footgun on struct copy).
+    class OutputLog {
+        Array<string> lines_ = [];
+        void write(string s) { lines_ = lines_.add(s); }
+        void dump() { for (string l in lines_) console.writeln(l); }
+    }
+
+    void main() {
+        OutputLog out = OutputLog();
+        CommandRegistry reg = CommandRegistry();
+
+        // Register the build command exactly as H01 will; give it its ^B chord.
+        reg.register("helm.build", "Build Workspace", "Build", () => {
+            Proc p = Proc("/bin/sh", ["-c", "echo compiling...; echo done; exit 0"], "");
+            ProcStreamer st = ProcStreamer(p, (e) => {
+                if (e.isExit())        out.write("[exit " + e.code.toString() + "]");
+                else if (e.isStderr()) out.write("! " + e.line);
+                else                   out.write("> " + e.line);
+            });
+            st.run(20);
+        });
+        reg.setKey("helm.build", "^B");
+
+        console.writeln("commands: " + reg.count().toString());
+        console.writeln("bound:    " + reg.key("helm.build"));
+
+        // Fire via the keymap (^B) — proving the command routes through the same
+        // path a real keystroke would, not a direct call.
+        Keymap km = Keymap();
+        reg.bindInto(km);
+        char b = 'B';
+        console.writeln("fired:    " + (km.handle(KeyEvent(KeyCode::Char, b, Mod::Ctrl)) ? "yes" : "no"));
+
+        // The build streams asynchronously; drain-print once it has finished.
+        // (In the IDE the Output panel repaints incrementally each frame.)
+        std::after(200).subscribe((n) => {
+            console.writeln("== Output ==");
+            out.dump();
+        });
+    }
+
+}

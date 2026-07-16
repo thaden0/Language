@@ -1,0 +1,137 @@
+// H05 — the file explorer model (designs/helm/techdesign-00-overview.md §5, G-H1).
+//
+// `FileTree` is the sidebar's data model: a lazily-populated tree of the project
+// directory that implements Sonar's `ITreeSource` (listview.lev) so the virtualized
+// `TreeView` can paint the visible viewport without the whole tree in memory.
+// Directories list their children on first access; `TreeNodeId` is the opaque
+// handle the view keys expansion by — here it wraps a stable integer node id
+// (an index into `nodes_`), which never changes as the tree grows (append-only).
+//
+// Rows are `class` FileNode carriers (never Array<struct> — footgun #5 / the
+// treeview.lev TreeRow precedent), so a node's mutable `loaded`/`children` state
+// persists through the pure-array `nodes_.add(...)`.
+
+uses Sonar;
+
+namespace Helm {
+
+    class FileNode {
+        int        id;
+        string     path;
+        string     name;
+        bool       isDir;
+        int        parent;              // -1 for the root
+        bool       loaded;              // has this dir been listed yet?
+        Array<int> children = [];
+        new FileNode(int i, string p, string n, bool d, int par) {
+            id = i; path = p; name = n; isDir = d; parent = par; loaded = false;
+        }
+    }
+
+    class FileTree : ITreeSource {
+        string          root_;
+        Array<FileNode> nodes_  = [];
+        int             rootId_ = 0 - 1;
+
+        new FileTree(string root) {
+            root_   = stripTrailingSlash(root);
+            rootId_ = this.addNode(root_, basename(root_), true, 0 - 1);
+        }
+
+        int addNode(string path, string name, bool isDir, int parent) {
+            int id = nodes_.length();
+            nodes_ = nodes_.add(FileNode(id, path, name, isDir, parent));
+            return id;
+        }
+
+        // List a directory node's children on first access: alphabetical, then
+        // directories hoisted ahead of files (the conventional explorer order).
+        void ensureLoaded(int id) {
+            FileNode n = nodes_[id];
+            if (n.loaded) return;
+            n.loaded = true;                       // mark before early-outs (idempotent)
+            if (!n.isDir) return;
+            // `?? []` both narrows the optional and treats an unreadable dir as
+            // empty (early-return narrowing wouldn't survive here — footgun).
+            Array<string> entries = std::sysListDir(n.path) ?? [];
+            Array<string> sorted  = entries.sortBy((e) => e);   // lexicographic
+            Array<int> dirIds  = [];
+            Array<int> fileIds = [];
+            for (string e in sorted) {
+                string full = joinPath(n.path, e);
+                bool d = std::isDir(full);
+                int cid = this.addNode(full, e, d, id);
+                if (d) dirIds  = dirIds.add(cid);
+                else   fileIds = fileIds.add(cid);
+            }
+            // `n` is a class reference into nodes_ — still valid after the adds
+            // above replaced the array; the child list lands on the real node.
+            n.children = dirIds.concat(fileIds);
+        }
+
+        // Force a directory to re-list on next access (after a file op / watch).
+        void invalidate(int id) {
+            FileNode n = nodes_[id];
+            n.loaded   = false;
+            n.children = [];
+        }
+
+        // ---- navigation helpers (used by the view / commands) ----
+        int      rootId() => rootId_;
+        FileNode nodeOf(TreeNodeId nid) => nodes_[nid.id];
+        string   pathOf(TreeNodeId nid) => nodes_[nid.id].path;
+        bool     isDirNode(TreeNodeId nid) => nodes_[nid.id].isDir;
+
+        // ---- Sonar::ITreeSource ----
+        int rootCount() => 1;
+        TreeNodeId rootAt(int i) => TreeNodeId(rootId_);
+        int childCount(TreeNodeId nid) {
+            this.ensureLoaded(nid.id);
+            return nodes_[nid.id].children.length();
+        }
+        TreeNodeId childAt(TreeNodeId nid, int i) {
+            this.ensureLoaded(nid.id);
+            return TreeNodeId(nodes_[nid.id].children[i]);
+        }
+        string labelAt(TreeNodeId nid) {
+            FileNode n = nodes_[nid.id];
+            return n.isDir ? n.name + "/" : n.name;
+        }
+        bool hasChildren(TreeNodeId nid) {
+            FileNode n = nodes_[nid.id];
+            if (!n.isDir) return false;
+            this.ensureLoaded(nid.id);
+            return nodes_[nid.id].children.length() > 0;
+        }
+
+        // ---- file ops (H05): create / rename / delete, re-listing the parent ----
+        bool createFile(TreeNodeId dir, string name) {
+            FileNode d = nodes_[dir.id];
+            if (!d.isDir) return false;
+            using File f = File(joinPath(d.path, name), std::write);
+            f.write("");
+            this.invalidate(dir.id);
+            return true;
+        }
+        bool createDir(TreeNodeId dir, string name) {
+            FileNode d = nodes_[dir.id];
+            if (!d.isDir) return false;
+            int rc = std::sysMkdir(joinPath(d.path, name));
+            if (rc == 0) this.invalidate(dir.id);
+            return rc == 0;
+        }
+        bool renameNode(TreeNodeId node, string newName) {
+            FileNode n = nodes_[node.id];
+            int rc = std::sysRename(n.path, joinPath(dirname(n.path), newName));
+            if (rc == 0 && n.parent >= 0) this.invalidate(n.parent);
+            return rc == 0;
+        }
+        bool removeNode(TreeNodeId node) {
+            FileNode n = nodes_[node.id];
+            int rc = std::sysRemove(n.path);
+            if (rc == 0 && n.parent >= 0) this.invalidate(n.parent);
+            return rc == 0;
+        }
+    }
+
+}

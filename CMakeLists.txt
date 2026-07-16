@@ -366,6 +366,17 @@ add_test(NAME corpus_sys_natives_treewalk
 add_test(NAME corpus_sys_natives_ir
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_natives")
+# G-LANG-2 (techdesign-spawn-llvm.md §7.1): the spawn golden, promoted out of
+# sys_natives/ into its own dir now that LLVM covers the process floor. All
+# three lanes diff the SAME .expected — byte-identity across oracle/IR/LLVM is
+# the pass condition (the LLVM sibling lives in the LLVM_FOUND block below).
+# emit-C++ keeps its deliberate system-layer deferral (no cpp lane).
+add_test(NAME corpus_sys_spawn_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
+add_test(NAME corpus_sys_spawn_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
 # Track 10 native floor. Kept outside the frozen ELF lane: sysCpuCount and the
 # SO_REUSEPORT overload are interpreter/LLVM worker primitives.
 add_test(NAME corpus_threads_treewalk
@@ -821,6 +832,7 @@ if (LLVM_FOUND)
       "${CMAKE_SOURCE_DIR}/runtime/lv_plat_posix.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_loop.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_thread.c"
+      "${CMAKE_SOURCE_DIR}/runtime/lv_proc.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_entry.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_task.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_ctx_x86_64.S"
@@ -1025,6 +1037,12 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/blocks_io"
                    ${LANG_LVRT_SOURCES})
+  # G-LANG-2 (techdesign-spawn-llvm.md §7.1): the LLVM leg of the spawn golden —
+  # same .expected as corpus_sys_spawn_{treewalk,ir} above (byte-identity).
+  add_test(NAME corpus_sys_spawn_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn"
+                   ${LANG_LVRT_SOURCES})
   add_test(NAME corpus_threads_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/threads"
@@ -1181,6 +1199,7 @@ add_library(lvrt STATIC
   runtime/lv_plat_posix.c
   runtime/lv_loop.c
   runtime/lv_thread.c
+  runtime/lv_proc.c
   runtime/lv_entry.c
   ${LV_TASK_SRCS}
   ${LVRT_TLS_SRC})

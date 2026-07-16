@@ -1,0 +1,28 @@
+== listing ==
+proj/
+  src/
+    a.lev
+    b.lev
+  zdir/
+    deep.txt
+  README.md
+  main.lev
+rootCount: 1
+root label: proj/
+root childCount: 4
+hasChildren(root): y
+== file ops ==
+mkdir d1: y
+touch f1: y
+scratch_ft/
+  d1/
+  f1.txt
+-- rename --
+rename f1->f2: y
+scratch_ft/
+  d1/
+  f2.txt
+-- delete --
+rm f2: y
+rm d1: y
+scratch_ft/

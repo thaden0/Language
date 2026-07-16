@@ -712,6 +712,18 @@ void    lvrt_sysrsaencrypt(LvValue* out, const LvValue* pem, const LvValue* byte
 void    lvrt_sysrandom    (LvValue* out, const LvValue* n);    /* fresh string +1 (§8)   */
 void    lvrt_sysenv       (LvValue* out, const LvValue* key);  /* env var: string +1 | LV_NONE (bug #68) */
 
+/* Process floor (techdesign-spawn-llvm.md; oracle RuntimeNatives.cpp:1841+).
+ * lvrt_sysspawn: fresh Array<int> [pid, stdinFd, stdoutFd, stderrFd], or the
+ *   empty array on SPAWN failure (pipe/fork; empty path). Exec failure is the
+ *   child's _exit(127), collected via lvrt_sysreap. Returned array follows the
+ *   lvrt_sysargs ownership convention (rc 0; codegen retains).
+ * lvrt_syspidfdopen / lvrt_sysreap / lvrt_syskill: scalar LV_INT results,
+ *   values per the frozen F7 contract (Resolver.cpp:1479-1482).              */
+void    lvrt_sysspawn(LvValue* out, const LvValue* path, const LvValue* args);
+void    lvrt_syspidfdopen(LvValue* out, const LvValue* pid);
+void    lvrt_sysreap(LvValue* out, const LvValue* pid);
+void    lvrt_syskill(LvValue* out, const LvValue* pid, const LvValue* sig);
+
 void    lvrt_systimerstart(LvValue* out, const LvValue* delayMs,
                             const LvValue* intervalMs, const LvValue* cb);
 void    lvrt_systimercancel(const LvValue* id);

@@ -1,0 +1,147 @@
+// H03 — the command system (designs/helm/techdesign-00-overview.md §0.3, §3).
+//
+// "Everything is a command." Menus, the palette, keymaps, and buttons all fire
+// *named actions*; one `CommandRegistry` is the single source of truth for what
+// Helm can do. This sits above Sonar's `Keymap`/`ActionRegistry`: the registry
+// owns the id -> (title, category, handler, enabled, chord) mapping, and
+// `bindInto` installs its accelerators into an app `Keymap` so a chord fires
+// the same named command the palette and menu do.
+//
+// Storage mirrors Sonar's `ActionRegistry`: **parallel primitive/closure
+// columns**, never `Array<struct>` (footgun #5 / bug #74). `Command` is a
+// read-model value handed back by queries, built on demand.
+
+uses Sonar;
+
+namespace Helm {
+
+    // A read-model of one registered command (palette row / menu item / query
+    // result). A `class` so it can carry mixed fields without the array-staleness
+    // hazards of a struct; never stored in a hot array itself.
+    class Command {
+        string id;
+        string title;
+        string category;
+        string key;       // display accelerator, e.g. "^S"; "" if unbound
+        bool   enabled;
+        new Command(string i, string t, string c, string k, bool e) {
+            id = i; title = t; category = c; key = k; enabled = e;
+        }
+    }
+
+    class CommandRegistry {
+        Array<string>     ids_        = [];
+        Array<string>     titles_     = [];
+        Array<string>     categories_ = [];
+        Array<() => void> handlers_   = [];
+        Array<bool>       enabled_    = [];
+        Array<string>     keys_       = [];   // "" when no accelerator
+
+        int indexOf(string id) {
+            int i = 0;
+            for (string n in ids_) { if (n == id) return i; i = i + 1; }
+            return -1;
+        }
+
+        bool has(string id) => indexOf(id) >= 0;
+
+        // Register a named command. Re-registering an existing id replaces its
+        // title/category/handler (keeps a bound key and enabled state).
+        CommandRegistry register(string id, string title, string category, () => void handler) {
+            int at = indexOf(id);
+            if (at >= 0) {
+                titles_     = titles_.with(at, title);
+                categories_ = categories_.with(at, category);
+                handlers_   = handlers_.with(at, handler);
+                return this;
+            }
+            ids_        = ids_.add(id);
+            titles_     = titles_.add(title);
+            categories_ = categories_.add(category);
+            handlers_   = handlers_.add(handler);
+            enabled_    = enabled_.add(true);
+            keys_       = keys_.add("");
+            return this;
+        }
+
+        // Fire a command by id. Returns false for an unknown or disabled
+        // command (the palette/menu grey those; a keystroke to one is a no-op).
+        bool execute(string id) {
+            int at = indexOf(id);
+            if (at < 0) return false;
+            if (!enabled_[at]) return false;
+            () => void h = handlers_[at];
+            h();
+            return true;
+        }
+
+        void setEnabled(string id, bool on) {
+            int at = indexOf(id);
+            if (at >= 0) enabled_ = enabled_.with(at, on);
+        }
+        bool isEnabled(string id) {
+            int at = indexOf(id);
+            return at >= 0 && enabled_[at];
+        }
+
+        string title(string id) {
+            int at = indexOf(id);
+            return at >= 0 ? titles_[at] : "";
+        }
+        string category(string id) {
+            int at = indexOf(id);
+            return at >= 0 ? categories_[at] : "";
+        }
+        string key(string id) {
+            int at = indexOf(id);
+            return at >= 0 ? keys_[at] : "";
+        }
+
+        // Associate a display/binding accelerator with a command (e.g. "^S").
+        // The actual key routing is installed by `bindInto`.
+        void setKey(string id, string chord) {
+            int at = indexOf(id);
+            if (at >= 0) keys_ = keys_.with(at, chord);
+        }
+
+        int count() => ids_.length();
+
+        // The full command list, ordered by registration — the palette source.
+        Array<Command> commands() {
+            Array<Command> out = [];
+            for (int i in 0..ids_.length() - 1) {
+                out = out.add(Command(ids_[i], titles_[i], categories_[i], keys_[i], enabled_[i]));
+            }
+            return out;
+        }
+
+        // Case-insensitive substring filter over id + title — the quick-open /
+        // command-palette query. Empty query returns everything.
+        Array<Command> matching(string query) {
+            if (query.isEmpty()) return commands();
+            string q = query.toLower();
+            Array<Command> out = [];
+            for (int i in 0..ids_.length() - 1) {
+                string hay = (ids_[i] + " " + titles_[i]).toLower();
+                if (hay.contains(q)) {
+                    out = out.add(Command(ids_[i], titles_[i], categories_[i], keys_[i], enabled_[i]));
+                }
+            }
+            return out;
+        }
+
+        // Install every command that has an accelerator into an app Keymap, so
+        // the chord fires the named command at the capture phase (Sonar R11).
+        // Bound in a per-id helper so each closure captures its own `id` value,
+        // never a shared loop variable.
+        void bindInto(Keymap km) {
+            for (int i in 0..ids_.length() - 1) {
+                if (!keys_[i].isEmpty()) this.bindOne(km, keys_[i], ids_[i]);
+            }
+        }
+        void bindOne(Keymap km, string chord, string id) {
+            km.bind(chord, () => this.execute(id));
+        }
+    }
+
+}

@@ -1,0 +1,2 @@
+uses Lib;
+namespace App { int made() => Widget().v; }

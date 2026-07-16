@@ -1,0 +1,44 @@
+// Path helpers (H02). Pure string ops over '/'-separated POSIX paths — no
+// filesystem access, no dependency. Shared by the workspace and the file tree.
+namespace Helm {
+
+    // Strip trailing '/'s (but keep a lone "/").
+    string stripTrailingSlash(string path) {
+        string p = path;
+        while (p.length() > 1 && p.endsWith("/")) p = p.subStr(0, p.length() - 1);
+        return p;
+    }
+
+    // Last path segment. "a/b/c" -> "c", "a/b/" -> "b", "x" -> "x", "/" -> "".
+    string basename(string path) {
+        string p = stripTrailingSlash(path);
+        int idx = p.lastIndexOf("/");
+        if (idx < 0) return p;
+        return p.subStr(idx + 1, p.length() - (idx + 1));
+    }
+
+    // Parent directory. "a/b/c" -> "a/b", "x" -> ".", "/x" -> "/".
+    string dirname(string path) {
+        string p = stripTrailingSlash(path);
+        int idx = p.lastIndexOf("/");
+        if (idx < 0) return ".";
+        if (idx == 0) return "/";
+        return p.subStr(0, idx);
+    }
+
+    // Join a directory and a child name with exactly one '/'.
+    string joinPath(string dir, string name) {
+        if (dir.isEmpty()) return name;
+        if (dir.endsWith("/")) return dir + name;
+        return dir + "/" + name;
+    }
+
+    // File extension without the dot, "" if none. "a.lev" -> "lev", "a" -> "".
+    string extname(string path) {
+        string b = basename(path);
+        int idx = b.lastIndexOf(".");
+        if (idx <= 0) return "";   // no dot, or a leading-dot dotfile
+        return b.subStr(idx + 1, b.length() - (idx + 1));
+    }
+
+}

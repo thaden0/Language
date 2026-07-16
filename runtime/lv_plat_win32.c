@@ -230,6 +230,17 @@ int  lv_plat_signal_open(const int* sigs, int n) { (void)sigs; (void)n; return -
 int  lv_plat_signal_next(int fd) { (void)fd; return -1; }
 void lv_plat_signal_close(int fd) { (void)fd; }
 
+/* process floor: no Windows child-process story in v1 — the spawn/Channel
+ * Windows-reject precedent. LlvmGen rejects sysSpawn* for a Windows target at
+ * compile time (techdesign-spawn-llvm.md D4); these stubs keep the archive
+ * linking and return the frozen failure sentinels if ever reached. */
+int lv_plat_spawn(const char* path, char* const argv[], int fds[3]) {
+    (void)path; (void)argv; (void)fds; return -1;
+}
+int lv_plat_pidfd_open(int pid) { (void)pid; return -1; }
+int lv_plat_reap(int pid)       { (void)pid; return -1; }
+int lv_plat_kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
+
 int64_t lv_plat_stat_size(const char* path) {
     /* Pure Win32 (no CRT _stat64 struct-name ambiguity across CRTs); also
      * correct for files > 4 GB. -1 if the path does not exist (§5 contract). */

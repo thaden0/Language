@@ -1,0 +1,7 @@
+commands: 1
+bound:    ^B
+fired:    yes
+== Output ==
+> compiling...
+> done
+[exit 0]

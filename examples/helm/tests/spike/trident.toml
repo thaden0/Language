@@ -1,0 +1,12 @@
+name    = "helm-spike-test"
+entry   = "Helm::main"
+sources = [
+    "spike_test.lev",
+    "../../src/proc/proc.lev",
+    "../../src/command/command.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

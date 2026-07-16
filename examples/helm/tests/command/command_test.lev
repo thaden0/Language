@@ -1,0 +1,61 @@
+// H03 unit/golden — the command registry: register/execute/enable, the palette
+// filter, and keymap binding firing a named command through a Sonar Keymap.
+// Pure and hermetic (no subprocess); byte-identical on oracle + IR + LLVM.
+uses Sonar;
+
+namespace Helm {
+
+    // A ref-class counter: a closure that must be *observed* mutating shared
+    // state uses a class, never a struct (footgun "structs snapshot this").
+    class Counter { int n = 0; void inc() { n = n + 1; } }
+
+    void main() {
+        CommandRegistry reg = CommandRegistry();
+        Counter saves  = Counter();
+        Counter builds = Counter();
+
+        reg.register("file.save",   "Save File",     "File",  () => saves.inc());
+        reg.register("build.build", "Build Project", "Build", () => builds.inc());
+        reg.register("edit.undo",   "Undo",          "Edit",  () => {});
+
+        console.writeln("== registry ==");
+        console.writeln(reg.count());              // 3
+        console.writeln(reg.has("file.save"));     // true
+        console.writeln(reg.has("nope"));          // false
+        console.writeln(reg.title("build.build")); // Build Project
+        console.writeln(reg.category("edit.undo"));// Edit
+
+        console.writeln("== execute ==");
+        console.writeln(reg.execute("file.save")); // true
+        console.writeln(reg.execute("file.save")); // true
+        console.writeln(saves.n);                  // 2
+        console.writeln(reg.execute("missing"));   // false
+
+        console.writeln("== enable ==");
+        reg.setEnabled("build.build", false);
+        console.writeln(reg.isEnabled("build.build")); // false
+        console.writeln(reg.execute("build.build"));   // false
+        console.writeln(builds.n);                     // 0
+        reg.setEnabled("build.build", true);
+        console.writeln(reg.execute("build.build"));   // true
+        console.writeln(builds.n);                     // 1
+
+        console.writeln("== palette filter ==");
+        for (Command c in reg.matching("bui")) console.writeln(c.id + " | " + c.title);
+        console.writeln("--");
+        for (Command c in reg.commands()) console.writeln(c.category + "/" + c.id);
+
+        console.writeln("== keymap ==");
+        reg.setKey("file.save", "^S");
+        console.writeln(reg.key("file.save"));     // ^S
+        Keymap km = Keymap();
+        reg.bindInto(km);
+        // bug #50: a single-quoted char literal won't retype to char in call
+        // position — bind to a local first.
+        char sk = 'S';
+        KeyEvent e = KeyEvent(KeyCode::Char, sk, Mod::Ctrl);
+        console.writeln(km.handle(e));             // true (^S fired file.save)
+        console.writeln(saves.n);                  // 3
+    }
+
+}

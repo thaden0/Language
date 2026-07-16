@@ -259,6 +259,45 @@ CH_EXPECT='churn: true'
 check "spawn-churn --run" "$CH_EXPECT" "$("$bin" --run "$work/churn.lev" 2>&1)"
 check "spawn-churn --ir"  "$CH_EXPECT" "$("$bin" --ir  "$work/churn.lev" 2>&1)"
 
+# LLVM legs (G-LANG-2, techdesign-spawn-llvm.md §7.3): kill -> 143 on the
+# compiled runtime, and fd-table churn hygiene probed via sysOpen's
+# lowest-available fd number (sysListDir is not on the LLVM floor). Stdout
+# compared alone — the LLVM binary's [heap] meter is stderr.
+if "$bin" --build-native "$work/kill_llvm" "$work/kill.lev" >/dev/null 2>&1; then
+  check "kill llvm-native" "$K_EXPECT" "$("$work/kill_llvm" 2>/dev/null)"
+else
+  echo "FAIL kill llvm-native (build failed)"; fail=1
+fi
+
+cat > "$work/churn_llvm.lev" <<'EOF'
+// problem #4's acceptance on the compiled runtime: 8 spawn/reap rounds leave
+// the lowest free fd number unchanged (pipes x3 + pidfd all closed on reap).
+int fdProbe() {
+    int fd = std::sysOpen("/dev/null", 1);
+    std::sysClose(fd);
+    return fd;
+}
+int before = 0 - 1;
+int rounds = 0;
+void spin() {
+    if (rounds >= 8) {
+        console.writeln("churn: " + (fdProbe() == before).toString());
+        return;
+    }
+    rounds = rounds + 1;
+    Process p = Process("/bin/echo", ["r" + rounds.toString()]);
+    p.onStdout((s) => {});
+    p.exitCode().then((code) => spin());
+}
+before = fdProbe();
+spin();
+EOF
+if "$bin" --build-native "$work/churn_llvm" "$work/churn_llvm.lev" >/dev/null 2>&1; then
+  check "spawn-churn llvm-native" "$CH_EXPECT" "$("$work/churn_llvm" 2>/dev/null)"
+else
+  echo "FAIL spawn-churn llvm-native (build failed)"; fail=1
+fi
+
 # --- 9. comptime hermeticity covers the F5/F7 natives too --------------------
 printf 'comptime int N = std::sysSpawn("/bin/true", []).length();\nconsole.writeln(N.toString());\n' > "$work/ct_spawn.lev"
 cts_out=$("$bin" --run "$work/ct_spawn.lev" 2>&1); cts_rc=$?
@@ -268,10 +307,11 @@ else
   echo "FAIL comptime hermeticity (expected sysSpawn denial, got rc=$cts_rc): $cts_out"; fail=1
 fi
 
-# --- 10. compiled backends defer the spawn floor cleanly ---------------------
-# Process is prelude code over sys* natives the compiled backends don't cover
-# (per-native-on-consumer-demand policy); the failure must be a coverage error
-# naming a sys native, never a miscompile.
+# --- 10. spawn floor: emit-C++ defers cleanly; LLVM covers it ----------------
+# emit-C++ keeps its deliberate system-layer deferral (Track 08 stubs policy):
+# the failure must be a coverage error naming a sys native, never a miscompile.
+# LLVM covers the spawn floor since G-LANG-2 landed (techdesign-spawn-llvm.md)
+# — flipped from "defers" to "covered", the F5/sysMonotonic precedent.
 printf 'Process p = Process("/bin/echo", ["x"]);\np.exitCode().then((c) => console.writeln(c.toString()));\n' > "$work/sp.lev"
 sp_cpp=$("$bin" --build "$work/sp_cpp" "$work/sp.lev" 2>&1); sp_cpp_rc=$?
 if [ $sp_cpp_rc -ne 0 ] && echo "$sp_cpp" | grep -q "native.*'sys"; then
@@ -279,11 +319,10 @@ if [ $sp_cpp_rc -ne 0 ] && echo "$sp_cpp" | grep -q "native.*'sys"; then
 else
   echo "FAIL emit-cpp (expected clean spawn deferral, got rc=$sp_cpp_rc): $sp_cpp"; fail=1
 fi
-sp_llvm=$("$bin" --build-native "$work/sp_llvm" "$work/sp.lev" 2>&1); sp_llvm_rc=$?
-if [ $sp_llvm_rc -ne 0 ] && echo "$sp_llvm" | grep -q "native.*'sys"; then
-  echo "ok   llvm (clean spawn deferral)"
+if "$bin" --build-native "$work/sp_llvm" "$work/sp.lev" >/dev/null 2>&1; then
+  check "llvm spawn (covered)" "0" "$("$work/sp_llvm" 2>/dev/null)"
 else
-  echo "FAIL llvm (expected clean spawn deferral, got rc=$sp_llvm_rc): $sp_llvm"; fail=1
+  echo "FAIL llvm (expected sysSpawn to compile natively)"; fail=1
 fi
 
 echo "sys-natives differential done"

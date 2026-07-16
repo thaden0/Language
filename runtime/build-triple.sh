@@ -108,7 +108,7 @@ case "$triple" in
   *windows*|*mingw*) task_srcs=(lv_task.c) ;;
   *)                 task_srcs=(lv_task.c lv_ctx_x86_64.S lv_ctx_aarch64.S) ;;
 esac
-srcs=(lv_runtime.c "$floor" lv_loop.c lv_thread.c lv_entry.c "${task_srcs[@]}" "$tls_src")
+srcs=(lv_runtime.c "$floor" lv_loop.c lv_thread.c lv_proc.c lv_entry.c "${task_srcs[@]}" "$tls_src")
 mkdir -p "$out_dir"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

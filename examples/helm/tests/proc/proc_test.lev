@@ -1,0 +1,71 @@
+// H09 — subprocess bridge. Two layers:
+//   1. LineFramer chunk-to-line framing (pure, deterministic).
+//   2. Live integration: spawn real children through `Proc`, drain the
+//      ProcEventQueue as the UI would (a one-shot timer stands in for the
+//      frame tick), and report stdout/stderr/exit deterministically.
+//
+// Interpreter-only: `Process` runs on oracle + IR; the compiled backends defer
+// the spawn floor (this is why the golden lane for Helm is oracle+IR, not LLVM
+// — see the design §7.1 and §14 log). Inter-stream (stdout vs stderr) arrival
+// order is not guaranteed, so `report` buckets by stream before printing.
+
+namespace Helm {
+
+    void dumpFramer() {
+        console.writeln("== framer ==");
+        LineFramer f = LineFramer();
+        for (string ln in f.feed("hel"))     console.writeln("L:" + ln);  // (none)
+        for (string ln in f.feed("lo\nwor")) console.writeln("L:" + ln);  // L:hello
+        for (string ln in f.feed("ld\n"))    console.writeln("L:" + ln);  // L:world
+        console.writeln(f.hasRemainder());                                // false
+
+        // CRLF stripping + several lines + a partial tail in one chunk.
+        LineFramer g = LineFramer();
+        for (string ln in g.feed("a\r\nb\r\nc")) console.writeln("G:" + ln); // G:a G:b
+        console.writeln(g.hasRemainder());                                   // true
+        console.writeln("flush:" + g.flush());                               // flush:c
+        console.writeln(g.hasRemainder());                                   // false
+    }
+
+    // Drain a finished child's queue and print a stable summary.
+    void report(string tag, ProcEventQueue q, Proc p) {
+        console.writeln("== " + tag + " ==");
+        Array<string> outs = [];
+        Array<string> errs = [];
+        int exit = 0 - 999;
+        for (ProcEvent e in q.drain()) {
+            if (e.isStdout())      outs = outs.add(e.line);
+            else if (e.isStderr()) errs = errs.add(e.line);
+            else                   exit = e.code;
+        }
+        for (string s in outs) console.writeln("OUT:" + s);
+        for (string s in errs) console.writeln("ERR:" + s);
+        console.writeln("EXIT:" + exit.toString());
+        console.writeln(p.running() ? "running" : "done");
+    }
+
+    void main() {
+        dumpFramer();
+
+        // 1. argv passing + stdout + exit 0.
+        Proc echo = Proc("/bin/echo", ["hello", "world"], "");
+        ProcEventQueue qEcho = echo.start();
+
+        // 2. stdout + stderr + a non-zero exit code, via a shell we drive with
+        //    our own (deterministic) echoed text.
+        Proc sh = Proc("/bin/sh", ["-c", "echo out; echo err 1>&2; exit 3"], "");
+        ProcEventQueue qSh = sh.start();
+
+        // 3. cwd handling: `/bin/pwd` launched with cwd=/tmp must print /tmp
+        //    (folded to `/usr/bin/env -C /tmp /bin/pwd`).
+        Proc pwd = Proc("/bin/pwd", [], "/tmp");
+        ProcEventQueue qPwd = pwd.start();
+
+        // Drain each at a staggered tick so the transcript is ordered. In the
+        // real IDE the frame loop drains every queue every frame.
+        std::after(150).subscribe((n) => report("echo", qEcho, echo));
+        std::after(300).subscribe((n) => report("sh",   qSh,   sh));
+        std::after(450).subscribe((n) => report("pwd",  qPwd,  pwd));
+    }
+
+}

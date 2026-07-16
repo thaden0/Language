@@ -178,6 +178,8 @@ struct Gen {
         rtSysAccept, rtSysSend, rtSysRecv,
         rtSysTcpConnectNb, rtSysConnectResult,   // Track 08 F5 connect floor
         rtSysSocketBuffer,   // LA-29: advisory SO_SNDBUF/SO_RCVBUF sizing
+        // G-LANG-2 process floor (techdesign-spawn-llvm.md §5)
+        rtSysSpawn, rtSysPidfdOpen, rtSysReap, rtSysKill,
         // LA-2 (techdesign-tls-crypto.md §5.2): TLS/crypto natives + sysRandom leg
         rtSysTlsConnect, rtSysTlsAccept, rtSysTlsHandshake, rtSysTlsError,
         rtSysTlsAlpn, rtSysTlsVersion, rtSysRsaEncrypt, rtSysRandom, rtSysEnv,
@@ -347,6 +349,11 @@ struct Gen {
         rtSysTcpListenReuse = fn("lvrt_systcplisten_reuse", voidTy, {ptrTy, ptrTy, ptrTy});
         rtSysCpuCount = fn("lvrt_syscpucount", voidTy, {ptrTy});
         rtSysSocketBuffer = fn("lvrt_syssocketbuffer", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
+        // Process floor (techdesign-spawn-llvm.md §5): POSIX-only, Windows-rejected below.
+        rtSysSpawn     = fn("lvrt_sysspawn",     voidTy, {ptrTy, ptrTy, ptrTy});
+        rtSysPidfdOpen = fn("lvrt_syspidfdopen", voidTy, {ptrTy, ptrTy});
+        rtSysReap      = fn("lvrt_sysreap",      voidTy, {ptrTy, ptrTy});
+        rtSysKill      = fn("lvrt_syskill",      voidTy, {ptrTy, ptrTy, ptrTy});
         rtSysThreadTransfer = fn("lvrt_systhreadtransfer", voidTy, {ptrTy, ptrTy});
         rtSysThreadStart = fn("lvrt_systhreadstart", voidTy, {ptrTy, ptrTy});
         rtSysThreadResult = fn("lvrt_systhreadresult", voidTy, {ptrTy, ptrTy});
@@ -2677,6 +2684,23 @@ struct Gen {
                                 "atan2", FunctionType::get(f64Ty, {f64Ty, f64Ty}, false));
                             storeTP(b, regs[in.a], i64C(2),
                                     b.CreateBitCast(b.CreateCall(f, {y, x}), i64Ty));
+                        } else if (n == "sysSpawn" || n == "sysPidfdOpen" ||
+                                   n == "sysReap" || n == "sysKill") {
+                            // G-LANG-2 process floor (techdesign-spawn-llvm.md §5):
+                            // POSIX-only, the threads Windows-reject precedent (D4).
+                            if (targetWindows) {
+                                fail("process spawn: unsupported on Windows (v1) — '" + n +
+                                     "' has no Windows lowering (techdesign-spawn-llvm.md)");
+                            } else if (n == "sysSpawn") {
+                                b.CreateCall(rtSysSpawn, {regs[in.a], arg(0), arg(1)});
+                                retainDst();   // fresh heap Array<int> -> +1 (D1, sysArgs parity)
+                            } else if (n == "sysPidfdOpen") {
+                                b.CreateCall(rtSysPidfdOpen, {regs[in.a], arg(0)});
+                            } else if (n == "sysReap") {
+                                b.CreateCall(rtSysReap, {regs[in.a], arg(0)});
+                            } else {  // sysKill
+                                b.CreateCall(rtSysKill, {regs[in.a], arg(0), arg(1)});
+                            }
                         } else {
                             fail("native floor function '" + n + "'");
                         }

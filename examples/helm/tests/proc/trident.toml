@@ -1,0 +1,6 @@
+name    = "helm-proc-test"
+entry   = "Helm::main"
+sources = [
+    "proc_test.lev",
+    "../../src/proc/proc.lev",
+]

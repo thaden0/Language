@@ -3,6 +3,12 @@
  * of lv_plat.h's declared interface (files/sockets/poll) alongside the
  * event loop.
  */
+/* _GNU_SOURCE: pipe2 (atomic O_CLOEXEC — load-bearing for the fork-in-a-
+ * threaded-runtime discipline, techdesign-spawn-llvm.md D7) and SYS_pidfd_open
+ * are glibc/_GNU_SOURCE-gated; everything else here is plain POSIX. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include "lv_plat.h"
 
 #include <arpa/inet.h>
@@ -17,6 +23,8 @@
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -415,6 +423,70 @@ int64_t lv_plat_recv(int fd, void* buf, int64_t n) {
     if (r < 0 && errno == ENOTSOCK)
         r = (int64_t)read(fd, buf, (size_t)n);
     return r;
+}
+
+/* --- process floor (G-LANG-2, techdesign-spawn-llvm.md §3.2) ---------------
+ * Mirrors src/RuntimeNatives.cpp:1850-1933 syscall-for-syscall. Child
+ * discipline (D7): argv is built by the caller BEFORE fork; between fork and
+ * exec the child only dup2s and execs; a failed exec _exit(127)s. Async-
+ * signal-safe only — LLVM programs are multithreaded (lv_thread.c), and
+ * pipe2's ATOMIC O_CLOEXEC means a concurrent fork on another thread can
+ * never inherit a half-flagged pipe end. */
+extern char** environ;
+
+int lv_plat_spawn(const char* path, char* const argv[], int fds[3]) {
+    /* SIGPIPE off, once, lazily at first spawn: a write to a dead child's
+     * stdin must surface as EPIPE, not kill the host. A disposition, not a
+     * handler; duplicates the TLS provider's ignore (lv_tls_openssl.c) —
+     * idempotent, and SIG_IGN is process-global anyway (plain static,
+     * first-spawn-wins is fine). */
+    static int sigpipe_ignored = 0;
+    if (!sigpipe_ignored) { signal(SIGPIPE, SIG_IGN); sigpipe_ignored = 1; }
+    int inP[2], outP[2], errP[2];
+    if (pipe2(inP,  O_CLOEXEC) != 0) return -1;
+    if (pipe2(outP, O_CLOEXEC) != 0) { close(inP[0]); close(inP[1]); return -1; }
+    if (pipe2(errP, O_CLOEXEC) != 0) { close(inP[0]); close(inP[1]);
+                                       close(outP[0]); close(outP[1]); return -1; }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(inP[0]);  close(inP[1]);  close(outP[0]);
+        close(outP[1]); close(errP[0]); close(errP[1]);
+        return -1;
+    }
+    if (pid == 0) {                    /* child: dup2 + exec only; nothing allocates */
+        dup2(inP[0], 0); dup2(outP[1], 1); dup2(errP[1], 2);
+        execve(path, argv, environ);
+        _exit(127);
+    }
+    close(inP[0]); close(outP[1]); close(errP[1]);   /* parent drops child ends */
+    fds[0] = inP[1]; fds[1] = outP[0]; fds[2] = errP[0];
+    for (int i = 0; i < 3; i++) {
+        int fl = fcntl(fds[i], F_GETFL, 0);
+        fcntl(fds[i], F_SETFL, fl | O_NONBLOCK);
+    }
+    return (int)pid;
+}
+
+int lv_plat_pidfd_open(int pid) {
+    if (pid <= 0) return -1;
+#ifdef SYS_pidfd_open
+    return (int)syscall(SYS_pidfd_open, (pid_t)pid, 0);   /* Linux >= 5.3; -1 else */
+#else
+    return -1;        /* headers predate pidfd — the prelude poll-reap fallback (D5) */
+#endif
+}
+
+int lv_plat_reap(int pid) {
+    if (pid <= 0) return -1;
+    siginfo_t si; si.si_pid = 0;                   /* the WNOHANG zero-out idiom */
+    if (waitid(P_PID, (id_t)pid, &si, WEXITED | WNOHANG) != 0 || si.si_pid == 0)
+        return -1;
+    return si.si_code == CLD_EXITED ? (si.si_status & 0xFF) : 128 + si.si_status;
+}
+
+int lv_plat_kill(int pid, int sig) {
+    if (pid <= 0 || sig < 0) return -1;
+    return kill((pid_t)pid, sig) == 0 ? 0 : -1;
 }
 
 /* LA-2 §8: kernel CSPRNG — getrandom(2) (blocking pool, short-read looped) via

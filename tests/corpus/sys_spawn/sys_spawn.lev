@@ -1,6 +1,6 @@
-// Track 08 F7 (M6): the spawn floor + Process prelude class, golden on the
-// two interpreters (this dir is interpreter-only — the compiled backends
-// defer the spawn natives cleanly, asserted in run_sysnatives.sh).
+// Track 08 F7 / G-LANG-2: the spawn floor + Process prelude class, golden on
+// oracle + IR + LLVM (techdesign-spawn-llvm.md §7.1 — the three lanes diff this
+// one .expected). emit-C++ keeps its deliberate system-layer deferral.
 //
 // One child at a time, each step chained off the previous exitCode
 // resolution, so the transcript is deterministic:

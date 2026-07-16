@@ -1,0 +1,27 @@
+== registry ==
+3
+true
+false
+Build Project
+Edit
+== execute ==
+true
+true
+2
+false
+== enable ==
+false
+false
+0
+true
+1
+== palette filter ==
+build.build | Build Project
+--
+File/file.save
+Build/build.build
+Edit/edit.undo
+== keymap ==
+^S
+true
+3
