@@ -31,17 +31,19 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
+| Growing a GLOBAL `Array<T>` via repeated `xs = xs.add(...)` on LLVM native leaks every intermediate buffer (O(N²) live bytes; `lvrt: heap exhausted` near N≈10k) | #73 | build in a local, assign the global once | `tests/corpus/tasks/park_storm.lev` kept interpreter-lanes-only (`tests/corpus/tasks_llvm` CMakeLists comment) |
 
 ## Multi-mixin composition & Surface painting (cluster E, Sonar T05)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
+| A leaf's in-place content update to a SHORTER string leaves stale glyphs under the default/empty theme (repaint doesn't clear the box; `paintBackground` fills only for a themed non-default bg) | sonar-bugs.md #4 | pad mutable fields to a fixed width so each repaint fully overwrites | `sonar/examples/file-manager` (`showFile` pad) |
 
 ## Names, generics, overloads (clusters C & D)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
-| A `struct` with no explicit `(==)` compares unequal to a field-identical instance (not field-wise by default) | #77 (ruled 2026-07-15: canonical field-wise synthesis — `designs/techdesign-struct-equality.md`; impl deferred) | define an explicit `(==)` on the struct, or compare field-by-field, until the synthesis lands | `harpoon/src/assert.lev`'s `assertEqual<T>` doc comment |
+| _(cluster clear — #77 struct default `==` field-wise and #78 uses-import local shadow both FIXED 2026-07-15)_ | | | |
 
 ## By design — permanent semantics that read like bugs
 

@@ -759,6 +759,18 @@ static LvValue lv_flatten(LvFlatBuf* b, LvFlatSeen* seen, const LvValue* v, int 
                 lv_flat_fail_type(b, classId, "");    /* fd-/loop-bound carrier (§6) */
                 return fv;
             }
+            /* bug #81 (SU-1): an InStream is loop-bound only when it carries a
+             * producer teardown (hasDispose == true — the signal::on
+             * subscription; its onDispose reaches a live signalfd + loop watch).
+             * A plain in-memory InStream (hasDispose == false) must still cross,
+             * so this is a per-object field test, not a name-keyed reject. */
+            if (lv_class_is(classId, "InStream")) {
+                LvValue hd; lvrt_getfield(&hd, v, "hasDispose");
+                if (hd.tag == LV_BOOL && hd.payload) {
+                    lv_flat_fail_type(b, classId, "");
+                    return fv;
+                }
+            }
             int64_t off;
             if (lv_seen_get(seen, v->payload, &off)) { fv.payload = off; return fv; }
             int64_t nslots = lvrt_fieldcount(classId);
@@ -1312,7 +1324,13 @@ void lvrt_opm(LvValue* out, int64_t opcode, const LvValue* l, const LvValue* r) 
             return;
         }
         if (opcode == LV_OP_EQ || opcode == LV_OP_NE) {
-            int same = r->tag == LV_OBJ && l->payload == r->payload;
+            /* bug #77: a struct with no explicit (==) is field-wise by default
+             * (info.md §9 "a struct IS its fields"); a class with no (==)
+             * compares by reference identity. lvrt_keyeq already does the
+             * field-wise recursion for Map keys — reuse it so the two agree. */
+            int same = lvrt_isvalueclass(classId)
+                         ? lvrt_keyeq(l, r)
+                         : (r->tag == LV_OBJ && l->payload == r->payload);
             out->tag = LV_BOOL;
             out->payload = opcode == LV_OP_EQ ? same : !same;
             return;
@@ -2563,20 +2581,22 @@ void lvrt_sysmonotonic(LvValue* out) {
     out->payload = lv_plat_now_ns() / 1000000;
 }
 
-/* field: 0=exists(0/1) 1=size 2=mtime; -1 for size/mtime of a missing path
- * (RuntimeNatives.cpp parity — this floor only exposes stat_size, so mtime
- * isn't available yet; -1 until a Block-backed stat struct lands, matching
- * the oracle's own "interim shape" comment). */
+/* field: 0=exists(0/1) 1=size 2=mtime 3=isDir; -1 for size/mtime/isDir of a
+ * missing path (RuntimeNatives.cpp parity — this floor only exposes
+ * stat_size, so mtime isn't available yet; -1 until a Block-backed stat
+ * struct lands, matching the oracle's own "interim shape" comment). */
 void lvrt_sysstat(LvValue* out, const LvValue* path, const LvValue* field) {
     const char* cpath = (const char*)(P8(path->payload) + 8);
     int64_t size = lv_plat_stat_size(cpath);
     out->tag = LV_INT;
-    /* field 0=exists(0/1) 1=size 2=mtime; -1 for a missing path's size/mtime
-     * (byte-parity with RuntimeNatives.cpp's sysStat, src/RuntimeNatives.cpp
-     * :155-167 — field 2 returns real st_mtime epoch seconds). */
+    /* field 0=exists(0/1) 1=size 2=mtime 3=isDir; -1 for a missing path's
+     * size/mtime/isDir (byte-parity with RuntimeNatives.cpp's sysStat,
+     * src/RuntimeNatives.cpp :1312-1326 — field 2 returns real st_mtime
+     * epoch seconds, field 3 is the request-stat-isdir.md S_ISDIR probe). */
     if (field->payload == 0) out->payload = size >= 0 ? 1 : 0;
     else if (field->payload == 1) out->payload = size;
     else if (field->payload == 2) out->payload = lv_plat_stat_mtime(cpath);
+    else if (field->payload == 3) out->payload = lv_plat_stat_isdir(cpath);
     else out->payload = -1;
 }
 

@@ -56,3 +56,37 @@ still interpolate?).
 Unicode codepoints outside the BMP-by-escape use `char::fromCode(n)` at the call site
 instead of a string literal escape; raw/multiline content is built with ordinary escaped
 strings and `+`-concatenation or `StringBuilder`. No code is blocked waiting on this.
+
+## Implementation (landed 2026-07-15)
+
+All three forms landed together, entirely in the lexer/parser layer (`decodeEscapes`,
+`Lexer.cpp`, `Parser::parseInterpolatedString`) — no checker or backend changes, since
+every engine already funnels string content through one shared decode path
+(`Token.cpp`'s `decodeEscapes`/`decodeStringLiteral` for the oracle and the IR constant
+pool that emit-C++/LLVM both consume). The two open calls this ticket deliberately left
+for the implementer:
+
+- **Raw-string spelling: `r"..."` / `r'...'`, as suggested.** A bare `r` immediately
+  followed by a quote (no space) was never a legal two-token sequence before, so
+  repurposing that exact adjacency as the raw-string prefix is unambiguous. **Raw strings
+  suppress both escapes and interpolation** — the whole point of "raw" is that
+  `r"\d+${x}"` (a regex-shaped fixture) reads as literal text, not a template. v1 limit:
+  no way to embed the delimiter quote character itself (single-line only, matched to the
+  intended use — regex/paths/fixtures rarely need the exact quote char inline); a
+  `r"""..."""` raw+multiline combination is not implemented (out of scope, no acceptance
+  criterion asked for it).
+- **Triple-quoted strings interpolate.** `"""..."""`/`'''...'''` are the multiline
+  sibling of an ordinary string literal (same escape processing, same `${...}` holes) —
+  NOT a second raw-string spelling, keeping raw and multiline as two single-purpose forms
+  instead of one form doing double duty. A triple-quoted literal never target-types to
+  `char`.
+- **`\u{...}` invalid-scalar policy:** per the Known Warnings pointer, a surrogate or an
+  out-of-range codepoint decodes to **U+FFFD** rather than a compile error or a throw —
+  this is a compile-time literal, so there's nothing to catch, and it matches the
+  project's existing "invalid data never crashes" replacement policy. A syntactically
+  malformed `\u{...}` (no hex digits, no closing `}`, or more than 6 digits) is left
+  alone exactly like a malformed `\x` — `u` passes through literally, compat with any
+  program already relying on `\u` being a no-op escape.
+
+Verified byte-identical on oracle/IR/emit-C++/LLVM (`tests/corpus/string_literal_tail.lev`).
+`docs/reference.md` §1.4 documents all three forms (acceptance criterion 4).

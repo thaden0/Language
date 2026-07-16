@@ -10,8 +10,22 @@ class TextArea : Focusable, Scrollable {
     int curLine = 0;
     int curCol  = 0;              // scalar column (chars(), not bytes)
     public bool readOnly = false;
+    public string rawLanguage = "text";   // "json" | "xml" | "text" (§7.5)
+    public bool dirtyFlag = false;        // set on any edit; consumed by commitTo
 
     new TextArea() { lines = [""]; this.registerHandlers(); }
+
+    // ^F: pretty-print when the buffer parses as JSON, else leave it unchanged.
+    // Returns true iff a reformat happened.
+    bool formatJson() {
+        string body = this.text();
+        JsonValue? parsed = json::parse(body);
+        if (parsed == None) { return false; }
+        JsonValue v = parsed ?? JsonValue::ofNull();
+        this.setText(v.renderPretty(2));
+        this.dirtyFlag = true;
+        return true;
+    }
 
     void setText(string t) {
         lines = t.split("\n");
@@ -36,9 +50,12 @@ class TextArea : Focusable, Scrollable {
     }
 
     void onKeyDown(KeyEvent e) {
+        char fKey = 'F';
+        if (e.isCtrl(fKey)) { this.formatJson(); e.handled = true; return; }
         if (this.readOnly) { return; }
         if (e.code == KeyCode::Char) {
             this.insertChar(e.ch);
+            this.dirtyFlag = true;
             e.handled = true;
         } else if (e.code == KeyCode::Enter) {
             this.splitLine();

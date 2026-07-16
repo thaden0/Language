@@ -37,6 +37,20 @@ if [ -n "$cxx" ]; then
   else echo "FAIL cpp signal (expected sysSignal rejection, rc=$rc): $sigcpp"; fail=1; fi
 else echo "SKIP cpp signal rejection (no compiler)"; skip=$((skip+1)); fi
 
+# --- 2b. SU-1 in-memory stream close: runs on ALL FOUR engines (no signals) ----
+# The InStream.close() reachability fix (CGen by-name marking gated on
+# instantiated classes) is what lets emit-C++ compile a stream program that
+# closes an InStream — previously it dragged in TaskGroup::close -> sysTaskCancel.
+IMEXP=$'count=2\nafter=2\npull:stream is closed\ndone'
+check "unsub inmem run"  "$IMEXP" "$("$bin" --run "$d/unsub_inmem.lev" 2>&1)"
+check "unsub inmem ir"   "$IMEXP" "$("$bin" --ir  "$d/unsub_inmem.lev" 2>&1)"
+if [ -n "$cxx" ] && "$bin" --build "$work/inmem_cpp" "$d/unsub_inmem.lev" >/dev/null 2>&1; then
+  check "unsub inmem cpp"  "$IMEXP" "$("$work/inmem_cpp" 2>&1)"
+else echo "FAIL unsub inmem cpp (expected emit-C++ to compile InStream.close now)"; fail=1; fi
+if [ $have_llvm -eq 1 ] && "$bin" --build-native "$work/inmem_llvm" "$d/unsub_inmem.lev" 2>/dev/null; then
+  check "unsub inmem llvm" "$IMEXP" "$("$work/inmem_llvm" 2>/dev/null | grep -v '^\[heap\]')"
+else echo "SKIP unsub inmem llvm (no liblvrt.a/linker)"; skip=$((skip+1)); fi
+
 # --- 3. comptime hermeticity: sys*-prefixed floor calls are denied -------------
 printf 'comptime int x = std::sysWinSize(1, 0);\nconsole.writeln(x);\n' > "$work/ctw.lev"
 ct=$("$bin" --run "$work/ctw.lev" 2>&1); rc=$?
@@ -69,11 +83,21 @@ else
   # SIGTERM under raw mode restores the terminal
   pty_one "rawkill run"      rawkill -- "$bin" --run "$d/raw_term_kill.lev"
   pty_one "rawkill ir"       rawkill -- "$bin" --ir  "$d/raw_term_kill.lev"
+  # SU-1 unsubscribe: close-stops-delivery + broadcast isolation + self-close
+  # (send USR1 twice; closed sub A must not see the 2nd, sibling B still does)
+  pty_one "unsub isolation run" signal2 10 "a=1,b=1,b=2,done" "a=2" -- "$bin" --run "$d/unsub_isolation.lev"
+  pty_one "unsub isolation ir"  signal2 10 "a=1,b=1,b=2,done" "a=2" -- "$bin" --ir  "$d/unsub_isolation.lev"
+  # SU-1 loop-drain exit: `using` last-out teardown releases the watch so a
+  # one-shot program EXITS with no signal (a live watch would pin the loop)
+  pty_one "unsub drain run"     drain "subscribed,after-scope" -- "$bin" --run "$d/unsub_drain.lev"
+  pty_one "unsub drain ir"      drain "subscribed,after-scope" -- "$bin" --ir  "$d/unsub_drain.lev"
   if [ $have_llvm -eq 1 ]; then
     "$bin" --build-native "$work/usr1_llvm"   "$d/usr1.lev"   2>/dev/null && pty_one "signal usr1 llvm" signal 10 got=10 -- "$work/usr1_llvm"
     "$bin" --build-native "$work/fan_llvm"    "$d/fanout.lev" 2>/dev/null && pty_one "fanout llvm"      signal 10 b=10   -- "$work/fan_llvm"
     "$bin" --build-native "$work/winch_llvm"  "$d/winch.lev"  2>/dev/null && pty_one "winch llvm"       winch -- "$work/winch_llvm"
     "$bin" --build-native "$work/rawk_llvm"   "$d/raw_term_kill.lev" 2>/dev/null && pty_one "rawkill llvm" rawkill -- "$work/rawk_llvm"
+    "$bin" --build-native "$work/iso_llvm"    "$d/unsub_isolation.lev" 2>/dev/null && pty_one "unsub isolation llvm" signal2 10 "a=1,b=1,b=2,done" "a=2" -- "$work/iso_llvm"
+    "$bin" --build-native "$work/drain_llvm"  "$d/unsub_drain.lev" 2>/dev/null && pty_one "unsub drain llvm" drain "subscribed,after-scope" -- "$work/drain_llvm"
   fi
 fi
 

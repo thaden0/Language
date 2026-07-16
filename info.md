@@ -42,9 +42,10 @@ as-implemented reference, and the git history):
   now retired), interface-typed `using` now dispatches `close()` on the runtime class
   (teardown was silently skipped), and the rule engine gained `$C.name`/`$m.name`
   string reification, `$for`-bound-method selector splicing (`t.$m()`), and
-  type-position `$C` hygiene (reference.md §5.2/§6.9). Two bugs found but NOT fixed
-  (kept open): #77 (struct `==` isn't field-wise by default) and #78 (a bulk `uses`
-  import silently wins over a same-named local top-level function).
+  type-position `$C` hygiene (reference.md §5.2/§6.9). Two bugs found and since FIXED
+  (2026-07-15): #77 (struct `==` is now field-wise by default, info.md §9 / reference.md
+  §equality) and #78 (a file's own top-level function now wins ties over a same-named
+  bulk-`uses` import).
 - **`enum`** (Track 03 §2) — closed, `int`-carried value type; `::`-member access,
   `code()`/`toString()`/`fromCode`, exhaustive `match`. Desugars to a value `struct` +
   const globals, so it is **full-coverage on all four active engines** (reference.md §4.2c).
@@ -307,6 +308,24 @@ as-implemented reference, and the git history):
   `Sonar::TestRenderer` collided with the local `TestRenderer` that pre-existing `frame`/`loop`/`runloop`
   tests hand-rolled (under `uses Sonar` the import wins); renamed those to `RecordRenderer` (goldens
   unchanged). Design in `designs/complete/`.
+- **Stream unsubscribe / dispose (SU-1) — LANDED 2026-07-15** (§13): the stream substrate gains
+  deterministic dispose — `InStream<T> : IDisposable` (a `using`-releasable subscription, with an
+  optional producer-attached teardown closure), `StreamBuffer.close()` (push silent-drops, pull
+  throws the distinct `"stream is closed"`), and the `signal::off` free function whose last-out path
+  `sysUnwatch`+`sysSignalClose`s the fd (signal back to default disposition) so a one-shot signal
+  program now **exits by loop drain** instead of the watch pinning the loop. Prelude-only, no native/
+  IR/ABI change; oracle/IR/LLVM full, emit-C++ for the in-memory surface. Landing it surfaced and
+  fixed a latent **emit-C++ reachability defect**: a decl-less by-name method `CallDyn` (the prelude
+  is never checked, so `buf.close()` inside `InStream.close` dispatches by name) over-marked *every*
+  class's same-named method — provably-dead code for a non-instantiated reference class, but a hard
+  compile error once it dragged in `TaskGroup::close`→`sysTaskCancel` (loop-bound, unlowerable on
+  emit-C++). `CGen`'s by-name marking now skips non-instantiated **reference** classes (value types
+  always kept — they reach `callm` via `byNameClasses_`), with a fixpoint as instantiation is
+  discovered. The M4 thread-boundary gap (a disposable `InStream` crossing `spawn`, briefly
+  filed as #81) was then **fixed** with a per-object `hasDispose` gate in both flatten walks
+  (`lvThreadCopy`/`lv_flatten`) — a disposable stream rejects naming the type, a plain
+  in-memory one still crosses; pins in `tests/corpus/tasks/spawn_{disposable,plain}_stream_*`.
+  Design + `techdesign-terminal-floor.md` §8-q1 (closed) in `designs/complete/`.
 
 
 **Backend status — read this before citing a backend.** The **pure x86-64 / ELF backend
@@ -804,8 +823,11 @@ A `struct` differs from a reference `class` on exactly the axes that make it a *
 - **Copied, not aliased.** Binding, passing, returning, or storing a struct copies it (deep — a
   struct field copies too; a reference-class field is shared). Two variables never observe each
   other's mutations. A `class` keeps reference identity.
-- **No identity.** A struct is its fields; there is no object to be `==` by reference. (Equality
-  is field-wise / by a defined `(==)`.)
+- **No identity.** A struct is its fields; there is no object to be `==` by reference. Equality
+  is **field-wise by default** (each field compared recursively — a struct field field-wise, a
+  reference-class field by identity), and a defined `(==)` overrides that. This is the same
+  comparison a struct uses as a `Map` key (§keys). A `class` with no `(==)`, by contrast, is
+  reference identity.
 - **`mutating` methods.** Because the receiver is a value, a method that writes `this` must be
   marked `mutating`; a plain method that tries to assign a field is a compile error. Constructors
   and `set` accessors are mutating by definition.

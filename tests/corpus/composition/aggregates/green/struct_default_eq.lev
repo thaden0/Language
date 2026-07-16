@@ -1,0 +1,18 @@
+// Regression floor for known_bugs_2.md #77 (FIXED 2026-07-15): a struct with
+// no explicit `(==)` is field-wise by default (info.md §9 "a struct IS its
+// fields"), recursively; a class with no `(==)` stays reference identity.
+// Reuses the same keyEquals recursion Map keys already use so the two agree.
+struct Point { int x; int y; new Point(int px, int py) { x = px; y = py; } }
+struct Nested { Point p; int z; new Nested(Point pp, int zz) { p = pp; z = zz; } }
+class Ref { int v; new Ref(int vv) { v = vv; } }
+void main() {
+    console.writeln(Point(1, 2) == Point(1, 2));                // true
+    console.writeln(Point(1, 2) == Point(1, 3));                // false
+    console.writeln(Point(1, 2) != Point(9, 9));                // true
+    console.writeln(Nested(Point(4, 5), 6) == Nested(Point(4, 5), 6));  // true (recursive)
+    console.writeln(Nested(Point(4, 5), 6) == Nested(Point(4, 0), 6));  // false
+    Ref r = Ref(7);
+    console.writeln(Ref(7) == Ref(7));                          // false (class identity)
+    console.writeln(r == r);                                    // true (same ref)
+}
+main();

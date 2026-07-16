@@ -69,7 +69,7 @@ Corpus: winsize on a pty (python driver in `fuzz/` following `thread_leak.py`'s 
 
 ## 8. Open questions
 
-1. `signal::off`/unsubscribe surface (streams have no unsubscribe yet) — v1 leaks the subscription until program end; acceptable for Sonar (App holds one WINCH sub for its lifetime); revisit with stream maturity work.
+1. ~~`signal::off`/unsubscribe surface (streams have no unsubscribe yet) — v1 leaks the subscription until program end; acceptable for Sonar (App holds one WINCH sub for its lifetime); revisit with stream maturity work.~~ **CLOSED 2026-07-15** by SU-1 (`designs/complete/techdesign-stream-unsubscribe.md`): `InStream<T> : IDisposable` + the `signal::off` free function give deterministic unsubscribe and last-out fd/watch teardown; a one-shot signal program now exits by loop drain.
 
 ## 9. Implementation log
 

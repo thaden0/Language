@@ -78,6 +78,7 @@ class RequestSpec {
     public string             name   = "";
     public Method             method = Method::GET;
     public string             url    = "";       // may contain {{vars}}; the source of truth
+    public Array<FormField>   query;              // full param rows incl. disabled (DESIGN-2 §7.2)
     public Array<HeaderEntry> headers;
     public RequestBody        body;
     public AuthSpec?          auth   = None;      // None == inherit from folder/collection

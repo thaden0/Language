@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | — |
 | P1       | — |
-| P2       | — |
+| P2       | #72 |
 | P3       | — |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
@@ -99,4 +99,70 @@ a plain `.lev` source file without editing the compiler or the prelude.
 
 ---
 
-(no open entries in this file)
+## #72 [P2] `std::HttpClient.requestTls` reports a plain TCP connect failure as a misleading empty-reason "TLS handshake" error
+
+**STATUS: diagnostic FIXED (2026-07-15, commit e02678b + follow-up).** Both
+`requestTls` and its sibling `request` now check `fd < 0` immediately after
+`sysTcpConnect` and throw a clear `TCP connect failed (host '...', port N)`
+before ever reaching `tlsConnect`/`sysSend`. Verified on oracle + IR;
+`run_tls.sh` fully green. **STILL OPEN (native floor):** *why* `sysTcpConnect`
+returns -1 for the compiled process while the shell reaches the host fine — see
+the open question below; that part of #72 remains unresolved and keeps this
+entry open at P2.
+
+**Priority justification:** P2.4 (closest fit) — the happy path (successful
+TCP connect + TLS handshake) is unaffected; only the failure-path diagnostic
+is wrong, masking the real cause (a plaintext TCP connect failure) behind an
+unrelated TLS-specific message. Not P0/P1: nothing silently corrupts or
+misreports a *successful* operation, and there's a working escape hatch
+(inspect `fd` / add your own pre-check) once the miswiring is known. May
+warrant a bump if `sysTcpConnect` itself turns out to be genuinely broken
+rather than just poorly reported (see open question below).
+
+**Symptom.** `std::HttpClient.requestTls(...)` (`src/Resolver.cpp:2334-2356`):
+
+```
+void requestTls(string method, string host, int port, string path,
+                HeaderMap headers, string body, (HttpResponse) => void onResp) {
+    int fd = std::sysTcpConnect(host, port);
+    ...
+    std::tlsConnect(fd, host, "", "", 0, (cfd) => { ... });
+}
+```
+
+never checks `fd` for failure before handing it to `tlsConnect`, even though
+`sysTcpConnect` is documented to return `-1 on failure` (`src/Resolver.cpp:1417`).
+`tlsConnect` (`src/Resolver.cpp:1727-1734`) arms a TLS session on that fd and,
+when arming fails, throws
+`RuntimeException("TLS handshake: " + std::sysTlsError(fd) + " (host '" + host + "', fd " + fd + ")")`.
+With `fd == -1` there is no real handshake state for `sysTlsError` to report a
+reason for, so the thrown message reads (note the double space where the
+reason should be):
+
+```
+TLS handshake:  (host 'www.google.com', fd -1)
+```
+
+— i.e. a plain TCP connect failure is reported as an empty-reason TLS
+failure, hiding what actually went wrong.
+
+**Repro.** From `examples/recon` (`src/net/sender.lev:94-97` calls
+`client.requestTls(...)`), send a GET to `https://www.google.com` from the
+compiled app: the request fails immediately with the message above instead
+of a clear "TCP connect to www.google.com:443 failed" error.
+
+**Root cause (pointer):** the missing `fd < 0` guard in `requestTls` (and
+its sibling `request`, `src/Resolver.cpp:2298-2320`, which has the same gap
+but degrades more gracefully since there's no TLS-specific message to
+obscure it) is a clear, mechanical fix — check `fd` immediately after
+`sysTcpConnect` and throw a plain connect-failure exception before ever
+calling `tlsConnect`. **Open question, not chased (house rule — framework
+work stops at `src/**`):** *why* `sysTcpConnect` itself returned -1 for
+`www.google.com:443` in the environment this was found in, when plain shell
+`curl` to the same host succeeded during the same investigation. Could be
+environment-specific (network namespace/permissions differing between the
+compiled Leviathan process and the invoking shell) or a genuine native-floor
+bug in `sysTcpConnect`'s connect/DNS-resolution logic — undetermined.
+
+**Found:** investigating a user report against `examples/recon`
+(`designs/sonar/sonar-bugs.md` #3), 2026-07-14.

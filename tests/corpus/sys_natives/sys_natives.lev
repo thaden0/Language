@@ -21,3 +21,12 @@ console.writeln((env::get("LEVIATHAN_NOPE_XYZ_123") == None).toString());
 
 // F3 listDir: a path that is not a directory is None (distinct from []).
 console.writeln((std::sysListDir("/nonexistent/path/xyz/123") == None).toString());
+
+// request-stat-isdir.md: field 3 = isDir. "/" always exists and is a
+// directory; a nonexistent path reports -1 (not 1, not 0). std::isDir wraps
+// field 3 == 1 directly; the file-vs-directory and unreadable-directory
+// edges (environment-dependent) live in tests/run_sysnatives.sh.
+console.writeln((std::sysStat("/", 3) == 1).toString());
+console.writeln((std::sysStat("/nonexistent/path/xyz/123", 3) == -1).toString());
+console.writeln(std::isDir("/").toString());
+console.writeln(std::isDir("/nonexistent/path/xyz/123").toString());

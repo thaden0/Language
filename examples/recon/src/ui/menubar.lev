@@ -1,0 +1,37 @@
+// Menu bar (DESIGN-2 §6.3): one BarMenu row, one Menu per command category, one
+// MenuItem per command. Menus hold no state — they are a rendering of the registry
+// (P3), so they cannot drift from the chords/palette/help.
+namespace Recon {
+uses Sonar;
+
+class MenuBar {
+    public BarMenu bar;
+    public CommandRegistry commands;
+    new MenuBar(CommandRegistry reg) {
+        commands = reg;
+        bar = BarMenu();
+        this.rebuild();
+    }
+
+    void rebuild() {
+        for (string cat in this.commands.categories()) {
+            Menu m = Menu();
+            m.label(cat);
+            for (Command c in this.commands.inCategory(cat)) {
+                this.addItem(m, c.id, c.title, c.chord);
+            }
+            this.bar.menu(m);
+        }
+    }
+
+    // `id` is a per-call parameter so the onSelect closure captures it cleanly.
+    void addItem(Menu m, string id, string title, string chord) {
+        MenuItem mi = MenuItem();
+        mi.label(title);
+        if (!chord.isEmpty()) { mi.chord(chord); }
+        mi.onSelect(() => this.commands.run(id));
+        m.add(mi);
+    }
+}
+
+}

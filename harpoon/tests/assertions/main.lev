@@ -51,9 +51,12 @@ class Counter {
     int n = 0;
 }
 
-// Entry point: the file's own `main` — bug #78 is fixed, so a file-local
-// top-level declaration outranks the bulk-imported `harpoon::main()`.
-void main() {
+// Named runSelfTest for clarity. #78 (a bulk `uses harpoon;` import's `main`
+// silently winning over this file's own same-named top-level function) was
+// FIXED 2026-07-15 — the file's own declaration now wins ties over a
+// bulk-imported one — so a local `void main()` here would resolve correctly;
+// the descriptive name is kept regardless.
+void runSelfTest() {
     // assertEqual: scalar ladder
     expectPass("assertEqual int pass", () => { harpoon::assertEqual(1, 1); });
     expectFail("assertEqual int fail", () => { harpoon::assertEqual(1, 2); });
@@ -131,4 +134,4 @@ void main() {
     console.writeln("${passCount} passed, ${failCount} failed");
     env::setExitCode(failCount > 0 ? 1 : 0);
 }
-main();
+runSelfTest();

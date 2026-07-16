@@ -9,6 +9,10 @@ class Settings {
     public bool   followRedirects = true;
     public string activeSession = "default";
     public bool   clearSessionCookiesOnExit = false;
+    // DESIGN-2 §10.6 additions (loader defaults keep old settings.json valid).
+    public bool   warnUnresolved = true;
+    public bool   editorLineNumbers = false;
+    public string recentImportDir = "";
     new Settings() { }
 }
 
@@ -180,7 +184,10 @@ JsonValue settingsToJson(Settings s) {
         Pair::Of("defaultTimeoutMs", JsonValue::ofNum(intToFloat(s.defaultTimeoutMs))),
         Pair::Of("followRedirects", jBoolNode(s.followRedirects)),
         Pair::Of("activeSession", jStrNode(s.activeSession)),
-        Pair::Of("clearSessionCookiesOnExit", jBoolNode(s.clearSessionCookiesOnExit))
+        Pair::Of("clearSessionCookiesOnExit", jBoolNode(s.clearSessionCookiesOnExit)),
+        Pair::Of("warnUnresolved", jBoolNode(s.warnUnresolved)),
+        Pair::Of("editorLineNumbers", jBoolNode(s.editorLineNumbers)),
+        Pair::Of("recentImportDir", jStrNode(s.recentImportDir))
     ]);
 }
 
@@ -191,6 +198,9 @@ Settings settingsFromJson(JsonValue v) {
     s.followRedirects = jBool(v, "followRedirects", true);
     s.activeSession = jStr(v, "activeSession", "default");
     s.clearSessionCookiesOnExit = jBool(v, "clearSessionCookiesOnExit", false);
+    s.warnUnresolved = jBool(v, "warnUnresolved", true);
+    s.editorLineNumbers = jBool(v, "editorLineNumbers", false);
+    s.recentImportDir = jStr(v, "recentImportDir", "");
     return s;
 }
 

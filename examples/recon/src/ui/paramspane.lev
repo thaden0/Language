@@ -1,0 +1,50 @@
+// Params tab (DESIGN-2 §7.2): a KeyValueEditor over the request's query params
+// with two-way URL sync. The §7.2 invariant — the query substring of RequestSpec.url
+// always equals joinQueryPairs(enabled rows) — is re-established at loadFrom (URL →
+// table), on every table edit (table → URL, via onChange), and at commitTo.
+namespace Recon {
+uses Sonar;
+
+class ParamsPane {
+    public KeyValueEditor editor;
+    public RequestSpec? bound_ = None;
+    () => void onChange;
+    bool hasChange = false;
+
+    new ParamsPane() {
+        editor = KeyValueEditor();
+        this.editor.setOnChange(() => this.onEdit());
+    }
+
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+
+    IComponent view() => this.editor.list;
+
+    // URL → table (prefer the stored query[] rows, else parse url.raw — §7.2).
+    void loadFrom(RequestSpec r) {
+        bound_ = r;
+        Array<FormField> q = r.query;
+        if (q.isEmpty()) { q = parseQueryPairs(urlQueryOf(r.url)); }
+        this.editor.setRows(fieldsToKV(q));
+    }
+
+    // Called on every add/edit/delete/toggle: table → URL (keeps the invariant).
+    void onEdit() {
+        if (this.bound_ != None) {
+            RequestSpec r = this.bound_ ?? RequestSpec();
+            this.syncTo(r);
+        }
+        if (this.hasChange) { var cb = this.onChange; cb(); }
+    }
+
+    void syncTo(RequestSpec r) {
+        Array<FormField> q = kvToFields(this.editor.rows());
+        r.query = q;
+        r.url = setUrlQuery(r.url, joinQueryPairs(q));
+    }
+
+    // Final table → URL before a send.
+    void commitTo(RequestSpec r) { this.syncTo(r); }
+}
+
+}

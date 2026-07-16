@@ -1,0 +1,15 @@
+ABC
+€12.50
+😀
+3
+3
+u{}bad
+u nope
+128512
+C:\Users\name\output.txt
+\d+\.\d{2} matches a price like ${amount}
+total: 12
+first line
+second line: 12
+a "quoted" word and a 'single-quoted' one both pass through
+triple single-quote also interpolates: 12

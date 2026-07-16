@@ -220,6 +220,7 @@ struct SpecializationCloner {
         out->colon = e->colon; out->optChain = e->optChain;
         out->isComptime = e->isComptime; out->isMacroCall = e->isMacroCall;
         out->isRawSegment = e->isRawSegment; out->isQuasiPayload = e->isQuasiPayload;
+        out->isRawString = e->isRawString;
         out->singleQuoted = e->singleQuoted;
         out->charLit = e->charLit; out->argLabel = e->argLabel;
         out->weakField = e->weakField;
@@ -2133,24 +2134,27 @@ std::vector<const Stmt*> Checker::ctorOverloads(Symbol* cls, std::string_view la
 }
 
 std::vector<const Stmt*> Checker::functionOverloads(std::string_view name) {
-    std::vector<const Stmt*> own;        // genuine declarations in the scope chain
-    std::vector<const Stmt*> imported;   // names dumped in by a file-level `uses`/`use`
+    // bug #78: a top-level `uses NS;` dumps NS's names into this file's overlay
+    // scope, which is a CHILD of `global` — so a bulk-imported function is
+    // reached *before* the file's own same-named top-level declaration (which
+    // lives in `global`). pickOverload breaks equal-score ties by first-declared,
+    // so the import would silently win. The file's own declaration is the
+    // stronger claim (info.md §1), so collect own-declaration candidates first
+    // and file-overlay imports last: imports still participate as overloads for
+    // other arities, but lose ties to the file's own declaration. `use`-vs-`uses`
+    // ordering is untouched — both live in the same overlay bucket.
+    std::vector<const Stmt*> own, imported;
+    auto isFileOverlay = [&](const Scope* sc) {
+        for (const Scope* fs : sema_.fileScopes) if (fs == sc) return true;
+        return false;
+    };
     for (const Scope* sc = scope_; sc; sc = sc->parent) {
-        bool overlay = sema_.isFileOverlay(sc);
+        std::vector<const Stmt*>& bucket = isFileOverlay(sc) ? imported : own;
         if (const std::vector<Symbol*>* v = sc->localLookup(name))
             for (Symbol* s : *v)
-                if (s->kind == SymbolKind::Function && s->decl)
-                    (overlay ? imported : own).push_back(s->decl);
+                if (s->kind == SymbolKind::Function && s->decl) bucket.push_back(s->decl);
         // don't stop at first scope: a name can have overloads across enclosing scopes
     }
-    // bug.md #78: a file's OWN declaration outranks a same-signature function
-    // merely pulled in by a bulk `uses NS;`. The per-file import overlay sits
-    // NEARER than `global` in the scope chain, so an imported name would
-    // otherwise precede — and, since pickOverload breaks score ties by
-    // first-in-list, silently shadow — the file's own top-level declaration.
-    // Ranking own declarations first fixes that; genuinely different-signature
-    // imports still participate as overloads (they win on arity/type score
-    // regardless of position).
     own.insert(own.end(), imported.begin(), imported.end());
     return own;
 }
@@ -2265,6 +2269,7 @@ static ExprPtr cloneDefaultExpr(const Expr* e) {
     out->span = e->span; out->text = e->text; out->op = e->op;
     out->colon = e->colon; out->optChain = e->optChain;
     out->isRawSegment = e->isRawSegment; out->isQuasiPayload = e->isQuasiPayload;
+    out->isRawString = e->isRawString;
     out->singleQuoted = e->singleQuoted;
     out->charLit = e->charLit;
     out->a = cloneDefaultExpr(e->a.get());

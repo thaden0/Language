@@ -726,7 +726,11 @@ Value IrInterp::objectArith(TokenKind op, const Inst& in, const Value& l, const 
             return vbool(!res.b);
         }
     if (op == TokenKind::EqEq || op == TokenKind::BangEq) {
-        bool same = r.kind == VKind::Object && l.obj == r.obj;
+        // bug #77: struct with no explicit (==) is field-wise (info.md §9);
+        // class with no (==) is reference identity. Shared keyEquals recursion.
+        bool same = cls && cls->isValue
+                      ? keyEquals(l, r)
+                      : (r.kind == VKind::Object && l.obj == r.obj);
         return vbool(op == TokenKind::EqEq ? same : !same);
     }
     raise(std::string("no operator '") + sym + "' on '" + std::string(cls->name) + "'");

@@ -19,8 +19,8 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #77 |
-| P2       | — |
+| P1       | — |
+| P2       | #73 |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
 once the composition corpus lands, a red-lane repro under `tests/corpus/composition/`
@@ -98,57 +98,61 @@ a plain `.lev` source file without editing the compiler or the prelude.
 
 ---
 
-## #77 [P1] A `struct` with no explicit `(==)` compares unequal to a field-identical instance — bare `==` is not field-wise by default
+## #73 [P2] Reassigning a GLOBAL `Array<T>` grown element-by-element (`xs = xs.add(...)`) leaks every intermediate COW buffer on LLVM native — O(N²) live bytes, `lvrt: heap exhausted` near N≈10k
 
-**STATUS: semantics RULED 2026-07-15 (owner).** Struct `==` is field-wise by
-default via the **canonical relation** (float fields: all NaNs one class, ±0
-one class); explicit `(==)` overrides; a struct with a non-comparable field
-gets a **loud compile error**, never a silent `false`. Full architecture in
-`designs/techdesign-struct-equality.md` (two relations: IEEE operators /
-canonical value contexts; canon/hash/totalOrder; `float::NaN` match arms).
-**Implementation deferred by owner (cost-gated)** — design-doc-only for now.
+**Priority justification:** P2.2 — below the exhaustion cliff, output is
+correct on every engine but memory behavior is asymptotically wrong on an
+actively-maintained engine (O(N²) live bytes for O(N) data on LLVM); at the
+cliff it becomes P2.3 (fails loud — `lvrt: heap exhausted`, exit 1 — on one
+actively-maintained engine while oracle/IR/emit-C++ all work). No P0/P1
+marker: the failure is loud at the faulting site, never a silent wrong value.
 
-**Priority justification:** P1.1 — with the ruling in place the semantics cap
-(override 2) is lifted: every engine consistently returns `false` for a
-field-identical struct compare the ruling defines as `true` — a silent wrong
-value for checker-accepted code, exit 0, no diagnostic. Not P0.1: `.expected`
-goldens encode no struct-`==` output today, so the oracle poisons nothing.
-
-**Symptom.**
+**Symptom.** Growing a global array by repeated copy-on-write reassignment:
 
 ```lev
-struct Point { int x; int y; new Point(int px, int py) { x = px; y = py; } }
-void main() {
-    Point a = Point(1, 2);
-    Point b = Point(1, 2);
-    console.writeln(a == b);   // false on BOTH oracle and IR
+Array<int> xs;
+
+void build(int n) {
+    int i = 0;
+    while (i < n) {
+        xs = xs.add(i);
+        i = i + 1;
+    }
 }
-main();
+
+build(10000);
+console.writeln(xs.length().toString());
 ```
 
-Two `Point` instances with identical field values compare `false`. Adding
-an explicit `bool (==)(Point other) => x == other.x && y == other.y;`
-method makes the same comparison correctly report `true` — so struct
-equality works fully once defined, it just isn't field-wise **by default**.
+- Oracle (`--run`), IR (`--ir`), emit-C++ (`--build`): print `10000`, exit 0.
+- LLVM (`--build-native`): `lvrt: heap exhausted`, exit 1, no output.
+- At N=1000 LLVM completes but the escaping-tier meter shows the leak
+  directly: `[heap] escaping-tier peak=10824960 live-at-exit=10824928` —
+  ~10.8 MB still live for a 1000-int array (~16 KB of real data), i.e.
+  every superseded intermediate buffer of the global remains live
+  (Σ k·elemSize ≈ O(N²)), and the fixed 256 MiB bump heap dies near N≈10k.
+- The IDENTICAL loop on a **local** array is clean (`peak=787008
+  live-at-exit=576`), so reclamation works for locals; the leak is specific
+  to the global-slot store path.
 
-**Root cause (pointer).** Not traced — plausibly intentional (structs may
-simply not synthesize a default `(==)`, the same way C#/Rust require
-`#[derive(PartialEq)]`/explicit `Equals` opt-in), in which case this is a
-documentation clarification, not a code fix. Flagged here rather than
-assumed either way, per the semantics-ruling cap.
+**Root cause (pointer).** Not traced past the symptom. The live-at-exit ≈
+peak signature says superseded global-slot array payloads are never
+released on native: suspicion is the LLVM `StoreGlobal` lowering (or the
+runtime store path it calls) skipping the release-old of the previous
+array buffer when a global is reassigned — globals allocate in the
+escaping tier (`runtime/lv_runtime.c` bump heap, 256 MiB,
+`LV_HEAP_BYTES`), so anything not released is live forever. The local
+variant's cleanliness exonerates `Array.add` itself and the COW copy.
 
-**Workaround (verified, adopted by `harpoon/src/assert.lev`'s
-`assertEqual<T>`).** The generic duck-typed overload is kept (it works
-correctly for classes — reference identity — and enums — carrier compare,
-both confirmed on all engines), but a struct passed to it without its own
-`(==)` will almost always report "not equal" even when the caller expects
-equal. Documented in `assert.lev`: give the struct an explicit `(==)`, or
-compare with `assertTrue(a == b, msg)` once that operator exists, or field
--by-field with the scalar ladder — never rely on bare `assertEqual(struct,
-struct)` for a struct that hasn't defined `(==)`.
+**Workaround (verified).** Build in a local, assign the global once:
+`Array<int> tmp; ...grow tmp...; xs = tmp;` — N=10000 then completes on
+LLVM with `peak=787040`. One workaround per growth site (P1.2 does not
+apply: the sites are few and the rewrite is mechanical).
 
-**Found:** M1 self-test for `designs/techdesign-unit-test-library.md`
-(`harpoon/tests/main.lev`), 2026-07-15 — `assertEqual(Point(1,2),
-Point(1,2))` failed unexpectedly, tracing back to this.
-
----
+**Found:** reshaping `tests/corpus/tasks/park_storm.lev` for the bug #35
+fix, 2026-07-15 — its 10000-element global `Array<Promise<int>>` build
+dies of exactly this on native, which is why park_storm stays
+interpreter-lanes-only (see the `tests/corpus/tasks_llvm` comment block in
+CMakeLists.txt); promoting it rides on this fix. Red-lane repro:
+`tests/corpus/composition/aggregates/red/global_array_cow_growth.lev`
+(engines: llvm).

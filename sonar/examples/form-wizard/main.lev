@@ -5,6 +5,7 @@
 uses Sonar;
 
 class Form {
+    App app;
     Input name;
     Input email;
     CheckBox subscribe;
@@ -13,6 +14,7 @@ class Form {
     string status = "";
 
     new Form(App a) {
+        app = a;
         name = Input();
         name.setPlaceholder("name");
         email = Input();

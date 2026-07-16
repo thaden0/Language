@@ -43,4 +43,89 @@ Promise<bool> confirmDialog(string title, string message) => Sonar::confirm(titl
 // A transient notice.
 Modal alertDialog(string title, string message) => Sonar::alert(title, message);
 
+// FormDialog (DESIGN-2 §7.3): the DESIGN §9.4 component finally built. A Modal
+// holding N labeled Inputs (label column + input column), Enter on any input or OK
+// accepts (after validation), Escape/Cancel dismisses, onAccept(Array<string>)
+// returns the values. Fields may be masked (secrets) and carry validators (inline
+// field.invalid styling). Variants are configuration, not subclasses.
+class FormDialog {
+    public Modal modal;
+    Array<Input> inputs_ = [];
+    (Array<string>) => void onAccept;
+    bool hasAccept = false;
+
+    new FormDialog(string title) {
+        modal = Modal();
+        modal.title(title);
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        modal.setLayout(FlexLayout(Axis::Vertical));
+        this.modal.onKeyCapture((e) => this.onKey(e));
+    }
+
+    // Add a labeled field; returns the Input so callers can add validators.
+    Input field(string label, string initial, bool masked) {
+        Container rowc = Container();
+        rowc.setLayout(FlexLayout(Axis::Horizontal));
+        rowc.setHeight(Constraint::Fixed(1));
+        Text lbl = Text();
+        lbl.text(label);
+        lbl.setWidth(Constraint::Fixed(14));
+        Input inp = Input();
+        inp.setValue(initial);
+        if (masked) { char dot = '•'; inp.mask(dot); }
+        inp.setWidth(Constraint::Flex(1));
+        rowc.add(lbl);
+        rowc.add(inp);
+        this.modal.add(rowc);
+        inputs_ = inputs_.add(inp);
+        this.wireSubmit(inp);
+        return inp;
+    }
+
+    void wireSubmit(Input inp) { inp.onSubmit((v) => this.accept()); }
+
+    // Optional OK/Cancel button row (Enter on a field also accepts).
+    void buttons() {
+        Container rowc = Container();
+        rowc.setLayout(FlexLayout(Axis::Horizontal));
+        rowc.setHeight(Constraint::Fixed(1));
+        Button ok = Button();
+        ok.setLabel("OK");
+        ok.onPress(() => this.accept());
+        Button cancel = Button();
+        cancel.setLabel("Cancel");
+        cancel.onPress(() => this.cancel());
+        rowc.add(ok);
+        rowc.add(cancel);
+        this.modal.add(rowc);
+    }
+
+    void setOnAccept((Array<string>) => void cb) { onAccept = cb; hasAccept = true; }
+
+    Array<string> values() {
+        Array<string> out = [];
+        for (Input i in inputs_) { out = out.add(i.value); }
+        return out;
+    }
+
+    void open() {
+        this.modal.open();
+        if (inputs_.length() > 0) { Sonar::app().focus(inputs_.at(0)); }
+    }
+
+    void accept() {
+        for (Input i in inputs_) { if (!i.validate()) { return; } }   // inline field.invalid
+        Array<string> vals = this.values();
+        this.modal.close();
+        if (this.hasAccept) { var cb = this.onAccept; cb(vals); }
+    }
+
+    void cancel() { this.modal.close(); }
+
+    void onKey(KeyEvent e) {
+        if (e.code == KeyCode::Escape) { this.cancel(); e.handled = true; }
+    }
+}
+
 }

@@ -1,0 +1,107 @@
+// Corpus test for the DESIGN-2 pure additions: fmt.lev formatters, jsonhl
+// tokenizer, url query helpers, vars resolveReport, and auth authSourceLabel.
+// Headless, no Sonar. Every output byte is pinned in v2pure_test.expected.
+namespace Recon {
+
+void section(string s) { console.writeln("== " + s + " =="); }
+
+void showSpans(string line) {
+    Array<Span> spans = tokenizeJsonLine(line);
+    StringBuilder out = StringBuilder();
+    bool first = true;
+    for (Span sp in spans) {
+        if (!first) { out.add(" | "); }
+        first = false;
+        out.add(sp.styleKey + ":" + sp.text);
+    }
+    console.writeln(out.toString());
+}
+
+void main() {
+    section("statusClass");
+    console.writeln(statusClass(200) + " " + statusClass(204) + " " + statusClass(301)
+        + " " + statusClass(404) + " " + statusClass(500) + " " + statusClass(100));
+
+    section("fmtMs");
+    console.writeln(fmtMs(0) + " | " + fmtMs(143) + " | " + fmtMs(999) + " | "
+        + fmtMs(1000) + " | " + fmtMs(2400) + " | " + fmtMs(30000));
+
+    section("fmtBytes");
+    console.writeln(fmtBytes(0) + " | " + fmtBytes(340) + " | " + fmtBytes(1023) + " | "
+        + fmtBytes(1024) + " | " + fmtBytes(1258) + " | " + fmtBytes(1048576) + " | "
+        + fmtBytes(3670016));
+
+    section("fmtAgo");
+    // fixed now = 1_000_000_000_000 ms; deltas built from ISO stamps
+    int now = 1000000000000;
+    DateTime base = DateTime::ofEpochMs(now);
+    console.writeln(fmtAgo(now, DateTime::ofEpochMs(now - 2000).iso8601()) + " | "
+        + fmtAgo(now, DateTime::ofEpochMs(now - 30000).iso8601()) + " | "
+        + fmtAgo(now, DateTime::ofEpochMs(now - 120000).iso8601()) + " | "
+        + fmtAgo(now, DateTime::ofEpochMs(now - 3600000 * 3).iso8601()) + " | "
+        + fmtAgo(now, DateTime::ofEpochMs(now - 86400000 * 2).iso8601()));
+
+    section("truncateMiddle / truncateEnd / padTo");
+    console.writeln(truncateMiddle("/very/long/path/segment", 12));
+    console.writeln(truncateEnd("longtext", 5));
+    console.writeln("[" + padTo("GET", 5) + "]");
+    console.writeln("[" + padTo("DELETE", 5) + "]");
+
+    section("tokenizeJsonLine");
+    showSpans("  \"name\": \"Ada\",");
+    showSpans("  \"count\": 42,");
+    showSpans("  \"ok\": true,");
+    showSpans("  \"nil\": null");
+    showSpans("  \"neg\": -3.14e2");
+    showSpans("{ }");
+
+    section("parseQueryPairs / joinQueryPairs");
+    Array<FormField> q = parseQueryPairs("page=2&limit=50&debug");
+    for (FormField f in q) {
+        console.writeln(f.key + "=" + f.value + " enabled=" + f.enabled.toString());
+    }
+    console.writeln("join=" + joinQueryPairs(q));
+    // round-trip idempotence
+    console.writeln("roundtrip=" + joinQueryPairs(parseQueryPairs(joinQueryPairs(q))));
+    // disabled row is dropped from the join
+    q.at(1).enabled = false;
+    console.writeln("join-disabled=" + joinQueryPairs(q));
+
+    section("setUrlQuery / urlQueryOf");
+    console.writeln(setUrlQuery("https://h/p?old=1#frag", "new=2"));
+    console.writeln(setUrlQuery("https://h/p", "a=1&b=2"));
+    console.writeln(setUrlQuery("https://h/p?x=1", ""));
+    console.writeln("qof=" + urlQueryOf("https://h/p?a=1&b=2#f"));
+
+    section("resolveReport");
+    VarResolver r = VarResolver();
+    VarScope envs = VarScope::Named("environment");
+    envs.put("host", "api.acme.dev");
+    r.addScope(envs);
+    ResolveReport rep = resolveReport("https://{{host}}/v1/{{tokn}}", r);
+    console.writeln("result=" + rep.result);
+    console.writeln("clean=" + rep.clean().toString());
+    for (VarHole h in rep.holes) {
+        console.writeln("hole " + h.name + " resolved=" + h.resolved.toString()
+            + " scope=" + h.scope + " dynamic=" + h.dynamic.toString());
+    }
+    console.writeln("unresolved=" + rep.unresolved().joinToString(","));
+
+    section("authSourceLabel");
+    RequestSpec req = RequestSpec();
+    // request inherits, collection has bearer
+    AuthSpec colAuth = AuthSpec::Of("bearer");
+    console.writeln(authSourceLabel(req, None, colAuth, "auth", "acme-api"));
+    // request inherits, nothing upstream
+    console.writeln(authSourceLabel(req, None, None, "", ""));
+    // request explicitly noauth, overriding collection bearer
+    AuthSpec noAuth = AuthSpec::Of("noauth");
+    req.auth = noAuth;
+    console.writeln(authSourceLabel(req, None, colAuth, "auth", "acme-api"));
+    // folder wins over collection
+    AuthSpec folderAuth = AuthSpec::Of("basic");
+    RequestSpec req2 = RequestSpec();
+    console.writeln(authSourceLabel(req2, folderAuth, colAuth, "auth", "acme-api"));
+}
+
+}

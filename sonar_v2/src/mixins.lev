@@ -93,26 +93,22 @@ namespace Sonar {
         }
 
         void paintBackground(Surface s) {
-            // Clear the whole box on every repaint so a leaf whose content
-            // shrank or moved leaves no stale glyphs behind. A damage-driven
-            // repaint of a lone leaf runs only paintBackground+paintContent
-            // within the leaf's own box; if this fill is skipped (as it was
-            // under the empty/default theme, whose resolved background bg is
-            // Color::Default) the previous, longer content survives underneath
-            // the new one (sonar-bugs.md #4). Fill unconditionally: under the
-            // default theme the resolved style is Default/Default — a plain
-            // space, identical to the App root's own full-surface clear — and
-            // under a concrete theme it is that theme's background. Either way
-            // the box is reset before paintContent draws on top.
-            Style fillStyle;                                   // default: Default/Default/0
+            Style? background = styleOverrides_.atOrNone("background");
+            Style fillStyle;
+            bool hasFill = false;
             if (activeTheme_ != None) {
                 fillStyle = resolve("background", activeTheme_);
-            } else {
-                Style? background = styleOverrides_.atOrNone("background");
-                if (background != None) fillStyle = background;
+                hasFill = true;
+            } else if (background != None) {
+                fillStyle = background;
+                hasFill = true;
             }
-            char space = ' ';
-            s.fill(box, space, fillStyle);
+            if (hasFill) {
+                if (fillStyle.bg != Color::Default) {
+                    char space = ' ';
+                    s.fill(box, space, fillStyle);
+                }
+            }
         }
     }
 

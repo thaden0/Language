@@ -1,6 +1,7 @@
-// ReconApp — composition root & orchestration (DESIGN §10). Owns the Sonar App,
-// wires the panel tree to AppState, binds the keymap/commands, and runs the send
-// flow (§10.2). Background work is callbacks + timers — the UI never awaits.
+// ReconApp — composition root & orchestration (DESIGN-2 §11). Owns the Sonar App,
+// the one command registry (every keybinding/menu/palette/hint derives from it —
+// P1/P3), the panel tree, the overlays, and the send flow. Background work is
+// callbacks + timers — the UI never awaits (P4).
 namespace Recon {
 uses Sonar;
 
@@ -8,41 +9,64 @@ class ReconApp {
     public App app;
     public AppState state;
     public RequestSender sender;
+    public Theme theme;
+
+    public CommandRegistry commands;
+    public MenuBar menuBar;
     public TopBar topBar;
     public BottomBar bottomBar;
+    public NoticeLine noticeLine;
     public Sidebar sidebar;
     public RequestPanel reqPanel;
     public ResponsePanel respPanel;
-    public CommandRegistry commands;
-    public CommandBar commandBar;
 
-    new ReconApp(string configRoot, Array<string> args) {
-        // `app` auto-constructs exactly one App (§3) — it IS Sonar::app().
-        // Do NOT create a second (single-app rule); just configure the field.
+    public CommandPalette palette;
+    public HelpOverlay help;
+    public NoticesLog noticesLog;
+    public EnvEditor envEditor;
+    public SessionsModal sessionsModal;
+    public CookieManager cookieManager;
+    public SettingsModal settingsModal;
+
+    new ReconApp(string configRoot, Array<string> args, Theme boundTheme) {
         app.title("Recon");
+        theme = boundTheme;
         state = AppState();
         state.configRoot = configRoot;
         sender = RequestSender();
+
         commands = CommandRegistry();
         topBar = TopBar();
         bottomBar = BottomBar();
+        noticeLine = NoticeLine(state);
         sidebar = Sidebar(state);
         reqPanel = RequestPanel(state);
         respPanel = ResponsePanel(state);
-        commandBar = CommandBar(commands);
 
-        this.build();
-        this.wireCommands();
-        this.wireKeymap();
-        this.wirePanels();
+        palette = CommandPalette(commands);
+        help = HelpOverlay(commands);
+        noticesLog = NoticesLog(state);
+        envEditor = EnvEditor(state);
+        sessionsModal = SessionsModal(state);
+        cookieManager = CookieManager(state);
+        settingsModal = SettingsModal(state);
+
         this.loadPersisted();
+        this.wireCommands();
+        menuBar = MenuBar(commands);
+        this.build();
+        this.wireKeymapAll();
+        this.wirePanels();
         this.openArgs(args);
         this.refresh();
     }
 
-    // --- tree composition (§9.1) ---
+    // --- tree composition (§11.1) ---
     void build() {
         this.app.setLayout(FlexLayout(Axis::Vertical));
+
+        this.menuBar.bar.setHeight(Constraint::Fixed(1));
+        this.app.add(this.menuBar.bar);
 
         this.topBar.bar.setHeight(Constraint::Fixed(1));
         this.app.add(this.topBar.bar);
@@ -50,29 +74,35 @@ class ReconApp {
         SplitBox outer = SplitBox();
         outer.setAxis(Axis::Horizontal);
         outer.setRatio(28);
-        // Vertical FlexLayout's main axis is height — a child with no flex
-        // share sizes to its own intrinsic content height instead of filling
-        // the remaining space (sonar-bugs.md #1). Opt in explicitly.
-        outer.setHeight(Constraint::Flex(1));
-        outer.add(this.sidebar.tree);
+        outer.setHeight(Constraint::Flex(1));      // sonar-bugs #1: opt vertical child into flex
+        outer.add(this.sidebar.tabs);
 
         SplitBox inner = SplitBox();
         inner.setAxis(Axis::Vertical);
         inner.setRatio(45);
         inner.add(this.reqPanel.root);
-        inner.add(this.respPanel.tabs);
+        inner.add(this.respPanel.root);
         outer.add(inner);
         this.app.add(outer);
+
+        this.noticeLine.row.setHeight(Constraint::Fixed(0));
+        this.app.add(this.noticeLine.row);
 
         this.bottomBar.bar.setHeight(Constraint::Fixed(1));
         this.app.add(this.bottomBar.bar);
     }
 
     void wirePanels() {
-        // load a request into the editor when a tree node is opened
         this.sidebar.setOnOpen((item) => this.onNodeOpened(item));
-        // send from the request panel (URL submit or Send button)
+        this.sidebar.setOnChange(() => this.refresh());
         this.reqPanel.setOnSend(() => this.doSend());
+        this.respPanel.setOnAssert((p, v) => this.assertFromResponse(p, v));
+        this.respPanel.setOnExtract((p, seg) => this.extractFromResponse(p, seg));
+        this.envEditor.setOnChange(() => this.refresh());
+        this.sessionsModal.setOnChange(() => this.afterSessionChange());
+        this.cookieManager.setOnChange(() => this.refresh());
+        this.settingsModal.setOnTheme((name) => this.applyTheme(name));
+        this.settingsModal.setOnSave(() => this.afterSettingsSave());
     }
 
     void onNodeOpened(CollectionItem item) {
@@ -80,76 +110,277 @@ class ReconApp {
         this.refresh();
     }
 
-    // --- commands (§9.6) ---
+    // --- commands (§6.2) : the single authoring site ---
     void wireCommands() {
-        this.commands.register("send", "send the active request", () => this.doSend());
-        this.commands.register("quit", "exit Recon", () => this.app.quit());
-        this.commands.register("cancel", "cancel the in-flight send", () => this.sender.cancelActive());
-        this.commands.register("toggle-redirects", "toggle following redirects", () => this.toggleRedirects());
-        this.commands.register("next-tab", "focus the next response tab", () => this.nextRespTab());
-        this.commands.register("save-history", "persist history to disk", () => this.persist());
-        this.commands.register("export", "export the active collection to Postman v2.1 JSON", () => this.exportActive());
+        this.commands.define("request.send", "Send request", "Request", "^S", () => this.doSend())
+            .gate(() => !this.state.inFlight, "in flight");
+        this.commands.define("request.cancel", "Cancel", "Request", "", () => this.sender.cancelActive());
+        this.commands.define("request.new", "New request", "Request", "^N", () => this.newRequest());
+
+        this.commands.define("file.import", "Import…", "File", "^O", () => this.openImport());
+        this.commands.define("file.save", "Save", "File", "^W", () => this.saveActive());
+        this.commands.define("file.export", "Export…", "File", "", () => this.exportActive());
+        this.commands.define("file.saveResponseBody", "Save response body…", "File", "", () => this.saveResponseBody());
+        this.commands.define("file.settings", "Settings…", "File", "", () => this.settingsModal.open());
+
+        this.commands.define("view.palette", "Palette…", "View", "^P", () => this.palette.open());
+        this.commands.define("view.history", "History", "View", "^H", () => this.sidebar.showHistory());
+        this.commands.define("view.sidebar", "Sidebar", "View", "^B", () => this.app.focus(this.sidebar.tree));
+        this.commands.define("view.menu", "Menu bar", "View", "F10", () => this.app.focus(this.menuBar.bar));
+        this.commands.define("view.nextRespTab", "Next response tab", "View", "", () => this.nextRespTab());
+        this.commands.define("view.notices", "Notices log", "View", "", () => this.noticesLog.open(std::sysNow()));
+        this.commands.define("view.debug", "Debug overlay", "View", "F12", () => this.app.debugOverlay(!this.app.debugOverlayOn()));
+
+        this.commands.define("env.edit", "Edit…", "Environment", "^E", () => this.envEditor.open());
+
+        this.commands.define("session.switch", "Switch…", "Session", "", () => this.sessionsModal.open());
+        this.commands.define("session.cookies", "Cookie manager", "Session", "", () => this.cookieManager.open());
+
+        this.commands.define("help.keys", "Key reference", "Help", "F1", () => this.help.open());
+        this.commands.define("help.notices", "Notices log", "Help", "", () => this.noticesLog.open(std::sysNow()));
+
+        this.commands.define("app.quit", "Quit", "File", "^Q", () => this.tryQuit());
     }
 
-    // Export the active collection back to Postman v2.1 JSON (§5.4, T10).
-    bool exportActive() {
-        if (this.state.activeCollection == None) { this.state.lastError = "no active collection"; this.refresh(); return false; }
-        Collection c = this.state.activeCollection ?? Collection();
-        string path = c.sourcePath;
-        if (path.isEmpty()) {
-            if (this.state.configRoot.isEmpty()) { this.state.lastError = "no export path"; this.refresh(); return false; }
-            path = this.state.configRoot + "/" + c.name + ".exported.json";
-        }
-        writeAll(path, exportCollection(c).renderPretty(2));
-        Sonar::log("exported collection to " + path);
-        return true;
-    }
-
-    // History labels for a history pane / re-open list (§4.5, T10).
-    Array<string> historyLabels() {
-        Array<string> out = [];
-        for (int i = 0; i < this.state.history.entries.length(); i = i + 1) {
-            out = out.add(this.state.history.labelAt(i));
-        }
-        return out;
-    }
-
-    void toggleRedirects() {
-        this.state.settings.followRedirects = !this.state.settings.followRedirects;
-        this.refresh();
-    }
-
-    void nextRespTab() { this.respPanel.tabs.select(0); }
-
-    // --- keymap (§9.6) ---
-    void wireKeymap() {
-        Keymap km = this.app.keymap();
-        km.bind("^S", () => this.doSend());
-        km.bind("^Q", () => this.app.quit());
-        km.bind("^P", () => this.commandBar.open());
-        km.bind("Escape", () => this.onEscape());
+    void wireKeymapAll() {
+        wireKeymap(this.app, this.commands, () => this.onEscape());
     }
 
     void onEscape() {
+        // P5 cascade: overlays self-close (their capture handlers). If nothing
+        // consumed Escape, we're at the root → cancel any in-flight send.
+        this.noticeLine.dismissSticky();
         if (this.state.inFlight) { this.sender.cancelActive(); }
     }
 
-    // --- send flow (§10.2) ---
+    void nextRespTab() {
+        int n = 4;
+        this.respPanel.tabs.select((this.respPanel.tabs.selected + 1) % n);
+    }
+
+    // --- new / scratch request (§10.5) ---
+    void newRequest() {
+        this.ensureScratch();
+        RequestSpec r = RequestSpec();
+        r.name = "New Request";
+        CollectionItem node = CollectionItem::Request(r.name);
+        node.request = r;
+        if (this.state.scratch != None) {
+            Collection sc = this.state.scratch ?? Collection();
+            sc.root.children = sc.root.children.add(node);
+            this.sidebar.loadCollection(sc);
+        }
+        this.state.active = r;
+        this.reqPanel.loadFrom(r);
+        this.state.markDirty();
+        this.refresh();
+    }
+
+    void ensureScratch() {
+        if (this.state.scratch != None) { return; }
+        Collection sc = Collection();
+        sc.name = "scratch";
+        if (!this.state.configRoot.isEmpty()) { sc.sourcePath = this.state.configRoot + "/scratch.json"; }
+        this.state.scratch = sc;
+        this.state.collections = this.state.collections.add(sc);
+    }
+
+    // --- assert / extract from the response (§8.3) ---
+    void assertFromResponse(string path, string val) {
+        this.reqPanel.tests.addAssertion("jsonpath", path, "equals", val);
+        this.state.addNotice("success", "assertion added — Tests tab", std::sysNow());
+        this.reqPanel.tabs.select(4);
+        this.refresh();
+    }
+    void extractFromResponse(string path, string seg) {
+        this.reqPanel.tests.addExtraction("jsonpath", path, seg, "environment");
+        this.state.addNotice("success", "extraction added — Tests tab", std::sysNow());
+        this.reqPanel.tabs.select(4);
+        this.refresh();
+    }
+
+    // --- send flow (§9.4) ---
     void doSend() {
-        if (this.state.inFlight) { return; }
+        if (this.state.inFlight) { this.state.addNotice("info", "send — already in flight", std::sysNow()); this.refresh(); return; }
         this.reqPanel.commitTo(this.state.active);
+
+        // unresolved-variable guard (§9.3) — warn, don't block silently
+        if (this.state.settings.warnUnresolved) {
+            VarResolver vars = this.state.resolver();
+            ResolveReport rep = resolveReport(this.state.active.url, vars);
+            if (!rep.clean()) {
+                this.state.addNotice("warn", "unresolved variables: " + rep.unresolved().joinToString(", "), std::sysNow());
+            }
+        }
+
         PreparedRequest pr = this.state.buildPrepared();
-        if (!this.state.lastError.isEmpty()) { this.refresh(); return; }
+        if (!this.state.lastError.isEmpty()) {
+            this.state.addNotice("error", this.state.lastError, std::sysNow());
+            this.refresh();
+            return;
+        }
         this.state.beginInFlight();
         this.sender.jar = this.state.sessions.active().jar;
+        this.armTicker();
         this.refresh();
         this.sender.send(pr, (o) => this.onOutcome(o));
     }
 
+    void armTicker() {
+        this.state.tickerToken = this.app.every(100, () => this.tick());
+    }
+    void tick() {
+        this.respPanel.update(this.state);   // refreshes spinner/elapsed
+        this.noticeLine.update(std::sysNow());
+        this.app.requestFrame();
+    }
+    void cancelTicker() {
+        if (this.state.tickerToken >= 0) { this.app.cancelEvery(this.state.tickerToken); this.state.tickerToken = 0 - 1; }
+    }
+
     void onOutcome(RunOutcome o) {
+        this.cancelTicker();
         this.state.onOutcome(o);
+        if (!o.error.isEmpty()) { this.state.addNotice("error", o.error, std::sysNow()); }
+        else if (o.timedOut)   { this.state.addNotice("warn", "timed out after " + fmtMs(o.elapsedMs), std::sysNow()); }
+        else if (o.cancelled)  { this.state.addNotice("warn", "cancelled", std::sysNow()); }
+        this.reqPanel.refreshTestsLabel();
+        this.sidebar.refreshHistory();
         this.persist();
         this.refresh();
+    }
+
+    // --- import / export / save (§10.4, §10.5) ---
+    void openImport() {
+        string initial = this.state.settings.recentImportDir;
+        PromptDialog dlg = PromptDialog("Import", "Path to a Postman collection or environment:", initial);
+        dlg.setOnAccept((p) => this.doImport(p));
+        dlg.open(this.app);
+    }
+    void doImport(string path) {
+        if (path.isEmpty()) { return; }
+        this.state.settings.recentImportDir = dirOf(path);
+        string text = readAll(path);
+        if (text.isEmpty()) { this.state.addNotice("error", "cannot read " + path, std::sysNow()); this.refresh(); return; }
+        JsonValue? doc = json::parse(text);
+        if (doc == None) { this.state.addNotice("error", "invalid JSON: " + path, std::sysNow()); this.refresh(); return; }
+        JsonValue d = doc ?? JsonValue::ofNull();
+        // auto-detect: environment (values[] and no info.schema) vs collection
+        if (jHas(d, "values") && !jHas(d, "info")) {
+            Environment? env = importEnvironment(d);
+            if (env == None) { this.state.addNotice("error", "not a Postman environment", std::sysNow()); this.refresh(); return; }
+            Environment e = env ?? Environment();
+            this.state.environments = this.state.environments.add(e);
+            this.state.addNotice("success", "environment '" + e.name + "' imported — ^E to activate", std::sysNow());
+            this.refresh();
+            return;
+        }
+        Collection? col = importCollection(d, path);
+        if (col == None) { this.state.addNotice("error", "import failed: " + importError, std::sysNow()); this.refresh(); return; }
+        Collection c = col ?? Collection();
+        this.state.collections = this.state.collections.add(c);
+        this.sidebar.loadCollection(c);
+        this.state.addNotice("success", "imported '" + c.name + "'", std::sysNow());
+        this.refresh();
+    }
+
+    bool exportActive() {
+        if (this.state.activeCollection == None) { this.state.addNotice("info", "no active collection", std::sysNow()); this.refresh(); return false; }
+        Collection c = this.state.activeCollection ?? Collection();
+        string path = c.sourcePath;
+        if (path.isEmpty()) {
+            if (this.state.configRoot.isEmpty()) { this.state.addNotice("error", "no export path", std::sysNow()); this.refresh(); return false; }
+            path = this.state.configRoot + "/" + c.name + ".exported.json";
+        }
+        writeAll(path, exportCollection(c).renderPretty(2));
+        this.state.addNotice("success", "exported to " + path, std::sysNow());
+        this.refresh();
+        return true;
+    }
+
+    void saveActive() {
+        if (this.state.activeCollection == None) { this.state.addNotice("info", "nothing to save", std::sysNow()); this.refresh(); return; }
+        Collection c = this.state.activeCollection ?? Collection();
+        if (c.sourcePath.isEmpty()) {
+            PromptDialog dlg = PromptDialog("Save as", "Path:", this.state.configRoot + "/" + c.name + ".json");
+            dlg.setOnAccept((p) => this.doSaveAs(p));
+            dlg.open(this.app);
+            return;
+        }
+        writeAll(c.sourcePath, exportCollection(c).renderPretty(2));
+        this.state.clearDirty();
+        this.state.addNotice("success", "saved to " + c.sourcePath, std::sysNow());
+        this.refresh();
+    }
+    void doSaveAs(string path) {
+        if (path.isEmpty() || this.state.activeCollection == None) { return; }
+        Collection c = this.state.activeCollection ?? Collection();
+        c.sourcePath = path;
+        writeAll(path, exportCollection(c).renderPretty(2));
+        this.state.clearDirty();
+        this.state.addNotice("success", "saved to " + path, std::sysNow());
+        this.refresh();
+    }
+
+    void saveResponseBody() {
+        if (this.state.lastResponse == None) { this.state.addNotice("info", "no response to save", std::sysNow()); this.refresh(); return; }
+        PromptDialog dlg = PromptDialog("Save response body", "Path:", this.state.configRoot + "/response.txt");
+        dlg.setOnAccept((p) => this.doSaveBody(p));
+        dlg.open(this.app);
+    }
+    void doSaveBody(string path) {
+        if (path.isEmpty() || this.state.lastResponse == None) { return; }
+        HttpResponse r = this.state.lastResponse ?? HttpResponse(0, "");
+        writeAll(path, r.body);
+        this.state.addNotice("success", "wrote " + path, std::sysNow());
+        this.refresh();
+    }
+
+    // --- theme / settings / sessions ---
+    void applyTheme(string name) {
+        this.theme.setTheme(reconThemeFor(name));
+        this.app.requestFrame();
+    }
+    void afterSettingsSave() {
+        this.applyTheme(this.state.settings.themeName);
+        this.persist();
+        this.refresh();
+    }
+    void afterSessionChange() {
+        this.persist();
+        this.refresh();
+    }
+
+    // --- quit guard (§10.5) ---
+    void tryQuit() {
+        if (!this.state.dirty) { this.app.quit(); return; }
+        Modal guard = Modal();
+        guard.title("Unsaved changes");
+        guard.border(BorderStyle::Rounded);
+        guard.pad(Insets(1, 2, 1, 2));
+        guard.setLayout(FlexLayout(Axis::Vertical));
+        Text msg = Text();
+        msg.text("You have unsaved changes. Save before quitting?");
+        msg.setHeight(Constraint::Fixed(1));
+        guard.add(msg);
+        Container btns = Container();
+        btns.setLayout(FlexLayout(Axis::Horizontal));
+        btns.setHeight(Constraint::Fixed(1));
+        Button save = Button(); save.setLabel("Save");
+        Button discard = Button(); discard.setLabel("Discard");
+        Button cancel = Button(); cancel.setLabel("Cancel");
+        save.onPress(() => this.quitSave(guard));
+        discard.onPress(() => this.app.quit());
+        cancel.onPress(() => guard.close());
+        btns.add(save); btns.add(discard); btns.add(cancel);
+        guard.add(btns);
+        guard.open();
+        this.app.focus(save);
+    }
+    void quitSave(Modal guard) {
+        guard.close();
+        this.saveActive();
+        if (!this.state.dirty) { this.app.quit(); }   // save succeeded (dirty cleared)
     }
 
     // --- persistence (§8) ---
@@ -164,7 +395,6 @@ class ReconApp {
             this.state.sessions.activeName = sess.name;
         }
     }
-
     void persist() {
         if (this.state.configRoot.isEmpty()) { return; }
         saveHistory(this.state.configRoot, this.state.history);
@@ -172,36 +402,22 @@ class ReconApp {
         saveSettings(this.state.configRoot, this.state.settings);
     }
 
-    // --- open a collection named on the command line ---
     void openArgs(Array<string> args) {
         for (string path in args) {
-            if (path.endsWith(".json")) { this.openCollection(path); }
+            if (path.endsWith(".json")) { this.doImport(path); }
         }
-    }
-
-    bool openCollection(string path) {
-        string text = readAll(path);
-        if (text.isEmpty()) { this.state.lastError = "cannot read " + path; return false; }
-        JsonValue? doc = json::parse(text);
-        if (doc == None) { this.state.lastError = "invalid JSON: " + path; return false; }
-        JsonValue d = doc ?? JsonValue::ofNull();
-        Collection? col = importCollection(d, path);
-        if (col == None) { this.state.lastError = importError; return false; }
-        Collection c = col ?? Collection();
-        this.state.collections = this.state.collections.add(c);
-        this.sidebar.loadCollection(c);
-        return true;
     }
 
     // --- redraw ---
     void refresh() {
         this.topBar.update(this.state);
-        this.bottomBar.update(this.state);
+        this.bottomBar.update(this.state, this.commands);
         this.respPanel.update(this.state);
+        this.reqPanel.refreshPreview();
+        this.noticeLine.update(std::sysNow());
         this.app.requestFrame();
     }
 
-    // --- run / test hooks ---
     void run() { this.app.run(); }
     void pump() { this.app.pumpOnce(); }
     void teardown() { this.app.quit(); this.app.stopSession(); }
