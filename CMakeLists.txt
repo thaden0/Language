@@ -661,7 +661,7 @@ add_test(NAME corpus_covariant_return_cpp
 # semantics — see that script's header. This track owns
 # tests/corpus/composition/**, tests/run_red_corpus.sh, and this delimited
 # block; it does not touch src/, packages/, or any other track's corpus.
-set(LANG_COMPOSITION_CLUSTERS fnvalues aggregates names generics)
+set(LANG_COMPOSITION_CLUSTERS fnvalues aggregates names generics equality)
 list(JOIN LANG_COMPOSITION_CLUSTERS " " LANG_COMPOSITION_CLUSTERS_SP)
 add_test(NAME composition_treewalk
          COMMAND bash -c "for d in ${LANG_COMPOSITION_CLUSTERS_SP}; do bash '${CMAKE_SOURCE_DIR}/tests/run_corpus.sh' '$<TARGET_FILE:leviathan>' --run '${CMAKE_SOURCE_DIR}/tests/corpus/composition/'$d/green || exit 1; done")

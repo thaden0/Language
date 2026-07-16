@@ -1,0 +1,9 @@
+// M1 pin (design §5.2): a struct field of enum type compares by carrier.
+enum Color { Red, Green, Blue }
+struct Tag { Color c; int n; new Tag(Color cc, int nn) { c = cc; n = nn; } }
+void main() {
+    console.writeln(Tag(Color::Red, 1) == Tag(Color::Red, 1));     // true
+    console.writeln(Tag(Color::Red, 1) == Tag(Color::Green, 1));   // false
+    console.writeln(Tag(Color::Blue, 1) != Tag(Color::Green, 1));  // true
+}
+main();

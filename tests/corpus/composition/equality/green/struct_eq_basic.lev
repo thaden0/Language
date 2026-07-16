@@ -1,0 +1,21 @@
+// M1 pin (struct-equality design, packet 01): a struct with int/bool/string/
+// char fields compares field-wise by default (no explicit (==)); != derives
+// as the negation. Pins current keyEquals-fallback behavior — later packets
+// swap the mechanism (synthesized (==)) underneath and must keep this green.
+struct Rec {
+    int n;
+    bool ok;
+    string name;
+    char tag;
+    new Rec(int nn, bool oo, string na, char tt) { n = nn; ok = oo; name = na; tag = tt; }
+}
+void main() {
+    console.writeln(Rec(1, true, "a", 'x') == Rec(1, true, "a", 'x'));   // true
+    console.writeln(Rec(1, true, "a", 'x') == Rec(2, true, "a", 'x'));   // false
+    console.writeln(Rec(1, true, "a", 'x') == Rec(1, false, "a", 'x'));  // false
+    console.writeln(Rec(1, true, "a", 'x') == Rec(1, true, "b", 'x'));   // false
+    console.writeln(Rec(1, true, "a", 'x') == Rec(1, true, "a", 'y'));   // false
+    console.writeln(Rec(1, true, "a", 'x') != Rec(1, true, "a", 'y'));   // true
+    console.writeln(Rec(1, true, "a", 'x') != Rec(1, true, "a", 'x'));   // false
+}
+main();

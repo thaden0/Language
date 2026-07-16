@@ -1,0 +1,17 @@
+// M1 pin (design §5.4): a struct declaring its own (==) gets no synthesis —
+// the author's relation is used verbatim (here, comparing only one of two
+// fields), and != derives from it by negation.
+struct Money {
+    int cents;
+    string currency;
+    new Money(int c, string cur) { cents = c; currency = cur; }
+    bool (==)(Money o) => cents == o.cents;
+}
+void main() {
+    console.writeln(Money(100, "USD") == Money(100, "USD"));   // true
+    console.writeln(Money(100, "USD") == Money(100, "EUR"));   // true (currency ignored by override)
+    console.writeln(Money(100, "USD") == Money(200, "USD"));   // false
+    console.writeln(Money(100, "USD") != Money(200, "USD"));   // true (derives from (==))
+    console.writeln(Money(100, "USD") != Money(100, "EUR"));   // false
+}
+main();
