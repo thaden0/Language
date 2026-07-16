@@ -1,0 +1,43 @@
+== statusClass ==
+ok ok redirect clienterr servererr neutral
+== fmtMs ==
+0 ms | 143 ms | 999 ms | 1.0 s | 2.4 s | 30.0 s
+== fmtBytes ==
+0 B | 340 B | 1023 B | 1.0 KB | 1.2 KB | 1.0 MB | 3.5 MB
+== fmtAgo ==
+just now | 30s ago | 2m ago | 3h ago | 2d ago
+== truncateMiddle / truncateEnd / padTo ==
+/very/…gment
+long…
+[GET  ]
+[DELE…]
+== tokenizeJsonLine ==
+json.punct:   | json.key:"name" | json.punct::  | json.string:"Ada" | json.punct:,
+json.punct:   | json.key:"count" | json.punct::  | json.number:42 | json.punct:,
+json.punct:   | json.key:"ok" | json.punct::  | json.bool:true | json.punct:,
+json.punct:   | json.key:"nil" | json.punct::  | json.null:null
+json.punct:   | json.key:"neg" | json.punct::  | json.number:-3.14e2
+json.punct:{ }
+== parseQueryPairs / joinQueryPairs ==
+page=2 enabled=true
+limit=50 enabled=true
+debug= enabled=true
+join=page=2&limit=50&debug
+roundtrip=page=2&limit=50&debug
+join-disabled=page=2&debug
+== setUrlQuery / urlQueryOf ==
+https://h/p?new=2#frag
+https://h/p?a=1&b=2
+https://h/p
+qof=a=1&b=2
+== resolveReport ==
+result=https://api.acme.dev/v1/{{tokn}}
+clean=false
+hole host resolved=true scope=environment dynamic=false
+hole tokn resolved=false scope= dynamic=false
+unresolved=tokn
+== authSourceLabel ==
+Inherited: bearer — from collection 'acme-api'
+No inherited auth
+No auth (overrides inherited bearer)
+Inherited: basic — from folder 'auth'

@@ -93,6 +93,36 @@ exactly two hex digits, e.g. `\x4` or `\xZZ`) is likewise left alone: `x`
 passes through and the following character(s) are read as ordinary content,
 not consumed as part of a (failed) escape.
 
+**`\u{H+}`** (request-string-literal-tail, 1-6 hex digits) inserts the UTF-8
+encoding of that Unicode scalar — the sibling of `\xNN`, reusing `char`'s own
+scalar-validity rule: a surrogate (`D800`-`DFFF`) or a codepoint past
+`10FFFF` decodes to **U+FFFD** rather than throwing (a compile-time literal
+has nothing to catch; this is the same "invalid data never crashes"
+replacement policy as UTF-8 decode). A malformed `\u{...}` (no hex digits, or
+no closing `}`) is left alone exactly like a malformed `\x`: `u` passes
+through and `{...}` is read as ordinary content. `\u{1F600}` in a
+single-quoted literal target-typing to `char` (above) works the same as any
+other single-scalar literal.
+
+**Raw strings — `r"..."` / `r'...'`** (request-string-literal-tail): a `r`
+immediately followed by a quote (no space — that adjacency was never a legal
+two-token sequence before, so it is unambiguous) opens a literal where
+backslash is an ordinary character. No escape processing and no `${...}`
+interpolation happen inside — the entire point of "raw" — so the closing
+quote must be reached un-backslash-adjusted; there is no way to embed the
+delimiter quote character itself (v1 limit, matched to the intended use:
+regex patterns, Windows paths, embedded JSON/HTML fixtures rarely need it).
+Single-line only.
+
+**Multiline strings — `"""..."""` / `'''...'''`** (request-string-literal-
+tail): a literal delimited by three quote characters may contain raw
+newlines and a lone/double embedded quote of the same character (only three
+in a row closes it). Ordinary escape processing **and** `${...}` interpolation
+both still apply inside — unlike a raw string, this form is the multiline
+sibling of an ordinary string literal, not a second raw-string spelling. A
+triple-quoted literal never target-types to `char`, even a single-scalar one
+— multiline syntax is not char syntax.
+
 **Char literals are target-typed** (Track 03 §1). A single-quoted literal is a
 `string` by default (both quote styles lex to string literals), but it **re-types
 to `char`** when — and only when — the expected type in context is `char` *and*
@@ -1336,19 +1366,44 @@ resolved promise. `await` is the one privileged operation. (Async execution: **[
 
 ### 6.6 Streams — the system boundary
 `StreamBuffer<T>` (a single-consumer **queue**; in-language, Array-backed today):
-`push(v)`, `pull()`, `count()`, `isEmpty()`. Typed views:
-`InStream<T>` — `pull()`, `hasData()`, `subscribe((T) => void)`;
+`push(v)`, `pull()`, `count()`, `isEmpty()`, `close()`. Typed views:
+`InStream<T> : IDisposable` — `pull()`, `hasData()`, `subscribe((T) => void)`, `close()`;
 `OutStream<T>` — `(<<)` (returns the stream: chainable);
 `IOStream<T> : InStream<T>, OutStream<T>` — both ends over ONE collapsed buffer (the §13
 diamond). `reader >>` extracts (== `pull()`). `subscribe` is a **standing pull**: it claims
 the consumer end (later `pull` throws); broadcast is a library reshaping, not a stream
 property. Pull on empty throws.
 
+**Dispose / unsubscribe (SU-1, `designs/complete/techdesign-stream-unsubscribe.md`).**
+`InStream<T>` is `IDisposable`, so a subscription is a resource: `using InStream<int> w =
+signal::on(WINCH);` releases it on every scope-exit edge. `close()` is **idempotent and never
+throws** (the `using` contract), runs an optional producer-attached teardown (a `signal::on`
+stream's `close()` calls `signal::off`), then closes the backing buffer. On a closed
+`StreamBuffer`, `push` is a **silent drop** (strict fanout cutoff — a closed consumer receives
+zero further deliveries even mid-broadcast) and `pull`/`setHandler` throw the distinct
+`"stream is closed"`. A plain in-memory `InStream` with no teardown attached still supports
+`close()` (buffer close + no-op). For an `IOStream`, `close()` disposes the read-view
+subscription and closes the shared buffer; subsequent `<<` pushes drop. Producer-side EOF
+(loud push-after-close, `pullOrNone`, stream iteration) is deferred to streams-maturity (D-B).
+Lanes: oracle/IR/LLVM full; emit-C++ compiles the in-memory surface; the signal stream itself
+stays loop-bound-rejected on emit-C++ (unchanged).
+
+**`signal::off(int sig, int subId)`** (free function) — the unsubscribe primitive `InStream`'s
+teardown routes through; removes one subscriber from a signal's fanout and, when the **last**
+subscriber leaves, `sysUnwatch`es the loop watch then `sysSignalClose`s the fd (the signal
+returns to **default disposition** — a Linux-signalfd guarantee; on the self-pipe POSIX
+fallback the mask unblocks but the handler stays installed). Idempotent; a one-shot program
+that subscribes and disposes now **exits by loop drain** instead of the watch pinning the loop
+forever.
+
 ### 6.6.5 `std::sys` — the syscall floor
 `int sysWrite(int fd, string data)`; `string sysReadLine(int fd)` (returns `""` at end of
 input — interim); `int sysOpen(string path, int flags)`; `int sysClose(int fd)`;
 `string sysRead(int fd, int max)`; `int sysStat(string path, int field)` (0=exists,
-1=size, 2=mtime; -1 for missing paths — interim shape until a Block-backed stat).
+1=size, 2=mtime, 3=isDir; -1 for missing paths — interim shape until a Block-backed
+stat). `bool std::isDir(string path)` wraps field 3 alongside `fileExists`/`fileSize`/
+`fileModified` (request-stat-isdir.md); one `stat(2)` word, correct even on an
+unreadable directory where a `sysListDir(path) != None` probe misclassifies.
 Track 08 F2/F3/F4/F6 add (see §6.6.58): `int sysMonotonic()`, `string sysRandom(int n)`,
 `bool sysIsTty(int fd)`, `string? sysEnv(string key)`, `int sysMkdir(string path)`,
 `int sysRemove(string path)`, `int sysRename(string from, string to)`,
@@ -1597,8 +1652,13 @@ zero-copy sharing is a v2 optimization.
   `struct` values, strings, pure `Array`/`Map` of flattenable elements, and statically-shaped
   `class` objects (deep, with shared substructure/cycles preserved). Rejected — a loud,
   catchable error naming the type: a **nested closure** (only the spawn body itself may cross
-  as a closure), an **fd-/loop-bound carrier** (`TcpStream`/`TcpListener`/`Timer`/`Process` —
-  each worker opens its own), and a **`Block`**.
+  as a closure), an **fd-/loop-bound carrier** (`TcpStream`/`TcpListener`/`Timer`/`Process`,
+  and a **disposable `InStream`** — one whose `hasDispose` teardown reaches a live signalfd +
+  loop watch, e.g. a `signal::on` subscription; a plain in-memory `InStream` still crosses —
+  each worker opens its own), and a **`Block`**. (v1 residual, uniform across every carrier: a
+  carrier reached through a bare *global* rather than a captured local is not caught — only a
+  global *Promise* is re-scanned at the spawn call. Keep loop-bound carriers on their owning
+  thread; pass a `Channel<T>`.)
 - **`std::cpuCount()`** — online logical processors (≥ 1), for `HttpServer(port, workers:
   cpuCount())`-style sizing; `sysTcpListen(port, reusePort: true)` sets SO_REUSEPORT so N
   workers can each open a full accept loop on one port.
@@ -1755,7 +1815,7 @@ Type-safe: `File` takes `OpenMode`, not `int`.
 `write(s)`, `writeln(s)`, `readln()` (text; `""` = end), `read(max)`, and stream views
 `reader() -> FileInStream` (`pull()` / `>>` extract), `writer() -> FileOutStream` (`<<`).
 Attributes: `exists()`, `size()`, `modified()` on File, and path-level
-`std::fileExists/fileSize/fileModified(path)` (usable without opening). `File : IDisposable`
+`std::fileExists/fileSize/fileModified/isDir(path)` (usable without opening). `File : IDisposable`
 (§6.6.65) — `using File f = File(path, mode);` closes it deterministically on every scope exit
 (techdesign-02 F3; landed, §19 #8 resolved). Planned: locking (with concurrency), binary +
 `seek` (with `Block`).
@@ -1764,8 +1824,9 @@ Attributes: `exists()`, `size()`, `modified()` on File, and path-level
 ```
 interface IDisposable { void close(); }
 ```
-The contract `using` (§5.2) requires. `File` is the prelude's only conformer today; user
-classes implement it the same way to opt a resource into `using`.
+The contract `using` (§5.2) requires. Prelude conformers: `File`, `TaskGroup` (§6.6.68),
+and `InStream<T>` (§6.6, SU-1); user classes implement it the same way to opt a resource
+into `using`.
 
 Namespace-level **globals** (e.g. `std::read`, and `std::in/out` next) are initialized from
 the prelude before the program runs. `std::read/write/append/binary` are `const`

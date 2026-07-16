@@ -1,0 +1,56 @@
+// A styled single-line span leaf (DESIGN-2 §9.3, §11.2). Paints an Array<Span>,
+// each run in its theme style, over a full-width row background (the sonar-bugs #4
+// belt, N3). Reused by the status line, notice line, and URL variable-preview
+// strip. Composes shipped Surface primitives only.
+namespace Recon {
+uses Sonar;
+
+class RichText : Component, Styleable {
+    Array<Span> spans_ = [];
+    string bgKey_ = "default";
+    new RichText() { }
+
+    RichText setSpans(Array<Span> s) { spans_ = s; invalidate(); return this; }
+    RichText setBgKey(string k) { bgKey_ = k; invalidate(); return this; }
+
+    Size contentDesired(Size avail) {
+        int w = 0;
+        for (Span sp in spans_) { w = w + sp.text.chars().length(); }
+        return Size(w, 1);
+    }
+
+    void paintContent(Surface s) {
+        Rect content = box.inset(this.chrome());
+        if (content.isEmpty()) { return; }
+        Style bg = resolveOrDefault(this, bgKey_);
+        char space = ' ';
+        s.fill(content, space, bg);                 // full-width bg (N3, §2.3)
+        int x = content.x();
+        int y = content.y();
+        int maxX = content.right();
+        for (Span sp in spans_) {
+            if (x >= maxX) { break; }
+            Style st = sp.styleKey.isEmpty() ? bg : resolveOrDefault(this, sp.styleKey).over(bg);
+            string txt = clipToWidth(sp.text, maxX - x);
+            s.writeText(x, y, txt, st);
+            x = x + txt.chars().length();
+        }
+    }
+}
+
+// --- span builders (method badges, DESIGN-2 §4.2) ------------------------------
+
+// The width-5 non-color badge text (P7): GET/POST/PUT/PATCH/DEL/HEAD/OPT.
+string methodBadge(string method) {
+    string m = method.toUpper();
+    string b = m;
+    if (m == "DELETE")  { b = "DEL"; }
+    if (m == "OPTIONS") { b = "OPT"; }
+    return padTo(b, 5);
+}
+
+string methodStyleKey(string method) => "method." + method.toLower();
+
+Span methodSpan(string method) => Span::Of(methodBadge(method), methodStyleKey(method));
+
+}

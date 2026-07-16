@@ -1,6 +1,7 @@
 # examples/recon/trident.toml  (DESIGN §3.2)
 name    = "recon"
 entry   = "main"                       # top-level main() in src/main.lev
+assets  = ["themes/recon.toml"]        # folded to a comptime string (DESIGN-2 §4.4)
 sources = [
     "src/*.lev",
     "src/model/*.lev",

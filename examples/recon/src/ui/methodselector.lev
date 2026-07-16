@@ -1,0 +1,78 @@
+// MethodSelector (DESIGN-2 §7.1): a focusable width-7 method badge (`GET ▾`),
+// styled per §4.2. Space/Enter opens a Menu overlay at its own position listing
+// the seven methods; arrows cycle directly without opening (the fast path). A
+// Focusable leaf so it owns its `box` (needed to position the dropdown).
+namespace Recon {
+uses Sonar;
+
+class MethodSelector : Focusable, Styleable {
+    Array<string> methods_ = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+    string current_ = "GET";
+    (string) => void onSelect;
+    bool hasSelect = false;
+
+    new MethodSelector() {
+        setTabStop(true);
+        char spaceKey = ' ';
+        this.onKey((e) => {
+            if ((e.code == KeyCode::Enter && e.mods == 0) || e.isChar(spaceKey)) {
+                this.openMenu(); e.handled = true;
+            } else if (e.code == KeyCode::Down || e.code == KeyCode::Right) {
+                this.cycle(1); e.handled = true;
+            } else if (e.code == KeyCode::Up || e.code == KeyCode::Left) {
+                this.cycle(0 - 1); e.handled = true;
+            }
+        });
+        this.onMouse((e) => {
+            if (e.kind == MouseKind::Press && e.button == MouseButton::Left) {
+                this.openMenu(); e.handled = true;
+            }
+        });
+    }
+
+    void setOnSelect((string) => void cb) { onSelect = cb; hasSelect = true; }
+    void setMethod(string m) { current_ = m.toUpper(); invalidate(); }
+    string method() => current_;
+
+    Size contentDesired(Size avail) => Size(7, 1);
+
+    void paintContent(Surface s) {
+        Rect content = box.inset(this.chrome());
+        if (content.isEmpty()) { return; }
+        char space = ' ';
+        Style bg = resolveOrDefault(this, "default");
+        s.fill(content, space, bg);
+        Style st = resolveOrDefault(this, methodStyleKey(current_)).over(bg);
+        string txt = methodBadge(current_).trim() + " ▾";
+        s.writeText(content.x(), content.y(), clipToWidth(txt, content.w()), st);
+    }
+
+    void openMenu() {
+        Menu m = Menu();
+        for (string meth in methods_) { this.addItem(m, meth); }
+        int g = Sonar::app().newOverlayGroup();
+        m.openAt(box.x(), box.bottom(), g);
+    }
+
+    void addItem(Menu m, string meth) {
+        MenuItem mi = MenuItem();
+        mi.label(meth);
+        mi.onSelect(() => this.choose(meth));
+        m.add(mi);
+    }
+
+    void choose(string meth) {
+        this.setMethod(meth);
+        if (this.hasSelect) { var cb = this.onSelect; cb(meth); }
+    }
+
+    void cycle(int delta) {
+        int idx = this.methods_.indexOf(this.current_);
+        if (idx < 0) { idx = 0; }
+        int n = this.methods_.length();
+        idx = (idx + delta + n) % n;
+        this.choose(this.methods_.at(idx));
+    }
+}
+
+}

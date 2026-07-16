@@ -1032,9 +1032,11 @@ if (LLVM_FOUND)
   # LA-30 doc 5 §4: the LLVM-safe subset of tasks/ (symlinked, single-sourced
   # .expected bytes — the corpus_llvm_m3/m4 convention). With bug #35 fixed
   # (reject route A), order_two_awaits/order_fifo_three (reshaped to TaskGroup)
-  # and the two #35 reject pins are now here too. Only park_storm (native COW-
-  # array heap-leak at N=10000, #35-independent) and recursion_depth (interpreter
-  # stack-sizing) stay excluded — see the corpus_tasks_treewalk/_ir comment.
+  # and the two #35 reject pins are now here too. With bug #73 fixed (LlvmGen
+  # StoreGlobal now releases the old global value), park_storm's 10000-element
+  # global Array<Promise<int>> build no longer exhausts the native heap, so it
+  # joins the LLVM lane too. Only recursion_depth (interpreter stack-sizing)
+  # stays excluded — see the corpus_tasks_treewalk/_ir comment.
   add_test(NAME corpus_tasks_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/tasks_llvm"

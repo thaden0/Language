@@ -1,0 +1,20 @@
+// bug #73 (FIXED 2026-07-15): reassigning a GLOBAL Array<T> grown
+// element-by-element used to leak every intermediate COW buffer on LLVM
+// native — superseded global-slot payloads were never released in the
+// escaping-tier bump heap, giving O(N²) live bytes for O(N) data and dying
+// `lvrt: heap exhausted` near N≈10k. Fix: LlvmGen StoreGlobal now releases
+// the old global value before storing the new one (mirrors the RawSet
+// field release-old/retain-new path). N=10000 now completes on every
+// engine; peak drops from 256 MiB exhaustion to ~525 KB. Regression guard.
+Array<int> xs;
+
+void build(int n) {
+    int i = 0;
+    while (i < n) {
+        xs = xs.add(i);
+        i = i + 1;
+    }
+}
+
+build(10000);
+console.writeln(xs.length().toString());

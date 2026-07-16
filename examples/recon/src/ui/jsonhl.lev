@@ -1,0 +1,92 @@
+// Minimal, pure JSON line tokenizer + the Span value used by every Recon-authored
+// styled leaf (DESIGN-2 §7.5, §8.2, §9.3). One language, one scanner — no general
+// highlight framework. Corpus-tested as a pure function; JSON strings never span
+// lines, so per-line scanning is exact.
+namespace Recon {
+
+// A run of text carrying a theme style key. Reused by richtext, JsonView, and the
+// TextArea highlighter.
+class Span {
+    public string text     = "";
+    public string styleKey = "";      // "" == default style
+    new Span() { }
+    new Of(string t, string k) { text = t; styleKey = k; }
+}
+
+bool jhlIsDigit(int c) => c >= 48 && c <= 57;
+bool jhlIsAlpha(int c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
+
+bool jhlMatchWord(string line, int i, string word) {
+    int n = line.length();
+    int w = word.length();
+    if (i + w > n) { return false; }
+    if (line.subStr(i, w) != word) { return false; }
+    int after = i + w;
+    if (after < n && jhlIsAlpha(line.byteAt(after))) { return false; }
+    return true;
+}
+
+// Tokenize one line of (pretty-printed) JSON into styled spans. Style keys are
+// json.key / json.string / json.number / json.bool / json.null / json.punct.
+Array<Span> tokenizeJsonLine(string line) {
+    Array<Span> spans = [];
+    int n = line.length();
+    int i = 0;
+    int plainStart = -1;    // start of an accumulating punct/whitespace run
+    while (i < n) {
+        int c = line.byteAt(i);
+        bool startsNumber = jhlIsDigit(c) || (c == 45 && i + 1 < n && jhlIsDigit(line.byteAt(i + 1)));
+        bool startsToken = c == 34 || startsNumber
+            || jhlMatchWord(line, i, "true") || jhlMatchWord(line, i, "false")
+            || jhlMatchWord(line, i, "null");
+        if (!startsToken) {
+            if (plainStart < 0) { plainStart = i; }
+            i = i + 1;
+            continue;
+        }
+        // flush any pending plain run
+        if (plainStart >= 0) {
+            spans = spans.add(Span::Of(line.subStr(plainStart, i - plainStart), "json.punct"));
+            plainStart = -1;
+        }
+        if (c == 34) {
+            int j = i + 1;
+            bool closed = false;
+            while (j < n) {
+                int cj = line.byteAt(j);
+                if (cj == 92) { j = j + 2; continue; }     // backslash escape
+                if (cj == 34) { closed = true; j = j + 1; break; }
+                j = j + 1;
+            }
+            int end = closed ? j : n;
+            int k = end;
+            while (k < n && (line.byteAt(k) == 32 || line.byteAt(k) == 9)) { k = k + 1; }
+            bool isKey = k < n && line.byteAt(k) == 58;    // ':'
+            spans = spans.add(Span::Of(line.subStr(i, end - i), isKey ? "json.key" : "json.string"));
+            i = end;
+        } else if (startsNumber) {
+            int j = i;
+            if (line.byteAt(j) == 45) { j = j + 1; }
+            while (j < n) {
+                int cj = line.byteAt(j);
+                bool cont = jhlIsDigit(cj) || cj == 46 || cj == 101 || cj == 69 || cj == 43 || cj == 45;
+                if (!cont) { break; }
+                j = j + 1;
+            }
+            spans = spans.add(Span::Of(line.subStr(i, j - i), "json.number"));
+            i = j;
+        } else if (jhlMatchWord(line, i, "true")) {
+            spans = spans.add(Span::Of("true", "json.bool")); i = i + 4;
+        } else if (jhlMatchWord(line, i, "false")) {
+            spans = spans.add(Span::Of("false", "json.bool")); i = i + 5;
+        } else {
+            spans = spans.add(Span::Of("null", "json.null")); i = i + 4;
+        }
+    }
+    if (plainStart >= 0) {
+        spans = spans.add(Span::Of(line.subStr(plainStart, n - plainStart), "json.punct"));
+    }
+    return spans;
+}
+
+}

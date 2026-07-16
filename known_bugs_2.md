@@ -19,8 +19,8 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #77 |
-| P2       | — |
+| P1       | — |
+| P2       | #77 |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
 once the composition corpus lands, a red-lane repro under `tests/corpus/composition/`
@@ -98,21 +98,16 @@ a plain `.lev` source file without editing the compiler or the prelude.
 
 ---
 
-## #77 [P1] A `struct` with no explicit `(==)` compares unequal to a field-identical instance — bare `==` is not field-wise by default
+## #77 [P2] A `struct` with no explicit `(==)` compares unequal to a field-identical instance — bare `==` is not field-wise by default
 
-**STATUS: semantics RULED 2026-07-15 (owner).** Struct `==` is field-wise by
-default via the **canonical relation** (float fields: all NaNs one class, ±0
-one class); explicit `(==)` overrides; a struct with a non-comparable field
-gets a **loud compile error**, never a silent `false`. Full architecture in
-`designs/techdesign-struct-equality.md` (two relations: IEEE operators /
-canonical value contexts; canon/hash/totalOrder; `float::NaN` match arms).
-**Implementation deferred by owner (cost-gated)** — design-doc-only for now.
-
-**Priority justification:** P1.1 — with the ruling in place the semantics cap
-(override 2) is lifted: every engine consistently returns `false` for a
-field-identical struct compare the ruling defines as `true` — a silent wrong
-value for checker-accepted code, exit 0, no diagnostic. Not P0.1: `.expected`
-goldens encode no struct-`==` output today, so the oracle poisons nothing.
+**Priority justification:** semantics-ruling cap (override 2) — `info.md`
+§9's own wording ("No identity. A struct is its fields... Equality is
+field-wise / by a defined `(==)`.") is genuinely ambiguous between "field-wise
+by default, definable `(==)` overrides it" and "field-wise IS what a defined
+`(==)` gives you — nothing is automatic." Behavior is **consistent** across
+oracle and IR (not an engine divergence, so no P0/P1 marker applies on its
+own), so this caps at P2 pending an owner reading of which the sentence
+means.
 
 **Symptom.**
 
@@ -151,4 +146,3 @@ struct)` for a struct that hasn't defined `(==)`.
 (`harpoon/tests/main.lev`), 2026-07-15 — `assertEqual(Point(1,2),
 Point(1,2))` failed unexpectedly, tracing back to this.
 
----

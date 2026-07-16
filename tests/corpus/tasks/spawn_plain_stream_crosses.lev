@@ -1,0 +1,15 @@
+// bug #81 happy-path guard (SU-1): a PLAIN in-memory InStream (no producer
+// teardown, hasDispose == false) is ordinary statically-shaped data and MUST
+// still cross a thread boundary by deep copy — the per-object `hasDispose` gate
+// added for the disposable case must not over-reject. The worker reads the copied
+// stream and returns; byte-identical on oracle/IR/LLVM.
+int run() {
+    StreamBuffer<int> buf = StreamBuffer();
+    buf.push(7);
+    InStream<int> w = InStream(buf);
+    Worker<int> job = std::spawn(() => { return w.hasData() ? 1 : 0; });
+    int r = await job;
+    console.writeln("plain result=" + r.toString());
+    return r;
+}
+console.writeln("ret=" + run().toString());

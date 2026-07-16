@@ -1,0 +1,107 @@
+// The one command registry (DESIGN-2 §6.1). Every command is authored exactly
+// once here; the keymap, menu bar, palette, hints, and help all render from these
+// entries, so they cannot drift apart (P1/P3). Commands are reference classes, so
+// `.add` on the backing array is lane-safe (§13 N1 — no struct-element arrays).
+namespace Recon {
+uses Sonar;
+
+class Command {
+    public string id       = "";      // "request.send" — dotted, category prefix
+    public string title    = "";      // "Send request"
+    public string category = "";      // File | Request | View | Environment | Session | Help
+    public string chord    = "";      // display + binding source of truth: "^S", "F1", ""
+    public () => void action;         // the handler
+    public bool hasAction = false;
+    public () => bool enabledWhen;    // optional gate (e.g. "collection open")
+    public bool hasEnabled = false;
+    public string disabledReason = ""; // shown dim in the palette when gated off
+    new Command() { }
+
+    Command gate(() => bool w, string reason) {
+        enabledWhen = w; hasEnabled = true; disabledReason = reason; return this;
+    }
+}
+
+class CommandRegistry {
+    Array<Command> all_;              // insertion-ordered
+    new CommandRegistry() { }
+
+    void register(Command c) { all_ = all_.add(c); }
+
+    // Convenience builder: create, register, and return for optional .gate(...).
+    Command define(string id, string title, string category, string chord, () => void action) {
+        Command c = Command();
+        c.id = id; c.title = title; c.category = category; c.chord = chord;
+        c.action = action; c.hasAction = true;
+        all_ = all_.add(c);
+        return c;
+    }
+
+    Command? byId(string id) {
+        for (Command c in all_) { if (c.id == id) { return c; } }
+        return None;
+    }
+
+    bool enabled(Command c) {
+        if (!c.hasEnabled) { return true; }
+        var f = c.enabledWhen;
+        return f();
+    }
+
+    // Run by id; false when unknown or disabled (the caller notices, §9.2).
+    bool run(string id) {
+        Command? found = this.byId(id);
+        if (found == None) { return false; }
+        Command c = found ?? Command();
+        if (!this.enabled(c)) { return false; }
+        if (c.hasAction) { var f = c.action; f(); return true; }
+        return false;
+    }
+
+    // The disabled reason for an id ("" if none / enabled).
+    string reasonFor(string id) {
+        Command? found = this.byId(id);
+        if (found == None) { return ""; }
+        Command c = found ?? Command();
+        if (this.enabled(c)) { return ""; }
+        return c.disabledReason;
+    }
+
+    Array<Command> all() => all_;
+
+    Array<Command> inCategory(string cat) {
+        Array<Command> out = [];
+        for (Command c in all_) { if (c.category == cat) { out = out.add(c); } }
+        return out;
+    }
+
+    // case-insensitive substring on id + title; exact-id match sorts first (§6.4)
+    Array<Command> matching(string needle) {
+        string p = needle.toLower();
+        Array<Command> exact = [];
+        Array<Command> rest = [];
+        for (Command c in all_) {
+            if (p.isEmpty()) { rest = rest.add(c); continue; }
+            if (c.id.toLower() == p) { exact = exact.add(c); }
+            else if (c.id.toLower().contains(p) || c.title.toLower().contains(p)) { rest = rest.add(c); }
+        }
+        return exact.concat(rest);
+    }
+
+    Array<Command> bound() {
+        Array<Command> out = [];
+        for (Command c in all_) { if (!c.chord.isEmpty()) { out = out.add(c); } }
+        return out;
+    }
+
+    // distinct categories in first-seen order (for menu bar + help)
+    Array<string> categories() {
+        Array<string> out = [];
+        for (Command c in all_) {
+            if (!c.category.isEmpty() && out.indexOf(c.category) < 0) { out = out.add(c.category); }
+        }
+        return out;
+    }
+}
+
+}

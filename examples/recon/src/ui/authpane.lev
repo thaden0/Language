@@ -1,0 +1,122 @@
+// Auth tab (DESIGN-2 §7.4): a RadioGroup of kinds + inline per-kind field rows,
+// and the "Inherit"/"None" resolution label that makes the auth cascade visible
+// (P2). Digest is surfaced-unsupported. Values accept {{vars}}; the §9.3 strip
+// flags unresolved ones at send time.
+namespace Recon {
+uses Sonar;
+
+class AuthPane {
+    public Container root;
+    public RadioGroup kind;
+    public RichText sourceLabel;
+    public Input userI;
+    public Input passI;
+    public Input tokenI;
+    public Input keyNameI;
+    public Input keyValI;
+    public RadioGroup apiIn;
+    AppState state;
+    Array<string> kinds_ = ["Inherit", "None", "Basic", "Bearer", "API Key"];
+    () => void onChange;
+    bool hasChange = false;
+
+    new AuthPane(AppState st) {
+        state = st;
+        char dot = '•';
+        root = Container();
+        root.setLayout(FlexLayout(Axis::Vertical));
+
+        kind = RadioGroup();
+        kind.setOptions(this.kinds_);
+        kind.setHeight(Constraint::Fixed(this.kinds_.length()));
+
+        sourceLabel = RichText();
+        sourceLabel.setHeight(Constraint::Fixed(1));
+
+        userI = Input();     userI.setPlaceholder("username");
+        passI = Input();     passI.setPlaceholder("password");   passI.mask(dot);
+        tokenI = Input();    tokenI.setPlaceholder("token");     tokenI.mask(dot);
+        keyNameI = Input();  keyNameI.setPlaceholder("key name");
+        keyValI = Input();   keyValI.setPlaceholder("key value"); keyValI.mask(dot);
+        apiIn = RadioGroup();
+        apiIn.setOptions(["in: header", "in: query"]);
+        apiIn.setHeight(Constraint::Fixed(2));
+
+        root.add(this.kind);
+        root.add(this.sourceLabel);
+        root.add(this.userI);
+        root.add(this.passI);
+        root.add(this.tokenI);
+        root.add(this.keyNameI);
+        root.add(this.keyValI);
+        root.add(this.apiIn);
+
+        this.kind.onSelect((i) => this.fireChange());
+    }
+
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+    IComponent view() => this.root;
+
+    int indexForKind(string k) {
+        if (k == "noauth") { return 1; }
+        if (k == "basic")  { return 2; }
+        if (k == "bearer") { return 3; }
+        if (k == "apikey") { return 4; }
+        return 0;   // inherit
+    }
+    string kindForIndex(int i) {
+        if (i == 1) { return "noauth"; }
+        if (i == 2) { return "basic"; }
+        if (i == 3) { return "bearer"; }
+        if (i == 4) { return "apikey"; }
+        return "inherit";
+    }
+
+    void loadFrom(RequestSpec r) {
+        string k = "inherit";
+        if (r.auth != None) {
+            AuthSpec a = r.auth ?? AuthSpec();
+            k = a.kind;
+            this.userI.setValue(a.param("username"));
+            this.passI.setValue(a.param("password"));
+            this.tokenI.setValue(a.param("token"));
+            this.keyNameI.setValue(a.param("key"));
+            this.keyValI.setValue(a.param("value"));
+            this.apiIn.selectRow(a.param("in") == "query" ? 1 : 0);
+        }
+        this.kind.selectRow(this.indexForKind(k));
+        this.refreshSourceLabel(r);
+    }
+
+    void refreshSourceLabel(RequestSpec r) {
+        AuthSpec? folderAuth = None;
+        string folderName = "";
+        if (this.state.activeFolder != None) { CollectionItem f = this.state.activeFolder ?? CollectionItem(); folderAuth = f.auth; folderName = f.name; }
+        AuthSpec? colAuth = None;
+        string colName = "";
+        if (this.state.activeCollection != None) { Collection c = this.state.activeCollection ?? Collection(); colAuth = c.auth; colName = c.name; }
+        string label = authSourceLabel(r, folderAuth, colAuth, folderName, colName);
+        if (label.isEmpty()) { this.sourceLabel.setSpans([]); }
+        else { this.sourceLabel.setSpans([Span::Of(label, "dialog.hint")]); }
+    }
+
+    void commitTo(RequestSpec r) {
+        string k = this.kindForIndex(this.kind.selected);
+        if (k == "inherit") { r.auth = None; return; }
+        AuthSpec a = AuthSpec::Of(k);
+        if (k == "basic") {
+            a.put("username", this.userI.value);
+            a.put("password", this.passI.value);
+        } else if (k == "bearer") {
+            a.put("token", this.tokenI.value);
+        } else if (k == "apikey") {
+            a.put("key", this.keyNameI.value);
+            a.put("value", this.keyValI.value);
+            a.put("in", this.apiIn.selected == 1 ? "query" : "header");
+        }
+        r.auth = a;
+    }
+}
+
+}

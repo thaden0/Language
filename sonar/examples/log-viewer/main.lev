@@ -8,6 +8,7 @@
 uses Sonar;
 
 class LogViewer {
+    App app;
     ListView list;
     ContentBar status;
     Spinner spinner;
@@ -16,6 +17,7 @@ class LogViewer {
     int tick = 0;
 
     new LogViewer(App a) {
+        app = a;
         list = ListView();
         list.setHeight(Constraint::Flex(1));   // fill the vertical axis
         spinner = Spinner();

@@ -1,6 +1,8 @@
-// Top/bottom status bars (DESIGN §9.1). Plain builder classes owning a
-// framework ContentBar (no custom Container subclassing — dodges the MI-leaf
-// paint hazards entirely; we only compose shipped components).
+// Top/bottom chrome bars v2 (DESIGN-2 §5.1, §6.1). Plain builder classes owning a
+// framework ContentBar (compose-only; no Container subclassing). The bottom bar
+// hints are GENERATED from the command registry — each chord is read from the
+// registry entry, so a hint is structurally incapable of advertising an unbound
+// command (P1). The top bar surfaces dirty/env/session/cookies (P2).
 namespace Recon {
 uses Sonar;
 
@@ -8,30 +10,53 @@ class TopBar {
     public ContentBar bar;
     new TopBar() { bar = ContentBar(); }
     void update(AppState st) {
-        string env = st.activeEnvName.isEmpty() ? "(no env)" : st.activeEnvName;
-        string sess = st.sessions.activeName;
-        bar.setLeft(" Recon");
-        bar.setCenter("env: " + env + "   session: " + sess);
-        string status = st.inFlight ? "sending..." : "ready";
-        if (!st.lastError.isEmpty()) { status = "! " + st.lastError; }
-        bar.setRight(status + " ");
+        string col = "(no collection)";
+        if (st.activeCollection != None) { Collection c = st.activeCollection ?? Collection(); col = c.name; }
+        string dirty = st.dirty ? "● " : "";
+        bar.setLeft(" Recon  ∙  " + dirty + col);
+
+        string env = st.activeEnvName.isEmpty() ? "(no env)" : (st.activeEnvName + " ✓");
+        bar.setCenter("env: " + env);
+
+        int cookies = st.sessions.active().jar.cookies.length();
+        bar.setRight("session: " + st.sessions.activeName + "   cookies: " + cookies.toString() + " ");
     }
 }
 
 class BottomBar {
     public ContentBar bar;
-    public Spinner spinner;
-    new BottomBar() { bar = ContentBar(); spinner = Spinner(); }
-    void update(AppState st) {
-        bar.setLeft(" ^S send  ^P cmd  ^O import  ^E env  ^H history  Tab focus  ^Q quit");
-        if (st.lastOutcome != None) {
+    new BottomBar() { bar = ContentBar(); }
+
+    // The curated hint id -> short-label list (§5.1 zone 7). The chord itself is
+    // always read from the registry, so it can never advertise an unbound command.
+    Array<Pair<string,string>> curatedHints() => [
+        Pair::Of("request.send", "send"),
+        Pair::Of("view.palette", "palette"),
+        Pair::Of("help.keys",    "help"),
+        Pair::Of("file.import",  "import"),
+        Pair::Of("env.edit",     "env"),
+        Pair::Of("view.history", "history"),
+        Pair::Of("app.quit",     "quit")
+    ];
+
+    void update(AppState st, CommandRegistry reg) {
+        StringBuilder sb = StringBuilder();
+        sb.add(" ");
+        for (Pair<string,string> p in this.curatedHints()) {
+            Command? found = reg.byId(p.first);
+            if (found == None) { continue; }
+            Command c = found ?? Command();
+            if (c.chord.isEmpty()) { continue; }   // P1: never show an unbound chord
+            sb.add(c.chord + " " + p.second + "   ");
+        }
+        sb.add("Tab focus");
+        bar.setLeft(sb.toString());
+
+        // right slot: a compact settled summary (the full verdict is the status line)
+        if (st.lastOutcome != None && st.lastResponse != None) {
+            HttpResponse r = st.lastResponse ?? HttpResponse(0, "");
             RunOutcome o = st.lastOutcome ?? RunOutcome();
-            string t = o.elapsedMs.toString() + "ms";
-            if (st.lastResponse != None) {
-                HttpResponse r = st.lastResponse ?? HttpResponse(0, "");
-                t = r.status.toString() + " " + r.reason() + "  " + t + "  " + r.body.length().toString() + "B";
-            }
-            bar.setRight(t + " ");
+            bar.setRight(r.status.toString() + " ∙ " + fmtMs(o.elapsedMs) + " ");
         } else {
             bar.setRight(" ");
         }

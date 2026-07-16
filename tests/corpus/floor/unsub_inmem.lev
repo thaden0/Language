@@ -1,0 +1,17 @@
+// SU-1 (techdesign-stream-unsubscribe.md §4.1/§4.2, M1): the consumer-close
+// semantics on a plain in-memory stream — no signals, so this runs on ALL four
+// engines including emit-C++ (the lane the InStream.close() reachability fix
+// unblocked). A closed buffer drops pushes silently and throws a distinct
+// "stream is closed" on pull; close() is idempotent and never throws.
+StreamBuffer<int> buf = StreamBuffer();
+buf.push(1);
+buf.push(2);
+console.writeln("count=" + buf.count().toString());
+InStream<int> r = InStream(buf);
+r.close();
+buf.push(3);
+console.writeln("after=" + buf.count().toString());
+try { int v = r.pull(); console.writeln("v=" + v.toString()); }
+catch (IException e) { console.writeln("pull:" + e.message); }
+r.close();
+console.writeln("done");

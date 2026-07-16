@@ -93,6 +93,7 @@ void    lv_plat_signal_close(int fd);
 
 int64_t lv_plat_stat_size(const char* path);
 int64_t lv_plat_stat_mtime(const char* path);   /* epoch seconds; -1 if absent */
+int     lv_plat_stat_isdir(const char* path);   /* 1 dir / 0 not-dir / -1 absent */
 int     lv_plat_mkdir(const char* path);         /* 0 ok / -1 fail (mode 0755) */
 int     lv_plat_tcp_connect(const char* ip, int port);
 int     lv_plat_tcp_listen(const char* ip, int port, int backlog, int reuse_port);

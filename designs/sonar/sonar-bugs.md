@@ -182,15 +182,6 @@ question of *why* `sysTcpConnect` returns -1 for the compiled process while
 the shell reaches the host fine (§ above) is a separate native-floor concern,
 still tracked in `known_bugs_1.md #72`.
 
-**ROOT CAUSE FOUND + FIXED (2026-07-15, native floor):** the open question is
-closed — `sysTcpConnect` was failing because the connect floor (oracle
-`fillSockAddr`, native `lv_fill_sockaddr`) accepted **numeric IP literals
-only** (`inet_pton`), never resolving hostnames; `curl` succeeded because curl
-does its own DNS. Both floors now fall back to `getaddrinfo` when the literal
-parse fails (numeric fast path unchanged). Verified oracle/IR/native against a
-local listener: hostname connects, numeric connects, bad host still -1.
-`known_bugs_1.md` #72 is fully closed.
-
 ---
 
 ## #4 — Leaf component paint leaves STALE glyphs when its content shrinks (default/empty theme)
@@ -239,37 +230,3 @@ full differential re-run. **Workaround in the examples:** pad mutable
 fields to a fixed width so each repaint fully overwrites the previous one
 (used in `sonar/examples/file-manager`), which also matches how real
 status/field UIs are laid out. `docs/footguns.md` debt row added.
-
-**FIXED (2026-07-15):** `Styleable.paintBackground` now clears the whole box
-on every repaint — it fills unconditionally with the resolved background
-style (`Default/Default` under the empty/default theme, i.e. plain spaces —
-byte-identical to the App root's own full-surface clear, so no golden moved),
-instead of only when a themed non-default bg was set. A damage-driven leaf
-repaint therefore erases its previous, longer content before painting.
-Applied to `sonar/src/mixins.lev` AND the `sonar_v2/src/mixins.lev` copy.
-Regression pin: `sonar/tests/stale_glyph/` (oracle/IR/LLVM/emit-C++). The
-`file-manager` pad workaround was reverted and the `docs/footguns.md` row
-removed.
-
----
-
-## #5 — All four multi-scenario examples die at startup: `Uncaught SonarException: an App is already running (single-app rule)`
-
-**Found (2026-07-15):** running the examples lane (`runtests.sh`) —
-`dashboard`, `file-manager`, `form-wizard`, `log-viewer` all fail on every
-engine before printing anything; `hello` passes. Pre-existing at master HEAD
-`509e5a1` (verified against a clean stash — unrelated to today's paint fix).
-
-**Investigation (quick pass):** each failing example declares a bare
-`App app;` field on its root class and assigns `app = a;` in the ctor — and
-never reads it again (the field is dead). Under §3 bare-field semantics
-(`docs/footguns.md` "bare class-typed field auto-constructs"), that field
-auto-constructs `App()` BEFORE the ctor body runs; the harness has already
-constructed the single App, so the guarded ctor throws. The examples predate
-the global-init/auto-construct rework that made the footgun bite here.
-
-**Ruling: example-side bug** (dead field tripping documented framework
-semantics), not Sonar, not Leviathan.
-
-**FIXED (2026-07-15):** deleted the dead `App app;` + `app = a;` pair from all
-four examples. Examples lane green again on oracle/IR/LLVM.

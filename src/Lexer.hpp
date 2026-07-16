@@ -52,5 +52,13 @@ private:
     Token lexNumber(uint32_t start);
     Token lexIdentifier(uint32_t start);
     Token lexString(uint32_t start, char quote);
+    // request-string-literal-tail: r"..."/r'...' — 'r' and the opening quote
+    // already consumed; no escape processing, single-line only.
+    Token lexRawString(uint32_t start, char quote);
+    // request-string-literal-tail: """..."""/'''...''' — the three opening
+    // quote chars already consumed; ordinary escapes + interpolation still
+    // apply later (same content rules as lexString), only raw newlines and
+    // the wider delimiter differ.
+    Token lexTripleString(uint32_t start, char quote);
     Token lexQuasi(uint32_t start);
 };

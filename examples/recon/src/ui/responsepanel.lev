@@ -1,26 +1,32 @@
-// Response inspector panel (DESIGN §9.1). Tabs(Body | Headers | Cookies | Tests).
+// Response inspector panel v2 (DESIGN-2 §8). A status line pinned above
+// Tabs(Body | Headers | Cookies | Tests). The Body tab is the JsonView (fold /
+// search / assert-from-response); non-JSON bodies fall back to a raw view inside
+// it. Assert/extract from a selected value routes out to the request's Tests tab.
 namespace Recon {
 uses Sonar;
 
 class ResponsePanel {
+    public Container root;
+    public StatusLine statusLine;
     public Tabs tabs;
-    public ContentBox bodyBox;
-    public Text bodyText;
+    public JsonView jsonView;
     public RespHeaderTableSource headerSrc;
     public TableView headersTable;
     public CookieTableSource cookieSrc;
     public TableView cookiesTable;
     public ListView testList;
     public AppState state;
+    (string, string) => void onAssert;
+    bool hasAssert = false;
+    (string, string) => void onExtract;
+    bool hasExtract = false;
 
     new ResponsePanel(AppState st) {
         state = st;
-        bodyText = Text();
-        bodyText.wrap(Overflow::Wrap);
-        bodyBox = ContentBox();
-        bodyBox.setTitle("Response");
-        bodyBox.setBorder(BorderStyle::Single);
-        bodyBox.add(bodyText);
+        statusLine = StatusLine();
+        jsonView = JsonView();
+        this.jsonView.setOnAssert((p, v) => this.fireAssert(p, v));
+        this.jsonView.setOnExtract((p, seg) => this.fireExtract(p, seg));
 
         headerSrc = RespHeaderTableSource();
         headersTable = TableView();
@@ -28,7 +34,7 @@ class ResponsePanel {
             TableColumn("Name", Constraint::Flex(1), Align::Start),
             TableColumn("Value", Constraint::Flex(2), Align::Start)
         ]);
-        headersTable.setSource(headerSrc);
+        headersTable.setSource(this.headerSrc);
 
         cookieSrc = CookieTableSource();
         cookiesTable = TableView();
@@ -38,48 +44,51 @@ class ResponsePanel {
             TableColumn("Domain", Constraint::Flex(1), Align::Start),
             TableColumn("Path", Constraint::Fixed(10), Align::Start)
         ]);
-        cookiesTable.setSource(cookieSrc);
+        cookiesTable.setSource(this.cookieSrc);
 
         testList = ListView();
 
         tabs = Tabs();
-        tabs.add("Body", bodyBox);
-        tabs.add("Headers", headersTable);
-        tabs.add("Cookies", cookiesTable);
-        tabs.add("Tests", testList);
+        tabs.add("Body", this.jsonView);
+        tabs.add("Headers", this.headersTable);
+        tabs.add("Cookies", this.cookiesTable);
+        tabs.add("Tests", this.testList);
+
+        root = Container();
+        root.setLayout(FlexLayout(Axis::Vertical));
+        this.statusLine.row.setHeight(Constraint::Fixed(1));
+        root.add(this.statusLine.row);
+        this.tabs.setHeight(Constraint::Flex(1));
+        root.add(this.tabs);
     }
 
+    void setOnAssert((string, string) => void cb) { onAssert = cb; hasAssert = true; }
+    void setOnExtract((string, string) => void cb) { onExtract = cb; hasExtract = true; }
+    void fireAssert(string path, string val) { if (this.hasAssert) { var cb = this.onAssert; cb(path, val); } }
+    void fireExtract(string path, string seg) { if (this.hasExtract) { var cb = this.onExtract; cb(path, seg); } }
+
     void update(AppState st) {
+        int now = std::sysNow();
+        this.statusLine.update(st, now);
         if (st.lastResponse != None) {
             HttpResponse resp = st.lastResponse ?? HttpResponse(0, "");
-            this.bodyText.text(prettyBody(resp.body));
+            this.jsonView.setBody(resp.body);
             this.headerSrc.setFrom(resp.headers);
             this.headersTable.refresh();
-        } else if (!st.lastError.isEmpty()) {
-            this.bodyText.text("Error: " + st.lastError);
         }
         this.cookieSrc.rows = st.sessions.active().jar.cookies;
         this.cookiesTable.refresh();
 
         Array<string> lines = [];
         for (TestResult r in st.lastTests) {
-            string mark = r.passed ? "[PASS] " : "[FAIL] ";
+            string mark = r.passed ? "✓ " : "✗ ";
             string line = mark + r.label;
-            if (!r.passed && !r.detail.isEmpty()) { line = line + " — " + r.detail; }
+            if (!r.passed && !r.detail.isEmpty()) { line = line + "  —  " + r.detail; }
             lines = lines.add(line);
         }
+        if (lines.isEmpty()) { lines = ["  (no tests — add assertions on the request Tests tab)"]; }
         this.testList.items(lines);
     }
-}
-
-// Pretty-print a JSON body; fall back to raw for non-JSON.
-string prettyBody(string body) {
-    JsonValue? parsed = json::parse(body);
-    if (parsed != None) {
-        JsonValue v = parsed ?? JsonValue::ofNull();
-        return v.renderPretty(2);
-    }
-    return body;
 }
 
 }

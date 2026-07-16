@@ -223,15 +223,6 @@ struct Sema {
         return global;
     }
 
-    // True when `sc` is one of the per-file `uses`/`use` import overlays rather
-    // than a genuine declaration scope. Lets name resolution rank a file's own
-    // declarations ahead of names merely pulled in by a bulk import (bug.md #78).
-    bool isFileOverlay(const Scope* sc) const {
-        for (const Scope* fs : fileScopes)
-            if (fs == sc) return true;
-        return false;
-    }
-
     Symbol* newSymbol(SymbolKind k, std::string_view name, const Stmt* decl = nullptr) {
         symbols.push_back(std::make_unique<Symbol>());
         Symbol* s = symbols.back().get();

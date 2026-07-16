@@ -1,0 +1,20 @@
+name    = "recon-v2pure-test"
+entry   = "Recon::main"
+sources = [
+    "v2pure_test.lev",
+    "../../src/ui/fmt.lev",
+    "../../src/ui/jsonhl.lev",
+    "../../src/net/auth.lev",
+    "../../src/net/body.lev",
+    "../../src/net/sender.lev",
+    "../../src/net/url.lev",
+    "../../src/net/vars.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/collection.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+    "../../src/model/session.lev",
+    "../../src/model/history.lev",
+    "../../src/io/jsonio.lev",
+]

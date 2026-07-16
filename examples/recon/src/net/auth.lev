@@ -22,6 +22,38 @@ AuthSpec effectiveAuth(RequestSpec req, AuthSpec? folderAuth, AuthSpec? colAuth)
     return AuthSpec::Of("noauth");
 }
 
+// The inherited kind (folder then collection, first non-inherit) + its source
+// name. Returns Pair(kind, sourceName); kind "" when nothing is inherited.
+Pair<string,string> inheritedAuth(AuthSpec? folderAuth, AuthSpec? colAuth, string folderName, string colName) {
+    if (folderAuth != None) {
+        AuthSpec a = folderAuth ?? AuthSpec();
+        if (a.kind != "inherit" && a.kind != "noauth") { return Pair::Of(a.kind, "folder '" + folderName + "'"); }
+    }
+    if (colAuth != None) {
+        AuthSpec a = colAuth ?? AuthSpec();
+        if (a.kind != "inherit" && a.kind != "noauth") { return Pair::Of(a.kind, "collection '" + colName + "'"); }
+    }
+    return Pair::Of("", "");
+}
+
+// Human-readable label for the auth-tab "Inherit" / "None" rows (DESIGN-2 §7.4):
+// makes the cascade visible. Empty string when the request owns an explicit auth.
+string authSourceLabel(RequestSpec req, AuthSpec? folderAuth, AuthSpec? colAuth, string folderName, string colName) {
+    string reqKind = "inherit";
+    if (req.auth != None) { AuthSpec ra = req.auth ?? AuthSpec(); reqKind = ra.kind; }
+    Pair<string,string> inh = inheritedAuth(folderAuth, colAuth, folderName, colName);
+    string ik = inh.first;
+    if (reqKind == "inherit") {
+        if (ik.isEmpty()) { return "No inherited auth"; }
+        return "Inherited: " + ik + " — from " + inh.second;
+    }
+    if (reqKind == "noauth") {
+        if (ik.isEmpty()) { return "No auth"; }
+        return "No auth (overrides inherited " + ik + ")";
+    }
+    return "";
+}
+
 // Resolve {{vars}} in the values, then write the appropriate header (or query).
 void applyAuth(AuthSpec a, VarResolver vars, HeaderMap hdrs, Url url) {
     authNote = "";

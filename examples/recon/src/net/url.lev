@@ -99,6 +99,66 @@ Url? parseUrl(string raw) {
     return u;
 }
 
+// --- query parameter <-> string helpers (DESIGN-2 §7.2) ---
+// Both operate on RAW text (no percent-encode/decode — that happens only in
+// buildPrepared). They are inverse for the enabled-row set, so the §7.2 URL
+// round-trip invariant holds: joinQueryPairs(parseQueryPairs(q)) == q.
+
+Array<FormField> parseQueryPairs(string query) {
+    Array<FormField> out = [];
+    if (query.isEmpty()) { return out; }
+    Array<string> parts = query.split("&");
+    for (string p in parts) {
+        if (p.isEmpty()) { continue; }
+        int eq = p.indexOf("=");
+        FormField f = FormField();
+        f.enabled = true;
+        if (eq < 0) { f.key = p; f.value = ""; }
+        else {
+            f.key = p.subStr(0, eq);
+            f.value = p.subStr(eq + 1, p.length() - eq - 1);
+        }
+        out = out.add(f);
+    }
+    return out;
+}
+
+string joinQueryPairs(Array<FormField> rows) {
+    StringBuilder out = StringBuilder();
+    bool first = true;
+    for (FormField f in rows) {
+        if (!f.enabled || f.key.isEmpty()) { continue; }
+        if (!first) { out.add("&"); }
+        first = false;
+        if (f.value.isEmpty()) { out.add(f.key); }
+        else { out.add(f.key + "=" + f.value); }
+    }
+    return out.toString();
+}
+
+// Replace the query substring of a raw URL with a fresh query string, preserving
+// scheme/host/path/fragment (used by the Params<->URL two-way sync, §7.2).
+string setUrlQuery(string rawUrl, string newQuery) {
+    string s = rawUrl;
+    string frag = "";
+    int hash = s.indexOf("#");
+    if (hash >= 0) { frag = s.subStr(hash, s.length() - hash); s = s.subStr(0, hash); }
+    int qmark = s.indexOf("?");
+    string base = qmark >= 0 ? s.subStr(0, qmark) : s;
+    if (newQuery.isEmpty()) { return base + frag; }
+    return base + "?" + newQuery + frag;
+}
+
+// The raw query substring of a URL ("" if none).
+string urlQueryOf(string rawUrl) {
+    string s = rawUrl;
+    int hash = s.indexOf("#");
+    if (hash >= 0) { s = s.subStr(0, hash); }
+    int qmark = s.indexOf("?");
+    if (qmark < 0) { return ""; }
+    return s.subStr(qmark + 1, s.length() - qmark - 1);
+}
+
 // Resolve a possibly-relative Location against a base (for redirects, §6.6).
 Url? resolveUrl(Url base, string location) {
     string loc = location.trim();

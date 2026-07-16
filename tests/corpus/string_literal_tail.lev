@@ -1,0 +1,49 @@
+// request-string-literal-tail.md: the three remaining string-literal forms
+// from suggested-features.md §3.3 — `\u{...}` Unicode escape, raw strings
+// (`r"..."`/`r'...'`), and multiline/triple-quote strings (`"""..."""`/
+// `'''...'''`).
+void run() {
+    // `\u{...}` inserts the UTF-8 encoding of a Unicode scalar by codepoint —
+    // the sibling of the already-landed `\xNN` byte escape. 1-6 hex digits.
+    console.writeln("\u{41}\u{42}\u{43}");        // ASCII: "ABC"
+    console.writeln("\u{20AC}12.50");             // BMP 3-byte: the euro sign
+    console.writeln("\u{1F600}");                 // supplementary-plane 4-byte: an emoji
+
+    // A surrogate or an out-of-range codepoint decodes to U+FFFD (the same
+    // "invalid data never crashes" replacement policy as UTF-8 decode) rather
+    // than a compile error — this is a compile-time literal, not a runtime
+    // failure, so there is nothing to throw.
+    console.writeln("\u{D800}".length());         // lone surrogate -> one U+FFFD (3 bytes)
+    console.writeln("\u{110000}".length());       // past 0x10FFFF -> one U+FFFD (3 bytes)
+
+    // A malformed `\u{...}` (no digits, or no closing '}') is left alone —
+    // same compat rule as a malformed `\x`: `u` passes through literally and
+    // the rest reads as ordinary content, not a compile error.
+    console.writeln("\u{}bad");
+    console.writeln("\u nope");
+
+    // `char`'s target-typing (Track 03 §1) works the same over a `\u{...}`
+    // literal as any other single-scalar single-quoted literal.
+    char smiley = '\u{1F600}';
+    console.writeln(smiley.code());
+
+    // Raw strings: `r"..."`/`r'...'` — backslash is an ordinary character
+    // (no escapes at all) and `${...}` never interpolates. The natural home
+    // for regex patterns, Windows paths, and literal template text.
+    console.writeln(r"C:\Users\name\output.txt");
+    console.writeln(r'\d+\.\d{2} matches a price like ${amount}');
+
+    // Ordinary interpolation is unaffected by any of the above.
+    int amount = 12;
+    console.writeln("total: ${amount}");
+
+    // Triple-quoted strings: `"""..."""`/`'''...'''` — a multiline literal
+    // that keeps ordinary escape processing AND interpolation (unlike a raw
+    // string); a single embedded quote (or two) doesn't close it early.
+    console.writeln("""first line
+second line: ${amount}
+a "quoted" word and a 'single-quoted' one both pass through""");
+    console.writeln('''triple single-quote also interpolates: ${amount}''');
+}
+
+run();

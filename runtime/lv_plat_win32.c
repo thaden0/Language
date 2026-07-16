@@ -250,6 +250,14 @@ int64_t lv_plat_stat_mtime(const char* path) {
     return ticks / 10000000LL - 11644473600LL;
 }
 
+/* request-stat-isdir.md: 1 dir / 0 not-dir / -1 absent — parity with the
+ * POSIX floor's S_ISDIR probe. */
+int lv_plat_stat_isdir(const char* path) {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) return -1;
+    return (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+
 /* Create a directory. 0 on success, -1 on any failure (incl. already-exists) —
  * parity with the POSIX floor / oracle sysMkdir. */
 int lv_plat_mkdir(const char* path) {

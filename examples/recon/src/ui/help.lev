@@ -1,0 +1,54 @@
+// Help / key reference overlay (DESIGN-2 §6.5). Read-only Modal, GENERATED from
+// the registry — a section per category with `chord  title` rows, then a static
+// "While focused" block for component-local keys. Because it is generated, adding
+// a command updates help automatically; help cannot go stale (P1's sibling).
+namespace Recon {
+uses Sonar;
+
+class HelpOverlay {
+    public Modal modal;
+    public ListView list;
+    public CommandRegistry commands;
+    new HelpOverlay(CommandRegistry reg) {
+        commands = reg;
+        modal = Modal();
+        modal.title("Key reference");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        list = ListView();
+        modal.add(this.list);
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void open() {
+        this.rebuild();
+        this.modal.open();
+        Sonar::app().focus(this.list);
+    }
+
+    void rebuild() {
+        Array<string> rows = [];
+        for (string cat in this.commands.categories()) {
+            rows = rows.add("── " + cat + " ──");
+            for (Command c in this.commands.inCategory(cat)) {
+                rows = rows.add("  " + padTo(c.chord, 8) + c.title);
+            }
+            rows = rows.add("");
+        }
+        rows = rows.add("── While focused ──");
+        rows = rows.add("  Tree      F2 rename · Delete delete · Enter open");
+        rows = rows.add("  KV editor a add · e edit · d delete · Space toggle");
+        rows = rows.add("  JsonView  ↑↓ move · Enter fold · / search · a assert · x extract");
+        rows = rows.add("  TextArea  ^F format JSON");
+        rows = rows.add("  Tabs      1–9 select · ←→ navigate");
+        rows = rows.add("");
+        rows = rows.add("Esc close · ^P run any command by name");
+        this.list.items(rows);
+    }
+
+    void onKey(KeyEvent e) {
+        if (e.code == KeyCode::Escape) { this.modal.close(); e.handled = true; }
+    }
+}
+
+}

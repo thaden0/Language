@@ -5,9 +5,11 @@
 uses Sonar;
 
 class Dashboard {
+    App app;
     GridBox grid;
 
     new Dashboard(App a) {
+        app = a;
         grid = GridBox(2, 2);
         grid.gap(1);
         // Fill the vertical axis: on the root's vertical FlexLayout a child with

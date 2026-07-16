@@ -1,0 +1,168 @@
+// Sessions & cookies (DESIGN-2 §10.3, F17). Two modals: a session switcher
+// (Enter switch · n new · d delete) and a cookie manager (d delete · D clear all).
+// Mutations persist the active session immediately; the top bar's cookie count
+// reads the active jar each refresh (P2).
+namespace Recon {
+uses Sonar;
+
+class SessionsModal {
+    public Modal modal;
+    public ListView list;
+    public AppState state;
+    () => void onChange;
+    bool hasChange = false;
+
+    new SessionsModal(AppState st) {
+        state = st;
+        modal = Modal();
+        modal.title("Sessions");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        modal.setLayout(FlexLayout(Axis::Vertical));
+        Text hint = Text();
+        hint.text(" Enter switch · n new · d delete");
+        hint.setHeight(Constraint::Fixed(1));
+        list = ListView();
+        modal.add(hint);
+        modal.add(this.list);
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+
+    void open() {
+        this.rebuild();
+        this.modal.open();
+        Sonar::app().focus(this.list);
+    }
+
+    void rebuild() {
+        Array<string> rows = [];
+        for (Session s in this.state.sessions.sessions) {
+            string mark = s.name == this.state.sessions.activeName ? "✓ " : "  ";
+            rows = rows.add(mark + padTo(s.name, 18) + " " + s.jar.cookies.length().toString() + " cookies");
+        }
+        if (rows.isEmpty()) { rows = ["  (no sessions)"]; }
+        this.list.items(rows);
+    }
+
+    void onKey(KeyEvent e) {
+        char kN = 'n'; char kD = 'd';
+        if (e.code == KeyCode::Enter)       { this.switchSelected(); e.handled = true; }
+        else if (kvIsChar(e, kN))           { this.newSession(); e.handled = true; }
+        else if (kvIsChar(e, kD))           { this.deleteSelected(); e.handled = true; }
+        else if (e.code == KeyCode::Escape) { this.modal.close(); e.handled = true; }
+    }
+
+    void switchSelected() {
+        int i = this.list.selected;
+        if (i < 0 || i >= this.state.sessions.sessions.length()) { return; }
+        Session s = this.state.sessions.sessions.at(i);
+        this.state.sessions.switchTo(s.name);
+        this.state.settings.activeSession = s.name;
+        this.rebuild();
+        this.state.addNotice("success", "session '" + s.name + "' — " + s.jar.cookies.length().toString() + " cookies", std::sysNow());
+        this.fireChange();
+    }
+
+    void newSession() {
+        PromptDialog dlg = PromptDialog("New session", "Name:", "");
+        dlg.setOnAccept((v) => this.acceptNew(v));
+        dlg.open(Sonar::app());
+    }
+    void acceptNew(string name) {
+        if (name.isEmpty()) { return; }
+        this.state.sessions.switchTo(name);
+        this.state.settings.activeSession = name;
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void deleteSelected() {
+        int i = this.list.selected;
+        if (i < 0 || i >= this.state.sessions.sessions.length()) { return; }
+        Session s = this.state.sessions.sessions.at(i);
+        if (s.name == this.state.sessions.activeName) {
+            this.state.addNotice("info", "cannot delete the active session", std::sysNow());
+            return;
+        }
+        this.state.sessions.sessions = this.state.sessions.sessions.removeAt(i);
+        this.rebuild();
+        this.fireChange();
+    }
+}
+
+class CookieManager {
+    public Modal modal;
+    public ListView list;
+    public AppState state;
+    () => void onChange;
+    bool hasChange = false;
+
+    new CookieManager(AppState st) {
+        state = st;
+        modal = Modal();
+        modal.title("Cookies");
+        modal.border(BorderStyle::Rounded);
+        modal.pad(Insets(1, 2, 1, 2));
+        modal.setLayout(FlexLayout(Axis::Vertical));
+        Text hint = Text();
+        hint.text(" d delete · D clear all");
+        hint.setHeight(Constraint::Fixed(1));
+        list = ListView();
+        modal.add(hint);
+        modal.add(this.list);
+        this.list.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void setOnChange(() => void cb) { onChange = cb; hasChange = true; }
+    void fireChange() { if (this.hasChange) { var cb = this.onChange; cb(); } }
+
+    void open() {
+        this.rebuild();
+        this.modal.open();
+        Sonar::app().focus(this.list);
+    }
+
+    void rebuild() {
+        Array<string> rows = [];
+        for (Cookie c in this.state.sessions.active().jar.cookies) {
+            string when = c.session ? "session" : "expires";
+            rows = rows.add(padTo(c.name + "=" + c.value, 30) + " " + padTo(c.domain, 18) + " " + padTo(c.path, 10) + " " + when);
+        }
+        if (rows.isEmpty()) { rows = ["  (no cookies)"]; }
+        this.list.items(rows);
+    }
+
+    void onKey(KeyEvent e) {
+        char kD = 'd'; char kClear = 'D';
+        if (kvIsChar(e, kD))          { this.deleteSelected(); e.handled = true; }
+        else if (kvIsChar(e, kClear)) { this.clearAll(); e.handled = true; }
+        else if (e.code == KeyCode::Escape) { this.modal.close(); e.handled = true; }
+    }
+
+    void deleteSelected() {
+        int i = this.list.selected;
+        Session sess = this.state.sessions.active();
+        if (i < 0 || i >= sess.jar.cookies.length()) { return; }
+        sess.jar.cookies = sess.jar.cookies.removeAt(i);
+        this.persist(sess);
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void clearAll() {
+        Session sess = this.state.sessions.active();
+        sess.jar.cookies = [];
+        this.persist(sess);
+        this.rebuild();
+        this.fireChange();
+    }
+
+    void persist(Session sess) {
+        if (!this.state.configRoot.isEmpty()) { saveSession(this.state.configRoot, sess); }
+    }
+}
+
+}

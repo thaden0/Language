@@ -1,5 +1,7 @@
 == compose ==
-app children=3
+app children=5
+commands bound=12
+categories=Request,File,View,Environment,Session,Help
 tree roots=2
 root0=▸ Auth
 login label=POST Login
@@ -8,21 +10,27 @@ presents=1
 active url=https://api.example.com/auth/login
 panel urlInput=https://api.example.com/auth/login
 active method=POST
+method badge=POST
 body editor={"u":"ada"}
 == mock response ==
 lastStatus=200
 tests run=1
   PASS status equals 200
 history=1
-== pretty body first line ==
-{
+tests tab label=Tests ✓1
+== JsonView ==
+json rows=7
+statusClass=ok
 presents=2
 == commands ==
-commands=send,quit,cancel,toggle-redirects,next-tab,save-history,export
-toggle redirects ran=true
-followRedirects=false
+nextRespTab ran=true
+resp tab=1
+send reason idle=[]
+send reason inflight=[in flight]
+== hints never lie (P1, §14.2) ==
+all curated hints bound=true
+help categories=6
 == export ==
 export ran=true
 export valid json=true
-history labels=200 POST https://api.example.com/auth/login
 done
