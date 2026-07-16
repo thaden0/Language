@@ -386,6 +386,10 @@ struct Stmt {
     // zero-arg `close()` decl the Lowerer calls at every block-exit edge.
     bool isUsing = false;
     const Stmt* usingClose = nullptr;
+    // Struct-equality §5.5 (packet 02): this member is the Resolver-synthesized
+    // derived `(==)`. The synthesis pass erases and regenerates these each run
+    // (the two-pass resolver can change a struct's field list between passes).
+    bool isSynthEq = false;
     bool callable = false;
     Selector selector;
     TypeRefPtr type;
@@ -487,6 +491,20 @@ struct EnumDesugar {
     const Stmt* fromCode = nullptr;        // the mangled `Method$fromCode` free function
 };
 
+// Struct-equality §5.5 (packet 02): one record per user value struct with no
+// explicit `(==)`. synthesized=true => a derived field-wise `(==)` member was
+// spliced into the struct body (marked isSynthEq). synthesized=false => the
+// §5.2 gate info below is set; the Checker (packet 03) reports it at a
+// `==`/`!=` use site over that struct — never at the declaration. Rebuilt from
+// scratch on every Resolver pass. `structName` is backed by `synthNames`.
+struct StructEqSynth {
+    std::string_view structName;
+    bool synthesized = false;
+    std::string badField;        // first non-comparable field (empty for the
+                                 // struct-level generic restriction)
+    std::string badKindNote;     // e.g. "a function value", "an Array"
+};
+
 // The whole program: a flat list of top-level items (decls and statements).
 struct Program {
     std::vector<StmtPtr> items;
@@ -506,4 +524,8 @@ struct Program {
     std::deque<SourceFile> synthFiles;
     std::deque<std::string> synthNames;
     std::vector<EnumDesugar> enumDesugars;
+
+    // Struct-equality §5.5 (packet 02): per-struct synthesis/gate records, see
+    // StructEqSynth above. Same lifetime rationale as enumDesugars.
+    std::vector<StructEqSynth> structEqSynths;
 };
