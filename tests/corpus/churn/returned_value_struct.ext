@@ -1,0 +1,41 @@
+// Churn corpus (ARC leak net) — VALUE STRUCTS RETURNED BY VALUE.
+// GREEN on ELF (X64Gen's arena) and on LLVM (the A-M6 arena tier, doc-1 §9):
+// the mid-scope rebind's abandoned copy has no VFree path (nothing frees a
+// value-struct local clobbered by a fresh assignment, only ones explicitly
+// consumed) — Ownership.hpp proves each `Point p`/`makePoint` allocation here
+// never escapes its frame, so LlvmGen routes them to the arena tier and
+// bulk-frees them at frame exit, same as X64Gen's beginAlloc/restoreArena.
+//
+// A value struct that REALLY escapes its frame (returned, §15) is copied to
+// the heap (CopyVal); value structs are excluded from the retain/release
+// gate — a tag-5 value-struct pointer may point INLINE into a dense buffer,
+// so the gate cannot count them. Instead, structs are uniquely owned: once
+// the CALLER copies the returned tree out (var-init / assignment / argument /
+// chained return / discarded statement), it is provably dead, and Lower
+// emits Op::VFree on the consumed call-result temp — a recursive fields-first
+// free, guarded to standalone heap copies (refcount slot 0; arena copies
+// carry the -1 sentinel; Lower never marks native results, which can be
+// inline pointers). Each iteration churns three such copies: a plain return,
+// a mid-scope rebind (dropped before frame exit), and a pass-by-value
+// argument. An over-eager VFree (a live tree, an aliased local, an inline
+// pointer) corrupts output or crashes under memory reuse; a missed one grows
+// live-at-exit. Only `sink` survives: the root set is CONSTANT in N.
+// @N@ is substituted by fuzz/churn_leak.py.
+struct Point { int x = 0; int y = 0; }
+Point makePoint(int seed) {
+    Point p = Point();
+    p.x = seed; p.y = seed * 2;
+    return p;                     // returned BY VALUE -> CopyVal -> heap today
+}
+int readX(Point q) => q.x;        // arg-copy path: the callee copies q
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Point p = makePoint(i);   // fresh returned struct each iteration...
+        sink = sink + p.x;
+        p = makePoint(i + 1);     // rebind: the first copy is dropped mid-scope
+        sink = sink + readX(p);   // pass by value; the callee's copy is its own
+    }                             // ...dropped; today each returned copy leaks
+    console.writeln(sink);
+}
+run(@N@);

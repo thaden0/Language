@@ -1,0 +1,19 @@
+// bug.md #10: integer division/modulo by zero throws a catchable
+// RuntimeException (reference §3.7 loudness), not a silent 0 — on every
+// actively-maintained engine (oracle, IR, emit-C++, LLVM). The frozen ELF
+// backend still returns 0, so this dir has NO ELF lane (same treatment as
+// strings_native etc.). Floats keep IEEE inf/nan (bug.md #12), tested elsewhere.
+int safeDiv(int a, int b) {
+    try { return a / b; }                        // throw propagates out of `return`
+    catch (RuntimeException e) { return -1; }
+}
+int safeMod(int a, int b) {
+    try { return a % b; }
+    catch (RuntimeException e) { return -2; }
+}
+console.writeln(10 / 2);            // 5 — normal division unaffected
+console.writeln(10 % 3);           // 1 — normal modulo unaffected
+console.writeln(safeDiv(10, 0));   // -1 — division by zero caught
+console.writeln(safeMod(10, 0));   // -2 — modulo by zero caught
+try { int x = 7 / 0; console.writeln(x); }
+catch (RuntimeException e) { console.writeln(e.message); }   // division by zero

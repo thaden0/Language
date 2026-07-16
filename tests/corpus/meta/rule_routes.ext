@@ -1,0 +1,32 @@
+// §16.5 Layer B: the motivating case — @Route attributes morph into real
+// router registration wiring, injected into the controller's constructor.
+// Zero runtime reflection; the injected calls are ordinary code.
+namespace Web {
+    interface IController { }
+    attribute Route { string method; string path; }
+    rule registerRoutes {
+        match @Route(r) on method m in class C : IController
+        inject `router.record($r.method, $r.path)` at bottom of C.constructor
+    }
+}
+uses Web;
+
+class Router {
+    string routes = "";
+    Router record(string method, string path) {
+        routes = routes + method + " " + path + "\n";
+        return this;
+    }
+}
+
+class UserController : IController {
+    Router router;
+    new UserController(Router shared) { router = shared; }
+    @Route("GET", "/users")      int list()   => 1;
+    @Route("POST", "/users")     int create() => 2;
+    @Route("DELETE", "/users/x") int remove() => 3;
+}
+
+Router r = Router();
+UserController uc = UserController(r);
+console.write(r.routes);

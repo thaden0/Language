@@ -1,0 +1,2 @@
+uses Shared;
+console.writeln(one() + two() + three());

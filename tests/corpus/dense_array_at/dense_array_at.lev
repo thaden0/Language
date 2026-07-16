@@ -1,0 +1,25 @@
+// bug.md #33 regression: Array<Struct>.at must mask the dense marker and
+// return a pointer to the inline record. Exercise multiple indices, a record
+// wide enough to distinguish dense addressing from boxed 16-byte slots, and
+// the clean logical length in an actual out-of-bounds diagnostic.
+struct Grp {
+    bool matched = false;
+    string value = "";
+    int ordinal = -1;
+}
+
+Grp g0; g0.matched = true; g0.value = "whole"; g0.ordinal = 10;
+Grp g1; g1.value = "tail"; g1.ordinal = 20;
+Array<Grp> groups = [g0, g1];
+
+console.writeln(groups.length());
+Grp first = groups.at(0);
+Grp second = groups.at(1);
+console.writeln(first.matched.toString() + ":" + first.value + ":" + first.ordinal.toString());
+console.writeln(second.matched.toString() + ":" + second.value + ":" + second.ordinal.toString());
+
+try {
+    Grp missing = groups.at(2);
+} catch (RuntimeException e) {
+    console.writeln(e.message);
+}

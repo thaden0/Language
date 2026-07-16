@@ -1,0 +1,5 @@
+[lint] folder~namespace convention (opt-in; namespaces are path-decoupled by default, §12)
+[lint]   ok:   user.lev  (models ~ App, App::Models)
+[lint]   ok:   store.lev  (data ~ Data)
+[lint]   WARN: util.lev  declares Tools but sits in helpers — folder is not a suffix of the namespace
+[lint] 1 mismatch of 3 file(s) checked

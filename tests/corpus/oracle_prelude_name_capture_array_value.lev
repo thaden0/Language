@@ -1,0 +1,9 @@
+// bug.md #29 E3: even an unrelated one-argument global named `at` must not run
+// in place of Array.at while evaluating bracket access.
+int at(int i) => 99;
+
+void run() {
+    Array<int> values = [10, 20];
+    console.writeln(values[1]);
+}
+run();

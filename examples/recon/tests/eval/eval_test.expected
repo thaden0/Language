@@ -1,0 +1,27 @@
+== jsonpath ==
+$.token => abc
+$.user.id => 42
+$.user.name => Ada
+$.tags[0] => a
+$.tags[2] => c
+$.tags[9] => <none>
+$.missing => <none>
+$.user.nope.deep => <none>
+$.ok => true
+== assertions ==
+PASS | status equals 200 | ok
+PASS | status inRange 200..299 | ok
+FAIL | status equals 404 | expected '404', got '200'
+PASS | header Content-Type contains json | ok
+FAIL | header X-Missing exists | absent
+PASS | header X-Trace equals xyz | ok
+PASS | body contains Ada | ok
+PASS | jsonpath $.user.id equals 42 | ok
+FAIL | jsonpath $.user.name equals Bob | expected 'Bob', got 'Ada'
+PASS | jsonpath $.token exists | found
+PASS | jsonpath $.user.id isType number | type=number
+PASS | jsonpath $.token matches ^[a-z]+$ | ok
+== extractions written to env ==
+authToken=abc
+traceId=xyz
+userId=42

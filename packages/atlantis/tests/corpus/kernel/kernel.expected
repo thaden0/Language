@@ -1,0 +1,32 @@
+== ok ==
+  status=200 ctype=text/plain; charset=utf-8
+  body=hello /hi
+== healthz ==
+  status=200 ctype=text/plain; charset=utf-8
+  body=ok
+== readyz (up) ==
+  status=200 ctype=text/plain; charset=utf-8
+  body=ready
+== readyz (down) ==
+  status=503 ctype=text/plain; charset=utf-8
+  body=not ready: db
+== 404 mapped ==
+  status=404 ctype=application/problem+json
+  body={"type":"about:blank","title":"Not Found","status":404,"detail":"not found: /notfound","instance":"/notfound","requestId":"-"}
+== 400 mapped ==
+  status=400 ctype=application/problem+json
+  body={"type":"about:blank","title":"Bad Request","status":400,"detail":"no good","instance":"/bad","requestId":"-"}
+== 422 validation ==
+  status=422 ctype=application/problem+json
+  body={"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"validation failed","instance":"/invalid","requestId":"-","errors":[{"field":"email","message":"required"},{"field":"age","message":"must be >= 0"}]}
+== 500 (internals hidden) ==
+  status=500 ctype=application/problem+json
+  body={"type":"about:blank","title":"Internal Server Error","status":500,"detail":"internal server error","instance":"/boom","requestId":"-"}
+== 413 body too large ==
+  status=413 ctype=application/problem+json
+  body={"type":"about:blank","title":"Payload Too Large","status":413,"detail":"body exceeds 16 bytes","instance":"/hi","requestId":"-"}
+== log lines ==
+count=1
+  hasKaboom=true level=error
+== deadline stamped ==
+hasDeadline=true

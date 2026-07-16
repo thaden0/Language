@@ -1,0 +1,2 @@
+name = "p6_project"
+sources = ["lib.lev", "file_a_bulk_uses.lev", "file_b_selective_use.lev", "file_c_no_import.lev", "main.lev"]

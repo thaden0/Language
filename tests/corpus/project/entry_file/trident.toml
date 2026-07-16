@@ -1,0 +1,3 @@
+name = "entry_file"
+entry = "run.ext"
+sources = ["lib.ext", "run.ext"]

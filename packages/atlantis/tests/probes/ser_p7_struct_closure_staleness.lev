@@ -1,0 +1,17 @@
+// P-7: struct closure captures `this` by VALUE -- a getter lambda registered
+// at construction time goes stale after a later mutating method call.
+// "documentation-grade certainty" is the design's own accept bar for this
+// probe (it kills closure-registry designs, §1) -- oracle-only is enough.
+// Rephrasing the final call through a bound local to sidestep bug #52
+// (`arr[i]()` fails to lower on IR/native) instead hits bug #42 (a lambda-
+// typed local var declaration fails to parse) on IR/LLVM; both are
+// pre-existing, already-filed, unrelated bugs, not new findings here.
+struct Box {
+    int v;
+    Array<() => int> getters;
+    new Box() { v = 1; getters = [() => v]; }
+    mutating void bump() { v = v + 1; }
+}
+Box b = Box();
+b.bump();
+console.write(b.v.toString() + "," + b.getters.at(0)().toString());

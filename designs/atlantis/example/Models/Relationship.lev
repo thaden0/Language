@@ -1,0 +1,25 @@
+uses Atlantis::Models;
+
+namespace App::Models {
+    
+    enum RelationType {
+        Friend,
+    }
+
+
+    class Relationship {
+
+        @attr(PrimaryKey, AutoIncrement); // Atlantis::Models::PrimaryKey, Atlantis::Models::AutoIncrement
+        int id;
+
+        @attr(NotNull); // Atlantis::Models::NotNull
+        User user1;
+
+        @attr(NotNull);
+        User user2;
+
+        @attr(NotNull);
+        RelationType relationType;
+        
+    }
+}

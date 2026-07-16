@@ -1,0 +1,32 @@
+// techdesign-columnar §6.1: full-struct element overwrite in place (rc==1) and
+// through an alias (rc>1 -> whole-buffer COW). Both arrays are verified. NOTE:
+// single-field `arr[i].x = v` is deliberately NOT exercised (it is already
+// differentially divergent pre-columnar — see the design's C-M0 log).
+struct Pt { int x; int y; }
+void run() {
+    Array<Pt> a;
+    for (int i in 0..3) { Pt p; p.x = i; p.y = i * 2; a = a.add(p); }
+
+    // in-place overwrite (a is uniquely owned)
+    Pt q; q.x = 50; q.y = 60;
+    a[1] = q;
+    console.writeln(a[1].x);   // 50
+    console.writeln(a[1].y);   // 60
+
+    // alias -> COW: writing a must not disturb b
+    Array<Pt> b = a;
+    Pt r; r.x = 99; r.y = 88;
+    a[2] = r;
+    console.writeln(a[2].x);   // 99
+    console.writeln(a[2].y);   // 88
+    console.writeln(b[2].x);   // 2  (COW: b keeps the original)
+    console.writeln(b[2].y);   // 4
+    console.writeln(b[1].x);   // 50 (the pre-alias write is shared)
+
+    // sums prove no cross-contamination
+    int sa = 0; int sb = 0;
+    for (int i in 0..3) { sa = sa + a[i].x; sb = sb + b[i].x; }
+    console.writeln(sa);       // 0 + 50 + 99 + 3 = 152
+    console.writeln(sb);       // 0 + 50 + 2 + 3 = 55
+}
+run();

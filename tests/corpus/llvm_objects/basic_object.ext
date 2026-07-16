@@ -1,0 +1,11 @@
+class Counter {
+    public int value;
+    void increment() { value = value + 1; }
+    int get() => value;
+}
+
+Counter c = Counter();
+c.increment();
+c.increment();
+c.increment();
+console.writeln(c.get());

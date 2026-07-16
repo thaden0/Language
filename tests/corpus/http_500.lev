@@ -1,0 +1,22 @@
+// Track 09 F4 (M6): the 500 error path — an uncaught throw in a handler becomes
+// a 500 response and the server survives to answer the next request. Sockets, so
+// this rides the oracle + IR lanes (like http.ext/async.ext).
+void run() {
+    HttpServer server = HttpServer(8094);
+    server.handle((req) => {
+        if (req.path == "/boom") throw RuntimeException("kaboom");
+        return HttpResponse(200, "ok " + req.path);
+    });
+
+    HttpClient client = HttpClient();
+    client.get("127.0.0.1", 8094, "/boom", (resp) => {
+        console.writeln("boom -> " + resp.status);          // 500
+        // the server must still be alive for the next request:
+        client.get("127.0.0.1", 8094, "/fine", (r2) => {
+            console.writeln("fine -> " + r2.status + " " + r2.body);  // 200 ok /fine
+            server.stop();
+        });
+    });
+    console.writeln("up");
+}
+run();

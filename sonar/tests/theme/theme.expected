@@ -1,0 +1,32 @@
+-- resolution --
+focused.text 2 0 1
+input 6 0 0
+unknown.thing 7 0 0
+override 1 0 1
+empty-theme -1 -1 0
+-- parse valid --
+a 7 -1 9
+b 13 -1 16
+has(a)=true has(z)=false
+-- parse errors --
+E-outside theme.toml:1:1: key/value pair before any [table] header
+E-unclosed theme.toml:1:1: expected ']' to close table header
+E-noeq theme.toml:2:1: expected '=' in key/value pair
+E-unknownkey theme.toml:2:1: unknown key 'color' (expected fg, bg, or attrs)
+E-unknowncolor theme.toml:2:6: unknown color 'chartreuse'
+E-range theme.toml:2:6: color code out of range 0..15: 42
+E-unknownattr theme.toml:2:9: unknown attribute 'sparkle'
+E-emptyhdr theme.toml:1:1: empty table header '[]'
+E-emptyseg theme.toml:1:1: empty segment in table header 'input.'
+E-unterminated theme.toml:2:6: unterminated string value
+-- built-ins --
+Default keys=0 stateKeys=0 a11yViolations=0
+Dark keys=24 stateKeys=9 a11yViolations=0
+Light keys=24 stateKeys=9 a11yViolations=0
+HighContrast keys=24 stateKeys=9 a11yViolations=0
+-- switch --
+before=1
+after=4
+-- di --
+bound=1
+scoped=17

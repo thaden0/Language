@@ -1,0 +1,5 @@
+name = "asset_module_phantom"
+sources = ["main.lev"]
+
+[[dep]]
+path = "lib"

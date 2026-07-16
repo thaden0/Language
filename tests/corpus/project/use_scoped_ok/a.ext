@@ -1,0 +1,4 @@
+// Each file selectively imports only the ONE name it needs (imports.md, v1
+// file-level scoping — bug.md #8's substrate). `other` stays invisible here.
+use M::helper;
+console.writeln(helper(1));

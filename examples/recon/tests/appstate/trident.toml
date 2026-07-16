@@ -1,0 +1,24 @@
+name    = "recon-appstate-test"
+entry   = "Recon::main"
+sources = [
+    "appstate_test.lev",
+    "../../src/app.lev",
+    "../../src/net/auth.lev",
+    "../../src/net/body.lev",
+    "../../src/net/sender.lev",
+    "../../src/net/url.lev",
+    "../../src/net/vars.lev",
+    "../../src/eval/jsonpath.lev",
+    "../../src/eval/runner.lev",
+    "../../src/io/store.lev",
+    "../../src/io/importer.lev",
+    "../../src/io/exporter.lev",
+    "../../src/io/jsonio.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/collection.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+    "../../src/model/session.lev",
+    "../../src/model/history.lev",
+]

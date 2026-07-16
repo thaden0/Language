@@ -1,0 +1,47 @@
+// §5.2 refusal-diagnostic corpus (design §10 M2 acceptance): every guard
+// violation should fail with a named, field-anchored message rather than a
+// cryptic pass-2 error or (worse) silent misbehavior. This program is
+// EXPECTED TO FAIL COMPILATION -- its .expected pins the diagnostic text.
+// The five `__atlGuard` messages (one per violating type) are the ones this
+// test exists to pin; the file also produces deterministic secondary/
+// cascade diagnostics (a function-typed field has no __atlDec overload; the
+// generated nested-type decode templates hit spurious post-first-error
+// narrowing complaints) once compilation is already doomed by the guard —
+// harmless, reproducible collateral of the checker's error recovery, kept
+// in .expected as-is rather than chased (§13 STOP guardrails: framework
+// tracks never edit src/**, and this isn't a metaprogramming-shaped
+// contradiction of the phase-3 doc -- it's ordinary post-first-error noise).
+uses Atlantis;
+
+@Serializable
+struct BadMapKey : IJsonSerializable {
+    Map<int, string> counts;
+    JsonValue toJson() => JsonValue::ofNull();
+}
+
+@Serializable
+struct BadFunctionField : IJsonSerializable {
+    (int) => int transform;
+    JsonValue toJson() => JsonValue::ofNull();
+}
+
+@Serializable
+struct BadUnionField : IJsonSerializable {
+    int | string tagged;
+    JsonValue toJson() => JsonValue::ofNull();
+}
+
+@Serializable
+struct BadReservedField : IJsonSerializable {
+    int __atlBogus;
+    JsonValue toJson() => JsonValue::ofNull();
+}
+
+@Serializable
+struct MissingInterface {
+    int a;
+}
+
+void main() {
+    console.writeln("unreachable -- this corpus must fail to compile");
+}

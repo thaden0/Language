@@ -1,0 +1,14 @@
+// Terminal restore on exit-now (§5, shared with terminal-raw-mode.md §3.4): a
+// program enters raw mode, reads one keystroke, then env.exit(0) WITHOUT calling
+// term.restore(). The exit epilogue (lvrt_sysexit / rt_sysexit) must restore the
+// terminal so the pty is left cooked — a TUI that exits from an error path never
+// orphans the shell.
+void main() {
+    bool ok = term.enableRaw();
+    if (!ok) { console.writeln("NOTTY"); return; }
+    console.writeln("READY\r");
+    string key = std::sysRead(0, 1);
+    console.writeln("KEY=" + key + "\r");
+    env::exit(0);                          // NO term.restore(); epilogue must
+}
+main();

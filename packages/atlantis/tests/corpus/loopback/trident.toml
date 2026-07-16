@@ -1,0 +1,8 @@
+name = "atlantis-loopback-corpus"
+entry = "main"
+sources = ["loopback.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

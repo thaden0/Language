@@ -1,0 +1,3 @@
+// No `uses M` here. Before the fix, a.ext's top-level `uses M` leaked into the
+// shared global scope and this bare call resolved anyway. Now it must NOT.
+console.writeln(helper(7));

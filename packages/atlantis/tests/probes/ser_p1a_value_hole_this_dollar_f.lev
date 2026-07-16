@@ -1,0 +1,26 @@
+// P-1a: this.$f inside a $for element template (Mechanism A, class-level rule).
+// Expected (source reading): FAIL — "'$f' is an attribute value, not a member name".
+namespace Probe {
+    interface ISerializable { }
+    attribute Serializable { }
+    rule p1a {
+        match @Serializable on class C
+        where C.hasBase("ISerializable")
+        inject `int sumFields() {
+            int total = 0;
+            Array<int> vs = [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : this.$f ];
+            for (int v in vs) { total = total + v; }
+            return total;
+        }` at member of C
+    }
+}
+uses Probe;
+
+@Serializable
+class Widget : ISerializable {
+    int a = 1;
+    int b = 2;
+}
+
+Widget w = Widget();
+console.write(w.sumFields());

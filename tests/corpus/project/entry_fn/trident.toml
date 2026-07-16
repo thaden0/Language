@@ -1,0 +1,3 @@
+name = "entry_fn"
+entry = "main"
+sources = ["greet.ext", "app.ext"]

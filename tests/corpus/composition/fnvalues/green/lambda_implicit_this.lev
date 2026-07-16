@@ -1,0 +1,17 @@
+// A lambda calling a sibling instance method through an IMPLICIT (bare)
+// `this` receiver — regression floor for the fixed bug #53 (bare-receiver
+// lambda self-calls used to silently lose the call on IR and segfault on
+// native/LLVM).
+class Ticker {
+    int n = 0;
+    void bump() { n = n + 1; }
+    () => void handler() { return () => { bump(); }; }
+}
+void main() {
+    Ticker t = Ticker();
+    var h = t.handler();
+    h();
+    h();
+    console.writeln(t.n.toString());
+}
+main();

@@ -1,0 +1,28 @@
+// XFAIL: dense IndexStore leaks its VALUE operand — the struct written into a
+// dense array is heap-allocated (it "escapes" per Ownership's stored-by-index
+// rule), its record is memcpy'd into the buffer, but the standalone copy is
+// never freed (~64B/iteration). idxset cannot free it (the source local may
+// still be read); the fix needs Lower-side liveness (a VFree at the consuming
+// site, like returned value structs) or arena routing for operands that are
+// provably copied in. Pre-existing — present before the §11 COW work.
+struct Pt {
+    int x;
+    int y;
+}
+void run(int n) {
+    Pt p;
+    Array<Pt> pts;
+    for (int i in 0..3) {
+        pts = pts.add(p);
+    }
+    int sink = 0;
+    for (int i in 1..n) {
+        Pt q;
+        q.x = i;
+        pts[i - (i / 4) * 4] = q;   // dense set: in place when unique, but q's heap copy leaks
+        Pt r = pts[0];
+        sink = sink + r.x;
+    }
+    console.writeln(sink);
+}
+run(@N@);

@@ -1,0 +1,4 @@
+namespace M {
+    int helper(int x) => x + 100;
+    int other(int x) => x + 200;
+}

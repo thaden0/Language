@@ -1,0 +1,171 @@
+// Atlantis Track 01 — R10 Builder/App facade + IActionResponse (design §3R).
+//
+// These are conveniences ON TOP of the §1/§2/§3 machinery — the facade compiles
+// down to the SAME fold; the pipeline stays an explicit ordered list. Track 04
+// owns the blessed final form (config source, command dispatch); this is the
+// kernel's illustrative, compiling version. `useX` methods make the common order
+// READABLE — they do not introduce hidden stages (call order IS pipeline order).
+namespace Atlantis {
+    namespace Http {
+
+        class App {
+            Pipeline pipeline = Pipeline();
+            (Context) => HttpResponse terminalHandler;
+            int port;
+            Server srv;
+            bool started;
+
+            // Track 02 (design §0R.5) — the route table. `routesRegistered`
+            // makes the §1.5/foreseeable-problem-#8 boot check ("a router was
+            // built but never finalized") additive: an App that never touches
+            // routing (every pre-Track-02 kernel test) serves exactly as
+            // before.
+            Routing::Router router = Routing::Router();
+            bool routesRegistered = false;
+            bool routerFinalized = false;
+
+            new App(int port) {
+                this.port = port;
+                this.started = false;
+                // Default terminal (pre-Track-02): throw NotFound. finalize()
+                // (Track 02) replaces this with the router's dispatch handler.
+                this.terminalHandler = (c) => { throw NotFoundException(c.request.path); };
+            }
+
+            // Raw middleware append — CALL ORDER IS PIPELINE ORDER.
+            App use((Context, (Context) => HttpResponse) => HttpResponse m) {
+                this.pipeline.use(m);
+                return this;
+            }
+            // Named stages (readable common order; no hidden stages).
+            App useAccessLog(Log::Logger log)  { this.pipeline.use(AccessLog(log).mw()); return this; }
+            App useErrorMapping(Log::Logger log) { this.pipeline.use(ErrorMapper(log).mw()); return this; }
+            App useBodyLimit(int maxBytes)     { this.pipeline.use(BodyLimit(maxBytes).mw()); return this; }
+            App useDeadline(int budgetMs)      { this.pipeline.use(Deadline(budgetMs).mw()); return this; }
+            App useHealth(Array<IReadyCheck> checks) { this.pipeline.use(Health(checks).mw()); return this; }
+            App useStaticFiles(string root, string prefix) {
+                this.pipeline.use(StaticFiles(root, prefix).mw());
+                return this;
+            }
+            // Track 02 §1.4 handshake, stage one: fills routeParams + stamps
+            // the matched route key. Placed explicitly, after any middleware
+            // that must run unconditionally (body limits, deadlines) and
+            // before any middleware that needs to see the matched route (an
+            // auth guard, Track 08 — not yet built in this repo).
+            App useRouting() { this.pipeline.use(this.router.resolveMiddleware()); return this; }
+
+            // Track 02 §0R.1 — lowers a fluent `Route<C>` into one `RouteRec`
+            // per requested verb, sharing one handler thunk (§1.1: multiple
+            // verbs on one route share one controller.action key).
+            App AddRoute<C>(Routing::Route<C> r) {
+                var handler = r.toHandler();
+                for (string verb in Routing::requestTypeVerbs(r.verbs)) {
+                    // The array literal is passed inline, straight into
+                    // RouteRec's `Array<ParamDesc> params` parameter, rather
+                    // than through an explicitly `Routing::ParamDesc`-typed
+                    // local — a qualified generic-argument spelling
+                    // (`Routing::ParamDesc`) does not type-match its bare
+                    // spelling (`ParamDesc`, as declared inside the Routing
+                    // namespace itself) across this qualification boundary, a
+                    // filed compiler bug (see the design's §13 log).
+                    var rec = Routing::RouteRec(verb, r.path, "Route", r.actionKey(),
+                                                 [], "", r.authMode, r.authRole);
+                    this.router.record(rec, handler);
+                }
+                this.routesRegistered = true;
+                return this;
+            }
+
+            // Track 02 §0R.5 boot flow's last step: freezes the route table
+            // (§1.5 boot checks, R6 authDefault enforcement) and installs its
+            // dispatch as the terminal handler (§1.4 stage two).
+            App finalize(string authDefault) {
+                this.router.finalize(authDefault);
+                this.terminalHandler = this.router.dispatchHandler();
+                this.routerFinalized = true;
+                return this;
+            }
+
+            App terminal((Context) => HttpResponse h) { this.terminalHandler = h; return this; }
+
+            // The built handler — pure, closes over immutable structure only
+            // (worker-safe, §9). This is where the facade meets the §1 fold.
+            (Context) => HttpResponse buildHandler() => this.pipeline.build(this.terminalHandler);
+
+            void serve() {
+                if (this.routesRegistered && !this.routerFinalized) {
+                    throw RuntimeException("App.serve: routes were registered via AddRoute() but " +
+                        "finalize(authDefault) was never called (design §1.5 foreseeable problem #8)");
+                }
+                this.srv = Server(this.port, this.buildHandler());
+                this.started = true;
+                this.srv.start();
+            }
+            bool ok() => this.started && this.srv.ok();
+            void stop() { if (this.started) { this.srv.stop(); } }
+        }
+
+        class Builder {
+            int port;
+            int minLevel;
+            int bodyLimitBytes;
+            new Builder() {
+                this.port = 8080;
+                this.minLevel = 1;
+                this.bodyLimitBytes = 1048576;
+            }
+            Builder setPort(int p) { this.port = p; return this; }
+            Builder setMinLevel(int l) { this.minLevel = l; return this; }
+            Builder setBodyLimit(int bytes) { this.bodyLimitBytes = bytes; return this; }
+            App Build() => App(this.port);
+        }
+
+        // IActionResponse (return-position convenience; the terminal dispatcher
+        // renders it). Handler return positions accept HttpResponse | an
+        // IActionResponse implementor — one dispatcher branch, C2 shapes unchanged.
+        interface IActionResponse { HttpResponse render(Context ctx); }
+
+        class Json : IActionResponse {
+            int status;
+            string bodyJson;
+            new Json(string bodyJson) { this.status = 200; this.bodyJson = bodyJson; }
+            new WithStatus(int status, string bodyJson) { this.status = status; this.bodyJson = bodyJson; }
+            HttpResponse render(Context ctx) => Respond::json(this.status, this.bodyJson);
+        }
+        class Status : IActionResponse {
+            int code;
+            string message;
+            new Status(int code, string message) { this.code = code; this.message = message; }
+            HttpResponse render(Context ctx) => Respond::text(this.code, this.message);
+        }
+        class Redirect : IActionResponse {
+            string to;
+            int status;
+            new Redirect(string to) { this.to = to; this.status = 302; }
+            new Permanent(string to) { this.to = to; this.status = 301; }
+            HttpResponse render(Context ctx) {
+                HttpResponse r = HttpResponse(this.status, "");
+                r.withHeader("Location", this.to);
+                return r;
+            }
+        }
+        // View is rendered by Track 09-views; the kernel seed returns a placeholder
+        // so the surface exists and compiles (Atlantis::View('home') sugar lands with 09).
+        class View : IActionResponse {
+            string name;
+            Map<string, string> model = Map();
+            new View(string name) { this.name = name; }
+            View with(string key, string value) { this.model[key] = value; return this; }
+            HttpResponse render(Context ctx) {
+                HttpResponse r = HttpResponse(200, "[view:" + this.name + "]");
+                r.withHeader("Content-Type", "text/html; charset=utf-8");
+                return r;
+            }
+        }
+
+        // The terminal dispatcher's one branch: render an action result. A route
+        // handler that produces an IActionResponse is wrapped as
+        // `(c) => actionResult(view, c)` at the terminal (Track 02 wires this).
+        HttpResponse actionResult(IActionResponse a, Context ctx) => a.render(ctx);
+    }
+}

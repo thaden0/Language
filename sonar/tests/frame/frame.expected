@@ -1,0 +1,7 @@
+frame1 presents=1
+AA      |bb      |        |
+frame2 presents=2
+CC      |dd      |        |
+frame3 stable
+CC      |dd      |        |
+stats-frames>0=true

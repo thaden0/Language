@@ -1,0 +1,256 @@
+uses Sonar;
+
+class CountingSource : IListSource {
+    int n;
+    int hits = 0;
+    new CountingSource(int count) { n = count; }
+    int count() => n;
+    string itemAt(int i) {
+        hits = hits + 1;
+        return "row" + i.toString();
+    }
+}
+
+class LastInt {
+    int value = -999;
+    void set(int v) { value = v; }
+}
+class HitCounter {
+    int hits = 0;
+    Array<int> seen = [];
+    void bump(int v) { hits = hits + 1; seen = seen.add(v); }
+}
+
+string readRow(Surface s, int y, int x0, int w) {
+    string result = "";
+    for (int x in x0..x0 + w - 1) {
+        int scalar = s.cells().int32At(s.cellOffset(x, y));
+        result = result + std::charFromCode(scalar).toString();
+    }
+    return result;
+}
+
+void main() {
+    // ---- ArrayListSource + items() sugar --------------------------------
+    ArrayListSource src = ArrayListSource(["a", "b", "c"]);
+    console.writeln(src.count());
+    console.writeln(src.itemAt(0));
+    console.writeln(src.itemAt(2));
+
+    ListView lv = ListView();
+    lv.items(["one", "two", "three", "four", "five"]);
+    console.writeln(lv.source_.count());
+    console.writeln(lv.source_.itemAt(3));
+
+    // ---- virtualization: exactly viewport.h itemAt calls per repaint ----
+    CountingSource counting = CountingSource(10000);
+    ListView big = ListView();
+    big.setSource(counting);
+    big.box = Rect(Point(0, 0), Size(20, 4));
+    Surface bigSurface = Surface(20, 4);
+    Style plain;
+    bigSurface.clear(plain);
+    big.paintContent(bigSurface);
+    console.writeln(counting.hits);   // expect exactly 4 (viewport.h), not 10000
+
+    counting.hits = 0;
+    big.paintContent(bigSurface);
+    console.writeln(counting.hits);   // exactly 4 again on a second repaint
+
+    // scrolled into the middle: still exactly viewport.h calls
+    counting.hits = 0;
+    big.scrollTo(0, 5000);
+    big.paintContent(bigSurface);
+    console.writeln(counting.hits);
+    console.writeln(big.scrollY);
+
+    // ---- selection: Up/Down/Home/End/PageUp/PageDown + auto-scroll ------
+    ListView nav = ListView();
+    nav.items(["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"]);
+    nav.box = Rect(Point(0, 0), Size(10, 3));   // viewport height 3
+
+    HitCounter selectHits = HitCounter();
+    nav.onSelect((idx) => selectHits.bump(idx));
+
+    nav.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 0 (first press lands on 0)
+    console.writeln(selectHits.hits);
+    nav.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 1
+    nav.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    nav.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 3 -> scrollY should have advanced to keep it visible
+    console.writeln(nav.scrollY);        // viewport h=3, selected=3 -> scrollY=1
+
+    nav.fireKey(KeyEvent(KeyCode::PageDown, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 3 + 3 = 6
+    console.writeln(nav.scrollY);        // keeps 6 visible -> scrollY=4
+
+    nav.fireKey(KeyEvent(KeyCode::End, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 9
+    console.writeln(nav.scrollY);        // last row visible -> scrollY=7 (10-3)
+
+    nav.fireKey(KeyEvent(KeyCode::Home, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // 0
+    console.writeln(nav.scrollY);        // back to 0
+
+    nav.fireKey(KeyEvent(KeyCode::PageUp, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // clamped at 0
+
+    nav.fireKey(KeyEvent(KeyCode::Up, std::charFromCode(0), 0));
+    console.writeln(nav.selected);       // stays 0 (already at top)
+    console.writeln(selectHits.hits);    // fires only on ACTUAL changes
+
+    // programmatic setSelected: clamps, scrolls, does NOT fire on:select
+    int hitsBefore = selectHits.hits;
+    nav.setSelected(8);
+    console.writeln(nav.selected);
+    console.writeln(selectHits.hits == hitsBefore);
+    console.writeln(nav.scrollY);
+
+    // ---- multi-select checked toggling via Space -------------------------
+    ListView multi = ListView();
+    multi.items(["m0", "m1", "m2"]);
+    multi.setMulti(true);
+    multi.box = Rect(Point(0, 0), Size(10, 3));
+    multi.setSelected(1);
+    console.writeln(multi.isChecked(1));
+    char spaceCh = ' ';
+    multi.fireKey(KeyEvent(KeyCode::Char, spaceCh, 0));
+    console.writeln(multi.isChecked(1));
+    multi.fireKey(KeyEvent(KeyCode::Char, spaceCh, 0));
+    console.writeln(multi.isChecked(1));
+    console.writeln(multi.isChecked(0));
+
+    // ---- on:activate firing (Enter) --------------------------------------
+    HitCounter activateHits = HitCounter();
+    nav.onActivate((idx) => activateHits.bump(idx));
+    nav.setSelected(2);
+    nav.fireKey(KeyEvent(KeyCode::Enter, std::charFromCode(0), 0));
+    console.writeln(activateHits.hits);
+    console.writeln(activateHits.seen[0]);
+
+    // ---- refresh() re-clamps after the source shrinks --------------------
+    ListView shrink = ListView();
+    shrink.items(["s0", "s1", "s2", "s3", "s4"]);
+    shrink.box = Rect(Point(0, 0), Size(10, 2));
+    shrink.setSelected(4);
+    shrink.scrollTo(0, 3);
+    console.writeln(shrink.selected);
+    console.writeln(shrink.scrollY);
+    shrink.items(["only0", "only1"]);   // installs a new (shorter) source via setSource
+    console.writeln(shrink.selected);   // re-clamped to 1 (count-1)
+    console.writeln(shrink.scrollY);    // re-clamped to 0
+
+    // ---- double-press activation timing -----------------------------------
+    // std::sysNow() sanity check: returns a plausible (positive, large)
+    // millisecond epoch value.
+    int now1 = std::sysNow();
+    console.writeln(now1 > 0);
+
+    // Real wall-clock-driven double press proved too timing-fragile for a
+    // deterministic test (two consecutive std::sysNow() calls could
+    // legitimately straddle a >400ms gap under CI load, or the test process
+    // could be paused between them) — per this track's own stated
+    // allowance, `isDoublePress(int,int)` is unit-tested directly instead,
+    // in isolation from real timing.
+    console.writeln(isDoublePress(1000, 1399));  // 399ms gap -> double
+    console.writeln(isDoublePress(1000, 1400));  // exactly 400ms -> double
+    console.writeln(isDoublePress(1000, 1401));  // 401ms gap -> not a double
+    console.writeln(isDoublePress(-1, 500));     // no prior press -> not a double
+    console.writeln(isDoublePress(500, 400));    // backward clock -> not a double
+
+    // The component's own mouse-driven double-press path, exercised via two
+    // synthetic MouseEvent presses on the same row with the component's
+    // real `selected`/on:activate bookkeeping — timing itself is driven by
+    // the SAME isDoublePress helper under the hood, so this exercises the
+    // wiring (row-matching + selectIndex + fireActivate) without depending
+    // on real elapsed wall-clock time between the two `fireMouse` calls
+    // executing in the same process tick (which in practice IS well under
+    // 400ms, but is documented here as an assumption rather than asserted
+    // against a hardcoded budget).
+    ListView mouseLv = ListView();
+    mouseLv.items(["p0", "p1", "p2", "p3"]);
+    mouseLv.box = Rect(Point(0, 0), Size(10, 4));
+    HitCounter mouseActivate = HitCounter();
+    mouseLv.onActivate((idx) => mouseActivate.bump(idx));
+    mouseLv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 1, 0));
+    console.writeln(mouseLv.selected);      // row 1
+    console.writeln(mouseActivate.hits);    // single press: not yet an activate
+    mouseLv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 1, 0));
+    console.writeln(mouseActivate.hits);    // second press, same row, fast -> activate
+    console.writeln(mouseActivate.seen[0]);
+
+    // a press on a DIFFERENT row does not count as a double even if fast
+    HitCounter mouseActivate2 = HitCounter();
+    ListView mouseLv2 = ListView();
+    mouseLv2.items(["q0", "q1", "q2", "q3"]);
+    mouseLv2.box = Rect(Point(0, 0), Size(10, 4));
+    mouseLv2.onActivate((idx) => mouseActivate2.bump(idx));
+    mouseLv2.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 0, 0));
+    mouseLv2.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 2, 0));
+    console.writeln(mouseActivate2.hits);   // 0 — different rows, never a double
+    console.writeln(mouseLv2.selected);     // 2 (last press wins selection)
+
+    // ---- row painting: prefixes + selected/focused theme branch ----------
+    ListView paintLv = ListView();
+    paintLv.items(["Alpha", "Beta"]);
+    paintLv.setMulti(true);
+    paintLv.setSelected(0);
+    paintLv.box = Rect(Point(0, 0), Size(12, 2));
+    Surface paintSurface = Surface(12, 2);
+    paintSurface.clear(plain);
+    paintLv.paintContent(paintSurface);
+    console.writeln(readRow(paintSurface, 0, 0, 12));   // "[ ] Alpha  " (selected, unchecked)
+    console.writeln(readRow(paintSurface, 1, 0, 12));   // "[ ] Beta   "
+
+    paintLv.toggleChecked(0);
+    Surface paintSurface2 = Surface(12, 2);
+    paintSurface2.clear(plain);
+    paintLv.paintContent(paintSurface2);
+    console.writeln(readRow(paintSurface2, 0, 0, 12));  // "[x] Alpha  "
+
+    paintLv.setFocused(true);
+    Surface paintSurface3 = Surface(12, 2);
+    paintSurface3.clear(plain);
+    paintLv.paintContent(paintSurface3);
+    console.writeln(readRow(paintSurface3, 0, 0, 12));  // still "[x] Alpha  " (focused+selected uses a different theme key, same text)
+
+    // non-multi mode: no [x]/[ ] prefix
+    ListView plainLv = ListView();
+    plainLv.items(["Hello", "World"]);
+    plainLv.box = Rect(Point(0, 0), Size(10, 2));
+    Surface plainSurface = Surface(10, 2);
+    plainSurface.clear(plain);
+    plainLv.paintContent(plainSurface);
+    console.writeln(readRow(plainSurface, 0, 0, 10));   // "Hello     "
+    console.writeln(readRow(plainSurface, 1, 0, 10));   // "World     "
+
+    // ---- contentDesired: v1 rule, Size(avail.w, count) --------------------
+    ListView sizedLv = ListView();
+    sizedLv.items(["x", "y", "z"]);
+    Size desired = sizedLv.contentDesired(Size(40, 100));
+    console.writeln(desired.w);
+    console.writeln(desired.h);
+
+    // ---- Bordered composition: border renders without crashing (bug #59
+    // fix applied directly in this file's paintChrome override) ------------
+    ListView borderedLv = ListView();
+    borderedLv.items(["only"]);
+    borderedLv.setBorder(BorderStyle::Single);
+    borderedLv.box = Rect(Point(0, 0), Size(8, 4));
+    Surface borderedSurface = Surface(8, 4);
+    borderedSurface.clear(plain);
+    borderedLv.paintChrome(borderedSurface);
+    console.writeln(readRow(borderedSurface, 0, 0, 8));   // top border row, corners+horizontals
+    console.writeln(readRow(borderedSurface, 3, 0, 8));   // bottom border row
+
+    // ---- disabled state: no tab stop, distinct theme key path -----------
+    console.writeln(plainLv.isTabStop());
+    plainLv.setEnabled(false);
+    console.writeln(plainLv.isTabStop());
+    HitCounter disabledSelect = HitCounter();
+    plainLv.onSelect((idx) => disabledSelect.bump(idx));
+    plainLv.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(disabledSelect.hits);   // 0 — disabled swallows key handling entirely
+}

@@ -1,0 +1,44 @@
+// M0 P1: PASSES (with one spelling correction). A $for array element
+// containing a block lambda with $C/$m holes compiles, fires once per
+// matched method, and each closure captures its OWN $C/$m pair (not the
+// last-iteration value — the "loop" is compile-time $for expansion, so each
+// clone is a textually distinct lambda).
+//
+// Correction vs. the design doc's literal template: a hole embedded INSIDE
+// a string literal (`"$C::$m"`, or even a lone `"$C"`) is never substituted
+// — a string literal lexes as one opaque token, so `$`-holes only resolve
+// outside quotes. To reify a NAME as a string value use `.name` field
+// access on the reflection object, which DOES fold to a literal — but only
+// for a $for LOOP-bound item ($m.name works directly, confirmed below);
+// the rule's own top-level `match on class C` binding does NOT support
+// `$C.name` directly (it silently reifies empty — a second, narrower
+// finding, worked around here by re-binding C through a single-item $for:
+// `[ $for cc in [C] : $cc.name ][0]`, which IS a loop-bound item and works).
+namespace HP1 {
+    attribute Test { }
+    rule seedEntries {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test"))
+        inject `Array<(() => string)> $C() =>
+            [ $for m in C.methods.where((x) => x.hasAttr("Test"))
+                : () => [ $for cc in [C] : $cc.name ][0] + "::" + $m.name ];`
+               at namespace Gen
+    }
+}
+uses HP1;
+
+class MathTests {
+    @Test void addsNumbers() { }
+    @Test void subtractsNumbers() { }
+    void notATest() { }
+}
+
+class StringTests {
+    @Test void concatenates() { }
+}
+
+void main() {
+    for (var f in Gen::MathTests()) console.writeln(f());
+    for (var f in Gen::StringTests()) console.writeln(f());
+}
+main();

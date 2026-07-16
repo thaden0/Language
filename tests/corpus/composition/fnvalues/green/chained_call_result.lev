@@ -1,0 +1,12 @@
+// A chained call whose callee is itself a call expression, expr(args)(args2)
+// — regression floor for the now-fixed bug #47 (used to fail IR lowering).
+class Box {
+    Map<string, (int) => int> fns = Map();
+    (int) => int get(string k) => this.fns.at(k);
+}
+void main() {
+    Box b = Box();
+    b.fns["a"] = (x) => x + 1;
+    console.writeln(b.get("a")(5).toString());
+}
+main();

@@ -1,0 +1,1 @@
+caught: import() is compile-time-only: call it from comptime context (LA-20)

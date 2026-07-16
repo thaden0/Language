@@ -1,0 +1,41 @@
+// Top/bottom status bars (DESIGN §9.1). Plain builder classes owning a
+// framework ContentBar (no custom Container subclassing — dodges the MI-leaf
+// paint hazards entirely; we only compose shipped components).
+namespace Recon {
+uses Sonar;
+
+class TopBar {
+    public ContentBar bar;
+    new TopBar() { bar = ContentBar(); }
+    void update(AppState st) {
+        string env = st.activeEnvName.isEmpty() ? "(no env)" : st.activeEnvName;
+        string sess = st.sessions.activeName;
+        bar.setLeft(" Recon");
+        bar.setCenter("env: " + env + "   session: " + sess);
+        string status = st.inFlight ? "sending..." : "ready";
+        if (!st.lastError.isEmpty()) { status = "! " + st.lastError; }
+        bar.setRight(status + " ");
+    }
+}
+
+class BottomBar {
+    public ContentBar bar;
+    public Spinner spinner;
+    new BottomBar() { bar = ContentBar(); spinner = Spinner(); }
+    void update(AppState st) {
+        bar.setLeft(" ^S send  ^P cmd  ^O import  ^E env  ^H history  Tab focus  ^Q quit");
+        if (st.lastOutcome != None) {
+            RunOutcome o = st.lastOutcome ?? RunOutcome();
+            string t = o.elapsedMs.toString() + "ms";
+            if (st.lastResponse != None) {
+                HttpResponse r = st.lastResponse ?? HttpResponse(0, "");
+                t = r.status.toString() + " " + r.reason() + "  " + t + "  " + r.body.length().toString() + "B";
+            }
+            bar.setRight(t + " ");
+        } else {
+            bar.setRight(" ");
+        }
+    }
+}
+
+}

@@ -1,0 +1,23 @@
+POST
+DELETE
+GraphQL
+urlencoded
+Get user
+Accept=application/json
+NoBody
+true
+bearer abc123
+Users/Get user
+true
+false
+api.example.com
+false
+2
+204 PUT u3
+admin
+default,admin
+Recon
+true
+42
+3.14
+42

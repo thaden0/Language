@@ -1,0 +1,32 @@
+// §16.5 Layer A: attributes are inert data — declared, resolved, type-checked,
+// and carried on declarations. With no rule reading them (Phase 2), the
+// program behaves exactly as if they were absent.
+
+attribute Route { string method; string path; }
+attribute Column { string name = ""; }        // defaulted field -> bare @Column
+attribute Cached { int ttl = 60; bool shared = true; }
+
+namespace App {
+    attribute Tag { int level; }
+}
+uses App;
+
+@Route("GET", "/users")
+Array<string> listUsers() => ["ada", "grace"];
+
+@Route("POST", "/users")
+@Cached(30)
+string createUser(string name) => "created " + name;
+
+@Tag(2)
+class User {
+    @Column public int id = 7;
+    @Column("full_name") public string name = "Ada";
+    @App::Tag(3)
+    string describe() => name + " (#" + id.toString() + ")";
+}
+
+console.writeln(listUsers());
+console.writeln(createUser("linus"));
+User u = User();
+console.writeln(u.describe());

@@ -1,0 +1,5 @@
+LA-20 asset-path test: import() resolves against a plan-mode, per-module
+declared asset table built by trident (moduleId-keyed); a plain
+concatenation of sources has no manifest/plan and no per-module asset
+table, so the invariant's premise (layout-independent meaning) does not
+hold here by design.

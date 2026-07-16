@@ -1,0 +1,3 @@
+name = "bug58"
+entry = "main"
+sources = ["main.lev"]

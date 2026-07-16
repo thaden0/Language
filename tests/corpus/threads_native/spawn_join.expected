@@ -1,0 +1,6 @@
+42
+5
+8
+value of type Worker cannot cross a thread boundary (v1); pass a Channel
+a closure cannot cross a thread boundary (v1)
+value of type Timer cannot cross a thread boundary (v1)

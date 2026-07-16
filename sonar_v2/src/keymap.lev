@@ -1,0 +1,150 @@
+namespace Sonar {
+    // Chord grammar (frozen, anchor C9): [C-][M-][S-]key, with ^X == C-X.
+    // key = a single printable char (case-normalized: ^s == ^S) or a
+    // KeyCode name (Enter, F5, ...).
+    //
+    // A `class`, not the value-type `struct` this data shape would
+    // otherwise call for — bug.md #41: an `Array<struct>` whose struct has
+    // an enum-typed field goes stale/wrong after unrelated heap activity
+    // elsewhere in the program (e.g. constructing a `Component`) on
+    // emit-C++/LLVM; a `class` (individually heap-allocated + refcounted,
+    // not packed inline in the array) is immune. Chord is parsed once and
+    // never mutated, so reference identity semantics cost nothing here.
+    class Chord {
+        int mods;
+        KeyCode code;
+        char ch;
+        new Chord(int m, KeyCode c, char character) { mods = m; code = c; ch = character; }
+    }
+
+    // NOT a Map<string, KeyCode> — bug.md #40: a Map whose value type is a
+    // user enum segfaults on emit-C++/LLVM once it holds 2+ entries (one
+    // entry, or a non-enum value type, is fine; verified with an isolated
+    // repro outside this file). An if/else chain sidesteps it entirely.
+    KeyCode? keyCodeFromName(string name) {
+        if (name == "Enter") return KeyCode::Enter;
+        if (name == "Escape") return KeyCode::Escape;
+        if (name == "Tab") return KeyCode::Tab;
+        if (name == "BackTab") return KeyCode::BackTab;
+        if (name == "Backspace") return KeyCode::Backspace;
+        if (name == "Delete") return KeyCode::Delete;
+        if (name == "Insert") return KeyCode::Insert;
+        if (name == "Up") return KeyCode::Up;
+        if (name == "Down") return KeyCode::Down;
+        if (name == "Left") return KeyCode::Left;
+        if (name == "Right") return KeyCode::Right;
+        if (name == "Home") return KeyCode::Home;
+        if (name == "End") return KeyCode::End;
+        if (name == "PageUp") return KeyCode::PageUp;
+        if (name == "PageDown") return KeyCode::PageDown;
+        if (name == "F1") return KeyCode::F1;
+        if (name == "F2") return KeyCode::F2;
+        if (name == "F3") return KeyCode::F3;
+        if (name == "F4") return KeyCode::F4;
+        if (name == "F5") return KeyCode::F5;
+        if (name == "F6") return KeyCode::F6;
+        if (name == "F7") return KeyCode::F7;
+        if (name == "F8") return KeyCode::F8;
+        if (name == "F9") return KeyCode::F9;
+        if (name == "F10") return KeyCode::F10;
+        if (name == "F11") return KeyCode::F11;
+        if (name == "F12") return KeyCode::F12;
+        return None;
+    }
+
+    // Parses a chord spec into its mods/code(/ch) shape. Throws loudly and
+    // immediately on any malformed spec (empty, unknown key name, ...) per
+    // the frozen grammar note in techdesign-03 §5.
+    Chord parseChord(string spec) {
+        string remaining = spec;
+        if (remaining.startsWith("^") && remaining.length() > 1)
+            remaining = "C-" + remaining.subStr(1, remaining.length() - 1);
+
+        int mods = 0;
+        bool scanning = true;
+        while (scanning) {
+            if (remaining.startsWith("C-")) { mods = mods + Mod::Ctrl; remaining = remaining.subStr(2, remaining.length() - 2); }
+            else if (remaining.startsWith("M-")) { mods = mods + Mod::Alt; remaining = remaining.subStr(2, remaining.length() - 2); }
+            else if (remaining.startsWith("S-")) { mods = mods + Mod::Shift; remaining = remaining.subStr(2, remaining.length() - 2); }
+            else scanning = false;
+        }
+
+        if (remaining.isEmpty()) throw SonarException("Empty key in chord: " + spec);
+
+        if (remaining.length() == 1) {
+            char key = remaining.at(0);
+            // Case-normalize only under Ctrl: a terminal delivers Ctrl+letter
+            // as the same byte regardless of shift state (^s == ^S), but a
+            // bare letter is a genuinely distinct keystroke from its shifted
+            // form, so an unmodified binding must stay case-sensitive.
+            bool hasCtrl = (mods / Mod::Ctrl) % 2 == 1;
+            if (hasCtrl && key.isAlpha()) key = key.toUpper();
+            return Chord(mods, KeyCode::Char, key);
+        }
+
+        KeyCode? found = keyCodeFromName(remaining);
+        if (found != None) {
+            KeyCode code = found;
+            return Chord(mods, code, std::charFromCode(0));
+        }
+        throw SonarException("Unknown key in chord: " + spec);
+    }
+
+    // Comparison logic is inlined at each use site (bind's duplicate check,
+    // handle's match check, KeyEvent.matches in component.lev) rather than
+    // factored into a shared helper — no correctness reason now that Chord
+    // is a class (bug.md #41), just kept as-is since it was already written
+    // and verified this way while chasing that bug down.
+
+    // App.keymap() surface (anchor C9). Duplicate-bind throws (loud, C9);
+    // removal is by token (R12).
+    class Keymap {
+        Array<Chord> chords_ = [];
+        Array<() => void> actions_ = [];
+        Array<int> tokens_ = [];
+        int nextToken_ = 1;
+
+        int bind(string chord, () => void action) {
+            Chord parsed = parseChord(chord);
+            for (Chord existing in chords_) {
+                bool same = existing.mods == parsed.mods && existing.code == parsed.code
+                    && (existing.code != KeyCode::Char || existing.ch == parsed.ch);
+                if (same) throw SonarException("Duplicate chord binding: " + chord);
+            }
+            int token = nextToken_;
+            nextToken_ = nextToken_ + 1;
+            chords_ = chords_.add(parsed);
+            actions_ = actions_.add(action);
+            tokens_ = tokens_.add(token);
+            return token;
+        }
+
+        void unbind(int token) {
+            Array<Chord> cs = [];
+            Array<() => void> as = [];
+            Array<int> ts = [];
+            for (int i in 0..tokens_.length() - 1) if (tokens_[i] != token) {
+                cs = cs.add(chords_[i]);
+                as = as.add(actions_[i]);
+                ts = ts.add(tokens_[i]);
+            }
+            chords_ = cs; actions_ = as; tokens_ = ts;
+        }
+
+        bool handle(KeyEvent e) {
+            Array<Chord> cs = chords_;
+            Array<() => void> actions = actions_;
+            for (int i in 0..cs.length() - 1) {
+                Chord c = cs[i];
+                bool same = c.mods == e.mods && c.code == e.code
+                    && (c.code != KeyCode::Char || c.ch == e.ch);
+                if (same) {
+                    var action = actions[i];
+                    action();
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+}

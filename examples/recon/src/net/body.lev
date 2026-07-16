@@ -1,0 +1,86 @@
+// Body assembly per BodyMode (DESIGN §6.3). Returns (bodyString, contentType?);
+// a None content-type means "don't set one" (the user's header wins).
+namespace Recon {
+
+// Surface a blocked send (FileBinary) so the caller can refuse honestly.
+string bodyNote = "";
+
+Pair<string, string?> buildBody(RequestBody b, VarResolver vars) {
+    bodyNote = "";
+    string? none = None;
+
+    if (b.mode == BodyMode::NoBody) {
+        return Pair::Of("", none);
+    }
+    if (b.mode == BodyMode::Raw) {
+        string body = vars.resolve(b.raw);
+        string? ct = contentTypeForLanguage(b.rawLanguage);
+        return Pair::Of(body, ct);
+    }
+    if (b.mode == BodyMode::UrlEncoded) {
+        Array<string> parts = [];
+        for (FormField f in b.urlencoded) {
+            if (!f.enabled) { continue; }
+            string k = encoding::percentEncode(vars.resolve(f.key));
+            string v = encoding::percentEncode(vars.resolve(f.value));
+            parts = parts.add(k + "=" + v);
+        }
+        string? ct = "application/x-www-form-urlencoded";
+        return Pair::Of(parts.joinToString("&"), ct);
+    }
+    if (b.mode == BodyMode::FormData) {
+        string boundary = formBoundary(b);
+        StringBuilder sb = StringBuilder();
+        for (FormField f in b.formdata) {
+            if (!f.enabled) { continue; }
+            if (f.kind == "file") {
+                bodyNote = "multipart file part '" + f.key + "' omitted (binary unsupported in v1)";
+                sb.add("--").add(boundary).add("\r\n");
+                sb.add("Content-Disposition: form-data; name=\"").add(vars.resolve(f.key)).add("\"\r\n\r\n");
+                sb.add("[binary part omitted]\r\n");
+            } else {
+                sb.add("--").add(boundary).add("\r\n");
+                sb.add("Content-Disposition: form-data; name=\"").add(vars.resolve(f.key)).add("\"\r\n\r\n");
+                sb.add(vars.resolve(f.value)).add("\r\n");
+            }
+        }
+        sb.add("--").add(boundary).add("--\r\n");
+        string? ct = "multipart/form-data; boundary=" + boundary;
+        return Pair::Of(sb.toString(), ct);
+    }
+    if (b.mode == BodyMode::GraphQL) {
+        string q = vars.resolve(b.graphqlQuery);
+        string varsStr = vars.resolve(b.graphqlVars);
+        JsonValue? parsedVars = json::parse(varsStr);
+        Map<string,JsonValue> emptyVars;
+        JsonValue varsNode = JsonValue::ofObject(emptyVars);
+        if (parsedVars != None) { varsNode = parsedVars ?? varsNode; }
+        JsonValue payload = jObj([
+            Pair::Of("query", jStrNode(q)),
+            Pair::Of("variables", varsNode)
+        ]);
+        string? ct = "application/json";
+        return Pair::Of(payload.render(), ct);
+    }
+    // FileBinary: not sendable.
+    bodyNote = "request body is a binary file upload, unsupported in v1";
+    return Pair::Of("", none);
+}
+
+string? contentTypeForLanguage(string lang) {
+    if (lang == "json") { return "application/json"; }
+    if (lang == "xml")  { return "application/xml"; }
+    string? plain = "text/plain";
+    return plain;
+}
+
+// Deterministic, content-derived boundary (unique in practice, reproducible in
+// tests — avoids sysRandom nondeterminism).
+string formBoundary(RequestBody b) {
+    StringBuilder seed = StringBuilder();
+    for (FormField f in b.formdata) { seed.add(f.key).add("=").add(f.value).add(";"); }
+    string hash = encoding::hexEncode(digest::md5(seed.toString()));
+    return "----ReconBoundary" + hash.subStr(0, 16);
+}
+
+}

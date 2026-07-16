@@ -1,0 +1,2 @@
+uses Base;
+namespace Mid { public int doubled() => Base::val() * 2; }

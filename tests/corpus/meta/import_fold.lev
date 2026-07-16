@@ -1,0 +1,17 @@
+// LA-20: comptime import() — a declared build input folds to a comptime
+// string, byte-for-byte (including non-ASCII content). Reading the same
+// path from two comptime sites is a compile-time cache (identical values,
+// one disk read); the folded string feeds an ordinary comptime function
+// call, exactly the template-parser pattern this feature exists for.
+
+comptime string tplA = import("import_fold_fixture.html");
+comptime string tplB = import("import_fold_fixture.html");
+
+bool hasPlaceholder(string s) => s.contains("{{name}}");
+comptime bool hasIt = hasPlaceholder(tplA);
+
+console.writeln(tplA.length());
+console.writeln(tplA.contains("{{name}}"));
+console.writeln(tplA.contains("€5"));
+console.writeln(tplA == tplB);
+console.writeln(hasIt);

@@ -1,0 +1,30 @@
+size=8
+APP_NAME=myapp
+SPACED=[trimmed]
+GREETING has tab=true len=11
+EMPTY present=true value=[]
+MISSING present=false
+PORT int=8080
+DEBUG bool=true
+absent int falls back=99
+clean errors=0
+bad int=-1
+bad bool=false
+accumulated=2
+  err: key 'N1': expected int, got 'abc'
+  err: key 'B1': expected bool (true|false), got 'maybe'
+require APP_NAME=myapp
+require NOPE threw: missing required key 'NOPE'
+smtp.HOST=mail.example.com
+smtp.PORT=2525
+smtp still has prefixed key=false
+malformed errors=5
+  line 2: missing '=' (expected KEY=VALUE)
+  line 3: invalid key '1BAD'
+  line 4: duplicate key 'GOOD'
+  line 5: bad value for 'ESC'
+  line 6: bad value for 'UNTERM'
+USER=bob
+DB_PASSWORD=****
+API_KEY=****
+HOST=local

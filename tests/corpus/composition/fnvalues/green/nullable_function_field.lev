@@ -1,0 +1,10 @@
+// Regression floor for bug #51 (a nullable function type, ((T) => R)?,
+// used to fail to parse). Fixed 2026-07-14 on master.
+class Validator {
+    ((string) => bool)? check = None;
+}
+void main() {
+    Validator v = Validator();
+    console.writeln(v.check == None);
+}
+main();

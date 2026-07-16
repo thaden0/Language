@@ -1,0 +1,8 @@
+packages/atlantis/tests/probes/ser_p1a_value_hole_this_dollar_f.lev:11:91: error: '$f' is an attribute value, not a member name
+              Array<int> vs = [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : this.$f ];
+                                                                                            ^~~~
+packages/atlantis/tests/probes/ser_p1a_value_hole_this_dollar_f.lev:11:91: error: '$f' is an attribute value, not a member name
+              Array<int> vs = [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : this.$f ];
+                                                                                            ^~~~
+
+2 error(s)

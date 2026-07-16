@@ -1,0 +1,31 @@
+// §16.5 Phase 3 §4: `where` gates a structural match with an ordinary comptime
+// predicate over the bindings (meta.* objects, plain names — no `$` holes).
+// No attribute pattern here: the match is by kind + encloser alone, so
+// `where` is the ONLY filter — only methods returning something (not void)
+// get instrumented.
+namespace W {
+    interface IService { }
+    rule onlyNonVoid {
+        match on method m in class C : IService
+        where m.returnType != "void"
+        inject `log.hit();` at bottom of C.constructor
+    }
+}
+uses W;
+
+class Log {
+    int n = 0;
+    Log hit() { n = n + 1; return this; }
+}
+
+class Svc : IService {
+    Log log;
+    new Svc(Log l) { log = l; }
+    int a() => 1;       // non-void: where is true, rule fires
+    void b() { }        // void: where is false, rule does not fire
+    string c() => "x";  // non-void: fires
+}
+
+Log lg = Log();
+Svc s = Svc(lg);
+console.writeln(lg.n);

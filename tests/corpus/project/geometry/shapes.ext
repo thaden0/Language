@@ -1,0 +1,8 @@
+namespace Geo {
+    public class Circle {
+        public int r = 0;
+        new Sized(int radius) { r = radius; }
+        public int area10() => 3 * r * r;    // area * ~1 (integer stand-in for pi)
+    }
+    public int square(int n) => n * n;
+}

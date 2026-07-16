@@ -1,0 +1,40 @@
+// M0 P5: PASSES (using direct console.writeln — see P6/known_bugs_1.md
+// #76 note: a namespace-scoped initializer can't touch other global state,
+// so accumulating into an Array field would be corrupted and prove
+// nothing; direct native I/O is unaffected and gives a trustworthy answer).
+// Two rules with complementary `where` predicates (disposable vs not) both
+// fire correctly across a mixed program — no double-fire, no miss.
+namespace HP5 {
+    attribute Test { }
+    rule seedPlain {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test")) && !C.hasBase("IDisposable")
+        inject `bool $C = HP5::__mark([ $for cc in [C] : $cc.name ][0], "plain");` at namespace Gen
+    }
+    rule seedDisposable {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test")) && C.hasBase("IDisposable")
+        inject `bool $C = HP5::__mark([ $for cc in [C] : $cc.name ][0], "disposable");` at namespace Gen
+    }
+    bool __mark(string name, string kind) {
+        console.writeln(name + ":" + kind);
+        return true;
+    }
+}
+uses HP5;
+
+class PlainTests {
+    @Test void p1() { }
+}
+class DisposableTests : IDisposable {
+    void close() { }
+    @Test void d1() { }
+}
+class NoTests {
+    void notATest() { }
+}
+
+void main() {
+    console.writeln("main done");
+}
+main();

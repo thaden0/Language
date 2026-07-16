@@ -1,0 +1,43 @@
+// M0 P3: FALSIFIED, independently of #76. `using $C t = $C(); t.$m();`
+// inside a FRAGMENT/TEMPLATE-parsed block lambda (the quasiquote
+// backtick body an `inject` uses) fails to parse — "expected ';'" at the
+// `using` keyword — even though the identical `using` statement inside an
+// ORDINARY (non-template) lambda parses and runs correctly (verified
+// separately: `using Res t = Res(); ...` inside a plain `() => { ... }`
+// works fine outside of any rule/template). So the gap is specific to the
+// fragment statement parser used inside `inject \`...\`` bodies, not to
+// `using`-in-lambda generally. Per the design's own P3 fallback: "drop the
+// `using` template; teardown becomes `t.$m(); t.close();` (no teardown on
+// failure) + a documented limit." Moot for v1 regardless, since #76
+// (known_bugs_1.md) already blocks the surrounding registration mechanism
+// this template would have been spliced into.
+bool closed = false;
+
+namespace HP3 {
+    attribute Test { }
+    rule seed {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test")) && C.hasBase("IDisposable")
+        inject `(() => void) $C() => () => { using $C t = $C(); t.$m(); };`
+               at namespace Gen
+    }
+}
+uses HP3;
+
+class Res : IDisposable {
+    new Res() { }
+    void close() { closed = true; }
+    @Test void boom() { throw RuntimeException("fail"); }
+}
+
+void main() {
+    var f = Gen::Res();
+    try {
+        f();
+        console.writeln("no throw (unexpected)");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+    console.writeln("closed=" + closed.toString());
+}
+main();

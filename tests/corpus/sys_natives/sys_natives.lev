@@ -1,0 +1,23 @@
+// Track 08 system natives (interpreters): property checks only — no golden
+// values for time/random (design M3), so this file stays environment-neutral.
+// The environment-dependent bits (env PATH, DNS localhost, dir round-trip) live
+// in tests/run_sysnatives.sh.
+
+// F2 monotonic: a later read never precedes an earlier one.
+int a = std::sysMonotonic();
+int b = std::sysMonotonic();
+console.writeln((b >= a).toString());
+
+// F2 random: requested length is honoured; n<=0 is the empty string.
+console.writeln(std::sysRandom(0).length().toString());
+console.writeln(std::sysRandom(24).length().toString());
+
+// F4 isatty: whatever the value, it is a stable bool (equal to itself).
+bool t = std::sysIsTty(1);
+console.writeln((t == t).toString());
+
+// F1 env: an unset variable is None (distinct from set-but-empty, §9).
+console.writeln((env::get("LEVIATHAN_NOPE_XYZ_123") == None).toString());
+
+// F3 listDir: a path that is not a directory is None (distinct from []).
+console.writeln((std::sysListDir("/nonexistent/path/xyz/123") == None).toString());

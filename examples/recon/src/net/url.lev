@@ -1,0 +1,169 @@
+// URL parsing (DESIGN §5.1). The HttpClient does no URL parsing; Recon owns it.
+// Pure/headless. Totals return None on malformed input (§12.6).
+namespace Recon {
+
+class Url {
+    public string scheme = "http";
+    public string host = "";
+    public int    port = 80;
+    public string path = "/";
+    public string query = "";                   // without the leading '?'
+    public string fragment = "";                // client-only; never sent
+    new Url() { }
+    bool isHttps() => scheme == "https";
+    string pathWithQuery() {
+        if (query.isEmpty()) { return path; }
+        return path + "?" + query;              // what HttpClient wants
+    }
+    string authority() {
+        int def = 80;
+        if (scheme == "https") { def = 443; }
+        if (port == def) { return host; }
+        return host + ":" + port.toString();
+    }
+    string full() {
+        string s = scheme + "://" + this.authority() + path;
+        if (!query.isEmpty())    { s = s + "?" + query; }
+        if (!fragment.isEmpty()) { s = s + "#" + fragment; }
+        return s;
+    }
+}
+
+// Total: None on a malformed/relative-without-base URL. A free function (no statics, §12.5).
+Url? parseUrl(string raw) {
+    string s = raw.trim();
+    if (s.isEmpty()) { return None; }
+
+    Url u = Url();
+    // 1. scheme
+    int sep = s.indexOf("://");
+    string rest = s;
+    if (sep >= 0) {
+        u.scheme = s.subStr(0, sep).toLower();
+        rest = s.subStr(sep + 3, s.length() - sep - 3);
+    } else {
+        u.scheme = "http";
+    }
+    int defPort = 80;
+    if (u.scheme == "https") { defPort = 443; }
+    u.port = defPort;
+
+    // 2. authority is up to the next '/', '?', or '#'
+    int authEnd = rest.length();
+    int i = 0;
+    while (i < rest.length()) {
+        int b = rest.byteAt(i);
+        if (b == 47 || b == 63 || b == 35) { authEnd = i; break; }  // / ? #
+        i = i + 1;
+    }
+    string authority = rest.subStr(0, authEnd);
+    string tail = rest.subStr(authEnd, rest.length() - authEnd);
+
+    // host:port  (IPv6 bracket form [::1]:port)
+    if (authority.startsWith("[")) {
+        int close = authority.indexOf("]");
+        if (close < 0) { return None; }
+        u.host = authority.subStr(1, close - 1);
+        string after = authority.subStr(close + 1, authority.length() - close - 1);
+        if (after.startsWith(":")) {
+            int? p = after.subStr(1, after.length() - 1).toInt();
+            if (p != None) { u.port = p; } else { return None; }
+        }
+    } else {
+        int colon = authority.lastIndexOf(":");
+        if (colon >= 0) {
+            string portStr = authority.subStr(colon + 1, authority.length() - colon - 1);
+            int? p = portStr.toInt();
+            if (p != None) { u.port = p; } else { return None; }
+            u.host = authority.subStr(0, colon);
+        } else {
+            u.host = authority;
+        }
+    }
+    if (u.host.isEmpty()) { return None; }
+
+    // 3. path / query / fragment from the tail
+    // fragment first (client-only)
+    int hash = tail.indexOf("#");
+    if (hash >= 0) {
+        u.fragment = tail.subStr(hash + 1, tail.length() - hash - 1);
+        tail = tail.subStr(0, hash);
+    }
+    int qmark = tail.indexOf("?");
+    if (qmark >= 0) {
+        u.query = tail.subStr(qmark + 1, tail.length() - qmark - 1);
+        tail = tail.subStr(0, qmark);
+    }
+    if (tail.isEmpty()) { u.path = "/"; }
+    else { u.path = tail; }
+    return u;
+}
+
+// Resolve a possibly-relative Location against a base (for redirects, §6.6).
+Url? resolveUrl(Url base, string location) {
+    string loc = location.trim();
+    if (loc.isEmpty()) { return None; }
+    // absolute (has scheme://)
+    if (loc.indexOf("://") >= 0) { return parseUrl(loc); }
+    // protocol-relative //host/path
+    if (loc.startsWith("//")) { return parseUrl(base.scheme + ":" + loc); }
+
+    Url u = Url();
+    u.scheme = base.scheme;
+    u.host = base.host;
+    u.port = base.port;
+    // split off query/fragment of the location
+    string p = loc;
+    int hash = p.indexOf("#");
+    if (hash >= 0) {
+        u.fragment = p.subStr(hash + 1, p.length() - hash - 1);
+        p = p.subStr(0, hash);
+    }
+    int qmark = p.indexOf("?");
+    if (qmark >= 0) {
+        u.query = p.subStr(qmark + 1, p.length() - qmark - 1);
+        p = p.subStr(0, qmark);
+    }
+    if (p.isEmpty()) {
+        u.path = base.path;
+    } else if (p.startsWith("/")) {
+        u.path = p;                              // absolute path
+    } else {
+        // relative to the base directory
+        string dir = dirOf(base.path);
+        if (!dir.endsWith("/")) { dir = dir + "/"; }
+        u.path = normalizePath(dir + p);
+    }
+    return u;
+}
+
+// The directory portion of a path ("/a/b/c" -> "/a/b", "/x" -> "/"). Shared by
+// the cookie jar's default-path rule (§6.5).
+string dirOf(string path) {
+    if (path.isEmpty()) { return "/"; }
+    int q = path.indexOf("?");
+    string p = path;
+    if (q >= 0) { p = p.subStr(0, q); }
+    int slash = p.lastIndexOf("/");
+    if (slash <= 0) { return "/"; }
+    return p.subStr(0, slash);
+}
+
+// Collapse "." and ".." segments in a path.
+string normalizePath(string path) {
+    Array<string> segs = path.split("/");
+    Array<string> out = [];
+    for (string seg in segs) {
+        if (seg == "" || seg == ".") { continue; }
+        if (seg == "..") {
+            if (out.length() > 0) { out = out.removeAt(out.length() - 1); }
+        } else {
+            out = out.add(seg);
+        }
+    }
+    string joined = "/" + out.joinToString("/");
+    if (path.endsWith("/") && !joined.endsWith("/")) { joined = joined + "/"; }
+    return joined;
+}
+
+}

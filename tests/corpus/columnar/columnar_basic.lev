@@ -1,0 +1,29 @@
+// techdesign-columnar §3.1: build-by-append, fused + gathered field reads,
+// whole-struct read, length, iteration. Output must be byte-identical on
+// oracle/IR/emit-C++/LLVM, with --columnar on AND off.
+struct Wide { int hot; int c1; int c2; }
+void run() {
+    Array<Wide> a;
+    for (int i in 0..5) {
+        Wide w; w.hot = i * 10; w.c1 = i; w.c2 = 100 + i;
+        a = a.add(w);
+    }
+    // fused field read (arr[i].field -> ColGet)
+    int sum = 0;
+    for (int i in 0..5) { sum = sum + a[i].hot; }
+    console.writeln(sum);            // 150
+
+    // whole-struct read (gather) then field access on the bound value
+    Wide x = a[3];
+    console.writeln(x.hot);          // 30
+    console.writeln(x.c1);           // 3
+    console.writeln(x.c2);           // 103
+
+    console.writeln(a.length());     // 6
+
+    // for-in gather over the whole array
+    int cs = 0;
+    for (Wide e in a) { cs = cs + e.c1 + e.c2; }
+    console.writeln(cs);             // (0+1+2+3+4+5) + (100..105) = 15 + 615 = 630
+}
+run();

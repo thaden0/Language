@@ -1,0 +1,2 @@
+use M::other as oth;
+console.writeln(oth(2));

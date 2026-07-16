@@ -1,0 +1,106 @@
+// Atlantis Track 02 — validation (design §5): C5 rule/attribute *shapes* are
+// declared in route_rec.lev per this track's commission, but the attribute
+// auto-wiring rules (§5.1's class-level rule, §5.2's per-attribute
+// registration rules) both need mechanisms this repo hasn't landed yet
+// (LA-4 attribute-value reflection, LA-16 identifier/type splicing — both
+// already filed, request-metaprog-attr-values.md / request-metaprog-splices.md;
+// see the design's §13 log). What ships here is the part that needs neither:
+// an explicit `Check`/`CRule` descriptor list, run against a parsed JSON body,
+// producing the same `Array<FieldError>` -> `ValidationException` -> 422 flow
+// (respond.lev's `Respond::validationProblem`, already landed in Track 01).
+namespace Atlantis {
+    namespace Routing {
+
+        struct CRule {
+            string kind;   // "Required" | "MaxLen" | "MinLen" | "Min" | "Max" | "Email" | "Url"
+            int arg;
+            new CRule(string kind, int arg) {
+                this.kind = kind;
+                this.arg = arg;
+            }
+        }
+        struct Check {
+            string field;
+            Array<CRule> rules;
+            new Check(string field, Array<CRule> rules) {
+                this.field = field;
+                this.rules = rules;
+            }
+        }
+
+        namespace Validation {
+
+            // Email heuristic (documented, v1 — §5): contains '@' with a '.'
+            // somewhere after it. `@Pattern`/regex-backed validation is
+            // deferred (`designs/requests/request-regex.md`, now landed as
+            // Track 10 LA-13 — a real follow-up, not attempted here to keep
+            // this track's scope to what §5 itself specifies).
+            bool looksLikeEmail(string s) {
+                int at = s.indexOf("@");
+                if (at < 0) { return false; }
+                return s.indexOfFrom(".", at) > at;
+            }
+
+            Array<Http::FieldError> checkField(JsonValue body, Check c) {
+                Array<Http::FieldError> errs = [];
+                JsonValue fv = body.atOrNone(c.field) ?? JsonValue::ofNull();
+                bool present = !fv.isNull();
+                for (CRule r in c.rules) {
+                    if (r.kind == "Required") {
+                        if (!present) { errs = errs.add(Http::FieldError(c.field, "required")); }
+                    } else if (present) {
+                        if (r.kind == "MaxLen") {
+                            string s = fv.asStr() ?? "";
+                            if (s.length() > r.arg) {
+                                errs = errs.add(Http::FieldError(c.field, "must be at most " + r.arg.toString() + " characters"));
+                            }
+                        } else if (r.kind == "MinLen") {
+                            string s = fv.asStr() ?? "";
+                            if (s.length() < r.arg) {
+                                errs = errs.add(Http::FieldError(c.field, "must be at least " + r.arg.toString() + " characters"));
+                            }
+                        } else if (r.kind == "Min") {
+                            float n = fv.asNum() ?? 0.0;
+                            if (n < r.arg.toFloat()) {
+                                errs = errs.add(Http::FieldError(c.field, "must be >= " + r.arg.toString()));
+                            }
+                        } else if (r.kind == "Max") {
+                            float n = fv.asNum() ?? 0.0;
+                            if (n > r.arg.toFloat()) {
+                                errs = errs.add(Http::FieldError(c.field, "must be <= " + r.arg.toString()));
+                            }
+                        } else if (r.kind == "Email") {
+                            string s = fv.asStr() ?? "";
+                            if (!looksLikeEmail(s)) {
+                                errs = errs.add(Http::FieldError(c.field, "must be a valid email"));
+                            }
+                        } else if (r.kind == "Url") {
+                            string s = fv.asStr() ?? "";
+                            if (!(s.startsWith("http://") || s.startsWith("https://"))) {
+                                errs = errs.add(Http::FieldError(c.field, "must be a valid URL"));
+                            }
+                        }
+                    }
+                }
+                return errs;
+            }
+
+            Array<Http::FieldError> run(JsonValue body, Array<Check> checks) {
+                Array<Http::FieldError> errs = [];
+                for (Check c in checks) { errs = errs.concat(checkField(body, c)); }
+                return errs;
+            }
+
+            // The C4 channel (§5, "ValidationException (C4) -> 422"): throws
+            // when any check fails, otherwise a no-op.
+            void validate(JsonValue body, Array<Check> checks) {
+                // `var`, not an explicit `Array<Http::FieldError>` annotation
+                // — a qualified generic-argument spelling does not type-match
+                // its bare in-namespace spelling across this boundary (see
+                // the `AddRoute` note in facade.lev / the design's §13 log).
+                var errs = run(body, checks);
+                if (!errs.isEmpty()) { throw Http::ValidationException(errs); }
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+uses Web;
+class Ctl : IController {
+    Registry hits;
+    new Ctl(Registry r) { hits = r; }
+    @Route("/a") int a() => 1;
+    @Route("/b") int b() => 2;
+}
+Registry reg = Registry();
+Ctl c = Ctl(reg);
+console.writeln(reg.log);

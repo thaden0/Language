@@ -1,0 +1,3 @@
+name = "asset_ok"
+sources = ["main.lev"]
+assets = ["views/**", "schema.sql"]

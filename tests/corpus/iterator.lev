@@ -1,0 +1,95 @@
+// Track 07 M2 — the iterator protocol (techdesign-07 §1-2).
+// A user LinkedList-style IIterable driven through `for..in`; loop-var
+// inference (P4); break/continue inside a protocol-desugared loop (design
+// problem #5); Map iteration duality (design problem #7); and protocol
+// uniformity — an Array/Range standing where an IIterable is wanted (§2.1).
+
+class Link<T> {
+    T value;
+    Link<T> tail;
+    bool more = false;
+    new Link(T v) { value = v; }
+}
+
+// A minimal mutable singly-linked list that plugs into `for..in` by
+// implementing IIterable<T> — nothing built-in about it.
+class LinkedList<T> : IIterable<T> {
+    Link<T> head;
+    Link<T> last;
+    bool empty = true;
+    void add(T v) {
+        Link<T> n = Link(v);
+        if (empty) { head = n; last = n; empty = false; }
+        else { last.tail = n; last.more = true; last = n; }
+    }
+    IIterator<T> iterator() => LinkIterator(head, empty);
+}
+
+// The iterator holds honest mutable cursor state (design problem #3): a class,
+// not a snapshot closure, so `next()` advances across pulls.
+class LinkIterator<T> : IIterator<T> {
+    Link<T> cur;
+    bool live = false;
+    new LinkIterator(Link<T> start, bool isEmpty) { cur = start; live = !isEmpty; }
+    bool hasNext() => live;
+    T next() {
+        T v = cur.value;
+        if (cur.more) cur = cur.tail;
+        else live = false;
+        return v;
+    }
+}
+
+// A generic pass-through surface: ANY IIterable<int> flows through one function.
+int sumOf(IIterable<int> src) {
+    int t = 0;
+    for (int x in src) t = t + x;
+    return t;
+}
+
+void run() {
+    LinkedList<int> xs = LinkedList();
+    xs.add(10); xs.add(20); xs.add(30); xs.add(40);
+
+    // explicit element type through the protocol
+    int total = 0;
+    for (int x in xs) total = total + x;
+    console.writeln(total);
+
+    // loop-variable inference (P4): `var x` binds int from IIterable<int>
+    string joined = "";
+    for (var x in xs) joined = joined + x.toString() + ",";
+    console.writeln(joined);
+
+    // break / continue inside a protocol loop (design problem #5)
+    int kept = 0;
+    for (int x in xs) {
+        if (x == 20) continue;       // skip 20
+        if (x == 40) break;          // stop before 40
+        kept = kept + x;             // 10 + 30
+    }
+    console.writeln(kept);
+
+    // uniformity: a user list, an Array, and a Range all satisfy IIterable<int>
+    Array<int> arr = [1, 2, 3, 4];
+    Range rng = 1 .. 5;
+    console.writeln(sumOf(xs));
+    console.writeln(sumOf(arr));
+    console.writeln(sumOf(rng));
+
+    // Map iteration duality (design problem #7): the built-in `for (Pair e in m)`
+    // fast path and the protocol iterator yield the identical Pair sequence.
+    Map<string, int> m = Map();
+    m["a"] = 1; m["b"] = 2; m["c"] = 3;
+    string viaFast = "";
+    for (Pair e in m) viaFast = viaFast + e.first + "=" + e.second.toString() + ";";
+    string viaProto = "";
+    IIterator<Pair<string, int>> it = m.iterator();
+    while (it.hasNext()) {
+        Pair<string, int> e = it.next();
+        viaProto = viaProto + e.first + "=" + e.second.toString() + ";";
+    }
+    console.writeln(viaFast);
+    console.writeln(viaProto == viaFast);
+}
+run();

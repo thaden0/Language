@@ -1,0 +1,21 @@
+// bug #35 pin (reject route A), container leg: a Promise reached through a bare-
+// GLOBAL Array<Promise<int>> — indexed by `.at(idx)` inside the spawn body —
+// rejects with the SAME banner as a bare global Promise. The guard's recursive
+// walk descends object fields / array elements / map entries exactly like the
+// capture flatten, so a Promise nested in a global container is caught too (this
+// matches the capture path, which already rejects a promise inside a container).
+// `idx` is a captured local (an int, harmless); only the global `proms` trips
+// the guard. Byte-identical on oracle/IR/LLVM.
+Array<Promise<int>> proms;
+Promise<int> p0 = Promise();
+proms = proms.add(p0);
+std::sysTimerStart(10, 0, (n) => { proms.at(0).resolve(7); });
+void go() {
+    int idx = 0;
+    std::spawn(() => {
+        int v = await proms.at(idx);
+        console.writeln("v=" + v.toString());
+        return 0;
+    });
+}
+go();

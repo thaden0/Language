@@ -1,0 +1,8 @@
+name = "atlantis-static-corpus"
+entry = "main"
+sources = ["static.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

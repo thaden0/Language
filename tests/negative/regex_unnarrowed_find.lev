@@ -1,0 +1,7 @@
+// doc 2 §6 acceptance: an un-narrowed find() result is a compile error.
+void run() {
+    Regex re = Regex("a+");
+    Match? m = re.find("aaa");
+    console.writeln(m.value);
+}
+run();

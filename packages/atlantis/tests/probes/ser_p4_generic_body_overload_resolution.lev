@@ -1,0 +1,41 @@
+// P-4: generic body calling an overloaded free function, instantiated at
+// different concrete types -- per-instantiation resolution vs definition-checked.
+//
+// RESULT: FAIL, confirming the design's worry (techdesign-03-serialization.md
+// §5.1/§13). The generic body's `Probe::enc(item)` call resolves ONCE at
+// definition-check time (against `T` unresolved), not per-instantiation --
+// and it does so DIFFERENTLY per engine: oracle and IR both silently pick the
+// `enc(int)` overload for every instantiation (a string arg limps through as
+// "I" -- `v.toString()` on the wrong static type -- and an ISerializable
+// instance the same); LLVM instead resolves the string case correctly
+// ("Sa"/"Sb" -> wait, observed "Ia,Ib": LLVM's int-witness body still runs
+// but against the right runtime string bytes, differently truncated than the
+// oracle/IR path) while agreeing with oracle/IR on the object case. None of
+// the three engines is fully correct, and they do not even agree with each
+// other. This is silently-wrong output (no diagnostic, exit 0), not a
+// compile error -- worth a bug.md entry. §5.1's designed fallback (monomorphic
+// per-type overloads instead of a generic body) is what Track 03 ships.
+namespace Probe {
+    interface ISerializable { string tag(); }
+    string enc(int v) => "I" + v.toString();
+    string enc(string v) => "S" + v;
+    string enc(ISerializable v) => "O" + v.tag();
+
+    Array<string> encArr<T>(Array<T> v) {
+        Array<string> out = [];
+        for (T item in v) { out = out.add(Probe::enc(item)); }
+        return out;
+    }
+}
+uses Probe;
+
+class Thing : Probe::ISerializable {
+    string tag() => "thing";
+}
+
+Array<int> xs = [1, 2, 3];
+Array<string> ss = ["a", "b"];
+Array<Thing> ts = [Thing()];
+console.write(Probe::encArr(xs).joinToString(",") + "|" +
+              Probe::encArr(ss).joinToString(",") + "|" +
+              Probe::encArr(ts).joinToString(","));

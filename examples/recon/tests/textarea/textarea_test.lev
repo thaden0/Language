@@ -1,0 +1,83 @@
+// Corpus test: TextArea editing operations (headless).
+namespace Recon {
+uses Sonar;
+
+void type(TextArea ta, string s) {
+    for (char c in s.chars()) { ta.onKeyDown(KeyEvent(KeyCode::Char, c, 0)); }
+}
+void key(TextArea ta, KeyCode k) {
+    ta.onKeyDown(KeyEvent(k, std::charFromCode(0), 0));
+}
+void show(TextArea ta, string label) {
+    string flat = ta.text().replace("\n", "\\n");
+    console.writeln(label + ": [" + flat + "] lines=" + ta.lineCount().toString()
+        + " cur=" + ta.curLine.toString() + "," + ta.curCol.toString());
+}
+
+void main() {
+    TextArea ta = TextArea();
+    ta.focused = true;
+
+    type(ta, "hello");
+    show(ta, "typed");
+
+    key(ta, KeyCode::Enter);
+    type(ta, "world");
+    show(ta, "second line");
+
+    key(ta, KeyCode::Home);
+    show(ta, "home");
+
+    type(ta, "X");
+    show(ta, "insert at col0");
+
+    key(ta, KeyCode::Backspace);
+    show(ta, "backspace");
+
+    // move to start of "world" and backspace to join lines
+    key(ta, KeyCode::Home);
+    key(ta, KeyCode::Backspace);
+    show(ta, "join lines");
+
+    // arrows: go up then to end
+    ta.setText("abc\ndef\nghi");
+    show(ta, "setText");
+    key(ta, KeyCode::Down);
+    key(ta, KeyCode::Right);
+    key(ta, KeyCode::Right);
+    show(ta, "down+right2");
+    key(ta, KeyCode::Up);
+    show(ta, "up (clamp col)");
+    key(ta, KeyCode::End);
+    show(ta, "end");
+    key(ta, KeyCode::Delete);
+    show(ta, "delete at eol joins");
+
+    // paste multi-line
+    ta.setText("");
+    ta.onPasteText(PasteEvent("one\ntwo\nthree"));
+    show(ta, "paste");
+
+    // unicode scalar correctness
+    ta.setText("caf");
+    key(ta, KeyCode::End);
+    type(ta, "é");        // 2-byte scalar; column advances by 1, not 2
+    type(ta, "!");
+    show(ta, "unicode");
+
+    // readOnly ignores edits
+    ta.setText("locked");
+    ta.readOnly = true;
+    type(ta, "XXX");
+    show(ta, "readOnly");
+
+    // cursor pos when focused
+    ta.readOnly = false;
+    ta.setText("hi\nthere");
+    key(ta, KeyCode::Down);
+    key(ta, KeyCode::End);
+    Point? cp = ta.cursorPos();
+    if (cp != None) { Point p = cp ?? Point(0,0); console.writeln("cursor=" + p.x.toString() + "," + p.y.toString()); }
+}
+
+}

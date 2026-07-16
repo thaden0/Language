@@ -1,0 +1,15 @@
+// A lambda capturing `this` explicitly and calling a sibling instance
+// method through it.
+class Ticker {
+    int n = 0;
+    void bump() { this.n = this.n + 1; }
+    () => void handler() { return () => { this.bump(); }; }
+}
+void main() {
+    Ticker t = Ticker();
+    var h = t.handler();
+    h();
+    h();
+    console.writeln(t.n.toString());
+}
+main();

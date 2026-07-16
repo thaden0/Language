@@ -1,0 +1,10 @@
+[namespaces] every namespace, the files that open it, and its members
+[namespaces] <root>
+[namespaces]   opened-in: main.ext
+[namespaces]   members:   run
+[namespaces] Geo
+[namespaces]   opened-in: shapes.ext, area.ext
+[namespaces]   members:   Circle, describe, square
+[namespaces] Util
+[namespaces]   opened-in: util.ext
+[namespaces]   members:   tag

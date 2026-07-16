@@ -1,0 +1,5 @@
+// No `uses Web` here — @Tag must NOT resolve in this file, even though the
+// whole-program gather can see the namespace. Scoping is per-file (P-4).
+@Tag(1)
+void handler() { console.writeln("never"); }
+handler();

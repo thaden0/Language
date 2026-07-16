@@ -1,0 +1,41 @@
+// Collection sidebar (DESIGN §9.1). A TreeView over ReconTreeSource, wired to
+// load the selected request into AppState. Plain builder class.
+namespace Recon {
+uses Sonar;
+
+class Sidebar {
+    public TreeView tree;
+    public ReconTreeSource source;
+    public AppState state;
+    (CollectionItem) => void onOpen;
+    bool hasOnOpen = false;
+
+    new Sidebar(AppState st) {
+        state = st;
+        source = ReconTreeSource();
+        tree = TreeView();
+        tree.setTitle("Collections");
+        tree.setBorder(BorderStyle::Single);
+        tree.setSource(source);
+        // EXPLICIT this. inside handlers (bug #53)
+        tree.onSelect((n) => this.handleSelect(n));
+    }
+
+    void setOnOpen((CollectionItem) => void cb) { onOpen = cb; hasOnOpen = true; }
+
+    void loadCollection(Collection col) {
+        source.build(col);
+        state.activeCollection = col;
+        tree.refresh();
+    }
+
+    void handleSelect(TreeNodeId n) {
+        CollectionItem item = this.source.itemFor(n);
+        if (!item.isFolder && item.request != None) {
+            this.state.loadRequest(item, this.source.collection, None);
+            if (this.hasOnOpen) { var cb = this.onOpen; cb(item); }
+        }
+    }
+}
+
+}

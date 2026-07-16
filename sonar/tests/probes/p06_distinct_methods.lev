@@ -1,0 +1,4 @@
+class A { distinct int changed() => 2; }
+class B { distinct int changed() => 3; }
+class C : A, B { int total() => this.A::changed() + this.B::changed(); }
+console.writeln(C().total());

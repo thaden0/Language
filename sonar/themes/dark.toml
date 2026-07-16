@@ -1,0 +1,94 @@
+# Sonar built-in theme: Dark (design §3)
+#
+# Dark background, light foreground. a11y rule (design §3): every state
+# distinction (focused/disabled/selected) carries a non-color channel (attrs),
+# never color alone — so the theme reads on mono / color-blind terminals too.
+
+[default]
+fg = "white"
+bg = "black"
+
+[text]
+fg = "white"
+
+[input]
+fg = "white"
+bg = "black"
+
+[input.focused]
+fg    = "brightWhite"
+bg    = "blue"
+attrs = "bold"
+
+[input.disabled]
+fg    = "brightBlack"
+attrs = "dim"
+
+[button]
+fg = "black"
+bg = "white"
+
+[button.focused]
+fg    = "black"
+bg    = "brightCyan"
+attrs = "bold"
+
+[button.disabled]
+fg    = "brightBlack"
+attrs = "dim"
+
+[checkbox]
+fg = "white"
+
+[checkbox.focused]
+fg    = "brightWhite"
+attrs = "bold"
+
+[radio]
+fg = "white"
+
+[radio.focused]
+fg    = "brightWhite"
+attrs = "bold"
+
+[radio.selected]
+fg    = "brightCyan"
+attrs = "underline"
+
+[progress]
+fg = "brightBlack"
+
+[progress.bar]
+fg = "brightGreen"
+
+[spinner]
+fg = "brightCyan"
+
+[contentbar]
+fg = "white"
+bg = "brightBlack"
+
+[border]
+fg = "brightBlack"
+
+[border.focused]
+fg    = "brightCyan"
+attrs = "bold"
+
+[title]
+fg    = "brightWhite"
+attrs = "bold"
+
+[scrollbar]
+fg = "brightBlack"
+
+[scrollbar.thumb]
+fg = "white"
+
+[menu.item]
+fg = "white"
+
+[menu.item.selected]
+fg    = "brightWhite"
+bg    = "blue"
+attrs = "reverse"

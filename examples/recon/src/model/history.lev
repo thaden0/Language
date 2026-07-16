@@ -1,0 +1,36 @@
+// Recon history model (DESIGN §4.5).
+namespace Recon {
+
+class HistoryEntry {
+    public string method = "GET";
+    public string url = "";
+    public int    status = 0;
+    public int    elapsedMs = 0;
+    public int    bodySize = 0;
+    public string timestamp = "";               // DateTime::now().iso8601()
+    public string requestJson = "";             // serialized RequestSpec snapshot (re-openable)
+    public string responsePreview = "";         // first N bytes of the body
+    new HistoryEntry() { }
+}
+
+class History {
+    public Array<HistoryEntry> entries;         // most-recent-first, capped
+    public int cap = 500;
+    new History() { }
+
+    void add(HistoryEntry e) {                  // prepend + cap
+        Array<HistoryEntry> next = [e];
+        entries = next.concat(entries);
+        if (entries.length() > cap) {
+            entries = entries.slice(0, cap);
+        }
+    }
+
+    // one-line label for the history list ("200 GET https://...")
+    string labelAt(int i) {
+        HistoryEntry e = entries.at(i);
+        return e.status.toString() + " " + e.method + " " + e.url;
+    }
+}
+
+}

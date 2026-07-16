@@ -1,0 +1,14 @@
+// Calling the result of an array-indexing expression directly, fns[i]() —
+// regression floor for the now-fixed bug #52 (used to fail IR lowering:
+// "not yet lowerable: this call target").
+bool runAll(Array<() => bool> fns) {
+    for (int i in 0..fns.length() - 1) {
+        if (!fns[i]()) return false;
+    }
+    return true;
+}
+void main() {
+    Array<() => bool> fns = [() => true, () => true];
+    console.writeln(runAll(fns));
+}
+main();

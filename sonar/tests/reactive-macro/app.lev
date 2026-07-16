@@ -1,0 +1,51 @@
+uses Sonar;
+
+// T11 M4/M5 — the REAL `sonar!` reactive path end to end: comptime macro ->
+// reactive-hole detection -> __sonarBind registration -> compile -> run. The
+// design headline: mark a field @Sonar::Reactive, bind it in a template, and a
+// bare `count = n` write updates every bound widget.
+class CounterApp : Container {
+    @Sonar::Reactive int count = 0;
+    @Sonar::Reactive string status = "idle";
+    Text counter;
+    Text mirror;
+    Text stat;
+    Text plain;
+    string note = "hello";                 // NOT @Reactive
+
+    new CounterApp() {
+        this.add(sonar!(`
+            <Container>
+                <Text id="counter" text={this.count}/>
+                <Text id="mirror" text={this.count}/>
+                <Text id="stat" text={this.status}/>
+                <Text id="plain" text={this.note}/>
+            </Container>
+        `));
+    }
+
+    void tick() { count = count + 1; }         // the feature: bare write, widget updates
+    void setStatus(string s) { status = s; }
+}
+
+void main() {
+    CounterApp app = CounterApp();
+    console.writeln("init   c=" + app.counter.text + " m=" + app.mirror.text
+        + " s=" + app.stat.text + " p=" + app.plain.text);
+    app.tick();
+    console.writeln("tick1  c=" + app.counter.text + " m=" + app.mirror.text);   // both count-holes update
+    app.tick(); app.tick();
+    console.writeln("tick3  c=" + app.counter.text + " m=" + app.mirror.text);
+    app.setStatus("running");
+    console.writeln("status s=" + app.stat.text);
+
+    // Non-reactive field: a bare write does NOT route through a set-view, so the
+    // write itself triggers no update — the `plain` hole is still "hello".
+    app.note = "changed";
+    console.writeln("note   field=" + app.note + " hole=" + app.plain.text);      // hole still "hello"
+    // ...but v1 notify is GLOBAL fan-out, so the NEXT reactive write re-runs
+    // every binding — including plain's — and it picks up the new value. This is
+    // the documented deviation (per-field precision needs LA-15); pinned honestly.
+    app.tick();
+    console.writeln("after  hole=" + app.plain.text);                             // now "changed"
+}

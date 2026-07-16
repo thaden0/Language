@@ -1,0 +1,8 @@
+uses Client;                          // the dep's Json namespace, bound as Client
+void main() {
+    console.writeln(Client::enc(5));  // qualified via the alias
+    console.writeln(enc(6));          // unqualified via `uses Client`
+    Client::Doc d = Client::Doc();    // a type + construction through the alias
+    d.v = 99;
+    console.writeln(d.v);
+}

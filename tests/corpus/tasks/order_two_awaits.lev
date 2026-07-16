@@ -1,0 +1,29 @@
+// LA-30 doc 5 §2 C1 (completion-ordered resumption) — the design's canonical
+// repro, reshaped to TaskGroup children (bug #35 reject route A). The original
+// used `std::spawn` bodies that awaited a bare top-level Promise resolved by a
+// timer on the spawner's thread — an A-1 violation ("all waiters of a promise
+// live on the promise's own thread"). That shape now rejects loudly and byte-
+// identically on every engine (pin: spawn_global_promise_rejected.lev); the
+// SANCTIONED way to have several awaiters of a main-thread promise is same-
+// thread tasks, i.e. `TaskGroup` children (`g.run`), the b2_group_* precedent.
+//
+// The two awaiters therefore live on the main thread as group-owned tasks. The
+// main task then `await done` (a bare global awaited on ITS OWN thread — not a
+// crossing) to pump the loop so both children RESUME and complete before the
+// group's `using` close() (which would otherwise cancel a still-parked child).
+// Children first run FIFO to their first await, then resume in completion order
+// — fast (10ms) settles before slow (30ms), so B settles and resumes first:
+// B2 then A1, unchanged from the spawn shape. Byte-identical on oracle/IR/LLVM.
+Promise<int> slow = Promise();
+Promise<int> fast = Promise();
+Promise<int> done = Promise();
+void run() {
+    using TaskGroup g = TaskGroup();
+    std::sysTimerStart(30, 0, (n) => { slow.resolve(1); });
+    std::sysTimerStart(10, 0, (n) => { fast.resolve(2); });
+    std::sysTimerStart(45, 0, (n) => { done.resolve(0); });
+    g.run(() => { console.writeln("A" + (await slow).toString()); });
+    g.run(() => { console.writeln("B" + (await fast).toString()); });
+    int x = await done;                 // pump: let both children finish, then close()
+}
+run();

@@ -1,0 +1,31 @@
+// bug.md #32 regression: namespace-local class construction (qualified and
+// bare-inside-the-namespace) plus the X::Y(...) disambiguation between a
+// labeled ctor on a class and construction of a class inside a namespace.
+namespace geo {
+    class Point {
+        int x;
+        int y;
+        new Point(int a, int b) { x = a; y = b; }
+        string show() => "(" + x.toString() + "," + y.toString() + ")";
+    }
+    Point makeOrigin() { Point p = Point(0, 0); return p; }   // bare, same namespace
+}
+
+geo::Point q = geo::Point(3, 4);      // qualified construction: ns::Class(...)
+console.writeln(q.show());
+
+geo::Point o = geo::makeOrigin();     // bare construction inside the namespace function
+console.writeln(o.show());
+
+// Regression guard: C::Label(...) must still mean the labeled ctor on class C,
+// not construction of a namespace member named Label (Class checked before
+// Namespace in the disambiguation).
+class Widget {
+    int v = 0;
+    new Widget() { v = 1; }
+    new Named(int n) { v = n; }
+}
+Widget w1 = Widget();
+Widget w2 = Widget::Named(9);
+console.writeln(w1.v);
+console.writeln(w2.v);

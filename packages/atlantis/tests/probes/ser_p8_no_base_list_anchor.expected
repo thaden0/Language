@@ -1,0 +1,35 @@
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:37: error: expected an anchor (top/bottom of C.constructor, or member of C)
+          inject `implements IFoo` at bases of C
+                                      ^~~~~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:37: error: expected '}'
+          inject `implements IFoo` at bases of C
+                                      ^~~~~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:43: error: expected ';'
+          inject `implements IFoo` at bases of C
+                                            ^~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:46: error: expected ';'
+          inject `implements IFoo` at bases of C
+                                               ^
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:9:5: error: expected ';'
+      }
+      ^
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:10:1: error: expected expression
+  }
+  ^
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:11:1: error: expected ';'
+  uses Probe;
+  ^~~~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:37: error: unknown name 'bases'
+          inject `implements IFoo` at bases of C
+                                      ^~~~~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:43: error: unknown name 'of'
+          inject `implements IFoo` at bases of C
+                                            ^~
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:8:46: error: unknown name 'C'
+          inject `implements IFoo` at bases of C
+                                               ^
+packages/atlantis/tests/probes/ser_p8_no_base_list_anchor.lev:10:1: error: unknown name ''
+  }
+  ^
+
+11 error(s)

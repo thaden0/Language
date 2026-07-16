@@ -1,0 +1,23 @@
+// P-5: $C decl-hole in type position (param/return) + $C::FromJson(x) call,
+// injected at namespace Probe.
+namespace Probe {
+    interface ISerializable { }
+    attribute Serializable { }
+    rule p5 {
+        match @Serializable on class C
+        where C.hasBase("ISerializable")
+        inject `$C makeIt(int v) {
+            return $C::FromJson(v);
+        }` at namespace Probe
+    }
+}
+uses Probe;
+
+@Serializable
+class Widget : ISerializable {
+    int a;
+    new FromJson(int v) { a = v; }
+}
+
+Widget w = Probe::makeIt(9);
+console.write(w.a.toString());

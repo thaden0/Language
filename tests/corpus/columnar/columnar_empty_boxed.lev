@@ -1,0 +1,28 @@
+// techdesign-columnar §3/§5.4: operations on an array before any value-struct
+// append (still boxed-empty) — length 0, iteration over empty, and the flip on
+// the first append. Exercises the boxed-fallback/empty paths.
+struct S { int a; int b; }
+void run() {
+    Array<S> a;                  // boxed-empty
+    console.writeln(a.length()); // 0
+
+    int touched = 0;
+    for (S e in a) { touched = touched + 1; }   // zero iterations
+    console.writeln(touched);    // 0
+
+    // first append flips to columnar (eligible), subsequent appends grow it
+    S s0; s0.a = 1; s0.b = 2;
+    a = a.add(s0);
+    console.writeln(a.length()); // 1
+    console.writeln(a[0].a);     // 1
+
+    S s1; s1.a = 3; s1.b = 4;
+    a = a.add(s1);
+    console.writeln(a.length()); // 2
+    console.writeln(a[1].b);     // 4
+
+    int s = 0;
+    for (int i in 0..1) { s = s + a[i].a + a[i].b; }
+    console.writeln(s);          // 1+2+3+4 = 10
+}
+run();

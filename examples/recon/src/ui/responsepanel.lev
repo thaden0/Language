@@ -1,0 +1,85 @@
+// Response inspector panel (DESIGN §9.1). Tabs(Body | Headers | Cookies | Tests).
+namespace Recon {
+uses Sonar;
+
+class ResponsePanel {
+    public Tabs tabs;
+    public ContentBox bodyBox;
+    public Text bodyText;
+    public RespHeaderTableSource headerSrc;
+    public TableView headersTable;
+    public CookieTableSource cookieSrc;
+    public TableView cookiesTable;
+    public ListView testList;
+    public AppState state;
+
+    new ResponsePanel(AppState st) {
+        state = st;
+        bodyText = Text();
+        bodyText.wrap(Overflow::Wrap);
+        bodyBox = ContentBox();
+        bodyBox.setTitle("Response");
+        bodyBox.setBorder(BorderStyle::Single);
+        bodyBox.add(bodyText);
+
+        headerSrc = RespHeaderTableSource();
+        headersTable = TableView();
+        headersTable.setColumns([
+            TableColumn("Name", Constraint::Flex(1), Align::Start),
+            TableColumn("Value", Constraint::Flex(2), Align::Start)
+        ]);
+        headersTable.setSource(headerSrc);
+
+        cookieSrc = CookieTableSource();
+        cookiesTable = TableView();
+        cookiesTable.setColumns([
+            TableColumn("Name", Constraint::Flex(1), Align::Start),
+            TableColumn("Value", Constraint::Flex(1), Align::Start),
+            TableColumn("Domain", Constraint::Flex(1), Align::Start),
+            TableColumn("Path", Constraint::Fixed(10), Align::Start)
+        ]);
+        cookiesTable.setSource(cookieSrc);
+
+        testList = ListView();
+
+        tabs = Tabs();
+        tabs.add("Body", bodyBox);
+        tabs.add("Headers", headersTable);
+        tabs.add("Cookies", cookiesTable);
+        tabs.add("Tests", testList);
+    }
+
+    void update(AppState st) {
+        if (st.lastResponse != None) {
+            HttpResponse resp = st.lastResponse ?? HttpResponse(0, "");
+            this.bodyText.text(prettyBody(resp.body));
+            this.headerSrc.setFrom(resp.headers);
+            this.headersTable.refresh();
+        } else if (!st.lastError.isEmpty()) {
+            this.bodyText.text("Error: " + st.lastError);
+        }
+        this.cookieSrc.rows = st.sessions.active().jar.cookies;
+        this.cookiesTable.refresh();
+
+        Array<string> lines = [];
+        for (TestResult r in st.lastTests) {
+            string mark = r.passed ? "[PASS] " : "[FAIL] ";
+            string line = mark + r.label;
+            if (!r.passed && !r.detail.isEmpty()) { line = line + " — " + r.detail; }
+            lines = lines.add(line);
+        }
+        this.testList.items(lines);
+    }
+}
+
+// Pretty-print a JSON body; fall back to raw for non-JSON.
+string prettyBody(string body) {
+    JsonValue? parsed = json::parse(body);
+    if (parsed != None) {
+        JsonValue v = parsed ?? JsonValue::ofNull();
+        return v.renderPretty(2);
+    }
+    return body;
+}
+
+}

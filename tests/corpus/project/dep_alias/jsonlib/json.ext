@@ -1,0 +1,4 @@
+namespace Json {
+    public string enc(int n) => "j:" + n;
+    public class Doc { public int v = 0; }
+}

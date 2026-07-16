@@ -1,0 +1,55 @@
+// Corpus test: source adapters over the model (headless).
+namespace Recon {
+uses Sonar;
+
+void walkTree(ReconTreeSource src, TreeNodeId n, int depth) {
+    console.writeln("  ".repeat(depth) + src.labelAt(n) + (src.hasChildren(n) ? " [+]" : ""));
+    int cc = src.childCount(n);
+    for (int i = 0; i < cc; i = i + 1) { walkTree(src, src.childAt(n, i), depth + 1); }
+}
+
+void main() {
+    // Build a small collection: Auth/{Login}, Get user, Search
+    Collection col = Collection();
+    CollectionItem auth = CollectionItem::Folder("Auth");
+    CollectionItem login = CollectionItem::Request("Login");
+    if (login.request != None) { RequestSpec r = login.request ?? RequestSpec(); r.method = Method::POST; }
+    auth.children = [login];
+    CollectionItem getUser = CollectionItem::Request("Get user");
+    CollectionItem search = CollectionItem::Request("Search");
+    if (search.request != None) { RequestSpec r = search.request ?? RequestSpec(); r.method = Method::DELETE; }
+    col.root.children = [auth, getUser, search];
+
+    console.writeln("== tree source ==");
+    ReconTreeSource ts = ReconTreeSource();
+    ts.build(col);
+    console.writeln("rootCount=" + ts.rootCount().toString());
+    for (int i = 0; i < ts.rootCount(); i = i + 1) { walkTree(ts, ts.rootAt(i), 0); }
+
+    console.writeln("== header table ==");
+    HeaderTableSource hs = HeaderTableSource();
+    hs.rows = [HeaderEntry::Of("Accept", "application/json"), HeaderEntry::Of("X-Debug", "1")];
+    hs.rows.at(1).enabled = false;
+    console.writeln("rows=" + hs.rowCount().toString() + " cols=" + hs.colCount().toString());
+    for (int r = 0; r < hs.rowCount(); r = r + 1) {
+        console.writeln("  " + hs.cellAt(r, 0) + " " + hs.cellAt(r, 1) + " = " + hs.cellAt(r, 2));
+    }
+
+    console.writeln("== resp header table ==");
+    HeaderMap m = HeaderMap();
+    m.add("Content-Type", "application/json");
+    m.add("Set-Cookie", "a=1");
+    RespHeaderTableSource rs = RespHeaderTableSource();
+    rs.setFrom(m);
+    for (int r = 0; r < rs.rowCount(); r = r + 1) {
+        console.writeln("  " + rs.cellAt(r, 0) + ": " + rs.cellAt(r, 1));
+    }
+
+    console.writeln("== cookie table ==");
+    CookieTableSource cs = CookieTableSource();
+    Cookie ck = Cookie(); ck.name = "sid"; ck.value = "xyz"; ck.domain = "example.com"; ck.path = "/app";
+    cs.rows = [ck];
+    console.writeln("  " + cs.cellAt(0, 0) + "=" + cs.cellAt(0, 1) + " @" + cs.cellAt(0, 2) + cs.cellAt(0, 3));
+}
+
+}

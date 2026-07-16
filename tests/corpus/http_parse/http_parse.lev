@@ -1,0 +1,62 @@
+// Track 09 F4 (M5): HeaderMap + chunked codec + request/response parse/render,
+// exercised WITHOUT sockets so it runs on every engine (incl. frozen ELF). The
+// live server/client keep-alive + 500 paths are the socket corpus (tw/ir).
+
+// feed a chunked body one byte at a time — the fragmentation-proof property.
+string dechunkByBytes(string wire) {
+    ChunkedDecoder d = ChunkedDecoder();
+    string out = "";
+    int i = 0;
+    while (i < wire.length()) {
+        out = out + d.feed(wire.subStr(i, 1));
+        i = i + 1;
+    }
+    return out + (d.isDone ? "" : "!notdone");
+}
+
+void run() {
+    // --- HeaderMap: order, duplicates, case-insensitive, set/remove ---
+    HeaderMap h = HeaderMap();
+    h.add("Content-Type", "text/html");
+    h.add("Set-Cookie", "a=1");
+    h.add("Set-Cookie", "b=2");
+    console.writeln(h.firstOr("content-type", "?"));      // text/html (case-insensitive)
+    console.writeln(h.all("set-cookie").length().toString()); // 2 (duplicates kept)
+    console.writeln(h.has("X-None") ? "y" : "n");          // n
+    h.set("Content-Type", "application/json");             // replace-all-then-append
+    console.writeln(h.firstOr("Content-Type", "?"));       // application/json
+    console.writeln(h.length().toString());                // 3 (2 cookies + 1 CT)
+    h.remove("set-cookie");
+    console.writeln(h.length().toString());                // 1
+
+    // --- request parse (one-shot + header access) ---
+    HttpRequest req = HttpRequest();
+    req.parse("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello");
+    console.writeln(req.method + " " + req.path + " " + req.version);  // POST /submit HTTP/1.1
+    console.writeln(req.header("host"));                   // x
+    console.writeln(req.body);                             // hello
+
+    // --- request incremental feed (headers then body across fragments) ---
+    HttpRequest inc = HttpRequest();
+    console.writeln(inc.feed("GET / HTT") ? "t" : "f");    // f (partial)
+    console.writeln(inc.feed("P/1.1\r\n\r\n") ? "t" : "f"); // t (complete, no body)
+    console.writeln(inc.method + " " + inc.path);          // GET /
+
+    // --- response render (with a custom header) ---
+    HttpResponse resp = HttpResponse(404, "nope");
+    resp.withHeader("X-Trace", "abc");
+    console.writeln(resp.render());
+
+    // --- response parse (chunked body decodes transparently) ---
+    HttpResponse cr = HttpResponse(0, "");
+    cr.parse("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n");
+    console.writeln(cr.status.toString() + " " + cr.body);  // 200 Hello World
+
+    // --- chunked codec round-trip + fragmentation-proofness ---
+    string wire = std::chunkEncode("Hello") + std::chunkEncode(" World") + std::chunkEnd();
+    console.writeln(dechunkByBytes(wire));                  // Hello World
+    // a single-shot decode too
+    ChunkedDecoder one = ChunkedDecoder();
+    console.writeln(one.feed(wire) + (one.isDone ? "" : "!"));  // Hello World
+}
+run();

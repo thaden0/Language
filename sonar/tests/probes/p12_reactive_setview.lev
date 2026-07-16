@@ -1,0 +1,26 @@
+// T11 R-1 gate: a Layer-B rule injects a `set`-view onto an @-attributed field.
+// A bare `count = v` write then routes through the view (raw-slot write, §6
+// non-recursive) and pings the host. This is the whole compile-time-reactivity
+// mechanism, isolated from the Sonar package.
+namespace R {
+    attribute Reactive { }
+    rule reactiveInt {
+        match @Reactive on field f in class C : IHost
+        where f.type == "int"
+        inject `set $f(int v) { $f = v; this.__ping(); }` at member of C
+    }
+    interface IHost { void __ping(); }
+}
+uses R;
+class Counter : IHost {
+    @Reactive int count = 0;
+    int pings = 0;
+    new Counter() { }
+    void __ping() { pings = pings + 1; }
+}
+Counter c = Counter();
+console.writeln("init " + c.count.toString() + " pings=" + c.pings.toString());
+c.count = 5;
+console.writeln("set5 " + c.count.toString() + " pings=" + c.pings.toString());
+c.count = c.count + 1;
+console.writeln("inc  " + c.count.toString() + " pings=" + c.pings.toString());

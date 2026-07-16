@@ -1,0 +1,263 @@
+uses Sonar;
+
+class WrapProbe : Component {
+    int textLen = 40;
+    Size contentDesired(Size avail) {
+        int w = avail.w;
+        if (w <= 0) w = 1;
+        int lines = (textLen + w - 1) / w;
+        return Size(avail.w, lines);
+    }
+}
+
+Component fixedBox(int w, int h) {
+    Component c = Component();
+    c.setWidth(Constraint::Fixed(w));
+    c.setHeight(Constraint::Fixed(h));
+    return c;
+}
+
+void main() {
+    // §2.3 worked example: 10 cells, weights [1,1,1] -> [4,3,3].
+    FlexLayout row = FlexLayout(Axis::Horizontal);
+    Component fa = Component(); fa.setWidth(Constraint::Flex(1));
+    Component fb = Component(); fb.setWidth(Constraint::Flex(1));
+    Component fc = Component(); fc.setWidth(Constraint::Flex(1));
+    Array<IComponent> weighted = [];
+    weighted = weighted.add(fa).add(fb).add(fc);
+    row.arrange(weighted, Rect(Point(0, 0), Size(10, 1)));
+    console.writeln(fa.box.w());
+    console.writeln(fb.box.w());
+    console.writeln(fc.box.w());
+
+    // repeat-run determinism: same inputs, same outputs.
+    row.arrange(weighted, Rect(Point(0, 0), Size(10, 1)));
+    console.writeln(fa.box.w());
+    console.writeln(fb.box.w());
+    console.writeln(fc.box.w());
+
+    // §2.4 clamp fixpoint: A bounded to max 2, B/C unbounded flex(1).
+    FlexLayout clampRow = FlexLayout(Axis::Horizontal);
+    Component ca = Component(); ca.setWidth(Constraint::Bounded(0, 2, 1));
+    Component cb = Component(); cb.setWidth(Constraint::Flex(1));
+    Component cc = Component(); cc.setWidth(Constraint::Flex(1));
+    Array<IComponent> clamped = [];
+    clamped = clamped.add(ca).add(cb).add(cc);
+    clampRow.arrange(clamped, Rect(Point(0, 0), Size(10, 1)));
+    console.writeln(ca.box.w());
+    console.writeln(cb.box.w());
+    console.writeln(cc.box.w());
+
+    // Overflow: two flex children with min 8 each, only 10 cells available.
+    FlexLayout overflowRow = FlexLayout(Axis::Horizontal);
+    Component oa = Component(); oa.setWidth(Constraint::Bounded(8, Sonar::Unbounded, 1));
+    Component ob = Component(); ob.setWidth(Constraint::Bounded(8, Sonar::Unbounded, 1));
+    Array<IComponent> overflowKids = [];
+    overflowKids = overflowKids.add(oa).add(ob);
+    overflowRow.arrange(overflowKids, Rect(Point(0, 0), Size(10, 1)));
+    console.writeln(oa.box.w());
+    console.writeln(ob.box.w());
+    console.writeln(ob.box.x());
+
+    // totalFlex == 0: rigid children pack from Start, slack empty at End.
+    FlexLayout rigidRow = FlexLayout(Axis::Horizontal);
+    rigidRow.gap(1);
+    Component ra = fixedBox(3, 1);
+    Component rb = fixedBox(4, 1);
+    Array<IComponent> rigidKids = [];
+    rigidKids = rigidKids.add(ra).add(rb);
+    rigidRow.arrange(rigidKids, Rect(Point(0, 0), Size(20, 1)));
+    console.writeln(ra.box.x());
+    console.writeln(rb.box.x());
+    console.writeln(rb.box.right());
+
+    // measure(): sum of main + gaps, cross = max.
+    FlexLayout measureRow = FlexLayout(Axis::Horizontal);
+    measureRow.gap(2);
+    Component ma = fixedBox(3, 5);
+    Component mb = fixedBox(5, 2);
+    Component mcHeight = fixedBox(2, 7);
+    Array<IComponent> measureKids = [];
+    measureKids = measureKids.add(ma).add(mb).add(mcHeight);
+    Size measured = measureRow.measure(measureKids, Size(100, 100));
+    console.writeln(measured.w);
+    console.writeln(measured.h);
+
+    // Align modes on the cross axis (vertical main -> cross is width).
+    Component alignChild = fixedBox(4, 2);
+    Array<IComponent> alignKids = [];
+    alignKids = alignKids.add(alignChild);
+    FlexLayout stretchCol = FlexLayout(Axis::Vertical);
+    stretchCol.measure(alignKids, Size(10, 5));
+    stretchCol.arrange(alignKids, Rect(Point(0, 0), Size(10, 5)));
+    console.writeln(alignChild.box.x());
+    console.writeln(alignChild.box.w());
+
+    FlexLayout startCol = FlexLayout(Axis::Vertical);
+    startCol.align(Align::Start);
+    startCol.measure(alignKids, Size(10, 5));
+    startCol.arrange(alignKids, Rect(Point(0, 0), Size(10, 5)));
+    console.writeln(alignChild.box.x());
+    console.writeln(alignChild.box.w());
+
+    FlexLayout centerCol = FlexLayout(Axis::Vertical);
+    centerCol.align(Align::Center);
+    centerCol.measure(alignKids, Size(10, 5));
+    centerCol.arrange(alignKids, Rect(Point(0, 0), Size(10, 5)));
+    console.writeln(alignChild.box.x());
+
+    FlexLayout endCol = FlexLayout(Axis::Vertical);
+    endCol.align(Align::End);
+    endCol.measure(alignKids, Size(10, 5));
+    endCol.arrange(alignKids, Rect(Point(0, 0), Size(10, 5)));
+    console.writeln(alignChild.box.x());
+
+    // Stretch genuinely fills when the child's cross constraint is
+    // unconstrained (as opposed to the Fixed-clamped case above).
+    Component fillChild = Component(); fillChild.setHeight(Constraint::Fixed(2));
+    Array<IComponent> fillAlignKids = [];
+    fillAlignKids = fillAlignKids.add(fillChild);
+    FlexLayout fillStretchCol = FlexLayout(Axis::Vertical);
+    fillStretchCol.measure(fillAlignKids, Size(10, 5));
+    fillStretchCol.arrange(fillAlignKids, Rect(Point(0, 0), Size(10, 5)));
+    console.writeln(fillChild.box.x());
+    console.writeln(fillChild.box.w());
+
+    // Wrap re-measure protocol: a fixed-width label + a wrapping child.
+    FlexLayout wrapRow = FlexLayout(Axis::Horizontal);
+    wrapRow.align(Align::Start);
+    Component label = fixedBox(5, 1);
+    WrapProbe wrapper = WrapProbe();
+    wrapper.setWidth(Constraint::Flex(1));
+    Container wrapContainer = Container();
+    wrapContainer.setLayout(wrapRow);
+    wrapContainer.add(label);
+    wrapContainer.add(wrapper);
+    wrapContainer.measure(Size(100, 100));
+    wrapContainer.arrange(Rect(Point(0, 0), Size(25, 10)));
+    console.writeln(wrapper.box.w());
+    console.writeln(wrapper.box.h());
+
+    // Degenerate: zero children, zero content.
+    FlexLayout emptyRow = FlexLayout(Axis::Horizontal);
+    Array<IComponent> noKids = [];
+    Size emptyMeasured = emptyRow.measure(noKids, Size(50, 50));
+    console.writeln(emptyMeasured.w);
+    console.writeln(emptyMeasured.h);
+    emptyRow.arrange(noKids, Rect(Point(0, 0), Size(0, 0)));
+
+    FlexLayout zeroContentRow = FlexLayout(Axis::Horizontal);
+    Component za = Component(); za.setWidth(Constraint::Flex(1));
+    Array<IComponent> zeroKids = [];
+    zeroKids = zeroKids.add(za);
+    zeroContentRow.arrange(zeroKids, Rect(Point(0, 0), Size(0, 5)));
+    console.writeln(za.box.w());
+
+    // DockLayout: classic shape (menubar/statusbar/sidebar/editor).
+    DockLayout dock = DockLayout();
+    Component menubar = Component(); menubar.dock = Dock::Top; menubar.setHeight(Constraint::Fixed(1));
+    Component statusbar = Component(); statusbar.dock = Dock::Bottom; statusbar.setHeight(Constraint::Fixed(1));
+    Component sidebar = Component(); sidebar.dock = Dock::Left; sidebar.setWidth(Constraint::Fixed(8));
+    Component editor = Component();
+    Array<IComponent> dockKids = [];
+    dockKids = dockKids.add(menubar).add(statusbar).add(sidebar).add(editor);
+    dock.arrange(dockKids, Rect(Point(0, 0), Size(40, 10)));
+    console.writeln(menubar.box.x()); console.writeln(menubar.box.y());
+    console.writeln(menubar.box.w()); console.writeln(menubar.box.h());
+    console.writeln(statusbar.box.x()); console.writeln(statusbar.box.y());
+    console.writeln(statusbar.box.w()); console.writeln(statusbar.box.h());
+    console.writeln(sidebar.box.x()); console.writeln(sidebar.box.y());
+    console.writeln(sidebar.box.w()); console.writeln(sidebar.box.h());
+    console.writeln(editor.box.x()); console.writeln(editor.box.y());
+    console.writeln(editor.box.w()); console.writeln(editor.box.h());
+
+    // Multiple Fill children share the same remaining rect.
+    DockLayout multiFill = DockLayout();
+    Component fillA = Component();
+    Component fillB = Component();
+    Array<IComponent> fillKids = [];
+    fillKids = fillKids.add(fillA).add(fillB);
+    multiFill.arrange(fillKids, Rect(Point(1, 2), Size(6, 4)));
+    console.writeln(fillA.box.x()); console.writeln(fillA.box.w());
+    console.writeln(fillB.box.x()); console.writeln(fillB.box.w());
+
+    // Dock overflow: a fixed dock bigger than the container floors the
+    // remainder at 0 rather than going negative.
+    DockLayout overflowDock = DockLayout();
+    Component bigTop = Component(); bigTop.dock = Dock::Top; bigTop.setHeight(Constraint::Fixed(6));
+    Component fillAfter = Component();
+    Array<IComponent> overflowDockKids = [];
+    overflowDockKids = overflowDockKids.add(bigTop).add(fillAfter);
+    overflowDock.arrange(overflowDockKids, Rect(Point(0, 0), Size(10, 4)));
+    console.writeln(bigTop.box.h());
+    console.writeln(fillAfter.box.w());
+    console.writeln(fillAfter.box.h());
+
+    // GridLayout: 3 rows x 2 cols, a 2-col-span header, placement, an
+    // out-of-range index (clamps), and an overlap (both painted, no error).
+    GridLayout grid = GridLayout(3, 2);
+    grid.gap(1);
+    Size gridMeasured = grid.measure([], Size(50, 50));
+    console.writeln(gridMeasured.w);
+    console.writeln(gridMeasured.h);
+
+    Component header = Component(); header.gridRow = 0; header.gridCol = 0; header.gridColSpan = 2;
+    Component cellB = Component(); cellB.gridRow = 1; cellB.gridCol = 0;
+    Component cellC = Component(); cellC.gridRow = 1; cellC.gridCol = 1;
+    Component outOfRange = Component(); outOfRange.gridRow = 5; outOfRange.gridCol = 0;
+    Component overlap = Component(); overlap.gridRow = 1; overlap.gridCol = 0;
+    Array<IComponent> gridKids = [];
+    gridKids = gridKids.add(header).add(cellB).add(cellC).add(outOfRange).add(overlap);
+    grid.arrange(gridKids, Rect(Point(0, 0), Size(21, 17)));
+    console.writeln(header.box.x()); console.writeln(header.box.y());
+    console.writeln(header.box.w()); console.writeln(header.box.h());
+    console.writeln(cellB.box.x()); console.writeln(cellB.box.y());
+    console.writeln(cellB.box.w()); console.writeln(cellB.box.h());
+    console.writeln(cellC.box.x()); console.writeln(cellC.box.y());
+    console.writeln(cellC.box.w()); console.writeln(cellC.box.h());
+    console.writeln(outOfRange.box.x()); console.writeln(outOfRange.box.y());
+    console.writeln(overlap.box.x()); console.writeln(overlap.box.y());
+    console.writeln(overlap.box.w()); console.writeln(overlap.box.h());
+
+    // GridLayout: a Fixed column mixed with a Flex column.
+    GridLayout mixedGrid = GridLayout(1, 2);
+    mixedGrid.gap(2);
+    mixedGrid.colConstraint(0, Constraint::Fixed(6));
+    Component leftCell = Component(); leftCell.gridRow = 0; leftCell.gridCol = 0;
+    Component rightCell = Component(); rightCell.gridRow = 0; rightCell.gridCol = 1;
+    Array<IComponent> mixedKids = [];
+    mixedKids = mixedKids.add(leftCell).add(rightCell);
+    mixedGrid.arrange(mixedKids, Rect(Point(0, 0), Size(20, 5)));
+    console.writeln(leftCell.box.w());
+    console.writeln(rightCell.box.x());
+    console.writeln(rightCell.box.w());
+
+    // StackLayout: measure is the max over children; arrange fills content.
+    StackLayout stack = StackLayout();
+    Component sa = fixedBox(5, 3);
+    Component sb = fixedBox(8, 2);
+    Component sc = fixedBox(3, 9);
+    Array<IComponent> stackKids = [];
+    stackKids = stackKids.add(sa).add(sb).add(sc);
+    Size stackMeasured = stack.measure(stackKids, Size(100, 100));
+    console.writeln(stackMeasured.w);
+    console.writeln(stackMeasured.h);
+    stack.arrange(stackKids, Rect(Point(0, 0), Size(20, 10)));
+    console.writeln(sa.box.x()); console.writeln(sa.box.y());
+    console.writeln(sa.box.w()); console.writeln(sa.box.h());
+    console.writeln(sb.box.w()); console.writeln(sb.box.h());
+    console.writeln(sc.box.w()); console.writeln(sc.box.h());
+
+    // Visibility: hidden children consume no space and no gaps.
+    FlexLayout visRow = FlexLayout(Axis::Horizontal);
+    visRow.gap(1);
+    Component va = fixedBox(3, 1);
+    Component vb = fixedBox(4, 1);
+    vb.setVisible(false);
+    Component vc = fixedBox(2, 1);
+    Array<IComponent> visKids = [];
+    visKids = visKids.add(va).add(vb).add(vc);
+    visRow.arrange(visKids, Rect(Point(0, 0), Size(20, 1)));
+    console.writeln(va.box.x());
+    console.writeln(vc.box.x());
+}

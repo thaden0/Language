@@ -1,0 +1,551 @@
+namespace Sonar {
+    // ---- TreeRow ------------------------------------------------------------
+    // §3.7's code block: `struct TreeRow { TreeNodeId node; int depth; bool
+    // expandable; bool expanded; }` — NOT used verbatim here, a REQUIRED
+    // deviation discovered only by testing, not assumed from the field list.
+    //
+    // `TreeRow` has no enum-typed field (unlike TableColumn), so it does not
+    // match bug.md #41's own documented trigger (an enum-typed field) — this
+    // file originally shipped `TreeRow` as a `struct` on exactly that
+    // reasoning, backed by a stress test that allocated a batch of unrelated
+    // objects (Components, Maps) between populating `flat_` and reading it
+    // back. That stress test passed and did NOT catch the real bug, because
+    // the actual trigger is unrelated to #41's "unrelated heap activity"
+    // shape: bug.md #66 (found implementing this track) documents that an
+    // `Array<struct>` whose struct has a NESTED-STRUCT-typed field (here:
+    // `TreeNodeId node`, itself a struct) corrupts on LLVM specifically
+    // after a later plain WRITE to a DIFFERENT `Rect`-typed field on the
+    // SAME object — and `box` (inherited from Component, written by every
+    // real `arrange()` call and by this file's own `ensureRowVisible`/
+    // `setSelected`/key-handling paths) is exactly that field. This is
+    // unavoidable in ordinary use (any real TreeView gets its box set), so
+    // `TreeRow` is a `class` instead — confirmed by a minimal, isolated,
+    // Sonar-independent repro (see bug.md #66) that converting the
+    // Array-element type from `struct` to `class` alone fixes it, matching
+    // this codebase's own established `Chord`/`TableColumn` precedent for
+    // "an Array<struct> corrupts on LLVM; a class, individually
+    // heap-allocated + refcounted rather than packed inline in the array,
+    // is immune" — just triggered by a different condition than #41's own.
+    class TreeRow {
+        TreeNodeId node;
+        int depth;
+        bool expandable;
+        bool expanded;
+        new TreeRow(TreeNodeId n, int d, bool exp, bool isOpen) {
+            node = n; depth = d; expandable = exp; expanded = isOpen;
+        }
+    }
+
+    // Default `source_` value before a real `ITreeSource` is installed via
+    // `setSource` — mirrors TableView's own `EmptyTableSource` pattern
+    // (§2 names no shipped Array-backed convenience for `ITreeSource`
+    // either).
+    class EmptyTreeSource : ITreeSource {
+        int rootCount() => 0;
+        TreeNodeId rootAt(int i) => TreeNodeId(0);
+        int childCount(TreeNodeId n) => 0;
+        TreeNodeId childAt(TreeNodeId n, int i) => TreeNodeId(0);
+        string labelAt(TreeNodeId n) => "";
+        bool hasChildren(TreeNodeId n) => false;
+    }
+
+    // Spaces per depth level in the indent + expander-glyph rendering
+    // (§3.7: "depth * indent spaces + expander glyph"). §3.7 never pins a
+    // specific numeric value for "indent" — 2 is this file's own judgment
+    // call (a common default for tree-shaped TUI widgets), not a design
+    // amendment; easy to retune later since every read of it goes through
+    // this one constant.
+    const int TreeIndent = 2;
+
+    // ---- TreeView -------------------------------------------------------------
+    // §3.7's own header is `Focusable, Scrollable, Bordered` — `Styleable`
+    // added as a header completion for the same reason as every other T05
+    // leaf (paintRow below needs `resolveOrDefault`). `bool enabled` +
+    // `setEnabled` added too per §1's binding "enabled convention" — TreeView
+    // takes keyboard input (navigation + expand/collapse + activate).
+    //
+    // No mouse handling in this file at all — a deliberate scope decision,
+    // not an oversight: §3.7's own text specifies key handling exhaustively
+    // (Up/Down/PageUp/PageDown/Home/End/Right/Left/Enter/Space) and its own
+    // events list (on:select/on:expand/on:activate) is driven entirely by
+    // those keys; unlike §3.5 (ListView, explicit "Mouse: Press selects row
+    // ...") and §3.6 (TableView, explicit "clicking a header ... fires
+    // on:sort"), §3.7 never once mentions mouse/click/press anywhere, and
+    // its own "paint and key handling are shared shape with ListView" sentence
+    // deliberately scopes the ListView-shape reuse to paint+key handling only
+    // (omitting "mouse", which IS named for the other two). Read as a
+    // meaningful textual signal rather than a gap to silently fill.
+    class TreeView : Focusable, Scrollable, Bordered, Styleable {
+        ITreeSource source_ = EmptyTreeSource();
+        Map<int, bool> expanded_ = Map();
+        int selected = -1;
+        Array<TreeRow> flat_ = [];
+        bool enabled = true;
+
+        RowScroller rowScroller_ = RowScroller();
+
+        Array<(TreeNodeId) => void> selectHandlers_ = [];
+        Array<int> selectTokens_ = [];
+        Array<(TreeNodeId, bool) => void> expandHandlers_ = [];
+        Array<int> expandTokens_ = [];
+        Array<(TreeNodeId) => void> activateHandlers_ = [];
+        Array<int> activateTokens_ = [];
+
+        new TreeView() {
+            setTabStop(true);
+            // bug.md #53: a lambda calling an instance method with a bare
+            // (implicit-`this`) receiver silently misbehaves once stored and
+            // invoked later from a different call frame; every call below
+            // uses an explicit `this.` receiver as the workaround.
+            char spaceKey = ' ';
+            this.onKey((e) => {
+                if (!enabled) return;
+                int viewportH = box.inset(this.chrome()).h();
+                int next = rowScroller_.handleKey(e, selected, flat_.length(), viewportH);
+                if (next != -1) {
+                    this.selectRow(next);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Right && e.mods == 0 && selected >= 0) {
+                    this.handleRightKey();
+                    e.handled = true;
+                } else if (e.code == KeyCode::Left && e.mods == 0 && selected >= 0) {
+                    this.handleLeftKey();
+                    e.handled = true;
+                } else if (e.isChar(spaceKey) && selected >= 0) {
+                    this.toggleExpandAt(selected);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Enter && e.mods == 0 && selected >= 0) {
+                    this.fireActivate(flat_[selected].node);
+                    e.handled = true;
+                }
+            });
+        }
+
+        // ---- state setters ---------------------------------------------------
+
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        // Same "preserve -1" policy as ListView.clampSelection/TableView's
+        // own copy — RowScroller.clampIndex's own contract (promote a
+        // negative navigation delta up to row 0) is wrong for a "nothing
+        // selected" sentinel.
+        int clampSelection(int idx, int count) {
+            if (count <= 0) return -1;
+            if (idx < 0) return -1;
+            if (idx > count - 1) return count - 1;
+            return idx;
+        }
+
+        // §1's binding attribute-table requirement, applied here even
+        // though §3.7 (unlike §3.5/§3.6) shows no attribute table of its
+        // own — read as the same kind of oversight already logged
+        // elsewhere in this track, not an amendment. `selected` is the one
+        // piece of State §3.7 itself calls out that plainly wants a
+        // template-attribute setter (parallel to ListView's own `selected`
+        // row in its table).
+        //
+        // | attribute  | expands to        |
+        // |------------|--------------------|
+        // | `selected` | `setSelected(int)` |
+        //
+        // Programmatic setter — clamps/re-scrolls, does not fire on:select
+        // (interactive paths go through selectRow, which does fire).
+        void setSelected(int idx) {
+            int clamped = this.clampSelection(idx, flat_.length());
+            if (clamped == selected) return;
+            selected = clamped;
+            this.ensureRowVisible(selected);
+            invalidate();
+        }
+
+        // General source install. Resets expanded_ too: §2's own identity-
+        // free ruling ("a TreeNodeId is a value; expansion state lives in
+        // the VIEW... keyed by id") means a wholly different source's ids
+        // carry no relationship to the old source's — keeping stale
+        // expansion state around after a full source swap would risk
+        // exactly the "colliding source corrupts expansion state" issue
+        // §3.7/§5 already documents as an accepted risk for a single
+        // source, needlessly extended across unrelated sources.
+        void setSource(ITreeSource src) {
+            source_ = src;
+            Map<int, bool> freshExpanded;
+            expanded_ = freshExpanded;
+            this.refresh();
+            invalidateLayout();
+        }
+
+        // §2's change-notification ruling: the caller mutated the same
+        // installed source's backing data and wants the view to notice.
+        // Unlike ListView (a flat count needs no recomputation), TreeView's
+        // own cache (`flat_`) must be rebuilt here too — that IS the "notice
+        // the mutation" step for a tree.
+        void refresh() {
+            this.rebuildFlat();
+            selected = this.clampSelection(selected, flat_.length());
+            int viewportH = box.inset(this.chrome()).h();
+            int maxScroll = flat_.length() - viewportH;
+            if (maxScroll < 0) maxScroll = 0;
+            if (scrollY > maxScroll) scrollY = maxScroll;
+            if (scrollY < 0) scrollY = 0;
+            invalidate();
+        }
+
+        // ---- the flatten cache (§3.7's design center) -----------------------
+
+        bool isExpanded(TreeNodeId n) {
+            bool? found = expanded_.atOrNone(n.id);
+            return found == None ? false : found;
+        }
+
+        // Iterative pre-order walk with an EXPLICIT STACK — an
+        // implementation REQUIREMENT per §3.7 ("deep trees must not ride
+        // the call stack"), not a suggestion. Two parallel arrays
+        // (`stack`/`depthStack`) rather than one `Array<TreeNodeId>` alone:
+        // §3.7's own text names `Array<TreeNodeId>` as the stack type for
+        // the NODE identity, but a plain `TreeNodeId` carries no depth, and
+        // depth is needed per emitted `TreeRow` — the second array is a
+        // synced companion, not a departure from "one explicit stack, no
+        // recursion." Root/child pushes happen in REVERSE index order so
+        // the LOWEST index pops first (LIFO), producing left-to-right
+        // pre-order without needing a descending `Range` (this codebase's
+        // `a..b` `Range` is ascending/counted-loop only — see geometry.lev's
+        // callers throughout this package; `0..n-1` for `n == 0` already
+        // relies on this yielding zero iterations, not a backward walk).
+        // Stack size here is bounded by the tree's own depth/branching
+        // (heap-allocated `Array` growth), never the language runtime's own
+        // call stack — this is exactly what makes a several-hundred-node
+        // deep chain safe to flatten, unlike a recursive walk.
+        void rebuildFlat() {
+            Array<TreeRow> result = [];
+            Array<TreeNodeId> stack = [];
+            Array<int> depthStack = [];
+            int rootCount = source_.rootCount();
+            for (int i in 0..rootCount - 1) {
+                int ri = rootCount - 1 - i;
+                stack = stack.add(source_.rootAt(ri));
+                depthStack = depthStack.add(0);
+            }
+            while (!stack.isEmpty()) {
+                int top = stack.length() - 1;
+                TreeNodeId node = stack[top];
+                int depth = depthStack[top];
+                stack = stack.removeAt(top);
+                depthStack = depthStack.removeAt(top);
+
+                bool expandable = source_.hasChildren(node);
+                bool isOpen = this.isExpanded(node);
+                result = result.add(TreeRow(node, depth, expandable, isOpen));
+
+                if (expandable && isOpen) {
+                    int childCount = source_.childCount(node);
+                    for (int i in 0..childCount - 1) {
+                        int ci = childCount - 1 - i;
+                        stack = stack.add(source_.childAt(node, ci));
+                        depthStack = depthStack.add(depth + 1);
+                    }
+                }
+            }
+            flat_ = result;
+        }
+
+        // ---- selection -------------------------------------------------------
+
+        // The interactive path (RowScroller.handleKey's returned index):
+        // updates `selected`, keeps it in view, fires on:select(TreeNodeId)
+        // only on an actual change and only when a real row is selected.
+        void selectRow(int idx) {
+            int clamped = this.clampSelection(idx, flat_.length());
+            bool didChange = clamped != selected;
+            selected = clamped;
+            this.ensureRowVisible(selected);
+            invalidate();
+            if (didChange && selected >= 0) this.fireSelect(flat_[selected].node);
+        }
+
+        void ensureRowVisible(int idx) {
+            if (idx < 0) return;
+            int viewportH = box.inset(this.chrome()).h();
+            if (viewportH <= 0) return;
+            int nextScroll = rowScroller_.ensureVisible(idx, flat_.length(), viewportH, scrollY);
+            if (nextScroll != scrollY) this.scrollTo(scrollX, nextScroll);
+        }
+
+        int indexOfNodeId(int id) {
+            for (int i in 0..flat_.length() - 1) if (flat_[i].node.id == id) return i;
+            return -1;
+        }
+
+        // ---- expand/collapse -------------------------------------------------
+
+        void toggleExpandAt(int idx) {
+            if (idx < 0 || idx >= flat_.length()) return;
+            TreeRow row = flat_[idx];
+            if (!row.expandable) return;
+            this.setExpanded(row.node, !row.expanded);
+        }
+
+        // §3.7: "Right expands (or moves to first child if already
+        // expanded)". No-op (still swallows the key — see the onKey
+        // handler above) on a non-expandable row.
+        void handleRightKey() {
+            TreeRow row = flat_[selected];
+            if (!row.expandable) return;
+            if (!row.expanded) {
+                this.setExpanded(row.node, true);
+                return;
+            }
+            if (selected + 1 < flat_.length() && flat_[selected + 1].depth == row.depth + 1) {
+                this.selectRow(selected + 1);
+            }
+        }
+
+        // §3.7: "Left collapses (or jumps to parent)". Walks backward
+        // through flat_ (a pre-order-flattened list: the nearest preceding
+        // row whose depth is exactly one less than the current row's IS its
+        // parent — every row in between is a descendant, at depth >= the
+        // current row's own depth) to find the parent row.
+        void handleLeftKey() {
+            TreeRow row = flat_[selected];
+            if (row.expandable && row.expanded) {
+                this.setExpanded(row.node, false);
+                return;
+            }
+            if (row.depth <= 0) return;
+            int i = selected - 1;
+            while (i >= 0 && flat_[i].depth >= row.depth) i = i - 1;
+            if (i >= 0) this.selectRow(i);
+        }
+
+        // §3.7: "on:expand(TreeNodeId, bool) fires BEFORE rebuild so lazy
+        // sources can populate — handler loads children, returns, rebuild
+        // queries childCount fresh." Selection is re-anchored to the SAME
+        // NODE (by id, not by flat-list index — the whole point of
+        // rebuilding is that indices shift) when possible; if the
+        // previously-selected node became hidden by this exact toggle (e.g.
+        // collapsing a subtree that contained it), falls back to the
+        // just-toggled node itself, which is always still visible.
+        void setExpanded(TreeNodeId node, bool value) {
+            bool current = this.isExpanded(node);
+            if (current == value) return;
+            expanded_[node.id] = value;
+            this.fireExpand(node, value);
+
+            bool hadSelection = selected >= 0 && selected < flat_.length();
+            int selectedId = 0 - 1;
+            if (hadSelection) selectedId = flat_[selected].node.id;
+            int toggledId = node.id;
+
+            this.rebuildFlat();
+
+            if (hadSelection) {
+                int newIdx = this.indexOfNodeId(selectedId);
+                if (newIdx == -1) newIdx = this.indexOfNodeId(toggledId);
+                selected = this.clampSelection(newIdx, flat_.length());
+            } else {
+                selected = this.clampSelection(selected, flat_.length());
+            }
+            this.ensureRowVisible(selected);
+            invalidate();
+        }
+
+        // ---- events ------------------------------------------------------------
+
+        int onSelect((TreeNodeId) => void h) {
+            int token = newHandlerToken();
+            selectHandlers_ = selectHandlers_.add(h);
+            selectTokens_ = selectTokens_.add(token);
+            return token;
+        }
+        void offSelect(int token) {
+            Array<(TreeNodeId) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..selectTokens_.length() - 1) if (selectTokens_[i] != token) {
+                hs = hs.add(selectHandlers_[i]);
+                ts = ts.add(selectTokens_[i]);
+            }
+            selectHandlers_ = hs;
+            selectTokens_ = ts;
+        }
+        void fireSelect(TreeNodeId node) {
+            Array<(TreeNodeId) => void> snapshot = selectHandlers_;
+            for ((TreeNodeId) => void h in snapshot) h(node);
+        }
+
+        int onExpand((TreeNodeId, bool) => void h) {
+            int token = newHandlerToken();
+            expandHandlers_ = expandHandlers_.add(h);
+            expandTokens_ = expandTokens_.add(token);
+            return token;
+        }
+        void offExpand(int token) {
+            Array<(TreeNodeId, bool) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..expandTokens_.length() - 1) if (expandTokens_[i] != token) {
+                hs = hs.add(expandHandlers_[i]);
+                ts = ts.add(expandTokens_[i]);
+            }
+            expandHandlers_ = hs;
+            expandTokens_ = ts;
+        }
+        void fireExpand(TreeNodeId node, bool expanded) {
+            Array<(TreeNodeId, bool) => void> snapshot = expandHandlers_;
+            for ((TreeNodeId, bool) => void h in snapshot) h(node, expanded);
+        }
+
+        int onActivate((TreeNodeId) => void h) {
+            int token = newHandlerToken();
+            activateHandlers_ = activateHandlers_.add(h);
+            activateTokens_ = activateTokens_.add(token);
+            return token;
+        }
+        void offActivate(int token) {
+            Array<(TreeNodeId) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..activateTokens_.length() - 1) if (activateTokens_[i] != token) {
+                hs = hs.add(activateHandlers_[i]);
+                ts = ts.add(activateTokens_[i]);
+            }
+            activateHandlers_ = hs;
+            activateTokens_ = ts;
+        }
+        void fireActivate(TreeNodeId node) {
+            Array<(TreeNodeId) => void> snapshot = activateHandlers_;
+            for ((TreeNodeId) => void h in snapshot) h(node);
+        }
+
+        // ---- bug.md #61 extension: Scrollable+Bordered dispatch ------------
+        // Identical finding/fix to ListView's own `scrollTo` override (see
+        // listview.lev's long comment for the full investigation) — the
+        // same Focusable+Scrollable+Bordered mixin shape, so the same
+        // conclusion transfers directly. TreeView is row-only like ListView
+        // (§3.7 never mentions a horizontal scroll axis — indentation is
+        // rendered, not scrolled), so this is byte-for-byte ListView's own
+        // formula with `flat_.length()` in place of `source_.count()`.
+        void scrollTo(int x, int y) {
+            int viewportH = box.inset(this.chrome()).h();
+            int maxY = flat_.length() - viewportH;
+            if (maxY < 0) maxY = 0;
+            int nextY = y < 0 ? 0 : (y > maxY ? maxY : y);
+            int nextX = 0;
+            if (nextX == scrollX && nextY == scrollY) return;
+            scrollX = nextX;
+            scrollY = nextY;
+            changed();
+            invalidate();
+        }
+
+        // ---- layout / paint --------------------------------------------------
+        // Not a Container (§3.7, same as ListView) — rows are painted from
+        // `flat_`, not child components. No paint()/measure() override
+        // needed for the same confirmed-safe-dispatch reason ListView/
+        // TableView both document.
+
+        // "ListView over flat_" (§3.7, verbatim framing): desired height =
+        // flat_.length(), width fills.
+        Size contentDesired(Size avail) => Size(avail.w, flat_.length());
+
+        // The virtualization core, driven by `flat_.length()` (not a
+        // source-side count) per §3.7's own instruction to reuse
+        // RowScroller "driven by flat_.length() as the row count."
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            int count = flat_.length();
+            RowWindow win = rowScroller_.visibleWindow(count, content.h(), scrollY);
+            for (int i in win.first..win.last - 1) {
+                int y = content.y() + (i - scrollY);
+                this.paintRow(s, content, i, y);
+            }
+        }
+
+        // §3.7: "depth * indent spaces + expander glyph (▸/▾/ ) + label;
+        // theme treeview.item(.selected/.focused.selected), treeview.
+        // expander." Priority order for the row's own theme key (enabled >
+        // focused+selected > selected > plain) matches ListView/TableView's
+        // identical convention.
+        void paintRow(Surface s, Rect content, int idx, int y) {
+            TreeRow row = flat_[idx];
+            bool isSelected = idx == selected;
+            string themeKey = "treeview.item";
+            if (!enabled) themeKey = "treeview.item.disabled";
+            else if (isSelected && focused) themeKey = "treeview.item.focused.selected";
+            else if (isSelected) themeKey = "treeview.item.selected";
+            Style st = resolveOrDefault(this, themeKey);
+            Style expanderSt = resolveOrDefault(this, "treeview.expander");
+            char space = ' ';
+            s.fill(Rect(Point(content.x(), y), Size(content.w(), 1)), space, st);
+
+            int indent = row.depth * TreeIndent;
+            int x = content.x() + indent;
+            if (x >= content.x() && x < content.right()) {
+                s.put(x, y, this.expanderGlyph(row), expanderSt);
+            }
+            int labelX = x + 1;
+            if (labelX < content.right()) {
+                string label = source_.labelAt(row.node);
+                int avail = content.right() - labelX;
+                s.writeText(labelX, y, clipToWidth(label, avail), st);
+            }
+        }
+
+        // bug.md #62/#63: a char literal used directly as a ternary branch
+        // evaluates wrong once it reaches a native call argument. Every
+        // literal here is bound to a local first and selected via a plain
+        // if/else chain (never a ternary), the same defensive pattern
+        // tableview.lev's own glyph helpers use.
+        char expanderGlyph(TreeRow row) {
+            char collapsedGlyph = '▸';
+            char expandedGlyph = '▾';
+            char noneGlyph = ' ';
+            if (!row.expandable) return noneGlyph;
+            if (row.expanded) return expandedGlyph;
+            return collapsedGlyph;
+        }
+
+        // bug.md #59 workaround: identical fix to ListView's own (see that
+        // file's long comment) — decodes borderGlyphs() via `.chars()`
+        // rather than `.at(byteOffset)`.
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+    }
+}

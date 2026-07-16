@@ -1,0 +1,195 @@
+// Atlantis Track 01 — static files (design §5).
+//
+// GET/HEAD only; everything else falls through to next(c). A miss falls through
+// (app routes may claim the path) unless `strict` (dedicated asset mount → 404).
+// The traversal defense (§5.1) is spelled out below — deviations here are CVEs.
+namespace Atlantis {
+    namespace Http {
+
+        // §5.1 step 4 — lexical canonicalization, NO filesystem calls. Left-to-right
+        // stack: ""/"." dropped; ".." pops (popping empty → None = escape attempt);
+        // else push. Post-condition: no ".." remains and the join can't escape root.
+        string? canonicalize(string decoded) {
+            Array<string> stack = [];
+            for (string seg in decoded.split("/")) {
+                if (seg == "..") {
+                    if (stack.isEmpty()) { return None; }
+                    stack = stack.removeAt(stack.length() - 1);
+                } else {
+                    if (seg != "" && seg != ".") { stack = stack.add(seg); }
+                }
+            }
+            return stack.joinToString("/");
+        }
+
+        // §5.1 step 3 — strings are byte-clean; a NUL defeats %00-truncation tricks
+        // against any downstream C-ish layer.
+        bool hasNul(string s) {
+            int i = 0;
+            while (i < s.length()) {
+                if (s.byteAt(i) == 0) { return true; }
+                i = i + 1;
+            }
+            return false;
+        }
+
+        class StaticFiles {
+            string root;
+            string prefix;
+            bool strict;
+            string cacheControl;
+            Map<string, string> types = Map();
+
+            new StaticFiles(string root, string prefix) {
+                this.root = root;
+                this.prefix = prefix;
+                this.strict = false;
+                this.cacheControl = "public, max-age=3600";
+                this.initTypes();
+            }
+            StaticFiles setStrict(bool s) { this.strict = s; return this; }
+            StaticFiles setCacheControl(string cc) { this.cacheControl = cc; return this; }
+
+            void initTypes() {
+                this.types["html"] = "text/html; charset=utf-8";
+                this.types["css"]  = "text/css; charset=utf-8";
+                this.types["js"]   = "text/javascript; charset=utf-8";
+                this.types["mjs"]  = "text/javascript; charset=utf-8";
+                this.types["json"] = "application/json";
+                this.types["txt"]  = "text/plain; charset=utf-8";
+                this.types["md"]   = "text/markdown; charset=utf-8";
+                this.types["xml"]  = "application/xml";
+                this.types["svg"]  = "image/svg+xml";
+                this.types["png"]  = "image/png";
+                this.types["jpg"]  = "image/jpeg";
+                this.types["jpeg"] = "image/jpeg";
+                this.types["gif"]  = "image/gif";
+                this.types["webp"] = "image/webp";
+                this.types["ico"]  = "image/x-icon";
+                this.types["woff2"] = "font/woff2";
+                this.types["wasm"] = "application/wasm";
+                this.types["pdf"]  = "application/pdf";
+            }
+
+            string extOf(string name) {
+                int dot = 0 - 1;
+                int i = 0;
+                while (i < name.length()) {
+                    if (name.byteAt(i) == 46) { dot = i; }   // '.'
+                    if (name.byteAt(i) == 47) { dot = 0 - 1; }   // '/' resets — ext is after last dot in last segment
+                    i = i + 1;
+                }
+                if (dot < 0) { return ""; }
+                return name.subStr(dot + 1, name.length() - (dot + 1)).toLower();
+            }
+            string contentType(string name) => this.types.atOr(this.extOf(name), "application/octet-stream");
+
+            bool etagMatches(string inm, string etag) {
+                for (string part in inm.split(",")) {
+                    string t = part.trim();
+                    if (t == "*") { return true; }
+                    if (t == etag) { return true; }
+                }
+                return false;
+            }
+
+            HttpResponse missOr(Context c, (Context) => HttpResponse next) {
+                if (this.strict) { return Respond::text(404, "not found"); }
+                return next(c);
+            }
+
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                string m = c.request.method;
+                bool head = m == "HEAD";
+                if (m != "GET" && !head) { return next(c); }   // §5: GET/HEAD only
+
+                string p = c.request.path;
+                if (!p.startsWith(this.prefix)) { return next(c); }   // step 1: prefix gate
+                string rest = p.subStr(this.prefix.length(), p.length() - this.prefix.length());
+
+                string? dec = encoding::percentDecode(rest);          // step 2: decode ONCE
+                if (dec == None) { return Respond::text(404, "not found"); }
+                string decoded = dec ?? "";                            // None already handled → concrete string
+                if (hasNul(decoded)) { return Respond::text(404, "not found"); }   // step 3
+
+                string? canon = canonicalize(decoded);                // step 4
+                if (canon == None) { return Respond::text(404, "not found"); }
+
+                string rel = canon ?? "";
+                bool wantsIndex = rel == "" || p.endsWith("/");
+                string full = this.root + "/" + rel;                  // step 5
+                if (wantsIndex) {
+                    full = rel == "" ? (this.root + "/index.html") : (this.root + "/" + rel + "/index.html");
+                }
+                if (!std::fileExists(full)) {
+                    string alt = this.root + "/" + rel + "/index.html";
+                    if (!wantsIndex && std::fileExists(alt)) { full = alt; }
+                    else { return this.missOr(c, next); }
+                }
+                return this.serve(c, full, head);
+            }
+
+            HttpResponse serve(Context c, string full, bool head) {
+                int size = std::fileSize(full);
+                int mtime = std::fileModified(full);
+                string ctype = this.contentType(full);
+
+                // §5.3 two-tier ETag: small files (<= 256 KiB) read fully → strong
+                // md5 (one read, served from the buffer); large files → weak
+                // size-mtime (no read).
+                bool small = size >= 0 && size <= 262144;
+                string etag = "";
+                string body = "";
+                if (small) {
+                    using File f = File(full, std::read);
+                    body = f.read(262145);
+                    etag = "\"" + encoding::hexEncode(digest::md5(body)) + "\"";
+                } else {
+                    etag = "W/\"" + size.toString() + "-" + mtime.toString() + "\"";
+                }
+
+                string inm = c.request.header("If-None-Match");
+                if (inm.length() > 0 && this.etagMatches(inm, etag)) {
+                    HttpResponse nm = HttpResponse(304, "");
+                    nm.withHeader("ETag", etag);
+                    nm.withHeader("Cache-Control", this.cacheControl);
+                    return nm;
+                }
+
+                string lastMod = DateTime::ofEpochMs(mtime * 1000).httpDate();
+                if (small || head) {
+                    HttpResponse r = head ? HttpResponse(200, "") : HttpResponse(200, body);
+                    r.withHeader("Content-Type", ctype);
+                    r.withHeader("ETag", etag);
+                    r.withHeader("Last-Modified", lastMod);
+                    r.withHeader("Cache-Control", this.cacheControl);
+                    return r;
+                }
+
+                // Large GET: streamed (§5.4). v1 is collect-then-send (mkStreaming
+                // buffers) — correct output; true incremental wire streaming awaits
+                // the Track 09 server-side streaming-response hook (request filed).
+                string ff = full;
+                Array<Pair<string, string>> hdrs = [];
+                hdrs = hdrs.add(Pair::Of("Content-Type", ctype));
+                hdrs = hdrs.add(Pair::Of("ETag", etag));
+                hdrs = hdrs.add(Pair::Of("Last-Modified", lastMod));
+                hdrs = hdrs.add(Pair::Of("Cache-Control", this.cacheControl));
+                return mkStreaming(200, hdrs, (out) => {
+                    using File f = File(ff, std::read);
+                    string chunk = f.read(65536);
+                    while (chunk != "") {
+                        out.write(chunk);
+                        chunk = f.read(65536);
+                    }
+                    out.end();
+                });
+            }
+
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                StaticFiles self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+    }
+}

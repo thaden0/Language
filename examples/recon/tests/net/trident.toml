@@ -1,0 +1,8 @@
+name    = "recon-net-test"
+entry   = "Recon::main"
+sources = [
+    "net_test.lev",
+    "../../src/net/url.lev",
+    "../../src/net/vars.lev",
+    "../../src/model/environment.lev",
+]

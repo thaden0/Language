@@ -1,0 +1,24 @@
+// §16.5 Phase 3 §7×§9 (5c): a rule/anchor template may call a macro from its
+// own namespace. The clone expands the macro right after cloning, scoped by
+// the RULE's own file (definition-site scoping, §10, falls out for free) —
+// proven here by the macro living in a namespace the USE SITE never `uses`.
+namespace Fmt {
+    macro tag(e) => `"<" + $e + ">"`;
+}
+namespace Web {
+    uses Fmt;
+    attribute Mark { }
+    rule wire {
+        match @Mark on method m in class C
+        inject `log = log + tag!("x");` at bottom of C.constructor
+    }
+}
+uses Web;
+
+class Ctl {
+    string log = "";
+    @Mark int f() => 1;
+}
+
+Ctl c = Ctl();
+console.write(c.log);

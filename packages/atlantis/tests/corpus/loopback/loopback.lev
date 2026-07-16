@@ -1,0 +1,46 @@
+// Atlantis Track 01 — one-process loopback: the Server (wrapping Track 09's
+// hardened HttpServer) serving real traffic through the full pipeline, with an
+// HttpClient in the same event loop. Requests are chained (each fired from the
+// prior response's callback) for deterministic output. Exercises: pipeline fold
+// over a socket, exception→status mapping end-to-end, health, and the 500 net.
+uses Atlantis::Http;
+uses Atlantis::Log;
+
+void main() {
+    int port = 18091;
+    CaptureSink sink = CaptureSink();
+    Logger log = Logger(sink, 0);
+    Array<IReadyCheck> checks = [];
+
+    Pipeline p = Pipeline();
+    p.use(AccessLog(log).mw());
+    p.use(ErrorMapper(log).mw());
+    p.use(Health(checks).mw());
+    var app = p.build((c) => {
+        Context ctx = c;
+        if (ctx.path() == "/missing") { throw NotFoundException(ctx.path()); }
+        if (ctx.path() == "/crash") { throw RuntimeException("secret internals"); }
+        return Respond::text(200, "hello " + ctx.path());
+    });
+
+    Server srv = Server(port, app);
+    srv.start();
+    HttpClient client = HttpClient();
+
+    client.get("127.0.0.1", port, "/hi", (r1) => {
+        console.writeln("GET /hi -> " + r1.status.toString() + " : " + r1.body);
+        client.get("127.0.0.1", port, "/healthz", (r2) => {
+            console.writeln("GET /healthz -> " + r2.status.toString() + " : " + r2.body);
+            client.get("127.0.0.1", port, "/missing", (r3) => {
+                console.writeln("GET /missing -> " + r3.status.toString() + " ctype=" +
+                    r3.headers.firstOr("Content-Type", "-"));
+                client.get("127.0.0.1", port, "/crash", (r4) => {
+                    console.writeln("GET /crash -> " + r4.status.toString() +
+                        " leaks=" + r4.body.contains("secret").toString());
+                    console.writeln("log lines=" + sink.count().toString());
+                    srv.stop();
+                });
+            });
+        });
+    });
+}

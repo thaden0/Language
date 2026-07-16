@@ -1,0 +1,85 @@
+// Corpus test: AppState.buildPrepared (resolve/auth/body/cookies) + onOutcome
+// (tests + extraction writeback + history). Headless, no Sonar.
+namespace Recon {
+
+void main() {
+    AppState st = AppState();
+
+    // environment
+    Environment env = Environment::Named("Prod");
+    env.values = [
+        Variable::Of("base", "api.example.com"),
+        Variable::Of("token", "SECRET")
+    ];
+    st.environments = [env];
+    st.activeEnvName = "Prod";
+
+    // collection with a collection-level var
+    Collection col = Collection();
+    col.variables = [Variable::Of("ver", "v2")];
+    st.activeCollection = col;
+
+    // active request: bearer auth, a header, a json body, all with {{vars}}
+    RequestSpec req = RequestSpec();
+    req.method = Method::POST;
+    req.url = "https://{{base}}/{{ver}}/users?active=true";
+    req.headers = [HeaderEntry::Of("Accept", "application/json")];
+    AuthSpec auth = AuthSpec::Of("bearer");
+    auth.put("token", "{{token}}");
+    req.auth = auth;
+    req.body.mode = BodyMode::Raw;
+    req.body.rawLanguage = "json";
+    req.body.raw = "{\"name\":\"{{base}}\"}";
+    st.active = req;
+
+    console.writeln("== buildPrepared ==");
+    PreparedRequest pr = st.buildPrepared();
+    console.writeln("method=" + pr.method);
+    console.writeln("scheme=" + pr.url.scheme + " host=" + pr.url.host + " port=" + pr.url.port.toString());
+    console.writeln("pathWithQuery=" + pr.url.pathWithQuery());
+    console.writeln("Authorization=" + pr.headers.firstOr("Authorization", "<none>"));
+    console.writeln("Accept=" + pr.headers.firstOr("Accept", "<none>"));
+    console.writeln("Content-Type=" + pr.headers.firstOr("Content-Type", "<none>"));
+    console.writeln("Accept-Encoding=" + pr.headers.firstOr("Accept-Encoding", "<none>"));
+    console.writeln("body=" + pr.body);
+
+    // add a cookie to the active session and re-build -> Cookie header present
+    st.sessions.active().jar.capture(["sid=xyz; Path=/"], "api.example.com", "/", 1700000000000);
+    PreparedRequest pr2 = st.buildPrepared();
+    console.writeln("Cookie=" + pr2.headers.firstOr("Cookie", "<none>"));
+
+    console.writeln("== onOutcome (tests + extraction + history) ==");
+    // define a test plan on the active request
+    req.tests.assertions = [
+        Assertion::Of("status", "", "equals", "200"),
+        Assertion::Of("jsonpath", "$.id", "equals", "7")
+    ];
+    req.tests.extractions = [ Extraction::Of("jsonpath", "$.newToken", "token") ];
+
+    HttpResponse resp = HttpResponse(200, "{\"id\":7,\"newToken\":\"REFRESHED\"}");
+    RunOutcome o = RunOutcome();
+    o.ok = true;
+    o.response = resp;
+    o.elapsedMs = 5;
+    st.onOutcome(o);
+
+    console.writeln("inFlight=" + st.inFlight.toString());
+    for (TestResult r in st.lastTests) {
+        console.writeln((r.passed ? "PASS" : "FAIL") + " " + r.label);
+    }
+    console.writeln("history=" + st.history.entries.length().toString());
+    console.writeln("hist0=" + st.history.labelAt(0));
+    // extraction wrote token=REFRESHED back onto the environment
+    Environment? e2 = st.activeEnvironment();
+    if (e2 != None) {
+        Environment ev = e2 ?? Environment();
+        for (Variable v in ev.values) {
+            if (v.key == "token") { console.writeln("env token=" + v.value); }
+        }
+    }
+    // and buildPrepared now uses the refreshed token
+    PreparedRequest pr3 = st.buildPrepared();
+    console.writeln("Authorization after extract=" + pr3.headers.firstOr("Authorization", "<none>"));
+}
+
+}

@@ -1,0 +1,34 @@
+// bug.md #70 (known_bugs_1.md, fixed): a local/parameter whose name shadows
+// an in-scope namespace (`env`, `math`, ...), dynamically dispatched
+// (interface-typed, forcing §3.4a's "always dispatch on runtime class"
+// rule), calling a method that namespace ALSO declares as a free function
+// with the same arity, used to silently resolve to the NAMESPACE function
+// on --ir/native instead of the receiver's real runtime method. Root cause:
+// Lower.cpp's NS::fn-call fallback checked only "does the callee's base
+// text name a known namespace," with no check that the same name resolved
+// to a local/parameter first — the fallback exists for unchecked prelude
+// bodies (where e->resolved is genuinely null) but also fired whenever the
+// CHECKER itself left e->resolved null for an unrelated reason (dynamic
+// interface dispatch). Fixed by requiring the base name NOT be a local
+// before taking the namespace fallback (same precedent as the `console`
+// shadow guard a few lines above it in lowerCall).
+interface IEnv { Array<string> args(); }
+class FakeA : IEnv { Array<string> args() => ["A"]; }
+class FakeB : IEnv { Array<string> args() => ["B", "extra"]; }
+
+// The parameter is deliberately named `env` — the exact shadow shape bug
+// #70 describes (§3.4a forces dynamic dispatch on an interface-typed
+// receiver, and `env::args()` is a real prelude namespace function of the
+// same arity).
+string first(IEnv env) => env.args().at(0);
+
+console.writeln(first(FakeA()));
+console.writeln(first(FakeB()));
+
+// A second shadowed name, exercised through a local variable rather than a
+// parameter, and a different namespace (`math`) to confirm the fix isn't
+// `env`-specific.
+interface IMath { int value(); }
+class FixedMath : IMath { int value() => 7; }
+IMath math = FixedMath();
+console.writeln(math.value().toString());

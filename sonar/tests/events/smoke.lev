@@ -1,0 +1,255 @@
+uses Sonar;
+
+// Closures capture their environment by snapshot (bug.md #3's framing) —
+// reassigning a captured local from inside a lambda does not write back to
+// the caller's variable. Reference-type sinks make the mutation visible
+// through the shared object instead.
+class KeySink { Array<KeyEvent> items = []; void put(KeyEvent e) { items = items.add(e); } void clear() { items = []; } }
+class MouseSink { Array<MouseEvent> items = []; void put(MouseEvent e) { items = items.add(e); } }
+class PasteSink { Array<PasteEvent> items = []; void put(PasteEvent e) { items = items.add(e); } }
+class Recorder { Array<string> items = []; int count = 0; void note(string s) { items = items.add(s); } void bump() { count = count + 1; } void clear() { items = []; } }
+
+class Leaf : Component, Focusable {
+    string name;
+    new Leaf(string n) { name = n; }
+}
+
+class Panel : Container, Scrollable { }
+
+void main() {
+    // --- decoder: Ground / C0 / printable --------------------------------
+    KeySink keys = KeySink();
+    MouseSink mice = MouseSink();
+    PasteSink pastes = PasteSink();
+    InputDecoder dec = InputDecoder(
+        (e) => keys.put(e),
+        (e) => mice.put(e),
+        (e) => pastes.put(e));
+
+    dec.feed("a");
+    dec.feed("\x03"); // Ctrl+C
+    dec.feed("\x0d"); // Enter
+    dec.feed("\x09"); // Tab
+    console.writeln(keys.items.length());
+    console.writeln(keys.items[0].code == KeyCode::Char);
+    console.writeln(keys.items[0].ch.toString());
+    console.writeln(keys.items[1].code == KeyCode::Char);
+    console.writeln(keys.items[1].mods == Mod::Ctrl);
+    console.writeln(keys.items[1].ch.toString());
+    console.writeln(keys.items[2].code == KeyCode::Enter);
+    console.writeln(keys.items[3].code == KeyCode::Tab);
+
+    // --- decoder: CSI arrow + modifier ------------------------------------
+    keys.clear();
+    dec.feed("\x1b[A");        // Up
+    dec.feed("\x1b[1;5C");     // Ctrl+Right
+    console.writeln(keys.items[0].code == KeyCode::Up);
+    console.writeln(keys.items[0].mods == 0);
+    console.writeln(keys.items[1].code == KeyCode::Right);
+    console.writeln(keys.items[1].mods == Mod::Ctrl);
+
+    // --- decoder: split across two feed() calls ---------------------------
+    keys.clear();
+    dec.feed("\x1b[3");
+    dec.feed("~");             // Delete, split mid-sequence
+    console.writeln(keys.items[0].code == KeyCode::Delete);
+
+    // --- decoder: Alt-prefix (M-x) and double-escape (Alt+Up) -------------
+    keys.clear();
+    dec.feed("\x1bx");
+    char xChar = 'x';
+    console.writeln(keys.items[0].code == KeyCode::Char && keys.items[0].ch == xChar);
+    console.writeln(keys.items[0].mods == Mod::Alt);
+    keys.clear();
+    dec.feed("\x1b\x1b[A");
+    console.writeln(keys.items[0].code == KeyCode::Up);
+    console.writeln(keys.items[0].mods == Mod::Alt);
+
+    // --- decoder: SS3 F1 --------------------------------------------------
+    keys.clear();
+    dec.feed("\x1bOP");
+    console.writeln(keys.items[0].code == KeyCode::F1);
+
+    // --- decoder: UTF-8, split byte-at-a-time ------------------------------
+    keys.clear();
+    dec.feed("\xe7"); dec.feed("\x95"); dec.feed("\x8c"); // 界
+    console.writeln(keys.items[0].ch.code());
+
+    // --- decoder: bracketed paste, terminator split across feed() ---------
+    dec.feed("\x1b[200~hello ");
+    dec.feed("world\x1b[20");
+    dec.feed("1~");
+    console.writeln(pastes.items.length());
+    console.writeln(pastes.items[0].text);
+
+    // --- decoder: SGR mouse press/drag/release + wheel ---------------------
+    dec.feed("\x1b[<0;5;3M");   // left press at (4,2)
+    dec.feed("\x1b[<32;6;3M");  // motion with left held -> drag
+    dec.feed("\x1b[<0;6;3m");   // release
+    dec.feed("\x1b[<64;1;1M");  // wheel up
+    console.writeln(mice.items.length());
+    console.writeln(mice.items[0].kind == MouseKind::Press);
+    console.writeln(mice.items[0].x);
+    console.writeln(mice.items[0].y);
+    console.writeln(mice.items[1].kind == MouseKind::Drag);
+    console.writeln(mice.items[2].kind == MouseKind::Release);
+    console.writeln(mice.items[3].button == MouseButton::WheelUp);
+
+    // --- decoder: pendingTimeoutMs / flushPending --------------------------
+    keys.clear();
+    dec.feed("\x1b");
+    console.writeln(dec.pendingTimeoutMs() > 0);
+    dec.flushPending();
+    console.writeln(keys.items[0].code == KeyCode::Escape);
+    console.writeln(dec.pendingTimeoutMs());
+
+    // --- keymap: bind/handle/duplicate/unbind ------------------------------
+    Recorder kmHits = Recorder();
+    Keymap km = Keymap();
+    int token = km.bind("^S", () => kmHits.bump());
+    console.writeln(km.handle(KeyEvent(KeyCode::Char, std::charFromCode(83), Mod::Ctrl)));
+    console.writeln(kmHits.count);
+    try { km.bind("^S", () => kmHits.bump()); }
+    catch (SonarException ex) { console.writeln("dup"); }
+    km.unbind(token);
+    console.writeln(km.handle(KeyEvent(KeyCode::Char, std::charFromCode(83), Mod::Ctrl)));
+
+    Keymap km2 = Keymap();
+    km2.bind("M-x", () => kmHits.bump());
+    console.writeln(km2.handle(KeyEvent(KeyCode::Char, std::charFromCode(120), Mod::Alt)));
+    console.writeln(kmHits.count);
+
+    // --- KeyEvent.matches / isChar / isCtrl --------------------------------
+    KeyEvent enterEvt = KeyEvent(KeyCode::Enter, std::charFromCode(0), 0);
+    console.writeln(enterEvt.matches("Enter"));
+    KeyEvent ctrlS = KeyEvent(KeyCode::Char, std::charFromCode(83), Mod::Ctrl);
+    console.writeln(ctrlS.matches("^s"));
+    char sChar = 'S';
+    console.writeln(ctrlS.isCtrl(sChar));
+    KeyEvent plainA = KeyEvent(KeyCode::Char, std::charFromCode(97), 0);
+    char aChar = 'a';
+    console.writeln(plainA.isChar(aChar));
+
+    // --- focus: FocusRing traversal + moveFocus -----------------------------
+    Container root = Container();
+    Leaf a = Leaf("a");
+    Leaf b = Leaf("b");
+    Leaf c = Leaf("c");
+    c.setTabStop(false);
+    root.add(a); root.add(b); root.add(c);
+    FocusRing ring = FocusRing();
+    Focusable? f1 = ring.first(root);
+    console.writeln(f1 != None);
+    if (f1 != None) { Focusable ff = f1; moveFocus(None, ff); }
+    console.writeln(a.focused);
+    Focusable? f2 = ring.next(root, a);
+    if (f2 != None) { Focusable ff2 = f2; console.writeln(ff2 == b); moveFocus(a, ff2); }
+    console.writeln(a.focused);
+    console.writeln(b.focused);
+    Focusable? f3 = ring.next(root, b); // c is not a tab stop -> wraps to a
+    if (f3 != None) { Focusable ff3 = f3; console.writeln(ff3 == a); }
+
+    // --- dispatch: capture/target/bubble + handled short-circuit -----------
+    // Tree: droot -> [mid -> [inner]]. Ancestor path of `inner` is
+    // droot..mid..inner, so capture/bubble only ever touch those three.
+    Container droot = Container();
+    Container mid = Container();
+    Leaf inner = Leaf("inner");
+    droot.add(mid);
+    mid.add(inner);
+
+    Recorder order = Recorder();
+    droot.onKeyCapture((e) => order.note("droot-capture"));
+    mid.onKeyCapture((e) => order.note("mid-capture"));
+    inner.onKeyCapture((e) => order.note("inner-capture"));
+    inner.onKey((e) => order.note("inner-target"));
+    mid.onKey((e) => order.note("mid-bubble"));
+    droot.onKey((e) => order.note("droot-bubble"));
+
+    KeyEvent e1 = KeyEvent(KeyCode::Char, std::charFromCode(120), 0);
+    dispatchKey(droot, inner, None, FocusRing(), e1);
+    console.writeln(order.items.joinToString(","));
+
+    // bubble stop: mid's onKey sets handled
+    order.clear();
+    Leaf inner2 = Leaf("inner2");
+    Container mid2 = Container();
+    mid2.add(inner2);
+    droot.add(mid2);
+    inner2.onKey((e) => order.note("inner2"));
+    mid2.onKey((e) => { order.note("mid2"); e.handled = true; });
+    KeyEvent e2 = KeyEvent(KeyCode::Char, std::charFromCode(121), 0);
+    dispatchKey(droot, inner2, None, FocusRing(), e2);
+    console.writeln(order.items.joinToString(","));
+    console.writeln(e2.handled);
+
+    // handler exception is caught and logged, walk continues
+    Leaf boom = Leaf("boom");
+    droot.add(boom);
+    boom.onKey((e) => { throw RuntimeException("boom"); });
+    KeyEvent e3 = KeyEvent(KeyCode::Char, std::charFromCode(122), 0);
+    dispatchKey(droot, boom, None, FocusRing(), e3);
+    console.writeln(handlerErrorCount() > 0);
+
+    // keymap capture tier beats a focused component's bubble handler
+    order.clear();
+    Keymap appKeymap = Keymap();
+    appKeymap.bind("^Q", () => order.note("keymap-quit"));
+    Leaf focusedLeaf = Leaf("fl");
+    droot.add(focusedLeaf);
+    focusedLeaf.onKey((e) => order.note("leaf-saw-it"));
+    KeyEvent ctrlQ = KeyEvent(KeyCode::Char, std::charFromCode(81), Mod::Ctrl);
+    dispatchKey(droot, focusedLeaf, appKeymap, FocusRing(), ctrlQ);
+    console.writeln(order.items.joinToString(","));
+    console.writeln(ctrlQ.handled);
+
+    // unmodified printable never triggers keymap capture tier, reaches leaf
+    order.clear();
+    Keymap appKeymap2 = Keymap();
+    appKeymap2.bind("q", () => order.note("keymap-fallback-q"));
+    Leaf focusedLeaf2 = Leaf("fl2");
+    droot.add(focusedLeaf2);
+    KeyEvent plainQ = KeyEvent(KeyCode::Char, std::charFromCode(113), 0);
+    dispatchKey(droot, focusedLeaf2, appKeymap2, FocusRing(), plainQ);
+    console.writeln(order.items.joinToString(","));
+    console.writeln(plainQ.handled);
+
+    // Tab framework default moves focus
+    Container troot = Container();
+    Leaf t1 = Leaf("t1");
+    Leaf t2 = Leaf("t2");
+    troot.add(t1); troot.add(t2);
+    t1.setFocused(true);
+    KeyEvent tabEvt = KeyEvent(KeyCode::Tab, std::charFromCode(0), 0);
+    dispatchKey(troot, t1, None, FocusRing(), tabEvt);
+    console.writeln(t1.focused);
+    console.writeln(t2.focused);
+    console.writeln(tabEvt.handled);
+
+    // --- dispatch: mouse hit-test + capture/bubble + wheel-to-scrollable ---
+    Container mroot = Container();
+    Panel panel = Panel();
+    mroot.add(panel);
+    mroot.box = Rect(Point(0, 0), Size(20, 10));
+    panel.box = Rect(Point(0, 0), Size(20, 10));
+    panel.contentSize = Size(20, 40);
+
+    Recorder morder = Recorder();
+    panel.onMouseCapture((e) => morder.note("panel-capture"));
+    panel.onMouse((e) => morder.note("panel-target"));
+
+    MouseEvent press = MouseEvent(MouseKind::Press, MouseButton::Left, 5, 5, 0);
+    MouseTarget hit = dispatchMouse(mroot, None, false, press);
+    console.writeln(hit.component != None);
+    console.writeln(morder.items.joinToString(","));
+
+    MouseEvent wheel = MouseEvent(MouseKind::Press, MouseButton::WheelDown, 5, 5, 0);
+    dispatchMouse(mroot, None, false, wheel);
+    console.writeln(panel.scrollY);
+
+    // mouse press outside a non-transparent top overlay reports outsidePress
+    MouseEvent outsidePress = MouseEvent(MouseKind::Press, MouseButton::Left, 50, 50, 0);
+    MouseTarget outside = dispatchMouse(mroot, panel, false, outsidePress);
+    console.writeln(outside.component == None);
+    console.writeln(outside.outsidePress);
+}

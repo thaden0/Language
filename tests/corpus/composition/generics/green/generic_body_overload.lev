@@ -1,0 +1,29 @@
+// bug #54 (FIXED): a generic function body's call to an overloaded free
+// function passing a type-parameter-typed value now resolves PER concrete
+// instantiation, not once at definition-check. Widened LA-18's
+// `specializationRequired` demand routes this shape through the existing
+// above-IR monomorphization pipeline, so every engine consumes ordinary
+// concrete function-table entries. Promoted from generics/red/ on the fix.
+// Acceptance §5.1/§5.2: interface-member dispatch reached (`v.tag()`).
+namespace Probe {
+    interface ISerializable { string tag(); }
+    string enc(int v) => "I" + v.toString();
+    string enc(string v) => "S" + v;
+    string enc(ISerializable v) => "O" + v.tag();
+
+    Array<string> encArr<T>(Array<T> v) {
+        Array<string> out = [];
+        for (T item in v) { out = out.add(Probe::enc(item)); }
+        return out;
+    }
+}
+uses Probe;
+
+class Thing : Probe::ISerializable { string tag() => "thing"; }
+
+Array<int> xs = [1, 2, 3];
+Array<string> ss = ["a", "b"];
+Array<Thing> ts = [Thing()];
+console.write(Probe::encArr(xs).joinToString(",") + "|" +
+              Probe::encArr(ss).joinToString(",") + "|" +
+              Probe::encArr(ts).joinToString(","));

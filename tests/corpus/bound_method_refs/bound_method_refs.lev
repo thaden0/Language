@@ -1,0 +1,80 @@
+// F3: `obj.method` is the eta-expansion lambda with `obj` captured by value.
+
+class Counter {
+    int n;
+    new Counter(int value) { n = value; }
+    int add(int value) => n + value;
+    int read() => n;
+}
+
+class Selector {
+    int choose(int value) => value + 1;
+    string choose(string value) => value + "!";
+}
+
+class Holder {
+    (int)=>int fn;
+}
+
+class BuiltBound {
+    (int)=>int fn;
+    new BuiltBound() { fn = this.twice; }
+    int twice(int value) => value * 2;
+}
+
+class Animal {
+    string speak() => "base";
+}
+class Dog : Animal {
+    string speak() => "dog";
+}
+
+int apply((int)=>int fn, int value) => fn(value);
+string take(string value) => "wrong";
+int take((int)=>int fn) => fn(40);
+
+void run() {
+    Counter c = Counter(10);
+    var add = c.add;
+    console.writeln(add(2));
+
+    // The captured reference still sees mutation of the same object.
+    c.n = 20;
+    console.writeln(add(2));
+
+    // Rebinding the local does not change the receiver snapshot.
+    Counter old = Counter(3);
+    var snap = old.add;
+    old = Counter(100);
+    console.writeln(snap(1));
+
+    // Assignment and argument positions provide overload target types. The
+    // outer string overload must not accept the deferred bound reference.
+    Selector selector = Selector();
+    Holder h = Holder();
+    h.fn = selector.choose;
+    var selected = h.fn;
+    console.writeln(selected(9));
+    console.writeln(take(selector.choose));
+
+    // Constructor-time `this` capture.
+    BuiltBound built = BuiltBound();
+    var twice = built.fn;
+    console.writeln(twice(6));
+
+    // Runtime dispatch is inherited from the synthesized ordinary call.
+    Animal animal = Dog();
+    var speak = animal.speak;
+    console.writeln(speak());
+
+    // A closed concrete receiver takes the ordinary statically-resolved path.
+    var read = c.read;
+    console.writeln(read());
+
+    // Container elements receive their target from the declared element type.
+    Array<(int)=>int> refs = [selector.choose];
+    var fromArray = refs.at(0);
+    console.writeln(fromArray(5));
+}
+
+run();

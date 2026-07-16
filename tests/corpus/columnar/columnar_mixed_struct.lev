@@ -1,0 +1,26 @@
+// techdesign-columnar §3: an INELIGIBLE value struct (has a string field) must
+// keep the row-major dense layout even under --columnar — proving the
+// eligibility gate leaves the existing path untouched. Also mixes an eligible
+// struct alongside it in the same program.
+struct Named { int id; string label; }    // string field -> INELIGIBLE (row-major)
+struct Point { int x; int y; }             // all-scalar -> eligible (columnar)
+void run() {
+    Array<Named> people;
+    people = people.add(named(1, "ann"));
+    people = people.add(named(2, "bob"));
+    people = people.add(named(3, "cy"));
+    for (int i in 0..2) {
+        console.writeln(people[i].id.toString() + ":" + people[i].label);
+    }
+
+    // eligible struct in the same program still works
+    Array<Point> pts;
+    for (int i in 0..3) { Point p; p.x = i; p.y = i + 10; pts = pts.add(p); }
+    int s = 0;
+    for (int i in 0..3) { s = s + pts[i].x + pts[i].y; }
+    console.writeln(s);          // (0+1+2+3) + (10+11+12+13) = 6 + 46 = 52
+}
+Named named(int id, string label) {
+    Named n; n.id = id; n.label = label; return n;
+}
+run();

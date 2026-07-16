@@ -1,0 +1,38 @@
+// LA-2 acceptance #2: a hostname mismatch under full verification is rejected
+// LOUDLY and NAMED. The server's cert is valid for localhost/127.0.0.1, but the
+// client demands host "wrong.example" (verifyMode 0), so the handshake fails and
+// sysTlsError carries the named verify reason. This corpus form drives the
+// handshake explicitly (tlsDrive) and reports the reason through the failure
+// callback, so it is byte-deterministic and exits cleanly on every engine
+// (oracle, IR, LLVM). The throwing form — std::tlsConnect / HttpClient.*Tls —
+// raises RuntimeException("TLS handshake: <reason>") with the same text; on the
+// interpreters an uncaught async throw terminates loudly, and its wording is
+// pinned by the raw-reject scratch check in tests/run_tls.sh.
+void run() {
+    int PORT = 8443;
+    int lfd = std::sysTcpListen(PORT);
+    int accWatch = std::sysWatch(lfd, (ready) => {
+        int cfd = std::sysAccept(lfd);
+        if (cfd >= 0) {
+            std::tlsAccept(cfd, "tests/certs/server-chain.pem",
+                           "tests/certs/server-key.pem", "", 10000, (sfd) => { });
+        }
+    });
+    std::connectTimeout("127.0.0.1", PORT, 5000, (fd) => {
+        if (fd < 0) { console.writeln("connect FAILED"); return; }
+        int armed = std::sysTlsConnect(fd, "wrong.example", "", "tests/certs/ca-cert.pem", 0);
+        if (armed < 0) { console.writeln("setup failed"); return; }
+        std::tlsDrive(fd, (result) => {
+            if (result < 0) {
+                console.writeln("rejected: " + std::sysTlsError(fd));
+                std::sysClose(fd);
+                std::sysUnwatch(accWatch);
+                std::sysClose(lfd);
+            } else {
+                console.writeln("UNEXPECTED: handshake succeeded");
+            }
+        });
+    });
+    console.writeln("reject up");
+}
+run();

@@ -1,0 +1,18 @@
+// doc 2 §4 row 1 (leftmost-first) + row 2 (empty-match advance: a zero-length
+// match at i is reported, then the scan resumes at i+1).
+void run() {
+    Regex kvRe = Regex("(?<key>\\w+)=(?<val>[^;]*)");
+    Array<Match> all = kvRe.matches("a=1;b=2;c=3");
+    console.writeln(all.length());
+    for (Match mm in all) { console.writeln(mm.value + " key=" + (mm.group("key")?.value ?? "")); }
+
+    Regex emptyRe = Regex("a*");
+    Array<Match> es = emptyRe.matches("baab");
+    console.writeln(es.length());
+    for (Match mm in es) { console.writeln(mm.index.toString() + ":" + mm.length.toString() + ":" + mm.value); }
+
+    Regex noneRe = Regex("zzz");
+    Array<Match> nm = noneRe.matches("abc");
+    console.writeln(nm.length());
+}
+run();

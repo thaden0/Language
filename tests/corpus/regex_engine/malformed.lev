@@ -1,0 +1,14 @@
+void probe(string p) {
+    try {
+        regex::compileProgram(p, "");
+        console.writeln("accepted");
+    } catch (RuntimeException e) {
+        console.writeln("rejected");
+    }
+}
+
+probe("[");
+probe("(abc");
+probe("a**");
+probe("a{4,2}");
+probe("(?=x)");

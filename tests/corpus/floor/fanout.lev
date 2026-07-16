@@ -1,0 +1,11 @@
+// Two subscribers to ONE signal each observe every delivery (§3, §13 broadcast
+// is a Layer-2 reshaping): one open fd for USR1, fanned to two StreamBuffers.
+// A single SIGUSR1 fires both handlers, in subscription order.
+InStream<int> a = signal::on(signal::USR1);
+InStream<int> b = signal::on(signal::USR1);
+a.subscribe((n) => console.writeln("a=" + n.toString()));
+b.subscribe((n) => {
+    console.writeln("b=" + n.toString());
+    env::exit(0);
+});
+console.writeln("READY");

@@ -1,0 +1,6 @@
+// Folder "models" matches the namespace tail "Models" (App::Models) — lint ok.
+namespace App {
+    namespace Models {
+        public string label() => "user";
+    }
+}

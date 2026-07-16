@@ -1,0 +1,113 @@
+// Atlantis Track 01 — Respond helpers + problem+json (design §4.2).
+//
+// LLVM NOTE (bug.md #30): json::JsonValue does not lower on LLVM (a
+// Map<K, recursive-class> object-model corruption). Since AG-1 requires LLVM,
+// the kernel builds its JSON output with a small hand-rolled escaped-string
+// builder rather than JsonValue — this is the design's own "INTERIM builder"
+// (§4.2) made permanent-until-#30, so problem bodies and log lines work on every
+// active engine including LLVM. Public signatures are string-first accordingly.
+namespace Atlantis {
+    namespace Http {
+
+        // RFC 9457 statusText: the common codes, else "Error".
+        string statusText(int status) {
+            if (status == 200) { return "OK"; }
+            if (status == 201) { return "Created"; }
+            if (status == 204) { return "No Content"; }
+            if (status == 400) { return "Bad Request"; }
+            if (status == 401) { return "Unauthorized"; }
+            if (status == 403) { return "Forbidden"; }
+            if (status == 404) { return "Not Found"; }
+            if (status == 405) { return "Method Not Allowed"; }
+            if (status == 409) { return "Conflict"; }
+            if (status == 413) { return "Payload Too Large"; }
+            if (status == 422) { return "Unprocessable Entity"; }
+            if (status == 429) { return "Too Many Requests"; }
+            if (status == 500) { return "Internal Server Error"; }
+            if (status == 502) { return "Bad Gateway"; }
+            if (status == 503) { return "Service Unavailable"; }
+            if (status == 504) { return "Gateway Timeout"; }
+            return "Error";
+        }
+
+        // JSON string escaping — never hand-inline this at call sites (H-8:
+        // escaping is done in exactly one place). Produces a quoted JSON literal.
+        string jsonQuote(string s) {
+            string r = "\"";
+            int i = 0;
+            while (i < s.length()) {
+                int b = s.byteAt(i);
+                if (b == 34) { r = r + "\\\""; }
+                else if (b == 92) { r = r + "\\\\"; }
+                else if (b == 10) { r = r + "\\n"; }
+                else if (b == 13) { r = r + "\\r"; }
+                else if (b == 9) { r = r + "\\t"; }
+                else if (b < 32) { r = r + "\\u00" + encoding::hexEncode(std::byteToString(b)); }
+                else { r = r + std::byteToString(b); }
+                i = i + 1;
+            }
+            return r + "\"";
+        }
+
+        // Respond — response builders. Nested under Http so kernel code reaches
+        // them as `Respond::text(...)`. Inner namespace sees enclosing Http
+        // members (statusText/jsonQuote) bare.
+        namespace Respond {
+
+            HttpResponse text(int status, string body) {
+                HttpResponse r = HttpResponse(status, body);
+                r.withHeader("Content-Type", "text/plain; charset=utf-8");
+                return r;
+            }
+
+            // A pre-rendered JSON string body (LLVM-safe primary form).
+            HttpResponse json(int status, string renderedJson) {
+                HttpResponse r = HttpResponse(status, renderedJson);
+                r.withHeader("Content-Type", "application/json");
+                return r;
+            }
+
+            // RFC 9457 problem+json. Built as a string so it lowers on LLVM.
+            HttpResponse problem(int status, string detail, Context c) {
+                string rid = c.items.atOr("requestId", "-");
+                string body = "{" +
+                    "\"type\":\"about:blank\"," +
+                    "\"title\":" + jsonQuote(statusText(status)) + "," +
+                    "\"status\":" + status.toString() + "," +
+                    "\"detail\":" + jsonQuote(detail) + "," +
+                    "\"instance\":" + jsonQuote(c.request.path) + "," +
+                    "\"requestId\":" + jsonQuote(rid) +
+                    "}";
+                HttpResponse r = HttpResponse(status, body);
+                r.withHeader("Content-Type", "application/problem+json");
+                return r;
+            }
+
+            // validationProblem: problem(422, …) + an "errors" array of {field, message}.
+            HttpResponse validationProblem(IValidationException e, Context c) {
+                string rid = c.items.atOr("requestId", "-");
+                string errs = "[";
+                bool firstOne = true;
+                for (FieldError f in e.errors) {
+                    if (!firstOne) { errs = errs + ","; }
+                    firstOne = false;
+                    errs = errs + "{\"field\":" + jsonQuote(f.field) +
+                           ",\"message\":" + jsonQuote(f.message) + "}";
+                }
+                errs = errs + "]";
+                string body = "{" +
+                    "\"type\":\"about:blank\"," +
+                    "\"title\":" + jsonQuote(statusText(422)) + "," +
+                    "\"status\":422," +
+                    "\"detail\":" + jsonQuote(e.message) + "," +
+                    "\"instance\":" + jsonQuote(c.request.path) + "," +
+                    "\"requestId\":" + jsonQuote(rid) + "," +
+                    "\"errors\":" + errs +
+                    "}";
+                HttpResponse r = HttpResponse(422, body);
+                r.withHeader("Content-Type", "application/problem+json");
+                return r;
+            }
+        }
+    }
+}

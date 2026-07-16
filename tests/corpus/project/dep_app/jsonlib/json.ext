@@ -1,0 +1,4 @@
+namespace Json {
+    public string encode(int n) => "{\"value\":" + n + "}";
+    public string tag(string s) => "<" + s + ">";
+}

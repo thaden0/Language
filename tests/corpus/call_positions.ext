@@ -1,0 +1,17 @@
+// bug.md #8 follow-up: statically resolving calls in every expression position.
+// Making `uses` file-scoped (bug #8) removed a global-scope name leak that had
+// been masking two checker gaps — a call under `!` and a call inside a lambda
+// body were never type-checked, so they were not statically resolved and only
+// worked while the leak dumped namespace names into the global scope. Both are
+// now type-checked. Here a namespaced function is reached through each position.
+namespace Lib {
+    bool isFive(string s) => s == "5";
+    int inc(int x) => x + 1;
+    void run() {
+        if (!isFive("4")) console.writeln("not five");   // call under `!`
+        var f = () => inc(20);                            // call in a lambda body
+        console.writeln(f());
+    }
+}
+uses Lib;
+Lib::run();

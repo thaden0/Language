@@ -1,0 +1,101 @@
+// Atlantis Track 04 — DI acceptance corpus (design §12 M2/M4, §2-3).
+//
+// Proves the DI model Atlantis ships — three lifetimes over the language's compile-time
+// bind/inject, NO runtime container (H-5) — plus @Injectable validation (§3.4) and the
+// nearest-wins block-scope shadow that makes the testing story work (§7.4, P-8). Verified
+// byte-identical on oracle / IR / LLVM.
+uses Atlantis;
+
+// ---- §2.1 Singleton: bind a shared instance; every injection sees THIS one ----
+interface ICounter { int next(); }
+class Counter : ICounter {
+    int n = 0;
+    int next() { this.n = this.n + 1; return this.n; }
+}
+Counter sharedCounter = Counter();
+bind ICounter => sharedCounter;
+int useCounter(ICounter c) => c.next();
+
+// ---- §2.2 Transient: arrow-bind a constructor call; fresh per injection ----
+interface ITicket { int serial(); }
+class Ticket : ITicket {
+    int n = 0;
+    int serial() { this.n = this.n + 1; return this.n; }
+}
+bind ITicket => Ticket();                          // => Ctor() runs per injection
+int useTicket(ITicket t) => t.serial();
+
+// ---- §2.2 Chained factory binds: the composition-root workhorse (A6) ----
+interface IDb { string name(); }
+class SqlDb : IDb { string name() => "sql"; }
+bind IDb => SqlDb();
+
+interface IUserService { string describe(); }
+@Injectable                                        // §3.4: validates (IUserService is I-prefixed)
+class SqlUserService : IUserService {
+    IDb db;
+    new SqlUserService(IDb db) { this.db = db; }
+    string describe() => "users over " + this.db.name();
+}
+bind IUserService => SqlUserService(inject IDb);   // dep filled by the nearest IDb bind
+string useService(IUserService s) => s.describe();
+
+// ---- §2.3 Request-scoped: state on a per-request carrier, taken as a parameter ----
+// (No bind — a request scope is a runtime notion. This is the capability-honest,
+// greppable pattern the docs teach; Http::Context is the real carrier in an app.)
+class RequestBag { Map<string, string> items = Map(); }
+class RequestLog {
+    ILogSink sink;                                 // singleton, injected once
+    string requestId;
+    new RequestLog(RequestBag ctx, ILogSink sink) {
+        this.sink = sink;
+        this.requestId = ctx.items.atOr("requestId", "-");
+    }
+    void info(string msg) { this.sink.write("[" + this.requestId + "] " + msg); }
+}
+interface ILogSink { void write(string line); }
+class CaptureSink : ILogSink {
+    Array<string> lines = [];
+    void write(string line) { this.lines = this.lines.add(line); }
+    string last() => this.lines.at(this.lines.length() - 1);
+}
+CaptureSink sink = CaptureSink();
+bind ILogSink => sink;
+
+// §7.4 nearest-wins: a block-local bind shadows the top-level ICounter bind for
+// injecting calls made lexically within this body — this is the whole testing story
+// (the `bind` IS the mock installation, no mocking framework). The shadow uses the
+// `=> Ctor()` factory form the design mandates (§7.4 `=> FakeUserService()`); a bare
+// `=> localVar` block bind is a filed compiler bug (§13) and never how tests shadow.
+class FakeCounter : ICounter {
+    int next() => 99;                               // a distinguishable stub, like a test fake
+}
+void shadowDemo() {
+    bind ICounter => FakeCounter();                  // shadows for injecting calls below
+    console.writeln("shadow: injected sees the fake -> " + useCounter(inject ICounter).toString());
+}
+
+void main() {
+    // Singleton: two injections share one instance → 1, then 2.
+    console.writeln("singleton: " + useCounter(inject ICounter).toString());
+    console.writeln("singleton: " + useCounter(inject ICounter).toString());
+
+    // Transient: two injections are fresh instances → 1, then 1.
+    console.writeln("transient: " + useTicket(inject ITicket).toString());
+    console.writeln("transient: " + useTicket(inject ITicket).toString());
+
+    // Chained factory: the service's IDb dependency is wired by bind.
+    console.writeln("chained: " + useService(inject IUserService));
+
+    // Request-scoped: build from the per-request carrier, singleton sink injected.
+    RequestBag ctx = RequestBag();
+    ctx.items["requestId"] = "req-42";
+    RequestLog log = RequestLog(ctx, inject ILogSink);
+    log.info("handling");
+    console.writeln("request-scoped: " + sink.last());
+
+    // Nearest-wins shadow (the test-mock installation mechanism).
+    shadowDemo();
+    // Back in main's scope the top-level singleton bind still applies → 3.
+    console.writeln("singleton after shadow: " + useCounter(inject ICounter).toString());
+}

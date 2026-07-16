@@ -1,0 +1,17 @@
+// Churn corpus (ARC leak net) — escaping CLOSURES.
+//
+// @N@ is a template hole substituted by fuzz/churn_leak.py. Each iteration
+// builds a closure that captures `i`; the capture forces a heap closure record
+// (escaping tier) which is then dropped when the loop turns. Only `sink`
+// survives, so objects reachable at exit are CONSTANT in N. The escaping-tier
+// ARC must reclaim the N dropped closures, so `live-at-exit=` must stay flat
+// as N grows.
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        let f = (x) => x + i;     // closure captures i -> heap/escaping tier
+        sink = sink + f(10);
+    }                             // ...dropped here; the ARC owes N frees
+    console.writeln(sink);
+}
+run(@N@);

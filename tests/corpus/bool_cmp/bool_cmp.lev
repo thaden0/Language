@@ -1,0 +1,14 @@
+// bug.md #11: bool == bool / bool != bool must compare the actual values, not
+// always read true/false respectively. Pins all four (t,f) combinations for
+// both operators across every engine (LLVM/ELF already agreed; --run, --ir,
+// and emit-C++ used to always print true for == and false for !=).
+bool t = true;
+bool f = false;
+console.writeln(t == t);
+console.writeln(t == f);
+console.writeln(f == t);
+console.writeln(f == f);
+console.writeln(t != t);
+console.writeln(t != f);
+console.writeln(f != t);
+console.writeln(f != f);

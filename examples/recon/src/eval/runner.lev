@@ -1,0 +1,156 @@
+// Native test runner (DESIGN §7.1). Pure over a response + resolver; no UI.
+// The direct replacement for pm.test(...) and pm.environment.set(...).
+namespace Recon {
+
+Array<TestResult> runTests(TestPlan plan, HttpResponse resp, int elapsedMs, VarResolver vars) {
+    Array<TestResult> results = [];
+
+    // parse the body once (None if not JSON) for jsonpath assertions/extractions
+    JsonValue? bodyJson = json::parse(resp.body);
+
+    for (Assertion a in plan.assertions) {
+        TestResult r = evalAssertion(a, resp, elapsedMs, bodyJson);
+        results = results.add(r);
+    }
+
+    for (Extraction e in plan.extractions) {
+        applyExtraction(e, resp, bodyJson, vars);
+    }
+    return results;
+}
+
+TestResult evalAssertion(Assertion a, HttpResponse resp, int elapsedMs, JsonValue? bodyJson) {
+    string label = a.source;
+    if (!a.arg.isEmpty()) { label = label + " " + a.arg; }
+    label = label + " " + a.op;
+    if (!a.expected.isEmpty()) { label = label + " " + a.expected; }
+
+    if (a.source == "status") {
+        string actual = resp.status.toString();
+        return compareValue(label, actual, a.op, a.expected);
+    }
+    if (a.source == "header") {
+        bool present = resp.headers.has(a.arg);
+        if (a.op == "exists") {
+            return TestResult::Of(label, present, present ? "present" : "absent");
+        }
+        string actual = resp.headers.firstOr(a.arg, "");
+        return compareValue(label, actual, a.op, a.expected);
+    }
+    if (a.source == "body") {
+        return compareValue(label, resp.body, a.op, a.expected);
+    }
+    if (a.source == "jsonpath") {
+        if (bodyJson != None) {
+            JsonValue root = bodyJson;
+            JsonValue? node = evalJsonPath(root, a.arg);
+            if (a.op == "exists") {
+                bool ok = node != None;
+                return TestResult::Of(label, ok, ok ? "found" : "not found");
+            }
+            if (node != None) {
+                JsonValue found = node;
+                if (a.op == "isType") {
+                    string t = jsonTypeName(found);
+                    bool ok = t == a.expected;
+                    return TestResult::Of(label, ok, "type=" + t);
+                }
+                string actual = jNumOrStr(found);
+                return compareValue(label, actual, a.op, a.expected);
+            }
+            return TestResult::Of(label, false, "path not found");
+        }
+        return TestResult::Of(label, false, "body is not JSON");
+    }
+    return TestResult::Of(label, false, "unknown source '" + a.source + "'");
+}
+
+// Shared comparator over a string actual value.
+TestResult compareValue(string label, string actual, string op, string expected) {
+    if (op == "equals") {
+        bool ok = actual == expected;
+        return TestResult::Of(label, ok, ok ? "ok" : ("expected '" + expected + "', got '" + actual + "'"));
+    }
+    if (op == "notEquals") {
+        bool ok = actual != expected;
+        return TestResult::Of(label, ok, ok ? "ok" : ("unexpectedly equal to '" + expected + "'"));
+    }
+    if (op == "contains") {
+        bool ok = actual.contains(expected);
+        return TestResult::Of(label, ok, ok ? "ok" : ("'" + actual + "' does not contain '" + expected + "'"));
+    }
+    if (op == "matches") {
+        Regex? re = regex::compile(expected);
+        if (re != None) {
+            Regex rx = re;
+            bool ok = rx.isMatch(actual);
+            return TestResult::Of(label, ok, ok ? "ok" : ("'" + actual + "' does not match /" + expected + "/"));
+        }
+        return TestResult::Of(label, false, "invalid regex '" + expected + "'");
+    }
+    if (op == "inRange") {
+        int? av = actual.toInt();
+        if (av == None) { return TestResult::Of(label, false, "'" + actual + "' is not numeric"); }
+        int n = av ?? 0;
+        int sep = expected.indexOf("..");
+        if (sep < 0) { return TestResult::Of(label, false, "range must be 'lo..hi'"); }
+        int? lo = expected.subStr(0, sep).toInt();
+        int? hi = expected.subStr(sep + 2, expected.length() - sep - 2).toInt();
+        if (lo != None && hi != None) {
+            int loN = lo ?? 0;
+            int hiN = hi ?? 0;
+            bool ok = n >= loN && n <= hiN;
+            return TestResult::Of(label, ok, ok ? "ok" : (n.toString() + " not in " + expected));
+        }
+        return TestResult::Of(label, false, "bad range '" + expected + "'");
+    }
+    if (op == "exists") {
+        bool ok = !actual.isEmpty();
+        return TestResult::Of(label, ok, ok ? "present" : "empty");
+    }
+    return TestResult::Of(label, false, "unknown op '" + op + "'");
+}
+
+void applyExtraction(Extraction e, HttpResponse resp, JsonValue? bodyJson, VarResolver vars) {
+    string value = "";
+    bool got = false;
+    if (e.source == "jsonpath") {
+        if (bodyJson != None) {
+            JsonValue root = bodyJson;
+            JsonValue? node = evalJsonPath(root, e.arg);
+            if (node != None) { JsonValue v = node; value = jNumOrStr(v); got = true; }
+        }
+    } else if (e.source == "header") {
+        if (resp.headers.has(e.arg)) { value = resp.headers.firstOr(e.arg, ""); got = true; }
+    } else if (e.source == "regexGroup") {
+        Regex? re = regex::compile(e.arg);
+        if (re != None) {
+            Regex rx = re;
+            Match? m = rx.find(resp.body);
+            if (m != None) {
+                Match mt = m;
+                int? gi = e.group.toInt();
+                int g = gi ?? 1;
+                if (g >= 0 && g < mt.groups.length()) {
+                    Group gg = mt.group(g);
+                    value = gg.value; got = true;
+                }
+            }
+        }
+    }
+    if (got && !e.varName.isEmpty()) {
+        vars.setInScope(e.scope, e.varName, value);
+    }
+}
+
+string jsonTypeName(JsonValue v) {
+    if (v.isNull())   { return "null"; }
+    if (v.isBool())   { return "bool"; }
+    if (v.isNum())    { return "number"; }
+    if (v.isStr())    { return "string"; }
+    if (v.isArray())  { return "array"; }
+    if (v.isObject()) { return "object"; }
+    return "unknown";
+}
+
+}

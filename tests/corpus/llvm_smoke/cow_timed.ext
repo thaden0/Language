@@ -1,0 +1,16 @@
+// §10.2 timed COW smoke: ~1M indexed stores over a uniquely-owned array must
+// run on idxset's in-place (rc==1) path. If the pre-release discipline breaks
+// and the base reads shared, every store copies the whole array — O(n^2),
+// caught by the harness timeout, never by output diffing (the values are
+// identical either way; only the wall clock tells the paths apart).
+void run() {
+    Array<int> a = Array(1000, 0);
+    for (int rep in 0..999) {
+        for (int i in 0..999) {
+            a[i] = rep + i;
+        }
+    }
+    console.writeln(a[0]);
+    console.writeln(a[999]);
+}
+run();

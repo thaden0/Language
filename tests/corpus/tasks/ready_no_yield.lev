@@ -1,0 +1,18 @@
+// LA-30 doc 5 §2 C4 (documented, not a change — ready-await never yields).
+// Three promises are resolved BEFORE they are ever awaited, so every
+// `await` below takes the fast/ready path (doc 1 §6): proceed without
+// suspending, no scheduling point. Run with LANG_TASK_STATS=1: the
+// `[tasks] switches=` count must equal the fixed per-process baseline for
+// running task 0 alone (enter once, exit once — verified identical to a
+// program with NO awaits at all), proving zero scheduler switches happened
+// for this whole ready-chain. Byte-identical on oracle/IR/LLVM.
+Promise<int> p1 = Promise();
+p1.resolve(1);
+Promise<int> p2 = Promise();
+p2.resolve(2);
+Promise<int> p3 = Promise();
+p3.resolve(3);
+int a = await p1;
+int b = await p2;
+int c = await p3;
+console.writeln(a + b + c);

@@ -1,0 +1,133 @@
+// Sonar Track 08 acceptance test (design §8): resolution chain + layering,
+// TOML subset parser (valid + every error with line/col), built-in themes +
+// a11y, runtime theme switch, DI (bind/inject + scoped rebind).
+// Differential across oracle / IR / emit-C++ / LLVM against one .expected.
+uses Sonar;
+
+// A concrete Styleable so we can exercise setStyle + the resolve() chain.
+class Probe : Styleable { }
+
+// DI (design §5): the composition root binds ITheme; a function takes it
+// injected. Factory form `=> Ctor()` (the sanctioned bind shape, footgun #56).
+bind ITheme => Theme::Dark();
+int focusedAttrs(ITheme theme) => theme.style("input.focused").attrs;
+
+void showStyle(string label, Style s) {
+    console.writeln(label + " " + s.fg.code().toString()
+        + " " + s.bg.code().toString() + " " + s.attrs.toString());
+}
+
+void expectError(string label, string toml) {
+    try {
+        Theme t = Theme::FromToml(toml);
+        console.writeln(label + " NO-ERROR (unexpected)");
+    } catch (ISonarException e) {
+        console.writeln(label + " " + e.message);
+    }
+}
+
+// a11y (design §3): every state key must carry a non-color (attrs) channel.
+void a11yAudit(string name, Theme t) {
+    int stateKeys = 0;
+    int violations = 0;
+    for (string k in t.keys()) {
+        Array<string> parts = k.split(".");
+        bool hasState = false;
+        for (string p in parts) if (isStateSeg(p)) hasState = true;
+        if (hasState) {
+            stateKeys = stateKeys + 1;
+            if (t.style(k).attrs == 0) violations = violations + 1;
+        }
+    }
+    console.writeln(name + " keys=" + t.keys().length().toString()
+        + " stateKeys=" + stateKeys.toString() + " a11yViolations=" + violations.toString());
+}
+
+void main() {
+    // ---------- 1. Resolution chain + layering (design §2) ----------
+    Theme th = Theme::FromToml(
+        "[default]\n" +
+        "fg = \"white\"\n" +          // white=7
+        "bg = \"black\"\n" +          // black=0
+        "\n" +
+        "[input]\n" +
+        "fg = \"cyan\"\n" +           // cyan=6
+        "\n" +
+        "[input.text]\n" +
+        "fg = \"green\"\n" +          // green=2
+        "\n" +
+        "[input.focused.text]\n" +
+        "attrs = \"bold\"\n");        // bold=1
+
+    console.writeln("-- resolution --");
+    Probe p = Probe();
+    // Exact miss cascades: exact(bold) over minusState(green) over base(cyan)
+    // over default(white/black). fg=green(2) bg=black(0) attrs=bold(1).
+    showStyle("focused.text", p.resolve("input.focused.text", th));
+    // No part: base=minusState=exact="input" (cyan). default supplies bg.
+    showStyle("input", p.resolve("input", th));
+    // Only "default" hits.
+    showStyle("unknown.thing", p.resolve("unknown.thing", th));
+    // Instance override wins over everything, still layering bg/attrs beneath.
+    p.setStyle("input.focused.text", Style(Color::Red, Color::Default, 0));
+    showStyle("override", p.resolve("input.focused.text", th));
+    // Empty theme + no instance override => Style() at every step (the
+    // "no theme required" guarantee: a fresh Styleable resolves to terminal
+    // colors). A fresh probe, since p now carries the override set above.
+    Theme empty = Theme();
+    Probe fresh = Probe();
+    showStyle("empty-theme", fresh.resolve("input.focused.text", empty));
+
+    // ---------- 2. TOML parser: valid values ----------
+    console.writeln("-- parse valid --");
+    Theme v = Theme::FromToml(
+        "[a]\n" +
+        "fg = 7\n" +                          // bare int color
+        "bg = \"default\"\n" +                // "default" => -1
+        "attrs = \"bold|underline\"\n" +      // 1|8 = 9
+        "[b]\n" +
+        "fg = \"brightMagenta\"  # inline comment ok\n" +   // 13, trailing comment
+        "attrs = 16\n");                      // bare int attrs
+    showStyle("a", v.style("a"));
+    showStyle("b", v.style("b"));
+    console.writeln("has(a)=" + v.has("a").toString() + " has(z)=" + v.has("z").toString());
+
+    // ---------- 3. TOML parser: error taxonomy (line:col) ----------
+    console.writeln("-- parse errors --");
+    expectError("E-outside", "fg = \"red\"\n");
+    expectError("E-unclosed", "[input\n");
+    expectError("E-noeq", "[input]\nfg red\n");
+    expectError("E-unknownkey", "[input]\ncolor = \"red\"\n");
+    expectError("E-unknowncolor", "[input]\nfg = \"chartreuse\"\n");
+    expectError("E-range", "[input]\nfg = 42\n");
+    expectError("E-unknownattr", "[input]\nattrs = \"sparkle\"\n");
+    expectError("E-emptyhdr", "[]\n");
+    expectError("E-emptyseg", "[input.]\n");
+    expectError("E-unterminated", "[input]\nfg = \"red\n");
+
+    // ---------- 4. Built-in themes + a11y ----------
+    console.writeln("-- built-ins --");
+    a11yAudit("Default", Theme::Default());
+    a11yAudit("Dark", Theme::Dark());
+    a11yAudit("Light", Theme::Light());
+    a11yAudit("HighContrast", Theme::HighContrast());
+
+    // ---------- 5. Runtime theme switch (in-place mutation, design §3 R10) ----------
+    console.writeln("-- switch --");
+    Theme live = Theme::FromToml("[input]\nfg = \"red\"\n");   // red=1
+    console.writeln("before=" + live.style("input").fg.code().toString());
+    live.setTheme(Theme::FromToml("[input]\nfg = \"blue\"\n")); // blue=4
+    console.writeln("after=" + live.style("input").fg.code().toString());
+
+    // ---------- 6. DI: injection + scoped rebind (design §5) ----------
+    console.writeln("-- di --");
+    console.writeln("bound=" + focusedAttrs(inject ITheme).toString());        // Dark: bold=1
+    scopedRebind();
+}
+
+// Nearest-wins block rebind (design §1 Modal subtree): a lexical bind shadows
+// the top-level ITheme for injecting calls within this scope.
+void scopedRebind() {
+    bind ITheme => Theme::HighContrast();
+    console.writeln("scoped=" + focusedAttrs(inject ITheme).toString());       // HC: reverse|bold=17
+}

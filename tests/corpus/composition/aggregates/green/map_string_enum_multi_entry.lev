@@ -1,0 +1,23 @@
+// Regression floor for bug #40 (Map<string, EnumType> with 2+ entries
+// segfaulting on emit-C++/LLVM once a value is read back via atOrNone +
+// narrowed compare). known_bugs_1.md still lists #40 as open, but this
+// exact repro is clean on run/ir/cpp/llvm against the current runtime —
+// confirmed 2026-07-14 (same stale-liblvrt.a story as array_struct_enum_
+// stale.lev above). The owner should close #40 as fixed.
+enum Kind { A, B, C }
+Map<string, Kind> buildMap() {
+    Map<string, Kind> names = Map();
+    names["a"] = Kind::A;
+    names["b"] = Kind::B;
+    return names;
+}
+Map<string, Kind> myMap = buildMap();
+void main() {
+    Kind? found = myMap.atOrNone("a");
+    console.writeln(found != None);
+    if (found != None) {
+        Kind val = found;
+        console.writeln(val == Kind::A);
+    }
+}
+main();

@@ -1,0 +1,44 @@
+// Atlantis Track 01 — health & readiness (design §7.1).
+//
+// Middleware, not routes — works pre-Track-02. /healthz is liveness (no deps);
+// /readyz aggregates IReadyCheck implementors (Track 05's pool registers "mysql:
+// can acquire"; the app adds its own). During drain (§7.4) /readyz returns 503 so
+// load balancers stop routing before the stop.
+namespace Atlantis {
+    namespace Http {
+        interface IReadyCheck { string name(); bool ready(); }   // may await internally (no coloring)
+
+        class Health {
+            Array<IReadyCheck> checks;
+            bool draining;
+            new Health(Array<IReadyCheck> checks) {
+                this.checks = checks;
+                this.draining = false;
+            }
+            // Wired by the composition root to Server.stop() (§7.4).
+            void markDraining() { this.draining = true; }
+
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                string p = c.request.path;
+                if (p == "/healthz") { return Respond::text(200, "ok"); }   // liveness: no deps
+                if (p == "/readyz") {
+                    if (this.draining) { return Respond::text(503, "draining"); }
+                    Array<FieldError> failing = [];
+                    for (IReadyCheck ch in this.checks) {
+                        if (!ch.ready()) { failing = failing.add(FieldError(ch.name(), "not ready")); }
+                    }
+                    if (failing.isEmpty()) { return Respond::text(200, "ready"); }
+                    string body = "not ready:";
+                    for (FieldError f in failing) { body = body + " " + f.field; }
+                    return Respond::text(503, body);
+                }
+                return next(c);
+            }
+
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                Health self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+    }
+}

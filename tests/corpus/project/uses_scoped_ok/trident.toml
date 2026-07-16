@@ -1,0 +1,2 @@
+name = "uses_scoped_ok"
+sources = ["lib.ext", "a.ext", "b.ext"]

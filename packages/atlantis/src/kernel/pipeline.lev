@@ -1,0 +1,39 @@
+// Atlantis Track 01 — the pipeline (C2): shapes and the fold (design §1).
+//
+// The two function shapes, verbatim from C2 (first-class function types):
+//   Handler    = (Context) => HttpResponse
+//   Middleware = (Context, (Context) => HttpResponse) => HttpResponse
+//
+// There are no type aliases in the language, so these are spelled inline. The
+// pipeline is an explicit ordered Array of middleware folded right-to-left over
+// the terminal handler, in the composition root, at boot, once.
+namespace Atlantis {
+    namespace Http {
+        class Pipeline {
+            Array<(Context, (Context) => HttpResponse) => HttpResponse> steps;
+
+            new Pipeline() { this.steps = []; }
+
+            // Append a middleware; pure Array => rebind. Chainable.
+            Pipeline use((Context, (Context) => HttpResponse) => HttpResponse m) {
+                this.steps = this.steps.add(m);
+                return this;
+            }
+
+            int length() => this.steps.length();
+
+            (Context) => HttpResponse build((Context) => HttpResponse terminal) =>
+                this.foldFrom(0, terminal);
+
+            // Recursive fold — NOT a loop. Each frame owns its own `next`, so
+            // closure capture is unambiguous (P-probe P1 tests both forms; the
+            // recursive form is correct under by-value OR by-reference capture).
+            (Context) => HttpResponse foldFrom(int i, (Context) => HttpResponse terminal) {
+                if (i >= this.steps.length()) { return terminal; }
+                var m = this.steps.at(i);
+                var next = this.foldFrom(i + 1, terminal);
+                return (ctx) => m(ctx, next);
+            }
+        }
+    }
+}

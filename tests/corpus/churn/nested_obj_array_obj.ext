@@ -1,0 +1,28 @@
+// Churn corpus (ARC leak net) — NESTED heap graph: object -> array -> objects.
+//
+// Each iteration builds a Bag holding an Array of freshly-allocated Leaf
+// objects, then drops the whole subgraph. Reclaiming it needs RECURSIVE
+// release: free the Bag, then its array buffer, then each Leaf. A release that
+// stops at the Bag (misses the nested children) leaks; the meter's
+// live-at-exit then grows with N while the oracle root set stays constant.
+// @N@ is substituted by fuzz/churn_leak.py.
+class Leaf { int v = 0; }
+class Bag { Array<Leaf> items; }
+Bag makeBag(int seed) {
+    Bag b = Bag();
+    for (int i in 1..3) {
+        Leaf l = Leaf();
+        l.v = seed + i;
+        b.items = b.items.add(l);     // Leaf escapes into the Bag's array
+    }
+    return b;                         // whole subgraph escapes the callee frame
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Bag b = makeBag(i);           // fresh 1 Bag + 3 Leaf subgraph...
+        sink = sink + b.items.length();
+    }                                 // ...dropped; the ARC owes the whole graph
+    console.writeln(sink);
+}
+run(@N@);

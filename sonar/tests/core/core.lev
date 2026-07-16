@@ -1,0 +1,124 @@
+uses Sonar;
+
+class ProbeComponent : Component {
+    int attaches = 0;
+    int detaches = 0;
+    Size contentDesired(Size avail) => Size(4, 2);
+    void onAttach() { attaches = attaches + 1; }
+    void onDetach() { detaches = detaches + 1; }
+}
+
+class ContentBox : Container, Scrollable, Bordered { }
+class Counter { int hits = 0; void bump() { hits = hits + 1; } }
+
+void main() {
+    Rect a = Rect(Point(2, 2), Size(5, 4));
+    Rect b = Rect(Point(5, 1), Size(4, 3));
+    Rect overlap = a.intersect(b);
+    console.writeln(overlap.x());
+    console.writeln(overlap.y());
+    console.writeln(overlap.w());
+    console.writeln(overlap.h());
+    Rect empty = a.intersect(Rect(Point(20, 20), Size(1, 1)));
+    console.writeln(empty.x());
+    console.writeln(empty.y());
+    console.writeln(empty.w());
+    console.writeln(empty.h());
+    console.writeln(a.contains(2, 2));
+    console.writeln(a.contains(7, 2));
+    console.writeln(Rect(Point(0, 0), Size(3, 3)).inset(Insets::Uniform(2)).isEmpty());
+
+    Style base = Style(Color::Red, Color::Blue, Attr::Bold);
+    Style layer = Style(Color::Default, Color::Black, Attr::Underline);
+    Style merged = layer.over(base);
+    console.writeln(merged.fg.code());
+    console.writeln(merged.bg.code());
+    console.writeln(merged.attrs);
+    console.writeln(Attr::Bold);
+    console.writeln(Attr::Underline);
+    char ascii = 'a'; char cjk = '界'; char ambiguous = '·';
+    console.writeln(glyphWidth(ascii));
+    console.writeln(glyphWidth(cjk));
+    console.writeln(glyphWidth(ambiguous));
+    setWidthMode(WidthMode::EastAsian);
+    console.writeln(glyphWidth(ambiguous));
+    setWidthMode(WidthMode::Standard);
+
+    Surface surface = Surface(6, 2);
+    Style plain;
+    surface.clear(plain);
+    surface.put(1, 0, cjk, plain);
+    console.writeln(surface.cells().byteAt(surface.cellOffset(2, 0) + 7));
+    char x = 'x';
+    surface.put(2, 0, x, plain);
+    console.writeln(surface.cells().int32At(surface.cellOffset(1, 0)));
+    console.writeln(surface.cells().int32At(surface.cellOffset(2, 0)));
+    surface.put(1, 0, cjk, plain);
+    surface.put(1, 0, x, plain);
+    console.writeln(surface.cells().int32At(surface.cellOffset(2, 0)));
+    surface.pushClip(Rect(Point(4, 0), Size(1, 1)));
+    surface.put(4, 0, cjk, plain);
+    surface.popClip();
+    console.writeln(surface.cells().int32At(surface.cellOffset(4, 0)));
+    char control = '\n';
+    surface.put(5, 0, control, plain);
+    console.writeln(surface.cells().int32At(surface.cellOffset(5, 0)));
+    surface.fill(Rect(Point(0, 1), Size(6, 1)), x, plain);
+    console.writeln(surface.cells().int32At(surface.cellOffset(5, 1)));
+    try { surface.popClip(); }
+    catch (SonarException e) { console.writeln("underflow"); }
+
+    ProbeComponent leaf = ProbeComponent();
+    leaf.measure(Size(100, 100));
+    console.writeln(leaf.desired().w);
+    console.writeln(leaf.desired().h);
+    leaf.setWidth(Constraint::Fixed(7));
+    leaf.measure(Size(100, 100));
+    console.writeln(leaf.desired().w);
+
+    Counter counter = Counter();
+    int token = leaf.onKey((event) => counter.bump());
+    leaf.fireKey(KeyEvent(KeyCode::Enter, x, 0));
+    leaf.offKey(token);
+    leaf.fireKey(KeyEvent(KeyCode::Enter, x, 0));
+    console.writeln(counter.hits);
+
+    Container root = Container();
+    root.add(leaf);
+    console.writeln(leaf.parent() != None);
+    console.writeln(leaf.attaches);
+    root.remove(leaf);
+    console.writeln(leaf.parent() == None);
+    console.writeln(leaf.detaches);
+
+    Container child = Container();
+    root.add(child);
+    try { child.add(root); }
+    catch (SonarException e) { console.writeln("cycle"); }
+    root.clear();
+
+    ContentBox decorated = ContentBox();
+    decorated.padding = Insets::Uniform(2);
+    decorated.setBorder(BorderStyle::Single);
+    console.writeln(decorated.chrome().top);
+    decorated.box = Rect(Point(0, 0), Size(10, 4));
+    decorated.contentSize = Size(20, 10);
+    decorated.scrollTo(99, 99);
+    console.writeln(decorated.scrollX);
+    console.writeln(decorated.scrollY);
+
+    Container damageRoot = Container();
+    ProbeComponent damaged = ProbeComponent();
+    damageRoot.add(damaged);
+    damageRoot.arrange(Rect(Point(0, 0), Size(6, 2)));
+    damaged.arrange(Rect(Point(0, 0), Size(4, 2)));
+    damageRoot.clearDamage();
+    damaged.clearDamage();
+    damaged.invalidate();
+    console.writeln(damageRoot.subtreeDamaged());
+    console.writeln(collectLayoutRoots(damageRoot).length());
+    paintDamaged(damageRoot, surface);
+    console.writeln(damageRoot.subtreeDamaged());
+    damaged.invalidateLayout();
+    console.writeln(collectLayoutRoots(damageRoot).length());
+}

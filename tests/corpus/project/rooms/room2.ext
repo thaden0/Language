@@ -1,0 +1,4 @@
+namespace Room2 {
+    class TheClass { public string greet() => "Hello"; }
+    public string describe() { TheClass t = TheClass(); return t.greet(); }
+}

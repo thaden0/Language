@@ -1,0 +1,31 @@
+// Atlantis Track 01 — Context, the frozen C2 request scope (design §2).
+//
+// Per hurdle H-5, Context IS the request scope: "request-scoped services" take a
+// Context parameter; there is no runtime container. Adding a FIELD here is a C2
+// contract change (escalation) — anything a middleware hands downstream goes in
+// `items` (string values; encode ints via toString).
+namespace Atlantis {
+    namespace Http {
+        class Context {
+            HttpRequest request;                           // Track 09 type (HeaderMap headers)
+            Map<string, string> routeParams = Map();       // filled by the router (Track 02)
+            Auth::Principal? user;                          // None until auth middleware runs (Track 08)
+            Map<string, string> items = Map();             // per-request bag (request id, trace id, …)
+
+            // routeParams/items get a fresh Map per construction via the field
+            // initializers above ($init runs before the ctor body) — one Context
+            // per request, never reused (§2.2). Map<K,V>() only infers K/V from a
+            // field-default target, not a bare `= Map()` in a ctor body.
+            new Context(HttpRequest req) {
+                this.request = req;
+                this.user = None;
+            }
+
+            // Additive convenience METHODS only — no state beyond the four frozen fields.
+            string id() => this.items.atOr("requestId", "-");   // set by AccessLog (§6.3)
+            string? item(string k) => this.items.atOrNone(k);
+            string path() => this.request.path;
+            string method() => this.request.method;
+        }
+    }
+}

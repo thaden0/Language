@@ -1,0 +1,62 @@
+// Track 09 F3 (M1): encoding namespace — base64, base64Url, percent, hex.
+// RFC 4648 base64 test vectors + padding trio, hex round-trips, percent
+// round-trips, and the malformed->None totality contract (decoders never throw).
+
+string b64(string s) {
+    string? r = encoding::base64Decode(s);
+    return r != None ? r : "None";
+}
+string hx(string s) {
+    string? r = encoding::hexDecode(s);
+    return r != None ? r : "None";
+}
+string pc(string s) {
+    string? r = encoding::percentDecode(s);
+    return r != None ? r : "None";
+}
+string url(string s) {
+    string? r = encoding::base64UrlDecode(s);
+    return r != None ? r : "None";
+}
+
+void run() {
+    // --- base64 encode: RFC 4648 §10 vectors (the padding trio in one sweep) ---
+    console.writeln(encoding::base64Encode(""));         // (empty)
+    console.writeln(encoding::base64Encode("f"));        // Zg==
+    console.writeln(encoding::base64Encode("fo"));       // Zm8=
+    console.writeln(encoding::base64Encode("foo"));      // Zm9v
+    console.writeln(encoding::base64Encode("foob"));     // Zm9vYg==
+    console.writeln(encoding::base64Encode("fooba"));    // Zm9vYmE=
+    console.writeln(encoding::base64Encode("foobar"));   // Zm9vYmFy
+
+    // --- base64 decode round-trips ---
+    console.writeln(b64(""));                             // (empty)
+    console.writeln(b64("Zg=="));                         // f
+    console.writeln(b64("Zm8="));                         // fo
+    console.writeln(b64("Zm9vYmFy"));                     // foobar
+
+    // --- base64 malformed -> None (bad length, bad char, bad padding) ---
+    console.writeln(b64("Zg="));                          // None (len % 4 != 0)
+    console.writeln(b64("Zg=A"));                         // None ('=' not final)
+    console.writeln(b64("Z!=="));                         // None (bad char)
+    console.writeln(b64("===="));                         // None (v0 invalid)
+
+    // --- hex ---
+    console.writeln(encoding::hexEncode("Hi!"));          // 486921
+    console.writeln(hx("486921"));                        // Hi!
+    console.writeln(hx("DEADbeef") != "None" ? "ok" : "None"); // mixed case ok
+    console.writeln(hx("48692"));                         // None (odd length)
+    console.writeln(hx("48zz"));                          // None (bad nibble)
+
+    // --- percent (RFC 3986 unreserved passthrough, %XX uppercase) ---
+    console.writeln(encoding::percentEncode("a b/c?~-_.")); // a%20b%2Fc%3F~-_.
+    console.writeln(pc("a%20b%2Fc%3F"));                    // a b/c?
+    console.writeln(pc("%2"));                              // None (truncated)
+    console.writeln(pc("%zz"));                             // None (bad hex)
+
+    // --- base64url (no padding, -_ for +/) ---
+    console.writeln(encoding::base64UrlEncode("foob"));     // Zm9vYg  (no '=')
+    console.writeln(url("Zm9vYg"));                         // foob
+    console.writeln(url("Zm9vYmFy"));                       // foobar
+}
+run();

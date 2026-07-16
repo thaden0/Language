@@ -1,0 +1,79 @@
+// §11/§15 COW-on-refcount: arrays and maps are pure values whose indexed
+// writes mutate in place when uniquely owned and copy when aliased. This
+// pins the VALUE SEMANTICS across both paths: an alias must never observe
+// a write made through the other binding, whichever path the engine takes.
+struct Pt {
+    int x;
+    int y;
+}
+
+void run() {
+    // unique array: the in-place path — values must land correctly
+    Array<int> a = Array(5, 0);
+    for (int i in 0..4) {
+        a[i] = i * 10;
+    }
+    console.writeln(a[0]);       // 0
+    console.writeln(a[4]);       // 40
+
+    // aliased array: writes through either binding stay private
+    Array<int> b = a;
+    a[0] = 99;
+    b[4] = 77;
+    console.writeln(a[0]);       // 99
+    console.writeln(b[0]);       // 0
+    console.writeln(a[4]);       // 40
+    console.writeln(b[4]);       // 77
+
+    // alias taken MID-loop: later writes must not leak into the snapshot
+    Array<int> d = Array(4, 1);
+    Array<int> snap;
+    for (int i in 0..3) {
+        if (i == 2) { snap = d; }
+        d[i] = 5;
+    }
+    console.writeln(d[3]);       // 5
+    console.writeln(snap[2]);    // 1 (snapshot precedes d[2] = 5)
+    console.writeln(snap[3]);    // 1
+
+    // map: unique update loop (in-place), then alias independence
+    Map<string, int> m;
+    m["hits"] = 0;
+    for (int i in 1..6) {
+        m["hits"] = i;
+    }
+    console.writeln(m.at("hits"));   // 6
+    Map<string, int> m2 = m;
+    m["hits"] = 100;
+    m2["misses"] = 3;
+    console.writeln(m.at("hits"));   // 100
+    console.writeln(m2.at("hits"));  // 6
+    console.writeln(m.has("misses")); // false
+    console.writeln(m2.at("misses")); // 3
+
+    // dense value-struct array: unique set loop, then alias independence
+    Pt p;
+    Array<Pt> pts;
+    for (int i in 0..3) {
+        pts = pts.add(p);
+    }
+    for (int i in 0..3) {
+        Pt q;
+        q.x = i + 1;
+        q.y = i;
+        pts[i] = q;
+    }
+    Pt r0 = pts[0];
+    Pt r3 = pts[3];
+    console.writeln(r0.x);       // 1
+    console.writeln(r3.x);       // 4
+    Array<Pt> pts2 = pts;
+    Pt w;
+    w.x = 500;
+    pts[1] = w;
+    Pt s1 = pts[1];
+    Pt s2 = pts2[1];
+    console.writeln(s1.x);       // 500
+    console.writeln(s2.x);       // 2 (alias kept the original record)
+}
+run();

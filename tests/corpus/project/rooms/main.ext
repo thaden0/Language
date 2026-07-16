@@ -1,0 +1,5 @@
+void run() {
+    console.writeln(Room1::describe());   // same-named TheClass in each namespace...
+    console.writeln(Room2::describe());   // ...coexist (§12 boundaries persist)
+}
+run();

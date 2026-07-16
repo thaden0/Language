@@ -1,0 +1,39 @@
+namespace Sonar {
+    // §4 — the production IInputSource. Byte-clean stdin (fd 0) via sysWatch:
+    // escape bytes survive (the landed byte-clean sysRead), so the T03 decoder
+    // sees exactly what the terminal sent. StdinSource owns no timers — the
+    // decoder's ESC-timeout is armed by App after each feed (the seam T03 froze).
+    // The event loop IS the loop: this registers a read watch and returns; every
+    // subsequent wakeup is a callback on the one single-threaded dispatcher.
+    //
+    // EOF on stdin (terminal closed / pipe drained) is treated as a quit — a
+    // loud log then App.quit(), so the process tears down instead of spinning on
+    // a dead fd. `Sonar::app()` is a free function (not a sibling method), so the
+    // watch closure calls it directly with no bug.md #53 exposure.
+    class StdinSource : IInputSource {
+        int watchId_ = 0 - 1;
+        bool started_ = false;
+
+        new StdinSource() { }
+
+        void start((string) => void onBytes) {
+            if (started_) return;
+            started_ = true;
+            watchId_ = std::sysWatch(0, (fd) => {
+                string chunk = std::sysRead(0, 4096);
+                if (chunk.isEmpty()) {
+                    log("input: EOF on stdin — quitting");
+                    app().quit();
+                } else {
+                    onBytes(chunk);
+                }
+            });
+        }
+
+        void stop() {
+            if (!started_) return;
+            started_ = false;
+            if (watchId_ >= 0) { std::sysUnwatch(watchId_); watchId_ = 0 - 1; }
+        }
+    }
+}

@@ -1,0 +1,22 @@
+// M0 P7: generic assertEqual<T>-shaped duck `==` behaves for a user struct
+// (default field-wise equality, no explicit (==) defined) and an enum
+// (carrier compare).
+bool genericEq<T>(T a, T b) => a == b;
+
+struct Point {
+    int x; int y;
+    new Point(int px, int py) { x = px; y = py; }
+}
+
+enum Color { Red, Green, Blue }
+
+void main() {
+    Point p1 = Point(1, 2);
+    Point p2 = Point(1, 2);
+    Point p3 = Point(9, 9);
+    console.writeln(genericEq(p1, p2));
+    console.writeln(genericEq(p1, p3));
+    console.writeln(genericEq(Color::Red, Color::Red));
+    console.writeln(genericEq(Color::Red, Color::Blue));
+}
+main();

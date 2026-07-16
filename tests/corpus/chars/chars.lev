@@ -1,0 +1,70 @@
+// Track 03 §1 — char: Unicode-scalar primitive. Ships on oracle+IR+emit-C++
+// (no ELF: X64Gen frozen; no LLVM: LV_CHAR ABI addendum deferred). Desugar-free
+// but a new value kind, so verified byte-identical across the three lanes.
+
+char up(char c) => c.isLower() ? std::charFromCode(c.code() - 32) : c;
+
+string classify(char c) {
+    if (c.isDigit()) return "digit";
+    if (c.isAlpha()) return "alpha";
+    if (c.isSpace()) return "space";
+    return "other";
+}
+
+void main() {
+    // literals + target-typing + code()/toString()
+    char a = 'a';
+    console.writeln(a);                 // a
+    console.writeln(a.code());          // 97
+    console.writeln(a.toString());      // a
+
+    // comparisons by scalar (literal re-types against a char operand)
+    console.writeln(a == 'a');          // true
+    console.writeln(a != 'b');          // true
+    console.writeln(a < 'b');           // true
+    console.writeln('z' > a);           // true
+
+    // escapes
+    console.writeln(('\n' == a) == false);   // true (\n is char here, vs char a)
+    char nl = '\n';  console.writeln(nl.code());   // 10
+    char tab = '\t'; console.writeln(tab.code());  // 9
+    char q = '\'';   console.writeln(q.code());    // 39
+    char hex = '\x41'; console.writeln(hex);       // A
+
+    // classification + case
+    console.writeln(a.isLower());       // true
+    console.writeln(a.isUpper());       // false
+    console.writeln(a.isAlpha());       // true
+    char five = '5';
+    console.writeln(five.isDigit());    // true
+    console.writeln(a.toUpper());       // A
+    char Z = 'Z';
+    console.writeln(Z.toLower());       // z
+
+    // charFromCode + char parameter (char value binds to a char param)
+    console.writeln(std::charFromCode(66));   // B
+    char mc = 'm';
+    console.writeln(up(mc));            // M
+
+    // multi-byte
+    char e = 'é';
+    console.writeln(e.code());          // 233
+    console.writeln(e);                 // é
+
+    // string.at / chars (multi-byte, byte-offset semantics)
+    string s = "aé9";
+    console.writeln(s.at(0));           // a
+    console.writeln(s.at(1).code());    // 233
+    console.writeln(s.chars().length()); // 3
+    console.writeln(classify(s.at(0)));  // alpha
+    console.writeln(classify(s.at(3)));  // digit  (byte 3 = '9'; é occupies bytes 1-2)
+
+    // char match by scalar
+    char m = 'b';
+    console.writeln(match (m) { 'a' => "A"; 'b' => "B"; else => "?"; });   // B
+
+    // char? union + None
+    char? maybe = 'x';
+    console.writeln(maybe != None);     // true
+}
+main();

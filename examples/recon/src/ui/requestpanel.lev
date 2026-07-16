@@ -1,0 +1,88 @@
+// Request builder panel (DESIGN §9.1). Builder class owning a framework
+// Container tree: URL row (method + Input + Send) over Tabs(Headers | Body).
+namespace Recon {
+uses Sonar;
+
+class RequestPanel {
+    public Container root;
+    public Text methodLabel;
+    public Input urlInput;
+    public Button sendBtn;
+    public Tabs tabs;
+    public HeaderTableSource headerSrc;
+    public TableView headersTable;
+    public TextArea bodyEditor;
+    public AppState state;
+    () => void onSend;
+    bool hasOnSend = false;
+
+    new RequestPanel(AppState st) {
+        state = st;
+        // URL row
+        Container urlRow = Container();
+        urlRow.setLayout(FlexLayout(Axis::Horizontal));
+        urlRow.setHeight(Constraint::Fixed(1));
+        methodLabel = Text();
+        methodLabel.text("GET ");
+        methodLabel.setWidth(Constraint::Fixed(6));
+        urlInput = Input();
+        urlInput.setPlaceholder("https://host/path");
+        urlInput.setWidth(Constraint::Flex(1));
+        sendBtn = Button();
+        sendBtn.setLabel("Send");
+        sendBtn.setWidth(Constraint::Fixed(8));
+        urlRow.add(methodLabel);
+        urlRow.add(urlInput);
+        urlRow.add(sendBtn);
+
+        // Tabs
+        headerSrc = HeaderTableSource();
+        headersTable = TableView();
+        headersTable.setColumns([
+            TableColumn("", Constraint::Fixed(4), Align::Start),
+            TableColumn("Name", Constraint::Flex(1), Align::Start),
+            TableColumn("Value", Constraint::Flex(2), Align::Start)
+        ]);
+        headersTable.setSource(headerSrc);
+        bodyEditor = TextArea();
+
+        tabs = Tabs();
+        tabs.add("Headers", headersTable);
+        tabs.add("Body", bodyEditor);
+
+        root = Container();
+        root.setLayout(FlexLayout(Axis::Vertical));
+        root.add(urlRow);
+        root.add(tabs);
+
+        // handlers (explicit this., bug #53)
+        this.urlInput.onSubmit((v) => this.fireSend());
+        this.sendBtn.onPress(() => this.fireSend());
+    }
+
+    void setOnSend(() => void cb) { onSend = cb; hasOnSend = true; }
+    void fireSend() { if (this.hasOnSend) { var cb = this.onSend; cb(); } }
+
+    // Load a request into the widgets.
+    void loadFrom(RequestSpec r) {
+        this.methodLabel.text(methodName(r.method) + " ");
+        this.urlInput.setValue(r.url);
+        this.bodyEditor.setText(r.body.raw);
+        this.headerSrc.rows = r.headers;
+        this.headersTable.refresh();
+    }
+
+    // Read widget edits back into the request model (called before a send).
+    void commitTo(RequestSpec r) {
+        r.url = this.urlInput.value;
+        if (r.body.mode == BodyMode::Raw || r.body.mode == BodyMode::NoBody) {
+            string t = this.bodyEditor.text();
+            if (!t.isEmpty()) {
+                r.body.mode = BodyMode::Raw;
+                r.body.raw = t;
+            }
+        }
+    }
+}
+
+}

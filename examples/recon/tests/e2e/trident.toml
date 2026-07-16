@@ -1,0 +1,39 @@
+name    = "recon-e2e-test"
+entry   = "Recon::main"
+sources = [
+    "e2e_test.lev",
+    "../../src/app.lev",
+    "../../src/net/auth.lev",
+    "../../src/net/body.lev",
+    "../../src/net/sender.lev",
+    "../../src/net/url.lev",
+    "../../src/net/vars.lev",
+    "../../src/eval/jsonpath.lev",
+    "../../src/eval/runner.lev",
+    "../../src/io/store.lev",
+    "../../src/io/importer.lev",
+    "../../src/io/exporter.lev",
+    "../../src/io/jsonio.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/collection.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+    "../../src/model/session.lev",
+    "../../src/model/history.lev",
+    "../../src/ui/sources.lev",
+    "../../src/ui/textarea.lev",
+    "../../src/ui/statusbar.lev",
+    "../../src/ui/sidebar.lev",
+    "../../src/ui/requestpanel.lev",
+    "../../src/ui/responsepanel.lev",
+    "../../src/ui/keymap.lev",
+    "../../src/ui/commandbar.lev",
+    "../../src/ui/dialog.lev",
+    "../../src/ui/reconapp.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar"
+version = "0.1.0"
+as      = "Sonar"

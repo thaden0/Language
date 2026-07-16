@@ -1,0 +1,10 @@
+namespace App {
+    
+    void AddBindings() {
+
+        @InjectBindings();
+        bind IUserService => UserService();
+
+    }
+
+}

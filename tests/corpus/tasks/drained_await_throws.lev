@@ -1,0 +1,12 @@
+// LA-30 doc 5 §2 C3 (drained-loop await) — the design's canonical repro,
+// verbatim. The event loop has no work at all; nothing will ever resolve
+// `p`. Live since the M5 flip (doc 5 §5): a catchable
+// `RuntimeException("await: event loop drained with promise unresolved")`
+// at the await — uncaught here, so the standard uncaught banner + exit 1.
+// The pre-flip behavior (silently yield the promise's default-constructed
+// `value` — fabricated data, the disease None exists to cure, info.md §9)
+// is reachable only via the LANG_PUMP=1 escape hatch until M6 deletes it.
+// Byte-identical on oracle/IR/LLVM.
+Promise<int> p = Promise();
+int x = await p;                 // loop is empty; nothing can ever resolve p
+console.writeln(x);              // never reached

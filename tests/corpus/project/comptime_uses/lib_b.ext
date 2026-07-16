@@ -1,0 +1,7 @@
+namespace LibB {
+    attribute Handler { string tag; }
+    rule wireB {
+        match @Handler(h) on method m in class C
+        inject `log = log + "B:" + $h.tag + ";"` at bottom of C.constructor
+    }
+}

@@ -1,0 +1,60 @@
+// Atlantis Track 01 — operational guards (design §7.2/§7.3).
+//
+// Timeouts, honestly (§7.3): on one cooperative loop NOTHING can preempt a
+// compute-bound handler — a per-request wall-clock kill switch is impossible until
+// true workers (LA-1, now LANDED as Track 10 threads). The kernel ships the real
+// levers: slow-client timeouts (Track 09 keep-alive), awaited-work timeouts
+// (std::awaitTimeout — the design's §7.3 RaceState/awaitTimeout is now PROVIDED BY
+// THE LANGUAGE, reference §6.6.68 `T? awaitTimeout<T>(Promise<T>, int ms)`, so the
+// kernel reuses it rather than re-implementing the race), and deadline propagation.
+namespace Atlantis {
+    namespace Http {
+
+        // Request body size limit (§7.2). Sits directly under ErrorMapper: a
+        // Content-Length over the cap throws PayloadTooLargeException (mapped to
+        // 413). Chunked bodies have no Content-Length — that real cap belongs in
+        // Track 09's parser (maxBodyBytes knob, asked in §3.4).
+        class BodyLimit {
+            int maxBytes;
+            new BodyLimit(int maxBytes) { this.maxBytes = maxBytes; }
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                if (reqContentLength(c.request) > this.maxBytes) {
+                    throw PayloadTooLargeException(this.maxBytes);
+                }
+                return next(c);
+            }
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                BodyLimit self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+
+        // Deadline propagation (§7.3 #3): stamp a budget downstream awaits size
+        // their std::awaitTimeout from. Convention, enforced by review.
+        class Deadline {
+            int budgetMs;
+            new Deadline(int budgetMs) { this.budgetMs = budgetMs; }
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                c.items["deadlineMs"] = (nowMs() + this.budgetMs).toString();
+                return next(c);
+            }
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                Deadline self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+
+        // Remaining budget in ms from a Deadline-stamped Context (0 if none / past).
+        int deadlineRemaining(Context c) {
+            string? d = c.items.atOrNone("deadlineMs");
+            if (d != None) {
+                int? at = d.toInt();
+                if (at != None) {
+                    int rem = at - nowMs();
+                    return rem > 0 ? rem : 0;
+                }
+            }
+            return 0;
+        }
+    }
+}

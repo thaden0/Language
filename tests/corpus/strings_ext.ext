@@ -1,0 +1,50 @@
+// Track 04 (designs/techdesign-04-stdlib-strings.md) M1: the in-language
+// string toolkit built over the existing native core (length/charAt/subStr/
+// indexOf). Pure prelude additions -> no new natives, so this runs on every
+// engine including the frozen ELF backend for free (the "Array.where model").
+
+// split: keeps empty segments; empty separator -> array of 1-char strings.
+console.writeln("a,b,,c".split(","));          // [a, b, , c]
+console.writeln("".split(","));                // [ ] (one empty-string element)
+console.writeln("abc".split(""));              // [a, b, c]
+console.writeln("".split(""));                 // [] (truly empty)
+
+// replace: replace-all via segment-concat; from == "" is a defined no-op.
+console.writeln("hello world".replace("o", "0"));   // hell0 w0rld
+console.writeln("aaa".replace("a", "bb"));          // bbbbbb
+console.writeln("no match".replace("xyz", "!"));    // no match
+
+// lastIndexOf / indexOfFrom (a distinct name, not an indexOf overload -- see
+// bug.md: primitive-mask method bodies aren't checker-verified, so a same-
+// name bare self-call inside class string would ride Eval/Lower's arity-blind
+// by-name fallback and silently resolve to the wrong arity).
+console.writeln("abcabcabc".lastIndexOf("abc"));         // 6
+console.writeln("abcabcabc".indexOfFrom("abc", 1));      // 3
+console.writeln("abcabcabc".indexOfFrom("abc", 0 - 5));  // 0 (negative clamps to 0)
+console.writeln("abcabcabc".indexOfFrom("zzz", 2));      // -1
+
+// padStart / padEnd / repeat
+console.writeln("5".padStart(3, "0"));          // 005
+console.writeln("5".padEnd(3, "0"));            // 500
+console.writeln("already-long".padStart(3, "0")); // already-long (unchanged)
+console.writeln("ab".repeat(5));                // ababababab
+console.writeln("x".repeat(0));                 // (empty)
+console.writeln("x".repeat(0 - 3));              // (empty)
+
+// trimStart / trimEnd: probe-then-one-slice, no char-by-char accumulation.
+console.writeln("   hi  ".trimStart() + "|");   // hi  |
+console.writeln("|" + "   hi  ".trimEnd());     // |   hi
+
+// splitLines: "\n"-split, then exactly one trailing "\r" trimmed per line.
+console.writeln("line1\r\nline2\nline3\r\n".splitLines());  // [line1, line2, line3, ]
+
+// isBlank / count / removePrefix / removeSuffix / equalsIgnoreCase
+console.writeln("   ".isBlank());               // true
+console.writeln("x".isBlank());                 // false
+console.writeln("abcabcabc".count("abc"));      // 3
+console.writeln("abc".count(""));               // 0 (defined)
+console.writeln("prefix-rest".removePrefix("prefix-"));      // rest
+console.writeln("no-such-prefix".removePrefix("prefix-"));   // no-such-prefix (unchanged)
+console.writeln("rest-suffix".removeSuffix("-suffix"));      // rest
+console.writeln("HELLO".equalsIgnoreCase("hello"));   // true
+console.writeln("HELLO".equalsIgnoreCase("hellox"));  // false

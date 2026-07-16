@@ -1,0 +1,32 @@
+== parseUrl ==
+https | api.example.com | 443 | /users/1 | active=true | frag | pwq=/users/1?active=true | https=true
+http | localhost | 8080 | /a/b |  |  | pwq=/a/b | https=false
+http | example.com | 80 | /path |  |  | pwq=/path | https=false
+https | example.com | 443 | / |  |  | pwq=/ | https=true
+http | ::1 | 9000 | /x |  |  | pwq=/x | https=false
+https | user.example.com | 443 | / |  |  | pwq=/ | https=true
+<none>
+<none>
+== resolveUrl ==
+https://a.com/abs/path
+https://a.com/x/y/sibling
+https://a.com/x/up
+https://b.com/other
+https://c.com/proto-rel
+https://a.com/x/y/next?q=1#h
+== dirOf / normalizePath ==
+/a/b
+/
+/a/b
+/a/c
+== VarResolver ==
+https://api.example.com/v2/users
+unbound {{missing}} stays
+https://api.example.com/x
+Bearer T0K3N
+== dynamic vars (seeded) ==
+ts=1700000000
+iso=2023-11-14T22:13:20Z
+rand=798
+guid=d2309efc-5ab8-1674-d230-9efc5ab81674
+unknown={{$nope}}

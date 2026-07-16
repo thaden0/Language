@@ -1,0 +1,11 @@
+// A SELECTIVE import (not bulk `uses Web`) still opts this file into Web's
+// metaprogramming reach: `@Tag` resolves at namespace grain, the same way
+// `uses Web` would (imports.md §5, the sibling of attr_scope_ok).
+use Web::Tag;
+
+@Tag(1)
+void handler() { console.writeln("tagged handler ran"); }
+
+comptime int BUILD = 2 + 2;
+handler();
+console.writeln(BUILD);

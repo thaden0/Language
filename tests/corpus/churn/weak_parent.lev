@@ -1,0 +1,24 @@
+// XFAIL-ELF: frozen backend intentionally has no F5 weak-field lane.
+// F5 headline cycle: parent strongly owns children; each child weakly points
+// back. @N@ grows the number of discarded trees; LLVM live bytes must stay flat.
+class Node {
+    Array<Node> children;
+    weak Node? parent = None;
+    int id = 0;
+}
+
+int makeTree(int seed) {
+    Node parent = Node();
+    Node child = Node();
+    child.id = seed;
+    child.parent = parent;
+    parent.children = parent.children.add(child);
+    return child.parent != None ? child.id : 0;
+}
+
+void run(int n) {
+    int sum = 0;
+    for (int i in 1..n) sum = sum + makeTree(i);
+    console.writeln(sum);
+}
+run(@N@);

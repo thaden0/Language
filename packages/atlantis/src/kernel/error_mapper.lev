@@ -1,0 +1,33 @@
+// Atlantis Track 01 — the error-mapping middleware (design §4.3).
+//
+// Arm order is significance order: most-capable interface first. The 500 arm logs
+// the full toString() (message + type) server-side and returns only the generic
+// detail — internals never cross the wire (the never-leak invariant, C4). This is
+// the OUTERMOST error-handling middleware; below it sits the server-level 500 net
+// (§4.4, three layers total).
+namespace Atlantis {
+    namespace Http {
+        class ErrorMapper {
+            Log::Logger log;
+            new ErrorMapper(Log::Logger log) { this.log = log; }
+
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                try { return next(c); }
+                catch (IValidationException e) { return Respond::validationProblem(e, c); }
+                catch (IHttpException e)       { return Respond::problem(e.status, e.message, c); }
+                catch (IException e) {
+                    this.log.error("unhandled exception",
+                        [Log::LogField("requestId", c.items.atOr("requestId", "-")),
+                         Log::LogField("error", e.toString())]);
+                    return Respond::problem(500, "internal server error", c);  // NEVER e.message
+                }
+            }
+
+            // The C2 lambda. `this` is not captured by a lambda, so bind a local.
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                ErrorMapper self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+    }
+}

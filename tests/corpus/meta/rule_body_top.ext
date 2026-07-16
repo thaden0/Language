@@ -1,0 +1,40 @@
+// §16.5 Phase 3 §8.1: `top of body` / `bottom of body` — additive prologue and
+// epilogue statements injected directly into the MATCHED method's own body
+// (the subject is implicit; there is no target identifier in this grammar).
+// `bottom of body` only works when the body doesn't already end in a value
+// return (M25 rejects that as unreachable), so it targets a separate,
+// void-returning method here — `top of body` works on either shape.
+namespace W {
+    attribute TracedEnter { }
+    attribute TracedExit { }
+    rule addEntry {
+        match @TracedEnter on method m
+        inject `log = log + "enter;";` at top of body
+    }
+    rule addExit {
+        match @TracedExit on method m
+        inject `log = log + "exit;";` at bottom of body
+    }
+}
+uses W;
+
+class Tracer {
+    string log = "";
+
+    @TracedEnter
+    int compute(int n) {
+        int r = n * 2;
+        log = log + "computed;";
+        return r;
+    }
+
+    @TracedExit
+    void announce() {
+        log = log + "body;";
+    }
+}
+
+Tracer t = Tracer();
+console.writeln(t.compute(5));
+t.announce();
+console.writeln(t.log);

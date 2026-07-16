@@ -1,0 +1,14 @@
+// Pins the sanctioned workaround for bug #34 (a lambda-literal argument
+// wrongly scores as applicable to a string-typed sibling overload):
+// declaring the function-typed overload BEFORE its string-typed sibling
+// makes declaration-order tie-break land on the correct one.
+class Replacer {
+    string replace(string s, (string) => string fn) => fn(s);
+    string replace(string s, string with) => with;
+}
+void main() {
+    Replacer r = Replacer();
+    console.writeln(r.replace("x", (s) => s + s));
+    console.writeln(r.replace("x", "y"));
+}
+main();

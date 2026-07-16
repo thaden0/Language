@@ -1,0 +1,77 @@
+// Sonar example 3 — file-manager. A SplitBox pairing a file ListView with a
+// preview ContentBox, over a ContentBar status line: the enterprise centerpiece
+// (§6). Selecting a file updates the preview and the status. (A production
+// build would back the ListView with a lazy dir source over the File/sys
+// natives; this example uses an in-memory listing to stay hermetic and
+// differential.)
+uses Sonar;
+
+class FileManager {
+    ListView files;
+    Text preview;
+    ContentBar status;
+    Array<string> names = ["README.md", "main.lev", "trident.toml", "notes.txt"];
+    Array<string> bodies = ["# Project readme", "void main() { }", "name = \"demo\"", "todo: ship it"];
+
+    new FileManager(App a) {
+        files = ListView();
+        files.items(names);
+        files.onSelect((i) => this.showFile(i));
+        files.setSelected(0);   // start on the first file (ListView defaults to -1)
+
+        preview = Text();
+        ContentBox previewBox = ContentBox();
+        previewBox.border(BorderStyle::Single);
+        previewBox.title("preview");
+        previewBox.setHeight(Constraint::Flex(1));
+        previewBox.add(preview);
+
+        SplitBox split = SplitBox();
+        split.axis(Axis::Horizontal);
+        split.ratio(40);
+        split.setHeight(Constraint::Flex(1));   // fill the vertical axis
+        split.add(files);
+        split.add(previewBox);
+
+        status = ContentBar();
+        status.setRight("q:quit");
+
+        a.add(split);
+        a.add(status);
+        showFile(0);
+    }
+
+    void showFile(int idx) {
+        if (idx < 0 || idx >= names.length()) return;
+        preview.text(bodies[idx]);
+        status.setLeft("file: " + names[idx]);
+    }
+}
+
+App build() {
+    App a = App().title("file-manager");
+    FileManager fm = FileManager(a);
+    a.focus(fm.files);
+    return a;
+}
+
+void scripted() {
+    App a = SonarTest::harness(34, 8);
+    FileManager fm = FileManager(a);
+    a.focus(fm.files);
+    ScriptedInput si = SonarTest::input();
+    a.pumpOnce();
+    SonarTest::snapText(a, SonarTest::renderer(), "initial (README selected)");
+
+    si.key("Down").key("Down");        // move selection to trident.toml
+    SonarTest::pump(a, si);
+    SonarTest::pump(a, si);
+    SonarTest::snapText(a, SonarTest::renderer(), "after Down Down");
+    console.writeln("selected=" + fm.files.selected.toString());
+    SonarTest::reset();
+}
+
+void main() {
+    if (env::get("SONAR_SCRIPT") != None) { scripted(); return; }
+    build().run();
+}

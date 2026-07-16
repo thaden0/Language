@@ -1,0 +1,15 @@
+== tree source ==
+rootCount=3
+▸ Auth [+]
+  POST Login
+GET  Get user
+DEL  Search
+== header table ==
+rows=2 cols=3
+  [x] Accept = application/json
+  [ ] X-Debug = 1
+== resp header table ==
+  Content-Type: application/json
+  Set-Cookie: a=1
+== cookie table ==
+  sid=xyz @example.com/app

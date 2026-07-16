@@ -1,0 +1,3 @@
+name = "lib"
+sources = ["lib.lev"]
+assets = ["views/lib.html"]

@@ -1,0 +1,19 @@
+// LA-2 acceptance #1: in-language HTTPS server + client over full verification,
+// output byte-identical to the plaintext http twin's status/body lines. The
+// harness (tests/run_tls.sh) exports SSL_CERT_FILE=tests/certs/ca-cert.pem so
+// the client (verifyMode 0, system roots) trusts the hermetic test CA. Port
+// 8443 (the corpus_net_ports lock keeps TLS lanes off each other).
+void run() {
+    HttpServer server = HttpServer(8443, "tests/certs/server-chain.pem",
+                                         "tests/certs/server-key.pem");
+    server.handle((req) => HttpResponse(200, req.method + " " + req.path));
+
+    HttpClient client = HttpClient();
+    client.getTls("127.0.0.1", 8443, "/hello", (resp) => {
+        console.writeln("status " + resp.status);
+        console.writeln("body: " + resp.body);
+        server.stop();
+    });
+    console.writeln("https up");
+}
+run();

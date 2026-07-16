@@ -1,0 +1,28 @@
+// doc 2 §1.4: RegexOptions named-arg construction + string-flag variants
+// ("i"/"m"/"s" in any order), and options()/pattern() accessors.
+void run() {
+    RegexOptions o = RegexOptions(multiline: true);
+    Regex mlRe = Regex("^x$", o);
+    console.writeln(mlRe.isMatch("a\nx\nb"));
+    console.writeln(mlRe.options().multiline);
+    console.writeln(mlRe.options().ignoreCase);
+
+    Regex flagRe = Regex("[a-z]+", "i");
+    console.writeln(flagRe.isMatch("ABC"));
+    console.writeln(flagRe.options().ignoreCase);
+
+    Regex dotAllRe = Regex("a.b", "s");
+    console.writeln(dotAllRe.isMatch("a\nb"));
+    Regex dotRe = Regex("a.b");
+    console.writeln(dotRe.isMatch("a\nb"));
+
+    Regex combo = Regex("^x$", "ims");
+    console.writeln(combo.isMatch("A\nX\nB"));
+    console.writeln(combo.pattern());
+
+    Regex plain = Regex("abc");
+    console.writeln(plain.options().ignoreCase);
+    console.writeln(plain.options().multiline);
+    console.writeln(plain.options().dotAll);
+}
+run();

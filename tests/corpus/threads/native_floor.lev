@@ -1,0 +1,8 @@
+int n = std::cpuCount();
+console.writeln(n >= 1);
+
+// The overload is part of the worker floor. Port zero keeps this corpus
+// hermetic while still exercising SO_REUSEPORT-before-bind on supported hosts.
+int fd = std::sysTcpListen(0, true);
+console.writeln(fd >= 0);
+std::sysClose(fd);

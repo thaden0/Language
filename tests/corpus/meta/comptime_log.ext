@@ -1,0 +1,7 @@
+// Comptime console output goes through the real console object and is
+// emitted DURING compilation — so it precedes all runtime output, on every
+// engine that runs in-process (--run / --ir share one stdout).
+// @no-roundtrip: that same compile-time stdout interleaves with the --expand
+// source dump, so the captured artifact is not pure source (Phase 4 §6).
+comptime console.writeln("[build] table ready");
+console.writeln("runtime output");

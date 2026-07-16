@@ -1,0 +1,16 @@
+// The sanctioned workaround for bug #43's fluent-chain shape: an unchained
+// target-typed local first, then the chain call as its own statement,
+// rather than passing the chained expression straight into a sink.
+class Widget { int v = 7; }
+class Box<T> {
+    T val;
+    new Box(T val) { this.val = val; }
+    Box<T> tag() { return this; }
+}
+void useBox(Box<Widget> b) { console.writeln("ok"); }
+void main() {
+    Box<Widget> b = Box(Widget());
+    b.tag();
+    useBox(b);
+}
+main();

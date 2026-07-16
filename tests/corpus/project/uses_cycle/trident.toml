@@ -1,0 +1,2 @@
+name = "uses_cycle"
+sources = ["a.ext", "b.ext", "main.ext"]

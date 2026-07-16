@@ -1,0 +1,126 @@
+namespace Sonar {
+    // T05 §3.3. R5 base order: Container (core) first, Bordered last
+    // (decorator wins the chrome()/paintChrome collapse). Thin, honest
+    // sugar over GridLayout (T02, already landed): installs the strategy
+    // at construction and forwards gap/rowConstraint/colConstraint to it.
+    // Children position via the gridRow/gridCol/gridRowSpan/gridColSpan
+    // fields every IComponent/Component already carries (C5 amendment,
+    // T02's log) — nothing new needed here. No add()/remove()/clear()
+    // override, no new state beyond the forwarding reference itself.
+    class GridBox : Container, Bordered {
+        // Container.layout() returns the ILayoutStrategy interface type;
+        // GridLayout's own fluent methods (gap/rowConstraint/colConstraint)
+        // are declared on the concrete GridLayout type, so a concrete
+        // reference is kept here purely to forward to them.
+        GridLayout gridLayout_;
+
+        new GridBox(int rows, int cols) {
+            gridLayout_ = GridLayout(rows, cols);
+            setLayout(gridLayout_);
+        }
+
+        GridBox gap(int g) {
+            gridLayout_.gap(g);
+            invalidateLayout();
+            return this;
+        }
+        GridBox rowConstraint(int i, Constraint c) {
+            gridLayout_.rowConstraint(i, c);
+            invalidateLayout();
+            return this;
+        }
+        GridBox colConstraint(int i, Constraint c) {
+            gridLayout_.colConstraint(i, c);
+            invalidateLayout();
+            return this;
+        }
+
+        // bug.md #61 workaround: `Container.contentRect()`/`arrange()`/
+        // `paint()` (container.lev, T01-owned, off limits here) are declared
+        // ON Container — an intermediate mixin, sibling to Bordered under
+        // R5's collapse — and their bodies call `this.chrome()`/
+        // `this.paintChrome(s)`/`this.paintBackground(s)`/`contentRect()`
+        // internally. Per bug #61, calls to an overridden (non-`distinct`)
+        // method from WITHIN a method declared on an intermediate mixin do
+        // not reliably reach a sibling's override; empirically confirmed
+        // (a `Container, Bordered` composite that does NOT override
+        // `arrange`/`paint`/`contentRect` itself silently arranges/paints
+        // children into the FULL box, ignoring Bordered's inset, even when
+        // `contentRect()` alone is overridden on the leaf — Container's own
+        // `arrange()`'s internal bare call to it still doesn't pick up the
+        // override). GridBox's own spec says "no add()/remove() override,
+        // no new state beyond what forwarding requires" — this trio of
+        // overrides is a forced compiler-bug workaround, not a design
+        // deviation: reimplemented verbatim from Container's own logic
+        // (`container.lev`), just declared directly on GridBox (the leaf)
+        // so `this.chrome()`/`this.paintChrome(s)`/`this.paintBackground(s)`
+        // resolve correctly (confirmed: a leaf-declared method's own
+        // `this.overridden()` calls dispatch correctly). None of these three
+        // are `distinct`, so each cleanly replaces its single inherited
+        // slot.
+        Rect contentRect() => box.inset(this.chrome());
+
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            layout().arrange(children(), contentRect());
+            layoutDirty_ = false;
+        }
+
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            Rect content = contentRect();
+            s.pushClip(content);
+            for (IComponent child in children()) if (child.visible()) child.paint(s);
+            s.popClip();
+        }
+
+        // bug.md #59 workaround: Bordered.paintChrome (mixins.lev, T01-owned,
+        // off limits here) indexes its border-glyph string with
+        // `.at(byteOffset)` using character-position values, which lands
+        // mid-sequence for every real (non-NoBorder) border style's 3-byte
+        // UTF-8 box-drawing glyphs and throws. Reimplemented verbatim here
+        // (same draw order/logic) but decoding via `.chars()` first — see
+        // contentbox.lev's identical override for the full write-up.
+        // paintChrome is not `distinct`, so this cleanly replaces the
+        // single inherited slot.
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+    }
+}

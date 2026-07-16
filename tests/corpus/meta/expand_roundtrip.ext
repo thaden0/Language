@@ -1,0 +1,63 @@
+// Metaprog Phase 4 §6 (expand_roundtrip): a meta-heavy program whose --expand
+// output recompiles and runs identically. Exercises the source printer across
+// Layer D (rewrites/replace/$body), additive anchors (top of body, member of),
+// namespaces, attributes, control flow, and expressions.
+namespace App {
+    attribute Timed { }
+    attribute Logged { }
+    attribute Tagged { }
+
+    // Layer D: wrap the body, capturing the result via $body (expression form,
+    // valid because `compute` is arrow-bodied so its body is a single value).
+    rule timed rewrites body of m {
+        match @Timed on method m
+        replace `
+            ticks = ticks + 1;
+            var __r = $body;
+            return __r;
+        `
+    }
+    // Additive: prepend a trace line to the body (a separate method, so the
+    // rewritten method above stays a single-value expression).
+    rule logged { match @Logged on method m
+        inject `trace = trace + "call;";` at top of body }
+    // Additive: inject a whole method into the class.
+    rule tagged { match @Tagged on class C
+        inject `string tag() => "tagged";` at member of C }
+}
+uses App;
+
+class Service {
+    int ticks = 0;
+    string trace = "";
+
+    int sumTo(int n) {
+        int acc = 0;
+        for (int i in 1..n) { acc = acc + i; }
+        return acc;
+    }
+
+    @Timed
+    int compute(int n) => sumTo(n);
+
+    @Logged
+    void ping() { trace = trace + "p;"; }
+}
+
+@Tagged
+class Widget {
+    int base = 41;
+    int bump() => base + 1;
+}
+
+Service s = Service();
+console.writeln(s.compute(4));    // 1+2+3+4 = 10
+console.writeln(s.compute(3));    // 6
+console.writeln(s.ticks);         // 2
+s.ping();
+s.ping();
+console.writeln(s.trace);         // call;p;call;p;
+
+Widget w = Widget();
+console.writeln(w.bump());        // 42
+console.writeln(w.tag());         // tagged

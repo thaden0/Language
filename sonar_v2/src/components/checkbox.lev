@@ -1,0 +1,111 @@
+namespace Sonar {
+    class CheckBox : Focusable, Styleable, IValidatable {
+        string label = "";
+        bool checked = false;
+        bool enabled = true;
+
+        Array<(bool) => void> toggleHandlers_ = [];
+        Array<int> toggleTokens_ = [];
+
+        // T07 (not yet built) registers extra `bool m()` validators here;
+        // validate() below already consults the list so this component
+        // needs no changes once that track lands.
+        Array<() => bool> extraValidators_ = [];
+        Array<string> extraValidatorMessages_ = [];
+        string lastValidationMessage_ = "";
+
+        new CheckBox() {
+            setTabStop(true);
+            // bug.md #53: a lambda calling an instance method with a bare
+            // (implicit-`this`) receiver silently misbehaves once stored
+            // and invoked later; every call below uses an explicit
+            // `this.` receiver as the workaround.
+            // bug.md #50: char literals don't retype in call-argument
+            // position; bind to a local first.
+            char spaceKey = ' ';
+            this.onKey((e) => {
+                if (!enabled) return;
+                if (e.isChar(spaceKey)) { this.toggle(); e.handled = true; }
+            });
+            this.onMouse((e) => {
+                if (!enabled) return;
+                if (e.kind == MouseKind::Press && e.button == MouseButton::Left) {
+                    this.toggle();
+                    e.handled = true;
+                }
+            });
+        }
+
+        void setLabel(string value) { label = value; invalidateLayout(); }
+        void setChecked(bool value) {
+            if (checked == value) return;
+            checked = value;
+            invalidate();
+        }
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        void toggle() {
+            checked = !checked;
+            invalidate();
+            Array<(bool) => void> snapshot = toggleHandlers_;
+            for ((bool) => void h in snapshot) h(checked);
+        }
+
+        int onToggle((bool) => void h) {
+            int token = newHandlerToken();
+            toggleHandlers_ = toggleHandlers_.add(h);
+            toggleTokens_ = toggleTokens_.add(token);
+            return token;
+        }
+        void offToggle(int token) {
+            Array<(bool) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..toggleTokens_.length() - 1) if (toggleTokens_[i] != token) {
+                hs = hs.add(toggleHandlers_[i]);
+                ts = ts.add(toggleTokens_[i]);
+            }
+            toggleHandlers_ = hs;
+            toggleTokens_ = ts;
+        }
+
+        void addValidator(() => bool check, string message) {
+            extraValidators_ = extraValidators_.add(check);
+            extraValidatorMessages_ = extraValidatorMessages_.add(message);
+        }
+
+        // T07-registered only (no intrinsic check) per this track's design.
+        bool validate() {
+            for (int i in 0..extraValidators_.length() - 1) {
+                // bug.md #52: calling the result of an indexing expression
+                // directly (`arr[i]()`) fails to lower on IR; bind to a
+                // local first.
+                var check = extraValidators_[i];
+                if (!check()) {
+                    lastValidationMessage_ = extraValidatorMessages_[i];
+                    return false;
+                }
+            }
+            lastValidationMessage_ = "";
+            return true;
+        }
+        string validationMessage() => lastValidationMessage_;
+
+        Size contentDesired(Size avail) => Size(stringCellWidth(label) + 4, 1);
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            string glyph = checked ? "[x] " : "[ ] ";
+            string themeKey = "checkbox";
+            if (!enabled) themeKey = "checkbox.disabled";
+            else if (focused) themeKey = "checkbox.focused";
+            Style st = resolveOrDefault(this, themeKey);
+            s.writeText(content.x(), content.y(), glyph + label, st);
+        }
+    }
+}

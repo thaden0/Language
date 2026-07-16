@@ -1,0 +1,23 @@
+// LA-30 doc 5 §2 C3, worker variant: a spawned body's own inner await
+// drains — the promise it awaits is created and settled entirely INSIDE the
+// worker body (never referenced from the spawner's side), so this never trips
+// A-1's spawn-body-Promise reject (bug #35, reject route A — see
+// spawn_global_promise_rejected.lev). Byte-identical on oracle/IR/LLVM.
+//
+// Live since the M5 flip (doc 2 §7 — no new plumbing): the inner await
+// throws C3's RuntimeException *inside* the body; `spawn`'s existing
+// try/catch converts it into a rejection; `await w` rethrows it at the
+// spawner, where this file catches it — proving the full
+// throw → reject → rethrow chain, not just an uncaught banner.
+int deadAwait() {
+    Promise<int> p = Promise();
+    int r = await p;              // nothing will ever resolve p
+    return r;
+}
+Worker<int> w = std::spawn(() => deadAwait());
+try {
+    int got = await w;
+    console.writeln("unreachable");
+} catch (RuntimeException e) {
+    console.writeln("caught: " + e.message);
+}

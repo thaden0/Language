@@ -1,0 +1,36 @@
+// doc 2 §3 (replacement grammar) + §4 row 4 (replace replaces all by
+// default; count overloads bound it).
+void run() {
+    Regex dateRe = Regex("(\\d{4})-(\\d{2})-(\\d{2})");
+    console.writeln(dateRe.replace("2026-07-11", "$2/$3/$1"));
+    console.writeln(dateRe.replace("2026-07-11 and 2027-01-05", "$1"));
+    console.writeln(dateRe.replace("2026-07-11 and 2027-01-05", "$1", 1));
+
+    // NOTE: `${name}` is the regex replacement grammar's named-group ref
+    // (doc 2 §3) — but Leviathan's OWN string literals treat `${expr}` as
+    // interpolation (reference.md §3.2), so the literal three chars `${`
+    // must be spelled `\${` in source to reach the regex engine unchanged.
+    Regex namedRe = Regex("(?<y>\\d{4})-(?<m>\\d{2})-(?<d>\\d{2})");
+    console.writeln(namedRe.replace("2026-07-11", "\${m}/\${d}/\${y}"));
+
+    Regex dollarRe = Regex("x");
+    console.writeln(dollarRe.replace("x costs $5 (x2)", "[$$]"));
+
+    // unmatched group in the pattern substitutes "".
+    Regex altRe = Regex("(a)|(b)");
+    console.writeln(altRe.replace("b", "[$1|$2]"));
+
+    Regex tokenRe = Regex("secret\\d+");
+    string masked = tokenRe.replace("token secret123 end", (mm) => "***" + mm.value.subStr(mm.value.length() - 3, 3));
+    console.writeln(masked);
+    string maskedOne = tokenRe.replace("secret1 secret2", (mm) => "X", 1);
+    console.writeln(maskedOne);
+
+    try {
+        Regex noGroups = Regex("abc");
+        console.writeln(noGroups.replace("abc", "$1"));
+    } catch (RegexException e) {
+        console.writeln("caught:" + e.message);
+    }
+}
+run();

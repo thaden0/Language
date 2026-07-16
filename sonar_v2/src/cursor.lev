@@ -1,0 +1,130 @@
+namespace Sonar {
+    // T09 — the terminal escape vocabulary. Pure string builders, no state, so
+    // the module compiles on every engine (including emit-C++: no loop native is
+    // referenced here). AnsiRenderer (ansi_renderer.lev) owns the diff/minimizer
+    // state and composes these; keeping the raw sequences in one place makes the
+    // SONAR_DUMB_RENDER / golden-byte tests (§8.1) read against a single table.
+
+    const string EscPrefix = "\x1b[";
+
+    // Cursor position (CUP). row/col are 1-based screen coordinates; callers pass
+    // 0-based Surface coordinates, so this adds one.
+    string escCup(int row0, int col0) =>
+        EscPrefix + (row0 + 1).toString() + ";" + (col0 + 1).toString() + "H";
+
+    string escHome() => EscPrefix + "H";
+    string escClear() => EscPrefix + "2J";
+    string escHomeClear() => escHome() + escClear();
+
+    string escShowCursor() => EscPrefix + "?25h";
+    string escHideCursor() => EscPrefix + "?25l";
+
+    string escAltOn()  => EscPrefix + "?1049h";
+    string escAltOff() => EscPrefix + "?1049l";
+
+    // SGR mouse (1006) + button-motion tracking (1002). v1 uses 1002 (press +
+    // drag), not 1003 (any-motion) — open question #3.
+    string escMouseOn()  => EscPrefix + "?1002h" + EscPrefix + "?1006h";
+    string escMouseOff() => EscPrefix + "?1006l" + EscPrefix + "?1002l";
+
+    string escPasteOn()  => EscPrefix + "?2004h";
+    string escPasteOff() => EscPrefix + "?2004l";
+
+    string escResetSgr() => EscPrefix + "0m";
+    string escBell() => "\x07";
+
+    // 16-color SGR numbers from a Color carrier (§5 Colors). 0..7 -> 30..37 /
+    // 40..47; 8..15 (bright) -> 90..97 / 100..107; Default (-1) -> 39 / 49.
+    int sgrFgNum(Color c) {
+        int code = c.code();
+        if (code < 0) return 39;
+        if (code < 8) return 30 + code;
+        return 90 + (code - 8);
+    }
+    int sgrBgNum(Color c) {
+        int code = c.code();
+        if (code < 0) return 49;
+        if (code < 8) return 40 + code;
+        return 100 + (code - 8);
+    }
+
+    // Attr bit -> SGR "on" code. The bit values (geometry.lev Attr) are NOT the
+    // SGR codes: Bold(1)->1, Dim(2)->2, Italic(4)->3, Underline(8)->4,
+    // Reverse(16)->7, Blink(32)->5. A zero return means "no such bit here".
+    int sgrAttrOnCode(int bit) {
+        if (bit == Attr::Bold) return 1;
+        if (bit == Attr::Dim) return 2;
+        if (bit == Attr::Italic) return 3;
+        if (bit == Attr::Underline) return 4;
+        if (bit == Attr::Blink) return 5;
+        if (bit == Attr::Reverse) return 7;
+        return 0;
+    }
+
+    // Append the "on" codes for every attr bit set in `attrs` to `acc`, each
+    // prefixed by ';' (so acc is expected to already hold the leading token).
+    string appendAttrOnCodes(string acc, int attrs) {
+        string out = acc;
+        int bit = 1;
+        while (bit <= Attr::Blink) {
+            if ((attrs / bit) % 2 == 1) {
+                int code = sgrAttrOnCode(bit);
+                if (code > 0) out = out + ";" + code.toString();
+            }
+            bit = bit * 2;
+        }
+        return out;
+    }
+
+    // The SGR minimizer (§5.3). Produce the escape that transitions the terminal
+    // from style `from` to style `to`, or "" if identical.
+    //   - Any attr bit turning OFF (from has it, to lacks it): a full "0;"-rebuild
+    //     (never negate individual attrs — half the SGR-off codes are nonstandard).
+    //   - Otherwise incremental: newly-on attrs + changed fg + changed bg.
+    // `noColor` strips fg/bg (NO_COLOR / TERM=dumb, open question #1) but keeps
+    // attrs.
+    string sgrTransition(Style from, Style to, bool noColor) {
+        if (from.fg == to.fg && from.bg == to.bg && from.attrs == to.attrs) return "";
+        if (attrsTurnedOff(from.attrs, to.attrs)) {
+            // full rebuild
+            string body = appendAttrOnCodes("0", to.attrs);
+            if (!noColor) {
+                if (to.fg != Color::Default) body = body + ";" + sgrFgNum(to.fg).toString();
+                if (to.bg != Color::Default) body = body + ";" + sgrBgNum(to.bg).toString();
+            }
+            return EscPrefix + body + "m";
+        }
+        // incremental
+        string body = "";
+        int bit = 1;
+        while (bit <= Attr::Blink) {
+            bool inTo = (to.attrs / bit) % 2 == 1;
+            bool inFrom = (from.attrs / bit) % 2 == 1;
+            if (inTo && !inFrom) {
+                int code = sgrAttrOnCode(bit);
+                if (code > 0) body = joinSgr(body, code.toString());
+            }
+            bit = bit * 2;
+        }
+        if (!noColor) {
+            if (to.fg != from.fg) body = joinSgr(body, sgrFgNum(to.fg).toString());
+            if (to.bg != from.bg) body = joinSgr(body, sgrBgNum(to.bg).toString());
+        }
+        if (body.isEmpty()) return "";
+        return EscPrefix + body + "m";
+    }
+
+    string joinSgr(string acc, string tok) => acc.isEmpty() ? tok : acc + ";" + tok;
+
+    // True when some attr bit is set in `from` but clear in `to`.
+    bool attrsTurnedOff(int from, int to) {
+        int bit = 1;
+        while (bit <= Attr::Blink) {
+            bool inFrom = (from / bit) % 2 == 1;
+            bool inTo = (to / bit) % 2 == 1;
+            if (inFrom && !inTo) return true;
+            bit = bit * 2;
+        }
+        return false;
+    }
+}

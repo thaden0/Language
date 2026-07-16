@@ -1,0 +1,61 @@
+// Track 10 M3b (techdesign-threads-3 §4): the C flatten/rebuild engine, unit-
+// probed via std::sysThreadTransfer round-trips on ALL THREE active engines. The
+// interpreters' single-heap deep copy (RuntimeNatives.cpp lvThreadCopy) and the
+// LLVM C engine (lv_runtime.c) must produce BYTE-IDENTICAL output — the
+// acceptance-#5 differential — including on shared substructure and cycles.
+// main thread -> main thread; no OS threads (those are M3c). A transfer is a
+// deep copy: the source graph is untouched, the result is an independently-owned
+// graph in this heap.
+
+class Box { public int v = 0; }
+class Twin { public Box left = Box(); public Box right = Box(); }
+class Node { public int v = 0; public Array<Node> kids = []; }
+
+// 1. deep copy + isolation: mutating the original after the transfer is unseen.
+int scalarObj() {
+    Box b = Box(); b.v = 5;
+    Box c = std::sysThreadTransfer(b);
+    b.v = 99;                          // mutate the original
+    return c.v;                        // 5, not 99
+}
+console.writeln(scalarObj());          // 5
+
+// 2. strings + a boxed array deep-copy by value.
+string strArr() {
+    Array<string> a = ["ab", "cd"];
+    Array<string> c = std::sysThreadTransfer(a);
+    a = a.add("ef");                   // mutate the original binding
+    return c[0] + c[1] + "/" + c.length().toString();
+}
+console.writeln(strArr());             // abcd/2
+
+// 3. shared substructure (a diamond): both fields name ONE Box; the copy keeps
+//    them shared, so a write through one alias is seen through the other.
+int diamond() {
+    Box sh = Box(); sh.v = 1;
+    Twin p = Twin(); p.left = sh; p.right = sh;
+    Twin c = std::sysThreadTransfer(p);
+    c.left.v = 42;                     // write through one alias
+    return c.right.v;                  // 42 — sharing preserved (diamond in, diamond out)
+}
+console.writeln(diamond());            // 42
+
+// 4. a cycle: a node reaches itself; flatten terminates and rebuilds the cycle.
+int cycle() {
+    Node n = Node(); n.v = 7;
+    n.kids = [n];                      // n.kids[0] == n
+    Node c = std::sysThreadTransfer(n);
+    c.v = 88;
+    return c.kids[0].v;                // 88 — the same rebuilt node (cycle preserved)
+}
+console.writeln(cycle());              // 88
+
+// 5. a map crosses by copy, insertion order preserved.
+int mapCopy() {
+    Map<string, int> m = Map();
+    m["a"] = 1;
+    m["b"] = 2;
+    Map<string, int> c = std::sysThreadTransfer(m);
+    return c["a"] + c["b"];
+}
+console.writeln(mapCopy());            // 3

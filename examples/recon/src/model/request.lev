@@ -1,0 +1,88 @@
+// Recon request model (DESIGN §4.1). All reference classes (§12.4).
+namespace Recon {
+
+enum Method   : int { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS }
+enum BodyMode : int { NoBody, Raw, UrlEncoded, FormData, GraphQL, FileBinary }
+
+// Method <-> wire-string helpers (a bare enum toString() already yields the member name).
+string methodName(Method m) => m.toString();
+
+Method methodFromName(string s) {
+    string u = s.toUpper();
+    if (u == "GET")     return Method::GET;
+    if (u == "HEAD")    return Method::HEAD;
+    if (u == "POST")    return Method::POST;
+    if (u == "PUT")     return Method::PUT;
+    if (u == "PATCH")   return Method::PATCH;
+    if (u == "DELETE")  return Method::DELETE;
+    if (u == "OPTIONS") return Method::OPTIONS;
+    return Method::GET;
+}
+
+BodyMode bodyModeFromName(string s) {
+    if (s == "raw")        return BodyMode::Raw;
+    if (s == "urlencoded") return BodyMode::UrlEncoded;
+    if (s == "formdata")   return BodyMode::FormData;
+    if (s == "graphql")    return BodyMode::GraphQL;
+    if (s == "file")       return BodyMode::FileBinary;
+    return BodyMode::NoBody;
+}
+
+string bodyModeName(BodyMode m) {
+    if (m == BodyMode::Raw)        return "raw";
+    if (m == BodyMode::UrlEncoded) return "urlencoded";
+    if (m == BodyMode::FormData)   return "formdata";
+    if (m == BodyMode::GraphQL)    return "graphql";
+    if (m == BodyMode::FileBinary) return "file";
+    return "none";
+}
+
+class HeaderEntry {            // editable row: enabled flag + preserved order
+    public string name    = "";
+    public string value   = "";
+    public bool   enabled = true;
+    new HeaderEntry() { }
+    new Of(string n, string v) { name = n; value = v; }
+}
+
+class FormField {              // urlencoded / formdata row
+    public string key     = "";
+    public string value   = "";
+    public string kind    = "text";     // "text" | "file"  (file is import-only, unsupported to send)
+    public bool   enabled = true;
+    new FormField() { }
+    new Of(string k, string v) { key = k; value = v; }
+}
+
+class RequestBody {            // a CLASS (has a BodyMode enum field) so #41 never applies
+    public BodyMode mode = BodyMode::NoBody;
+    public string raw = "";
+    public string rawLanguage = "text";        // "json" | "xml" | "text" | ...
+    public Array<FormField> urlencoded;
+    public Array<FormField> formdata;
+    public string graphqlQuery = "";
+    public string graphqlVars  = "";
+    new RequestBody() { }
+}
+
+class AuthSpec {               // kind + a flat string param map (values are primitives -> #49 safe)
+    public string kind = "noauth";              // noauth|basic|bearer|apikey|digest|inherit
+    public Map<string,string> params;           // e.g. "username","password","token","key","value","in"
+    new AuthSpec() { }
+    new Of(string k) { kind = k; }
+    string param(string key) => params.atOr(key, "");
+    void put(string key, string v) { params[key] = v; }
+}
+
+class RequestSpec {
+    public string             name   = "";
+    public Method             method = Method::GET;
+    public string             url    = "";       // may contain {{vars}}; the source of truth
+    public Array<HeaderEntry> headers;
+    public RequestBody        body;
+    public AuthSpec?          auth   = None;      // None == inherit from folder/collection
+    public TestPlan           tests;              // native assertions/extractions (§7)
+    new RequestSpec() { body = RequestBody(); tests = TestPlan(); }
+}
+
+}

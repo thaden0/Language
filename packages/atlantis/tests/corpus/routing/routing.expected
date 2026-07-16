@@ -1,0 +1,44 @@
+== M3 Era-A end-to-end (authDefault=auth) ==
+-- GET / --
+  status=200 ctype=text/plain; charset=utf-8 allow=-
+  body=home
+-- GET /users/42 (path param binding) --
+  status=200 ctype=application/json allow=-
+  body={"id":42.000000,"name":"user-42"}
+-- GET /users/abc (pathInt throws -> 400) --
+  status=400 ctype=application/problem+json allow=-
+  body={"type":"about:blank","title":"Bad Request","status":400,"detail":"path parameter 'id' is not an integer: 'abc'","instance":"/users/abc","requestId":"-"}
+-- GET /users?q=hi (query param binding) --
+  status=200 ctype=text/plain; charset=utf-8 allow=-
+  body=q=hi
+-- GET /users (no query) --
+  status=200 ctype=text/plain; charset=utf-8 allow=-
+  body=q=-
+-- POST /users valid body (201) --
+  status=201 ctype=application/json allow=-
+  body={"email":"a@b.com","age":5.000000}
+-- POST /users invalid body (422) --
+  status=422 ctype=application/problem+json allow=-
+  body={"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"validation failed","instance":"/users","requestId":"-","errors":[{"field":"email","message":"required"},{"field":"age","message":"must be >= 0"}]}
+-- POST /users wrong content-type (415) --
+  status=415 ctype=application/problem+json allow=-
+  body={"type":"about:blank","title":"Error","status":415,"detail":"expected Content-Type: application/json","instance":"/users","requestId":"-"}
+-- GET /nope (404) --
+  status=404 ctype=application/problem+json allow=-
+  body={"type":"about:blank","title":"Not Found","status":404,"detail":"not found: /nope","instance":"/nope","requestId":"-"}
+-- DELETE /users (405, Allow header) --
+  status=405 ctype=text/plain; charset=utf-8 allow=GET, POST
+  body=method not allowed
+-- route table (Track 07 handoff shape) --
+  GET / -> Route./ [GET] authMode=2
+  GET /users/:id -> Route./users/:id [GET] authMode=2
+  POST /users -> Route./users [POST] authMode=1
+  GET /users -> Route./users [GET] authMode=2
+== authDefault=noauth ==
+mode(list)=2
+mode(create, explicit requireAuth wins)=1
+== authDefault=explicit (boot error) ==
+threw=true
+hasOffender=true
+== escape hatch (§7, raw router.record) ==
+escape-hatch status=200 key=Manual.healthz

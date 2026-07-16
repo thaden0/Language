@@ -1,0 +1,42 @@
+// techdesign-columnar §5.3/§5.4: every fusable form (arr[i].field in various
+// expression contexts) plus every ESCAPING form (bind, argument, return,
+// container store) — the gather/ownership discipline must keep all correct.
+struct Rec { int a; int b; int c; }
+
+int takesRec(Rec r) => r.a + r.b + r.c;      // struct passed by value (arg copy)
+Rec makeFrom(Rec r) { Rec o; o.a = r.a + 1; o.b = r.b + 1; o.c = r.c + 1; return o; }
+
+void run() {
+    Array<Rec> arr;
+    for (int i in 0..4) { Rec r; r.a = i; r.b = i * 2; r.c = i * 3; arr = arr.add(r); }
+
+    // fusable: arr[i].field directly in arithmetic
+    console.writeln(arr[2].a + arr[2].b + arr[2].c);   // 2+4+6 = 12
+
+    // fusable: arr[i].field as a condition / nested
+    int t = 0;
+    for (int i in 0..4) { if (arr[i].a > 1) t = t + arr[i].c; }
+    console.writeln(t);                                 // c of i=2,3,4 = 6+9+12 = 27
+
+    // escaping: bind the whole element, then read
+    Rec bound = arr[3];
+    console.writeln(bound.a + bound.b + bound.c);        // 3+6+9 = 18
+
+    // escaping: pass the element as an argument (arg copy)
+    console.writeln(takesRec(arr[4]));                    // 4+8+12 = 24
+
+    // escaping: return a struct derived from an element, store to a container
+    Array<Rec> out;
+    for (int i in 0..4) { out = out.add(makeFrom(arr[i])); }
+    int os = 0;
+    for (int i in 0..4) { os = os + out[i].a + out[i].b + out[i].c; }
+    // sum of (a+1)+(b+1)+(c+1) over all = original-sum + 3*5
+    // original a+b+c per i = 6i; sum over 0..4 = 6*10 = 60; +15 = 75
+    console.writeln(os);                                 // 75
+
+    // escaping: element stored into another array then re-read
+    Array<Rec> copy;
+    for (Rec e in arr) { copy = copy.add(e); }
+    console.writeln(copy[1].b);                           // 2
+}
+run();

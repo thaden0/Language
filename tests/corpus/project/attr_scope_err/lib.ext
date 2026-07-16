@@ -1,0 +1,5 @@
+// The attribute lives in namespace Web; only files that `uses Web` see it
+// (§16.5 proposal §5: metaprogramming reach is governed by imports).
+namespace Web {
+    attribute Tag { int level; }
+}

@@ -1,0 +1,93 @@
+// Corpus test: auth application + body assembly (deterministic, no network).
+namespace Recon {
+
+VarResolver mkVars() {
+    VarResolver v = VarResolver();
+    VarScope s = VarScope::Named("environment");
+    s.put("user", "ada");
+    s.put("pass", "s3cr3t");
+    s.put("token", "TOK");
+    s.put("apiKey", "KEY-XYZ");
+    v.addScope(s);
+    return v;
+}
+
+void showAuth(string kind, Array<Pair<string,string>> params) {
+    AuthSpec a = AuthSpec::Of(kind);
+    for (Pair<string,string> p in params) { a.put(p.first, p.second); }
+    HeaderMap h = HeaderMap();
+    Url u = Url();
+    u.scheme = "https"; u.host = "api.example.com"; u.port = 443; u.path = "/x";
+    applyAuth(a, mkVars(), h, u);
+    console.writeln(kind + ":");
+    console.writeln("  Authorization=" + h.firstOr("Authorization", "<none>"));
+    console.writeln("  X-Api-Key=" + h.firstOr("X-Api-Key", "<none>"));
+    console.writeln("  query=" + u.query);
+    if (!authNote.isEmpty()) { console.writeln("  note=" + authNote); }
+}
+
+void showBody(BodyMode mode, string label, RequestBody b) {
+    Pair<string, string?> r = buildBody(b, mkVars());
+    string ct = r.second ?? "<none>";
+    console.writeln(label + " ct=" + ct);
+    console.writeln("  body=[" + r.first + "]");
+    if (!bodyNote.isEmpty()) { console.writeln("  note=" + bodyNote); }
+}
+
+void main() {
+    console.writeln("== auth ==");
+    showAuth("noauth", []);
+    showAuth("basic", [Pair::Of("username", "{{user}}"), Pair::Of("password", "{{pass}}")]);
+    showAuth("bearer", [Pair::Of("token", "{{token}}")]);
+    showAuth("apikey", [Pair::Of("key", "X-Api-Key"), Pair::Of("value", "{{apiKey}}"), Pair::Of("in", "header")]);
+    showAuth("apikey", [Pair::Of("key", "api_key"), Pair::Of("value", "{{apiKey}}"), Pair::Of("in", "query")]);
+    showAuth("digest", [Pair::Of("username", "x")]);
+    showAuth("oauth2", []);
+
+    console.writeln("== effectiveAuth cascade ==");
+    RequestSpec req = RequestSpec();
+    AuthSpec? noFolder = None;
+    AuthSpec colAuth = AuthSpec::Of("bearer"); colAuth.put("token", "COL");
+    // request has no auth -> falls to collection
+    console.writeln(effectiveAuth(req, noFolder, colAuth).kind);
+    // request noauth disables inherited
+    req.auth = AuthSpec::Of("noauth");
+    console.writeln(effectiveAuth(req, noFolder, colAuth).kind);
+    // request inherit falls through to collection
+    req.auth = AuthSpec::Of("inherit");
+    console.writeln(effectiveAuth(req, noFolder, colAuth).kind);
+
+    console.writeln("== body ==");
+    RequestBody nb = RequestBody();
+    showBody(BodyMode::NoBody, "nobody", nb);
+
+    RequestBody raw = RequestBody();
+    raw.mode = BodyMode::Raw; raw.rawLanguage = "json"; raw.raw = "{\"u\":\"{{user}}\"}";
+    showBody(BodyMode::Raw, "raw-json", raw);
+
+    RequestBody ue = RequestBody();
+    ue.mode = BodyMode::UrlEncoded;
+    ue.urlencoded = [FormField::Of("q", "a b&c"), FormField::Of("t", "{{token}}")];
+    ue.urlencoded.at(1).enabled = true;
+    FormField off = FormField::Of("skip", "x"); off.enabled = false;
+    ue.urlencoded = ue.urlencoded.add(off);
+    showBody(BodyMode::UrlEncoded, "urlencoded", ue);
+
+    RequestBody gq = RequestBody();
+    gq.mode = BodyMode::GraphQL;
+    gq.graphqlQuery = "query { me }";
+    gq.graphqlVars = "{\"id\":1}";
+    showBody(BodyMode::GraphQL, "graphql", gq);
+
+    RequestBody fd = RequestBody();
+    fd.mode = BodyMode::FormData;
+    fd.formdata = [FormField::Of("name", "Ada"), FormField::Of("avatar", "/x.png")];
+    fd.formdata.at(1).kind = "file";
+    showBody(BodyMode::FormData, "formdata", fd);
+
+    RequestBody fb = RequestBody();
+    fb.mode = BodyMode::FileBinary;
+    showBody(BodyMode::FileBinary, "filebinary", fb);
+}
+
+}

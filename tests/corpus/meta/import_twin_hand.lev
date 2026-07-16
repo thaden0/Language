@@ -1,0 +1,7 @@
+// The hand-written twin of import_twin.lev — the same literal pasted in by
+// hand instead of read via import(). Must produce byte-identical output
+// (LA-20 P1 cost-identity): by pass 2, a folded import() is indistinguishable
+// from this.
+string tpl = "line one\nline two — dashΩ\n";
+console.writeln(tpl);
+console.writeln(tpl.length());

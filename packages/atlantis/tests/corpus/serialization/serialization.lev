@@ -1,0 +1,196 @@
+// Atlantis Track 03 — serialization & DTOs acceptance corpus (design §12 M2/M3/M4):
+// struct DTO + entity class round-trip, @JsonIgnore, optionals, DateTime, nested
+// DTO, policy hardening (missing/wrong-type/unknown-key/int-precision), and
+// content negotiation. toJson() is hand-written throughout (§3.2 escape hatch —
+// Mechanism A is blocked, P-1a); __atlKeys()/FromJson are generated (Mechanism B).
+uses Atlantis;
+uses Atlantis::Json;
+
+@Serializable
+struct Address : IJsonSerializable {
+    string city;
+    string zip;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [
+            Atlantis::__atlEnc(this.city),
+            Atlantis::__atlEnc(this.zip)
+        ];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+@Serializable
+struct CreateUserRequest : IJsonSerializable {
+    string email;
+    string fullName;
+    int? age;
+    @JsonIgnore string csrfShadow;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [
+            Atlantis::__atlEnc(this.email),
+            Atlantis::__atlEnc(this.fullName),
+            Atlantis::__atlEnc(this.age)
+        ];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+@Serializable
+class User : IJsonSerializable {
+    int id;
+    string email;
+    DateTime createdAt;
+    Address home;
+    Address? work;
+    Array<string> tags;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [
+            Atlantis::__atlEnc(this.id),
+            Atlantis::__atlEnc(this.email),
+            Atlantis::__atlEnc(this.createdAt),
+            Atlantis::__atlEnc(this.home),
+            Atlantis::__atlEnc(this.work),
+            Atlantis::__atlEnc(this.tags)
+        ];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+string fieldErrorsOf(Atlantis::Http::IValidationException e) {
+    string out = "";
+    for (Atlantis::Http::FieldError fe in e.errors) {
+        out = out + fe.field + ":" + fe.message + ";";
+    }
+    return out;
+}
+
+void main() {
+    console.writeln("-- struct DTO round-trip (ignore + optional present) --");
+    JsonValue doc1 = json::parse("{\"email\":\"a@b.com\",\"fullName\":\"Ann\",\"age\":30,\"csrfShadow\":\"x\"}") ?? JsonValue::ofNull();
+    CreateUserRequest req1 = CreateUserRequest::FromJson(doc1);
+    console.writeln(req1.email + "," + req1.fullName + "," + (req1.age ?? -1).toString() + "," + req1.csrfShadow);
+    console.writeln(req1.toJson().render());
+
+    console.writeln("-- struct DTO round-trip (optional absent) --");
+    JsonValue doc2 = json::parse("{\"email\":\"c@d.com\",\"fullName\":\"Cal\"}") ?? JsonValue::ofNull();
+    CreateUserRequest req2 = CreateUserRequest::FromJson(doc2);
+    console.writeln(req2.email + "," + req2.fullName + "," + (req2.age == None ? "none" : "some"));
+    console.writeln(req2.toJson().render());
+
+    console.writeln("-- struct DTO round-trip (optional explicit null) --");
+    JsonValue doc3 = json::parse("{\"email\":\"e@f.com\",\"fullName\":\"Eve\",\"age\":null}") ?? JsonValue::ofNull();
+    CreateUserRequest req3 = CreateUserRequest::FromJson(doc3);
+    console.writeln(req3.email + "," + (req3.age == None ? "none" : "some"));
+
+    console.writeln("-- entity class round-trip (nested + DateTime + array, work absent) --");
+    JsonValue doc4 = json::parse(
+        "{\"id\":7,\"email\":\"u@x.com\",\"createdAt\":\"1994-11-06T08:49:37Z\"," +
+        "\"home\":{\"city\":\"Metropolis\",\"zip\":\"00001\"},\"tags\":[\"a\",\"b\",\"c\"]}") ?? JsonValue::ofNull();
+    User u1 = User::FromJson(doc4);
+    console.writeln(u1.id.toString() + "," + u1.email + "," + u1.createdAt.iso8601() + "," +
+                     u1.home.city + "," + u1.home.zip + "," + (u1.work == None ? "none" : "some") + "," +
+                     u1.tags.joinToString("|"));
+    console.writeln(u1.toJson().render());
+
+    console.writeln("-- entity class round-trip (nested work present) --");
+    JsonValue doc5 = json::parse(
+        "{\"id\":8,\"email\":\"v@x.com\",\"createdAt\":\"2000-01-01T00:00:00Z\"," +
+        "\"home\":{\"city\":\"Gotham\",\"zip\":\"11111\"}," +
+        "\"work\":{\"city\":\"Star City\",\"zip\":\"22222\"},\"tags\":[]}") ?? JsonValue::ofNull();
+    User u2 = User::FromJson(doc5);
+    console.writeln((u2.work == None ? "none" : (u2.work ?? Address()).city));
+
+    console.writeln("-- policy: unknown keys ignored --");
+    JsonValue doc6 = json::parse("{\"email\":\"z@z.com\",\"fullName\":\"Zed\",\"unknownField\":123}") ?? JsonValue::ofNull();
+    CreateUserRequest req6 = CreateUserRequest::FromJson(doc6);
+    console.writeln(req6.email + "," + req6.fullName);
+
+    console.writeln("-- policy: missing required key throws ValidationException --");
+    JsonValue doc7 = json::parse("{\"fullName\":\"NoEmail\"}") ?? JsonValue::ofNull();
+    try {
+        CreateUserRequest::FromJson(doc7);
+        console.writeln("NO THROW (unexpected)");
+    } catch (Atlantis::Http::IValidationException e) {
+        console.writeln("caught:" + fieldErrorsOf(e));
+    }
+
+    console.writeln("-- policy: wrong type throws ValidationException --");
+    JsonValue doc8 = json::parse("{\"email\":123,\"fullName\":\"X\"}") ?? JsonValue::ofNull();
+    try {
+        CreateUserRequest::FromJson(doc8);
+        console.writeln("NO THROW (unexpected)");
+    } catch (Atlantis::Http::IValidationException e) {
+        console.writeln("caught:" + fieldErrorsOf(e));
+    }
+
+    console.writeln("-- policy: non-integral number into int throws --");
+    JsonValue doc9 = json::parse("{\"id\":7.5,\"email\":\"a@b.com\",\"createdAt\":\"2000-01-01T00:00:00Z\"," +
+        "\"home\":{\"city\":\"X\",\"zip\":\"1\"},\"tags\":[]}") ?? JsonValue::ofNull();
+    try {
+        User::FromJson(doc9);
+        console.writeln("NO THROW (unexpected)");
+    } catch (Atlantis::Http::IValidationException e) {
+        console.writeln("caught:" + fieldErrorsOf(e));
+    }
+
+    console.writeln("-- policy: null for a required field throws --");
+    JsonValue doc10 = json::parse("{\"email\":null,\"fullName\":\"X\"}") ?? JsonValue::ofNull();
+    try {
+        CreateUserRequest::FromJson(doc10);
+        console.writeln("NO THROW (unexpected)");
+    } catch (Atlantis::Http::IValidationException e) {
+        console.writeln("caught:" + fieldErrorsOf(e));
+    }
+
+    console.writeln("-- policy: wrong top-level kind (array where object expected) --");
+    JsonValue doc11 = json::parse("[1,2,3]") ?? JsonValue::ofNull();
+    try {
+        CreateUserRequest::FromJson(doc11);
+        console.writeln("NO THROW (unexpected)");
+    } catch (Atlantis::Http::IValidationException e) {
+        console.writeln("caught:" + fieldErrorsOf(e));
+    }
+
+    console.writeln("-- §7 negotiation: parseAccept fixtures --");
+    Array<MediaRange> r1 = Json::parseAccept("application/json;q=0.5, text/html;q=0.9, */*;q=0.1");
+    console.writeln(r1.length().toString());
+    Array<MediaRange> r2 = Json::parseAccept("");
+    console.writeln(r2.length().toString() + "," + r2.at(0).type + "/" + r2.at(0).sub);
+    Array<MediaRange> r3 = Json::parseAccept("application/json, not-a-media-range, text/plain");
+    console.writeln(r3.length().toString());
+    Array<MediaRange> r4 = Json::parseAccept("application/json;q=abc");
+    console.writeln(r4.at(0).q.toString());
+
+    console.writeln("-- §7 negotiation: negotiate --");
+    Array<string> producible = ["application/json", "text/html"];
+    console.writeln((Json::negotiate("text/html;q=0.9, application/json;q=0.8", producible) ?? "NONE"));
+    console.writeln((Json::negotiate(None, producible) ?? "NONE"));
+    console.writeln((Json::negotiate("application/xml", producible) ?? "NONE"));
+    console.writeln((Json::negotiate("application/json;q=0", producible) ?? "NONE"));
+    console.writeln((Json::negotiate("*/*", producible) ?? "NONE"));
+
+    console.writeln("-- §7 isJsonContent --");
+    HeaderMap h1 = HeaderMap();
+    h1 = h1.add("Content-Type", "application/json");
+    console.writeln(Json::isJsonContent(h1).toString());
+    HeaderMap h2 = HeaderMap();
+    h2 = h2.add("Content-Type", "application/json; charset=utf-8");
+    console.writeln(Json::isJsonContent(h2).toString());
+    HeaderMap h3 = HeaderMap();
+    h3 = h3.add("Content-Type", "application/vnd.api+json");
+    console.writeln(Json::isJsonContent(h3).toString());
+    HeaderMap h4 = HeaderMap();
+    h4 = h4.add("Content-Type", "text/plain");
+    console.writeln(Json::isJsonContent(h4).toString());
+    HeaderMap h5 = HeaderMap();
+    console.writeln(Json::isJsonContent(h5).toString());
+    HeaderMap h6 = HeaderMap();
+    h6 = h6.add("Content-Type", "application/json; charset=iso-8859-1");
+    console.writeln(Json::isJsonContent(h6).toString());
+}

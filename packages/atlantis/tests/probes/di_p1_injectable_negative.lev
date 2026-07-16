@@ -1,0 +1,17 @@
+// Atlantis Track 04 probe P-5 (NEGATIVE — must FAIL to compile).
+// An @Injectable class with no interface base trips the §3.4 sentinel-guard, which
+// throws a named diagnostic at rule-evaluation (compile) time — the program never runs.
+// Verified by dropping this file into a throwaway trident target that depends on the
+// Atlantis package (the guard rule lives in the package); expected output is a compile
+// error naming `@Injectable ConcreteOnly: needs an interface base …`. A GREEN sibling —
+// an @Injectable class WITH an I-prefixed base — is exercised by tests/corpus/di.
+uses Atlantis;
+
+class Base { int x = 0; }
+
+@Injectable
+class ConcreteOnly : Base {          // no I-prefixed interface base → guard fires
+    int y = 0;
+}
+
+void run() { console.writeln("unreachable — the guard fires at compile time"); }

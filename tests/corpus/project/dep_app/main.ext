@@ -1,0 +1,5 @@
+uses Json;
+void main() {
+    console.writeln(Json::encode(42));   // qualified use of the dependency
+    console.writeln(tag("hi"));          // unqualified via `uses Json;`
+}

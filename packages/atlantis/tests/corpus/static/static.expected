@@ -1,0 +1,38 @@
+== P7 canonicalize ==
+  /a/../../x => None
+  a/b/c => a/b/c
+  a/./b//c => a/b/c
+  a/../b => b
+  ../x => None
+   => 
+== serve index (GET /) ==
+  status=200 ctype=text/html; charset=utf-8
+  etag="8494ee3047b442b84524726ca17cadaa"
+  body=<!doctype html><h1>home</h1>
+
+== serve css (GET /style.css) ==
+  status=200 ctype=text/css; charset=utf-8
+== conditional GET (If-None-Match matches) ==
+  status=304 body.len=0
+== HEAD (no body) ==
+  status=200 body.len=0 hasEtag=true
+== traversal attempt (GET /%2e%2e/secret) ==
+  status=404
+== double-encoded dot-dot is a literal miss (GET /%252e%252e/x) ==
+  status=404
+== miss falls through to app (GET /nope.txt) ==
+  status=404 body=app-miss:/nope.txt
+== SSE ==
+  ended=true
+  |data: hello
+  |
+  |event: tick
+  |data: one
+  |data: two
+  |
+  |
+== facade + IActionResponse ==
+  json={"ok":true}
+  redirect.status=302 loc=/login
+  status=teapot
+  view=[view:home]

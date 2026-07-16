@@ -1,0 +1,6 @@
+// exit-now abandons pending loop work (§5): a 10-second timer is scheduled, but
+// env.exit(0) terminates immediately — the process returns in milliseconds, the
+// timer never fires. Proves exit does NOT drain the loop (unlike setExitCode).
+std::sysTimerStart(10000, 0, (t) => console.writeln("timer fired"));
+console.writeln("scheduling then exiting");
+env::exit(0);

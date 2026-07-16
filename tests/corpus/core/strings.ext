@@ -1,0 +1,9 @@
+void run() {
+    string s = "Hello";
+    s += ", world";
+    console.writeln(s);
+    console.writeln(s == "Hello, world");
+    console.writeln(s != "bye");
+    console.writeln("n=" + 42 + "!");
+}
+run();

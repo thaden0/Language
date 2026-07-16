@@ -1,0 +1,22 @@
+// bug #35 pin (reject route A): a bare TOP-LEVEL Promise resolved by a timer on
+// the main thread, awaited inside a std::spawn body, is an A-1 violation ("all
+// waiters of a promise live on the promise's own thread"). The capture flatten
+// only walks the body's CAPTURES, so a bare-GLOBAL reference used to bypass the
+// reject: the interpreters ran it cooperatively (printed the value) while LLVM's
+// worker OS thread silently drained (C3 -> spawn's catch -> Worker reject, the
+// handle discarded). It now rejects loudly and BYTE-IDENTICALLY on oracle/IR/
+// LLVM at the spawn call, before any worker starts — the SAME message and
+// banner as capturing the same promise through a local (verified precedent).
+//
+// v1 hole (symmetric on every engine, documented): the reference is checked at
+// spawn TIME. A global that is void at the spawn call and only becomes a Promise
+// later is NOT caught here — but it also cannot be observed across the boundary,
+// so the worker's drain is the same non-event. Keep promises task-local: pass a
+// Channel<T>, or await the Worker handle spawn returns (nested_spawn_join.lev).
+Promise<int> p = Promise();
+std::sysTimerStart(10, 0, (n) => { p.resolve(5); });
+std::spawn(() => {
+    int v = await p;
+    console.writeln("v=" + v.toString());
+    return 0;
+});

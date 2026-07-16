@@ -1,0 +1,43 @@
+// doc 2 §1.1 signatures: isMatch/find/groupCount/groupNames + Match/Group
+// field access (§1.2/§1.3), named + positional group lookup.
+void run() {
+    Regex userRe = Regex("^[a-z0-9_]{3,16}$");
+    console.writeln(userRe.isMatch("bob_1"));
+    console.writeln(userRe.isMatch("BOB"));
+    console.writeln(userRe.isMatch("xBOBx", 1));
+
+    Regex kvRe = Regex("(?<key>\\w+)=(?<val>[^;]*)");
+    Match? m = kvRe.find("host=example.com;");
+    console.writeln(m != None);
+    if (m != None) {
+        console.writeln(m.index.toString() + ":" + m.length.toString());
+        console.writeln(m.value);
+        console.writeln(m.groups.length());
+        console.writeln(m.group(0).value);
+        console.writeln(m.group(1).value);
+        console.writeln(m.group(2).value);
+        Group? kg = m.group("key");
+        console.writeln(kg != None);
+        if (kg != None) { console.writeln(kg.matched.toString() + ":" + kg.value); }
+        console.writeln(m.group("key")?.value ?? "");
+        console.writeln(m.group("nope")?.value ?? "fallback");
+    }
+    Match? none = kvRe.find("nothing here", 100);
+    console.writeln(none != None);
+
+    Array<string> names = kvRe.groupNames();
+    console.writeln(names.length());
+    console.writeln(names.at(0) + "," + names.at(1));
+    console.writeln(kvRe.groupCount());
+
+    // an unparticipating group inside a successful match stays a real,
+    // reachable state (matched=false), not an absent Match (§1.3).
+    Regex altRe = Regex("(a)|(b)");
+    Match? am = altRe.find("b");
+    if (am != None) {
+        console.writeln(am.group(1).matched);
+        console.writeln(am.group(2).matched);
+        console.writeln(am.group(1).value + "|" + am.group(2).value);
+    }
+}
+run();

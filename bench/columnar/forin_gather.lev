@@ -1,0 +1,16 @@
+// techdesign-columnar plan §4 honesty: the GATHER (non-win) regime. for-in
+// materializes a fresh standalone struct per element (§5.5); columnar pays an
+// allocation+scatter per step that row-major (buffer-pointer alias) does not.
+struct Small { int x; int y; }
+void bench(int n, int k) {
+    Small seed; seed.x = 1; seed.y = 2;
+    Array<Small> a = Array(n, seed);
+    int t0 = std::sysNow();
+    int s = 0;
+    for (int rep in 1..k) {
+        for (Small e in a) { s = s + e.x + e.y; }   // for-in GATHER per element
+    }
+    int t1 = std::sysNow();
+    console.writeln("elapsed_ms=" + (t1 - t0).toString());
+}
+bench(1000000, 20);

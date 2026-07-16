@@ -1,0 +1,6 @@
+# Sonar built-in theme: Default (design §3)
+#
+# Terminal-native: an intentionally empty map. The "no theme required"
+# guarantee (design §1 layer 3) means component paint code falls back to
+# Style() = Default/Default/0 — i.e. the terminal's own colors — for every
+# key, so an empty theme still renders legibly. Nothing to declare here.

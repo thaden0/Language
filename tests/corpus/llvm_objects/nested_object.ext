@@ -1,0 +1,22 @@
+class Inner {
+    public int n;
+}
+
+class Outer {
+    public Inner inner;
+    public int tag;
+}
+
+Outer o = Outer();
+o.inner = Inner();
+o.inner.n = 42;
+o.tag = 7;
+console.writeln(o.tag);
+console.writeln(o.inner.n);
+
+Inner shared = Inner();
+shared.n = 100;
+o.inner = shared;
+console.writeln(o.inner.n);
+shared.n = 200;
+console.writeln(o.inner.n);

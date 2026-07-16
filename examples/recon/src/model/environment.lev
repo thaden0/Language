@@ -1,0 +1,48 @@
+// Recon environment & variable model (DESIGN §4.3).
+namespace Recon {
+
+class Variable {
+    public string key     = "";
+    public string value   = "";
+    public bool   enabled = true;
+    public bool   secret  = false;      // type=="secret" -> masked in the UI
+    new Variable() { }
+    new Of(string k, string v) { key = k; value = v; }
+}
+
+class Environment {
+    public string id   = "";
+    public string name = "";
+    public Array<Variable> values;
+    new Environment() { }
+    new Named(string n) { name = n; }
+}
+
+// A resolution layer. VarResolver (§5.2) walks an ordered list of these, most-specific first.
+class VarScope {
+    public string name = "";                    // "local" | "environment" | "collection" | "global"
+    public Map<string,string> values;           // key -> value (only enabled vars, flattened)
+    new VarScope() { }
+    new Named(string n) { name = n; }
+    void put(string k, string v) { values[k] = v; }
+}
+
+// Flatten an Environment's enabled variables into a VarScope.
+VarScope scopeFromEnv(Environment e, string scopeName) {
+    VarScope s = VarScope::Named(scopeName);
+    for (Variable v in e.values) {
+        if (v.enabled) { s.values[v.key] = v.value; }
+    }
+    return s;
+}
+
+// Flatten a collection-level variable list into a VarScope.
+VarScope scopeFromVars(Array<Variable> vars, string scopeName) {
+    VarScope s = VarScope::Named(scopeName);
+    for (Variable v in vars) {
+        if (v.enabled) { s.values[v.key] = v.value; }
+    }
+    return s;
+}
+
+}

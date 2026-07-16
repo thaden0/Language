@@ -1,0 +1,1 @@
+namespace Lib { public int two() => 2; }        // Lib re-opened in a second file

@@ -1,0 +1,32 @@
+void main() {
+    Block a = Block(130);
+    Block b = Block(130);
+    int passed = 0;
+    int pos = 0;
+    while (pos < 130) {
+        b.fill(0, 130, 0);
+        b.setByte(pos, 1);
+        if (a.mismatch(b, 0) == pos) passed = passed + 1;
+        pos = pos + 1;
+    }
+    console.writeln(passed);
+
+    b.fill(0, 130, 0);
+    console.writeln(a.mismatch(b, 0));
+    console.writeln(a.mismatch(b, 130));
+    b.setByte(1, 1);
+    b.setByte(64, 1);
+    console.writeln(a.mismatch(b, 0));
+    console.writeln(a.mismatch(b, 2));
+    console.writeln(a.mismatch(b, 64));
+    console.writeln(a.mismatch(b, 65));
+
+    Block empty1 = Block(0);
+    Block empty2 = Block(0);
+    console.writeln(empty1.mismatch(empty2, 0));
+
+    try { a.mismatch(Block(129), 0); } catch (RuntimeException e) { console.writeln("throw: mismatch length"); }
+    try { a.mismatch(b, -1); } catch (RuntimeException e) { console.writeln("throw: mismatch low from"); }
+    try { a.mismatch(b, 131); } catch (RuntimeException e) { console.writeln("throw: mismatch high from"); }
+}
+main();

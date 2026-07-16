@@ -1,0 +1,20 @@
+// Hand-written twin of rule_memoize.ext — byte-identical output proves the
+// `@Memo` expansion equals the hand-written memoized method.
+class Mathy {
+    Map<int, int> store;
+    int computeCount = 0;
+    int raw(int n) { computeCount = computeCount + 1; return n * n; }
+
+    int expensive(int n) {
+        if (store.has(n)) { return store.at(n); }
+        var __r = raw(n);
+        store[n] = __r;
+        return __r;
+    }
+}
+
+Mathy m = Mathy();
+console.writeln(m.expensive(3));
+console.writeln(m.expensive(3));
+console.writeln(m.expensive(4));
+console.writeln(m.computeCount);

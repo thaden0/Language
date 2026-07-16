@@ -1,0 +1,19 @@
+// Inline example: the code under test and its @Test classes live in the SAME
+// file (and project). Discovery finds the tests because this file `uses
+// harpoon` — no separate tests/ directory, no registration.
+uses harpoon;
+
+namespace calc {
+    int add(int a, int b) => a + b;
+    int sub(int a, int b) => a - b;
+    int mul(int a, int b) => a * b;
+}
+
+class CalcTests {
+    @Test void addsPositives()  { harpoon::assertEqual(5, calc::add(2, 3)); }
+    @Test void subtracts()      { harpoon::assertEqual(1, calc::sub(4, 3)); }
+    @Test void multiplies()     { harpoon::assertEqual(12, calc::mul(3, 4)); }
+    @Test @Skip void wip()      { }
+}
+
+harpoon::main();

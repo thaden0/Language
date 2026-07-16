@@ -1,0 +1,304 @@
+namespace Sonar {
+    // T05 §3.1. R5 base order: Container (core) first, Scrollable, then
+    // Styleable, then Bordered last (decorator wins the chrome()/
+    // paintChrome collapse), IMultiLine marker last.
+    //
+    // Header completion (same move T04's log already made for every T04
+    // leaf, and for the identical reason): the design doc's class header
+    // line reads `ContentBox : Container, Scrollable, Bordered, IMultiLine`
+    // — no Styleable — but §3.1's own body requires theme keys
+    // (`contentbox.scrollbar`, `contentbox.scrollbar.thumb`), which need
+    // `resolve()`/`resolveOrDefault()`, only available via Styleable. This
+    // is a header completion, not an amendment (T04 precedent, logged in
+    // this track's own implementation log).
+    class ContentBox : Container, Scrollable, Styleable, Bordered, IMultiLine {
+        Overflow overflow = Overflow::Clip;
+
+        new ContentBox() {
+            // bug.md #53: a lambda that calls one of its own class's
+            // instance methods with a BARE (implicit-`this`) receiver
+            // silently loses the mutation on `--ir` and segfaults on
+            // native/LLVM once the lambda is stored (here, via `onKey`)
+            // and invoked later from a different call frame. Every method
+            // call inside this handler spells the receiver explicitly.
+            this.onKey((e) => {
+                if (overflow != Overflow::Scroll || e.mods != 0) return;
+                if (e.code == KeyCode::PageUp) {
+                    int amount = this.contentRect().h() - 1;
+                    if (amount < 1) amount = 1;
+                    this.scrollBy(0, 0 - amount);
+                    e.handled = true;
+                } else if (e.code == KeyCode::PageDown) {
+                    int amount = this.contentRect().h() - 1;
+                    if (amount < 1) amount = 1;
+                    this.scrollBy(0, amount);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Up) {
+                    this.scrollBy(0, 0 - 1);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Down) {
+                    this.scrollBy(0, 1);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Left) {
+                    this.scrollBy(0 - 1, 0);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Right) {
+                    this.scrollBy(1, 0);
+                    e.handled = true;
+                }
+            });
+        }
+
+        // ---- state setters (attribute table below expands to these) -----
+
+        void setOverflow(Overflow value) {
+            if (value == Overflow::Wrap)
+                throw SonarException("ContentBox: Overflow::Wrap is not valid for a container");
+            if (overflow == value) return;
+            overflow = value;
+            invalidateLayout();
+        }
+        void setPadding(Insets value) {
+            padding = value;
+            invalidateLayout();
+        }
+
+        // ---- R6 fluent wrappers (leaf-typed, per the design's own list) --
+
+        ContentBox border(BorderStyle b) { setBorder(b); return this; }
+        ContentBox title(string t) { setTitle(t); return this; }
+        ContentBox overflow(Overflow value) { setOverflow(value); return this; }
+        ContentBox pad(Insets value) { setPadding(value); return this; }
+
+        // bug.md #61 workaround: `Container.contentRect()` (mixins.lev/
+        // container.lev, T01-owned, off limits here) is declared ON
+        // Container — an intermediate mixin, sibling to Bordered under R5's
+        // collapse — and its body calls `this.chrome()` internally. Per
+        // bug #61, a call to an overridden (non-`distinct`) method from
+        // WITHIN a method declared on an intermediate mixin does not
+        // reliably reach a sibling's (or even the leaf's own direct)
+        // override; empirically confirmed via `Container.arrange()`
+        // silently arranging children into the FULL box, ignoring
+        // Bordered's inset, for any Container+Bordered composite that
+        // doesn't override `contentRect()` itself. Redeclaring it directly
+        // here — a method declared on the LEAF, ContentBox — makes
+        // `this.chrome()` resolve correctly (confirmed: a leaf-declared
+        // method's own `this.overridden()` calls dispatch correctly).
+        // contentRect() is not `distinct`, so this cleanly replaces the
+        // single inherited slot.
+        Rect contentRect() => box.inset(this.chrome());
+
+        // ---- scroll-content translation --------------------------------
+        // Implementation-judgment call (new finding, logged): the design's
+        // natural hook for "re-arrange the subtree on every scroll change"
+        // is Scrollable's `changed()` hook, but `changed()` is declared
+        // `distinct` in mixins.lev (T01-owned, off limits) SPECIFICALLY so
+        // Focusable's and Scrollable's own separate `changed()` slots don't
+        // collapse when a leaf composes both. A `distinct`-declared method
+        // turns out not to be a normal overridable virtual slot: redeclaring
+        // `changed()` here (confirmed via `trident check`'s shape dump)
+        // creates a SECOND, separate slot rather than replacing the one
+        // `Scrollable.scrollTo()`'s own bare internal `changed();` call
+        // reaches, so the override is silently never invoked by scrollTo/
+        // scrollBy. Worked around by overriding `scrollTo`/`scrollBy`
+        // directly instead (full reimplementation, the same "no super-call
+        // mechanism, just replace the single slot" shape already used for
+        // `arrange`/`paint` above) — those two are NOT `distinct`, so the
+        // override cleanly replaces the single inherited slot and dispatch
+        // from external callers (`nearestScrollable(...).scrollBy(...)` in
+        // events.lev's wheel path, this file's own onKey handler) reaches
+        // it correctly, matching the framework's already-proven
+        // runtime-class dispatch for non-distinct members.
+        void scrollTo(int x, int y) {
+            Rect content = contentRect();
+            int maxX = contentSize.w - content.w();
+            int maxY = contentSize.h - content.h();
+            if (maxX < 0) maxX = 0;
+            if (maxY < 0) maxY = 0;
+            int nextX = x < 0 ? 0 : (x > maxX ? maxX : x);
+            int nextY = y < 0 ? 0 : (y > maxY ? maxY : y);
+            if (nextX == scrollX && nextY == scrollY) return;
+            scrollX = nextX;
+            scrollY = nextY;
+            if (overflow == Overflow::Scroll) this.arrangeScrollContent();
+            invalidate();
+        }
+        void scrollBy(int dx, int dy) { this.scrollTo(scrollX + dx, scrollY + dy); }
+
+        // Re-arranges children into a virtual rect at the CURRENT scrollX/
+        // scrollY, using the contentSize already recorded by arrange() —
+        // this is the "translation via re-arrange" the design's
+        // implementation note prescribes: Surface has no offset transform,
+        // so scroll is implemented by re-arranging children into an
+        // already-translated virtual rect, not by an actual paint-time
+        // offset. Does NOT re-measure (measuring happens once per real
+        // layout pass, in arrange() below); a scroll tick is just a
+        // re-arrange, matching "Scrolling therefore costs an arrange pass
+        // over the subtree" (not a re-measure pass).
+        void arrangeScrollContent() {
+            Rect content = contentRect();
+            if (content.isEmpty()) return;
+            Rect virtualRect = Rect(Point(content.x() - scrollX, content.y() - scrollY), contentSize);
+            layout().arrange(children(), virtualRect);
+        }
+
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            if (overflow == Overflow::Scroll) {
+                Rect content = contentRect();
+                if (!content.isEmpty()) {
+                    Size measured = layout().measure(children(), Size(content.w(), Sonar::Unbounded));
+                    int cw = measured.w > content.w() ? measured.w : content.w();
+                    contentSize = Size(cw, measured.h);
+                }
+                // Re-clamp scrollX/scrollY against the freshly measured
+                // contentSize (a resize can shrink the viewport or the
+                // content) before re-arranging — mirrors Scrollable's own
+                // scrollTo() clamp math without bouncing through it.
+                int maxX = contentSize.w - content.w();
+                int maxY = contentSize.h - content.h();
+                if (maxX < 0) maxX = 0;
+                if (maxY < 0) maxY = 0;
+                if (scrollX > maxX) scrollX = maxX;
+                if (scrollX < 0) scrollX = 0;
+                if (scrollY > maxY) scrollY = maxY;
+                if (scrollY < 0) scrollY = 0;
+                this.arrangeScrollContent();
+            } else {
+                layout().arrange(children(), contentRect());
+            }
+            layoutDirty_ = false;
+        }
+
+        // bug.md #59 workaround: Bordered.paintChrome (mixins.lev, T01-owned,
+        // off limits here) indexes its border-glyph string with
+        // `.at(byteOffset)` using character-position values (0,1,2,...),
+        // which lands mid-sequence for every real (non-NoBorder) border
+        // style's 3-byte UTF-8 box-drawing glyphs and throws "byte offset N
+        // is not a scalar boundary" the first time an actual border is
+        // painted. Reimplemented here verbatim (same draw order/logic,
+        // same theme-less bare Style — Bordered's own version doesn't
+        // resolve a theme either) but decoding via `.chars()` into a proper
+        // Array<char> first, matching the title-drawing code's own
+        // (already-correct) pattern two lines below it in the original.
+        // paintChrome is not `distinct`, so this cleanly replaces the
+        // single inherited slot — the same mechanism already used above to
+        // override arrange/paint/scrollTo/scrollBy.
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+
+        // ---- paint --------------------------------------------------------
+        // Paint-ordering resolution (design §3.1 flags this as a real
+        // tension to resolve, not escalate): the design prose says
+        // scrollbars are "painted by paintChrome after the border", but
+        // Container.paint() paints chrome BEFORE children, while the
+        // scrollbar must visually overlay the LAST content column/row —
+        // i.e. it must render AFTER children paint. Resolved by overriding
+        // paint(Surface) entirely (not just paintChrome): background ->
+        // chrome (border, via this.paintChrome(s), which dispatches to
+        // Bordered's border-drawing since Bordered is the later/decorator
+        // base) -> children clipped to contentRect() (same shape as
+        // Container.paint()'s child loop) -> scrollbar as the final step,
+        // written directly via s.put at contentRect()'s last column/row (no
+        // extra clip needed since the coordinate math stays inside
+        // contentRect()).
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            Rect content = contentRect();
+            s.pushClip(content);
+            for (IComponent child in children()) if (child.visible()) child.paint(s);
+            s.popClip();
+            if (overflow == Overflow::Scroll) this.paintScrollbars(s);
+        }
+
+        // 1-cell vertical bar on the right inner edge when contentSize.h >
+        // viewport.h, horizontal on the bottom inner edge when contentSize.w
+        // > viewport.w — proportional thumb, min 1 cell. Scrollbars consume
+        // no layout space (children already arranged across the full
+        // content rect); this simply overlays the last column/row.
+        void paintScrollbars(Surface s) {
+            Rect content = contentRect();
+            if (content.isEmpty()) return;
+            Style trackStyle = resolveOrDefault(this, "contentbox.scrollbar");
+            Style thumbStyle = resolveOrDefault(this, "contentbox.scrollbar.thumb");
+            char vTrackGlyph = '│';
+            char hTrackGlyph = '─';
+            char thumbGlyph = '█';
+
+            if (contentSize.h > content.h()) {
+                int trackX = content.right() - 1;
+                int trackLen = content.h();
+                int thumbLen = trackLen * content.h() / contentSize.h;
+                if (thumbLen < 1) thumbLen = 1;
+                if (thumbLen > trackLen) thumbLen = trackLen;
+                int maxScroll = contentSize.h - content.h();
+                int room = trackLen - thumbLen;
+                int thumbOffset = maxScroll > 0 ? room * scrollY / maxScroll : 0;
+                if (thumbOffset < 0) thumbOffset = 0;
+                if (thumbOffset > room) thumbOffset = room;
+                for (int i in 0..trackLen - 1) {
+                    int y = content.y() + i;
+                    bool onThumb = i >= thumbOffset && i < thumbOffset + thumbLen;
+                    if (onThumb) s.put(trackX, y, thumbGlyph, thumbStyle);
+                    else s.put(trackX, y, vTrackGlyph, trackStyle);
+                }
+            }
+
+            if (contentSize.w > content.w()) {
+                int trackY = content.bottom() - 1;
+                int trackLen = content.w();
+                int thumbLen = trackLen * content.w() / contentSize.w;
+                if (thumbLen < 1) thumbLen = 1;
+                if (thumbLen > trackLen) thumbLen = trackLen;
+                int maxScroll = contentSize.w - content.w();
+                int room = trackLen - thumbLen;
+                int thumbOffset = maxScroll > 0 ? room * scrollX / maxScroll : 0;
+                if (thumbOffset < 0) thumbOffset = 0;
+                if (thumbOffset > room) thumbOffset = room;
+                for (int i in 0..trackLen - 1) {
+                    int x = content.x() + i;
+                    bool onThumb = i >= thumbOffset && i < thumbOffset + thumbLen;
+                    if (onThumb) s.put(x, trackY, thumbGlyph, thumbStyle);
+                    else s.put(x, trackY, hTrackGlyph, trackStyle);
+                }
+            }
+        }
+    }
+}

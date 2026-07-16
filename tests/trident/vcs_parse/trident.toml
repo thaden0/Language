@@ -1,0 +1,7 @@
+name = "vcs_parse"
+entry = "main.lev"
+sources = ["main.lev"]
+
+[[dep]]
+path = "github.com/x/y"
+version = "1.0.0"

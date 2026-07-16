@@ -1,0 +1,9 @@
+// Raw-mode toggle only (no keystroke read) so every engine incl. emit-C++ can
+// run it. Non-tty (piped/CI): enableRaw returns false -> "raw=off".
+void main() {
+    bool ok = term.enableRaw();
+    console.writeln("raw=" + (ok ? "on" : "off"));
+    term.restore();
+    console.writeln("done");
+}
+main();

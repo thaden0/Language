@@ -1,0 +1,68 @@
+// system-binds.md: capability injection over bind/inject. End-to-end run
+// across all engines, covering both channels:
+//   - M1 (§4/§9 M1): explicit textual binds (`bind IEnv => std::systemEnv;`),
+//     fake-shadowing in a block, INet's `None` arm on a refused port, and an
+//     IFileSystem open/exists/read round-trip.
+//   - M2 (§5/§9 M2): Channel 1 — `use std::T;` activates T's root bind with
+//     NO textual bind anywhere, filling every parameter below purely from
+//     the `use` (Atlantis probe A9's shape).
+//
+use std::IEnv;
+use std::IConsole;
+use std::IClock;
+use std::IFileSystem;
+use std::INet;
+
+// M2: every parameter here is filled by Channel 1 activation alone.
+void reportEnv(IEnv env, IConsole out) {
+    out.writeln("args >= 1: " + (env.args().length() >= 1).toString());
+    out.writeln("unset var is None: " +
+                (env.variable("LEVIATHAN_NOPE_VAR_XYZ") == None).toString());
+}
+reportEnv();
+
+void reportClock(IClock clock) {
+    console.writeln("clock positive: " + (clock.now() > 0).toString());
+}
+reportClock();
+
+// M1 acceptance: IFileSystem open/exists round-trip in a temp path.
+void roundTripFile(IFileSystem fs) {
+    string path = "/tmp/di_capabilities_test.tmp";
+    File w = fs.open(path, std::write);
+    w.write("hello capability");
+    w.close();
+    console.writeln("exists: " + fs.exists(path).toString());
+    File r = fs.open(path, std::read);
+    console.writeln("content: " + r.read(64));
+    r.close();
+}
+roundTripFile();
+
+// M1 acceptance: INet's `None` arm on a refused connection (nothing listens
+// on this loopback port).
+void refuseConnect(INet net) {
+    TcpStream? s = net.connect("127.0.0.1", 1);
+    console.writeln("refused: " + (s == None).toString());
+}
+refuseConnect();
+
+// M1: an explicit textual bind fakes a capability in a block (nearest-wins,
+// §5.1 rule 6) — the same shape whether the shadowed bind came from a `use`
+// activation (as here) or another textual bind. The outer (activated, real)
+// bind is back in effect once the block ends.
+class FakeEnv : IEnv {
+    Array<string> canned;
+    new FakeEnv(Array<string> a) { canned = a; }
+    Array<string> args() => canned;
+    string? variable(string n) => None;
+}
+void printFirstArg(IEnv env) {
+    console.writeln(env.args().at(0));
+}
+void shadowInBlock() {
+    bind IEnv => FakeEnv(["fake-prog", "-v"]);
+    printFirstArg();                          // fake: "fake-prog"
+}
+shadowInBlock();
+console.writeln("real args >= 1: " + (env::args().length() >= 1).toString());

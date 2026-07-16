@@ -1,0 +1,25 @@
+// bug.md #1: a BLOCK-scoped import of a (nested) namespace used as a `::`
+// qualifier must lower on every engine — the lowerer's namespace
+// re-derivation walks the block import overlays (Stmt::importScope), the file
+// overlay, then global, exactly like the checker's scope walk.
+namespace Lib {
+    namespace Inner {
+        int tag() => 42;
+    }
+    int nsGlobal = 7;
+}
+void f() {
+    uses Lib;
+    console.writeln(Inner::tag());       // block-scoped `uses` + nested-ns call
+}
+f();
+void g() {
+    use Lib::Inner as In;
+    console.writeln(In::tag());          // block-scoped alias + nested-ns call
+}
+g();
+void h() {
+    uses Lib;
+    console.writeln(Inner::tag() + nsGlobal);   // + a block-imported ns global read
+}
+h();

@@ -1,0 +1,29 @@
+// Track 04 M4: Array<string>.concatAll() (the O(total) native powering
+// StringBuilder) + StringBuilder itself. New native -> excluded from the
+// frozen ELF backend's lanes (same reasoning as toint_tofloat.ext/byte.ext).
+//
+// The `<<` spelling (bug.md #14: `(<<)` on a user-defined class didn't lower
+// on the emit-C++ backend) is now exercised here too, fixed by giving
+// CGen.cpp's Op::Arith case real object-transfer-operator codegen instead of
+// an unconditional error.
+
+console.writeln(["a", "bb", "ccc"].concatAll());   // abbccc
+Array<string> empty = [];
+console.writeln(empty.concatAll());                 // (blank)
+console.writeln(empty.concatAll().length());        // 0
+
+StringBuilder sb = StringBuilder();
+console.writeln(sb.isEmpty());     // true
+console.writeln(sb.length());      // 0
+sb.add("Hello");
+sb.add(", ");
+sb.add("World");
+sb.add("!");
+console.writeln(sb.length());      // 13
+console.writeln(sb.toString());    // Hello, World!
+console.writeln(sb.isEmpty());     // false
+
+StringBuilder sb2 = StringBuilder();
+sb2 << "chained " << "via " << "<<";
+console.writeln(sb2.toString());   // chained via <<
+console.writeln(sb2.length());     // 14

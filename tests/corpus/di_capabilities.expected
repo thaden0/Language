@@ -1,0 +1,8 @@
+args >= 1: true
+unset var is None: true
+clock positive: true
+exists: true
+content: hello capability
+refused: true
+fake-prog
+real args >= 1: true

@@ -1,0 +1,9 @@
+after open: overlays=1 open=true
+after OK: overlays=0 open=false
+detached=true
+soak leaks=0
+confirm open overlays=1 ready=false
+after Yes: ready=true value=true overlays=0
+after Esc: ready=true value=false overlays=0
+[┌─Hi───────┐]
+[│body      │]

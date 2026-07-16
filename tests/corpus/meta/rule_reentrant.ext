@@ -1,0 +1,21 @@
+// Layer D (metaprog Phase 4 §4): the gated reentrant fixpoint. `rule seed` (an
+// ordinary, non-reentrant rule) injects a method carrying `@Grown`. Normally no
+// rule fires on rule-generated code — but `rule grow reentrant` opts in, so a
+// second round matches the freshly-injected `@Grown` and injects `doubled`.
+// The chain converges: `grow`'s output carries no `@Grown`, so round three
+// fires nothing and the fixpoint settles (no M34).
+namespace Gen {
+    attribute Seed { }
+    attribute Grown { }
+    rule seed { match @Seed on class C
+        inject `@Grown int grown() => 10;` at member of C }
+    rule grow reentrant { match @Grown on method m in class C
+        inject `int doubled() => 20;` at member of C }
+}
+uses Gen;
+
+@Seed class Widget { int base = 0; }
+
+Widget w = Widget();
+console.writeln(w.grown());     // 10 — from `seed` (round 1)
+console.writeln(w.doubled());   // 20 — from `grow`, re-triggered on seed's output

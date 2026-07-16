@@ -1,0 +1,29 @@
+// Float arithmetic across every engine (the arithPrim float branch + the pure
+// backend's SSE path). All output must match std::to_string's "%f" shape.
+float a = 1.5;
+float b = 2.5;
+console.writeln(a + b);
+console.writeln(a - b);
+console.writeln(a * b);
+console.writeln(b / a);
+console.writeln(0.0 - a);
+console.writeln(a < b);
+console.writeln(b <= a);
+console.writeln(a == a);
+console.writeln(a != b);
+console.writeln(a >= 1.5);
+float c = a;
+c += 2.0;
+console.writeln(c);
+console.writeln(a * 2);
+console.writeln(10 / 4.0);
+console.writeln(2.0 == 2);
+console.writeln(1 < 1.5);
+console.writeln("x=" + a);
+console.writeln((0.25).toString());
+float d;
+console.writeln(d);
+console.writeln(0.0 - 0.5);
+console.writeln(1.0 / 3.0);
+console.writeln(0.1 + 0.2);
+console.writeln(1000000.75 + 0.125);

@@ -1,0 +1,101 @@
+// bug.md #30: a Map that has passed through Map.with, then returned ACROSS a
+// frame, was freed at the return on the LLVM backend (the with row reused the
+// IndexStore-convention lvrt_idxset, leaving the fresh map at rc 0; Op::Ret's
+// retain/release pair then freed it and the caller read 0xFE freelist poison —
+// a negative length, then a segfault once entries were dereferenced). The fix
+// (lvrt_map_with + the consumed-receiver release in the `with`/`without` rows)
+// makes every with/without result cross the boundary OWNED (+1).
+//
+// The existing tests/corpus/map_with_without exercise only IN-FRAME use, which
+// worked even with the bug; these probes all RETURN a with-map across a frame —
+// the shapes from designs/complete/techdesign-bug30-map-with-ownership.md §1's table.
+// Excluded from the shared ELF-scanned corpus: X64Gen is frozen (its `with`
+// predates this contract), and Track-09-style byte natives aren't the point —
+// runs on oracle / IR / emit-C++ / LLVM.
+
+// r2 — the minimal trigger: a single with, returned.
+Map<string, int> r2() {
+    Map<string, int> m = Map();
+    return m.with("a", 1);
+}
+
+// q1 — a with-chain in a free function, returned.
+Map<string, int> q1() {
+    Map<string, int> m = Map();
+    m = m.with("a", 1);
+    return m.with("b", 2);
+}
+
+// s3 — the update-of-existing-key path, then returned (exercises the rc==1
+// in-place COW branch, which was unreachable on LLVM before the fix).
+Map<string, int> s3() {
+    Map<string, int> m = Map();
+    m = m.with("k", 1);
+    m = m.with("k", 7);   // same key: update in place when uniquely owned
+    return m;
+}
+
+// t1 — the IndexStore STATEMENT form (m[k] = v), returned. Green before the fix
+// (dk==1 retains on top); kept as the regression floor that must stay green.
+Map<string, int> t1() {
+    Map<string, int> m = Map();
+    m["a"] = 1;
+    m["b"] = 2;
+    return m;
+}
+
+// p1 — plain (non-recursive) class values, map returned across a frame.
+class Item {
+    int v = 0;
+    new Of(int x) { v = x; }
+}
+Map<string, Item> p1() {
+    Map<string, Item> m = Map();
+    m = m.with("a", Item::Of(10));
+    m = m.with("b", Item::Of(20));
+    return m;
+}
+
+// p2 — recursive class values (the report's original repro): a Map whose value
+// type is a class that transitively contains that same Map, built in a method.
+class Node {
+    int v = 0;
+    Map<string, Node> kids;
+    new Of(int x) { v = x; }
+}
+class Builder {
+    Map<string, Node> build() {
+        Map<string, Node> m = Map();
+        m = m.with("a", Node::Of(1));
+        m = m.with("b", Node::Of(2));
+        return m;
+    }
+}
+
+void run() {
+    Map<string, int> a = r2();
+    console.writeln(a.length());      // 1
+    console.writeln(a.at("a"));       // 1
+
+    Map<string, int> b = q1();
+    console.writeln(b.length());      // 2
+    console.writeln(b.at("b"));       // 2
+
+    Map<string, int> c = s3();
+    console.writeln(c.length());      // 1
+    console.writeln(c.at("k"));       // 7
+
+    Map<string, int> d = t1();
+    console.writeln(d.length());      // 2
+    console.writeln(d.at("a"));       // 1
+
+    Map<string, Item> e = p1();
+    console.writeln(e.length());      // 2
+    console.writeln(e.at("b").v);     // 20
+
+    Map<string, Node> f = Builder().build();
+    console.writeln(f.length());      // 2
+    console.writeln(f.at("a").v);     // 1
+    console.writeln(f.at("b").v);     // 2
+}
+run();

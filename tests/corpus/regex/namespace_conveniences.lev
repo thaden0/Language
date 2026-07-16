@@ -1,0 +1,36 @@
+// doc 2 §2.2: namespace regex conveniences (compile-per-call, backed by the
+// pattern LRU cache) + §2.2's escape(); C# porting-table shapes from §2.3.
+void run() {
+    console.writeln(regex::isMatch("12345", "^\\d+$"));
+    console.writeln(regex::isMatch("abc", "^\\d+$"));
+    console.writeln(regex::isMatch("ABC", "^[a-z]+$", RegexOptions(ignoreCase: true)));
+    console.writeln(regex::isMatch("ABC", "^[a-z]+$", "i"));
+
+    Match? m = regex::find("host=example.com", "(?<key>\\w+)=(?<val>.*)");
+    console.writeln(m != None);
+    if (m != None) { console.writeln(m.group("val")?.value ?? ""); }
+
+    Array<Match> ms = regex::matches("a1 b2 c3", "[a-z]\\d");
+    console.writeln(ms.length());
+
+    console.writeln(regex::replace("2026-07-11", "(\\d+)-(\\d+)-(\\d+)", "$3/$2/$1"));
+    console.writeln(regex::replace("SECRET", "[A-Z]+", (mm) => mm.value.toLower()));
+
+    Array<string> parts = regex::split("a;b;c", ";");
+    console.writeln(parts.length());
+
+    console.writeln(regex::count("aaa", "a"));
+
+    // repeated calls with the same pattern reuse the LRU cache; correctness
+    // (not cache internals) is what's pinned here.
+    int i = 0;
+    int total = 0;
+    while (i < 20) {
+        if (regex::isMatch(i.toString(), "^\\d+$")) { total = total + 1; }
+        i = i + 1;
+    }
+    console.writeln(total);
+
+    console.writeln(regex::escape("a.b*c?(d)[e]"));
+}
+run();

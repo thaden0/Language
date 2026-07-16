@@ -1,0 +1,8 @@
+name = "dep_app"
+entry = "main"
+sources = ["main.ext"]
+
+[[dep]]
+path = "jsonlib"
+version = "1.0.0"
+as = "Json"

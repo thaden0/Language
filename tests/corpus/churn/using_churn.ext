@@ -1,0 +1,27 @@
+// Churn corpus (ARC leak net) — `using` cleanup, techdesign-02 F3.
+//
+// Each iteration acquires a fresh escaping Res via `using`, closes it (the
+// close() call itself is a churn point: field reads through the catch-bind
+// release path §15 fixed a leak in), and the block ends normally so the
+// cleanup-group's fallthrough path runs every iteration. Only `sink` is a
+// program-lifetime root, so live-at-exit must stay flat as N grows.
+class Res : IDisposable {
+    Array<int> data;
+    int id = 0;
+    void close() { data = data.add(0 - id); }   // touches the field, like a real resource
+}
+Res makeRes(int seed) {
+    Res r = Res();
+    r.id = seed;
+    r.data = r.data.add(seed);
+    return r;
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        using Res r = makeRes(i);
+        sink = sink + r.id;
+    }                             // `r` closes here every iteration
+    console.writeln(sink);
+}
+run(@N@);

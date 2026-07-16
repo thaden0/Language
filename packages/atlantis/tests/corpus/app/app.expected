@@ -1,0 +1,29 @@
+[serve] port=9090 args=0
+bare -> exit 0
+[serve] port=9090 args=0
+serve -> exit 0
+[migrate] running 2 step(s)
+migrate -> exit 0
+[seed] fixtures for: users,posts
+seed -> exit 0
+[fail] deliberately returning 3
+fail -> exit 3
+usage: myapp <command> [args]
+
+commands:
+  serve       Run the HTTP server
+  migrate     Apply DB migrations
+  seed        Load fixture data
+  fail        Always fails
+  help        Show this message
+help -> exit 0
+unknown command: nope
+usage: myapp <command> [args]
+
+commands:
+  serve       Run the HTTP server
+  migrate     Apply DB migrations
+  seed        Load fixture data
+  fail        Always fails
+  help        Show this message
+unknown -> exit 1

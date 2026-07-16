@@ -1,0 +1,47 @@
+uses Sonar;
+
+// Post-F4 round-trip (design §7): the real `sonar!` macro over REAL T04
+// components. Proves the expansion compiles, captures `this` for id/on:
+// bindings inside a method, drives $for/$if with runtime values, and builds
+// the actual component tree. If any registry setter name or the emitter's
+// namespace discipline were wrong, THIS would fail at compile — the goldens
+// alone cannot catch a comptime-resolution slip.
+class LoginForm {
+    Input nameField;
+    Button submitBtn;
+    Array<string> perms = ["read", "write"];
+    bool showHelp = true;
+    int presses = 0;
+
+    Container build() {
+        return sonar!(`
+            <Container>
+                <Text text="Sign in" align="Center"/>
+                <Input id="nameField" placeholder="username" maxLength="32" width="30"/>
+                <Button id="submitBtn" label="Go" on:press={this.onSubmit}/>
+                $for p in perms {
+                    <CheckBox label={p}/>
+                }
+                $if showHelp {
+                    <Text text="Need help getting started"/>
+                }
+            </Container>
+        `);
+    }
+
+    void onSubmit() { presses = presses + 1; }
+}
+
+void main() {
+    LoginForm form = LoginForm();
+    Container root = form.build();
+
+    // structure: Text + Input + Button + 2 CheckBox (from $for) + Text (from $if)
+    console.writeln(root.children().length());          // 6
+    console.writeln(form.nameField.placeholder);        // username
+    console.writeln(form.submitBtn.label);              // Go
+
+    // id-bound handler fires through the captured `this`
+    form.submitBtn.fireKey(KeyEvent(KeyCode::Enter, std::charFromCode(0), 0));
+    console.writeln(form.presses);                      // 1
+}

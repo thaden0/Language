@@ -1,0 +1,47 @@
+// Regression: a `match` nested inside another match's arm. A union-typed local
+// declared lexically inside an arm body used to keep unresolved union members
+// (canonical "") — the resolver's type-resolution pass never descended into
+// match arms — so the inner match misfired a bogus
+// "non-exhaustive match: '' is not covered". Covers: the arm-local union subject
+// of a nested match, an arm-local union declared inside an `if` nested in the
+// arm (a distinct inner union type), and passing an arm-local union to a
+// function (the secondary "no overload matches" symptom of the same gap).
+int | string classify(int n) {
+    if (n < 0) return "negative";
+    return n;
+}
+
+bool | int flag(int n) {
+    if (n < 0) return 0;
+    return true;
+}
+
+string show(int | string v) {
+    return match (v) {
+        int    => "num";
+        string => "text";
+    };
+}
+
+void run() {
+    int | string a = classify(5);
+    match (a) {
+        int => {
+            int | string b = classify(0 - 1);
+            match (b) {                          // inner match over an arm-local union
+                int    => console.writeln("int: " + b);
+                string => console.writeln("str: " + b);
+            }
+            if (b is string) {                   // arm-local union inside a nested if
+                bool | int c = flag(1);
+                match (c) {                      // a different inner union type
+                    bool => console.writeln("bool");
+                    int  => console.writeln("num");
+                }
+            }
+            console.writeln(show(b));            // arm-local union passed to a fn
+        }
+        string => console.writeln("outer str");
+    }
+}
+run();

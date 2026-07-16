@@ -1,0 +1,15 @@
+name    = "recon-hermetic-test"
+entry   = "Recon::main"
+sources = [
+    "hermetic_test.lev",
+    "../../src/net/sender.lev",
+    "../../src/net/url.lev",
+    "../../src/net/vars.lev",
+    "../../src/net/auth.lev",
+    "../../src/net/body.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+    "../../src/io/jsonio.lev",
+]

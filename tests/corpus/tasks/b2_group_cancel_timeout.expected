@@ -1,0 +1,6 @@
+closing
+child A ran
+B cancelled: task cancelled
+closed
+timeout -> None
+fast: 42

@@ -1,0 +1,7 @@
+// system-binds.md §6.4: a capability injection written directly inside a
+// comptime-folded root has no bind in scope (comptime folding runs before
+// the checker's bind-scope pass exists) — denied at the injection site,
+// before any call could reach the ordinary hermetic-comptime sys* deny.
+use std::IEnv;
+comptime int N = (inject IEnv).args().length();
+console.writeln(N);

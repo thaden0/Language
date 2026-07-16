@@ -1,0 +1,139 @@
+// Variable resolver (DESIGN §5.2). Interpolates {{name}} and {{$dynamic}} across
+// URL, headers, body, and auth values. Pure/headless except the dynamic vars,
+// which read the clock/random through injectable hooks for determinism in tests.
+namespace Recon {
+
+// Deterministic hooks: tests set a fixed clock/counter so {{$dynamic}} output is
+// stable. A resolver owns one so a test can seed it (§13 determinism).
+class VarClock {
+    public int fixedNowMs = 0;      // 0 => read the real clock
+    public int seed = 12345;        // pseudo-random state for $guid/$randomInt
+    new VarClock() { }
+    new Fixed(int nowMs, int s) { fixedNowMs = nowMs; seed = s; }
+
+    int nowMs() {
+        if (fixedNowMs != 0) { return fixedNowMs; }
+        return std::sysNow();
+    }
+    // A small deterministic LCG so tests are reproducible without touching sysRandom.
+    int nextRandom() {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        if (seed < 0) { seed = 0 - seed; }
+        return seed;
+    }
+}
+
+class VarResolver {
+    public Array<VarScope> scopes;              // ordered MOST-SPECIFIC FIRST
+    public VarClock clock;
+    new VarResolver() { clock = VarClock(); }
+    new WithClock(VarClock c) { clock = c; }
+
+    void addScope(VarScope s) { scopes = scopes.add(s); }
+
+    // walk scopes; None if unbound
+    string? lookup(string name) {
+        for (VarScope s in scopes) {
+            string? v = s.values.atOrNone(name);
+            if (v != None) { return v; }
+        }
+        return None;
+    }
+
+    // Write a value into a named scope (used by extractions, §7.1). Creates the
+    // scope if missing (appended last = least specific).
+    void setInScope(string scopeName, string key, string value) {
+        for (VarScope s in scopes) {
+            if (s.name == scopeName) { s.values[key] = value; return; }
+        }
+        VarScope ns = VarScope::Named(scopeName);
+        ns.values[key] = value;
+        scopes = scopes.add(ns);
+    }
+
+    // interpolate {{name}} and {{$dynamic}} — recursive with a depth cap of 8
+    string resolve(string template) => this.resolveDepth(template, 0);
+
+    string resolveDepth(string template, int depth) {
+        if (depth > 8) { return template; }
+        StringBuilder out = StringBuilder();
+        int i = 0;
+        int n = template.length();
+        bool changed = false;
+        while (i < n) {
+            int open = template.indexOfFrom("{{", i);
+            if (open < 0) {
+                out.add(template.subStr(i, n - i));
+                i = n;
+            } else {
+                out.add(template.subStr(i, open - i));
+                int close = template.indexOfFrom("}}", open + 2);
+                if (close < 0) {
+                    out.add(template.subStr(open, n - open));
+                    i = n;
+                } else {
+                    string name = template.subStr(open + 2, close - open - 2).trim();
+                    string replaced = this.resolveHole(name);
+                    if (replaced != "{{" + name + "}}") { changed = true; }
+                    out.add(replaced);
+                    i = close + 2;
+                }
+            }
+        }
+        string result = out.toString();
+        // recursive resolution: if a resolved value re-introduced holes, resolve again
+        if (changed && result.contains("{{")) {
+            return this.resolveDepth(result, depth + 1);
+        }
+        return result;
+    }
+
+    // One hole: $dynamic, bound var, or literal-if-unbound (Postman's behavior).
+    string resolveHole(string name) {
+        if (name.startsWith("$")) { return this.dynamic(name); }
+        string? v = this.lookup(name);
+        if (v != None) { return v; }
+        return "{{" + name + "}}";               // unbound -> left literal (UI flags it)
+    }
+
+    string dynamic(string name) {
+        if (name == "$guid") { return this.guid(); }
+        if (name == "$timestamp") {
+            int secs = this.clock.nowMs() / 1000;
+            return secs.toString();
+        }
+        if (name == "$isoTimestamp") {
+            DateTime d = DateTime::ofEpochMs(this.clock.nowMs());
+            return d.iso8601();
+        }
+        if (name == "$randomInt") {
+            int r = this.clock.nextRandom() % 1001;   // 0..1000
+            return r.toString();
+        }
+        return "{{" + name + "}}";               // any other $var -> literal (honest)
+    }
+
+    string guid() {
+        // RFC-4122-shaped id, 8-4-4-4-12 hex groups from the deterministic source.
+        StringBuilder hex = StringBuilder();
+        for (int i = 0; i < 32; i = i + 1) {
+            int nib = this.clock.nextRandom() % 16;
+            hex.add(hexNibble(nib));
+        }
+        string h = hex.toString();
+        return h.subStr(0, 8) + "-" + h.subStr(8, 4) + "-" + h.subStr(12, 4) + "-"
+             + h.subStr(16, 4) + "-" + h.subStr(20, 12);
+    }
+}
+
+string hexNibble(int n) {
+    if (n < 10) { return n.toString(); }
+    if (n == 10) { return "a"; }
+    if (n == 11) { return "b"; }
+    if (n == 12) { return "c"; }
+    if (n == 13) { return "d"; }
+    if (n == 14) { return "e"; }
+    return "f";
+}
+
+}

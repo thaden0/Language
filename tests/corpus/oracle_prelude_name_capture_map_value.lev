@@ -1,0 +1,9 @@
+// bug.md #29 E4: Map.([]) has the same bare prelude self-call and precedence.
+int at(string key) => 7;
+
+void run() {
+    Map<string, int> values = Map();
+    values["k"] = 5;
+    console.writeln(values["k"]);
+}
+run();

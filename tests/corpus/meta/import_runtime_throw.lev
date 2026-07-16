@@ -1,0 +1,9 @@
+// LA-20 §4: import() at runtime — there is nothing to intercept (comptime_
+// is false), so the prelude's own throwing body runs, exactly like any other
+// runtime failure (§12.6): loud, and catchable as an ordinary RuntimeException.
+try {
+    string s = import("import_fold_fixture.html");
+    console.writeln(s);
+} catch (IRuntimeException e) {
+    console.writeln("caught: " + e.message);
+}

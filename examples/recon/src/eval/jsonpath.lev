@@ -1,0 +1,57 @@
+// JSON path (DESIGN §7.2). A small, total walker over JsonValue: $.a.b[0].c
+// Returns None for any miss / kind-mismatch rather than throwing.
+namespace Recon {
+
+JsonValue? evalJsonPath(JsonValue root, string path) {
+    string p = path.trim();
+    if (p.isEmpty()) { return None; }
+    if (!p.startsWith("$")) { return None; }
+    JsonValue cur = root;
+    int i = 1;                        // skip the leading '$'
+    int n = p.length();
+    while (i < n) {
+        int b = p.byteAt(i);
+        if (b == 46) {                // '.'  -> object field
+            i = i + 1;
+            int start = i;
+            while (i < n) {
+                int c = p.byteAt(i);
+                if (c == 46 || c == 91) { break; }   // '.' or '['
+                i = i + 1;
+            }
+            string key = p.subStr(start, i - start);
+            if (key.isEmpty()) { return None; }
+            if (!cur.isObject()) { return None; }
+            JsonValue? next = cur.atOrNone(key);
+            if (next != None) { cur = next; } else { return None; }
+        } else if (b == 91) {         // '[' -> array index
+            i = i + 1;
+            int start = i;
+            while (i < n && p.byteAt(i) != 93) { i = i + 1; }   // ']'
+            if (i >= n) { return None; }
+            string idxStr = p.subStr(start, i - start);
+            i = i + 1;                // consume ']'
+            int? idx = idxStr.toInt();
+            int index = -1;
+            if (idx != None) { index = idx; } else { return None; }
+            if (!cur.isArray()) { return None; }
+            if (index < 0 || index >= cur.size()) { return None; }
+            cur = cur.at(index);
+        } else {
+            return None;              // unexpected char
+        }
+    }
+    return cur;
+}
+
+// Convenience: the resolved node as a display string ("" for a miss).
+string jsonPathString(JsonValue root, string path) {
+    JsonValue? v = evalJsonPath(root, path);
+    if (v != None) {
+        JsonValue node = v;
+        return jNumOrStr(node);
+    }
+    return "";
+}
+
+}

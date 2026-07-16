@@ -1,0 +1,85 @@
+// Atlantis Track 01 — static files (P7 traversal + serve/304/HEAD), SSE, facade,
+// IActionResponse. Deterministic (no Last-Modified printed — mtime varies). Run
+// from the REPO ROOT (fixture root is a repo-relative path). Identical on
+// oracle + IR + LLVM.
+uses Atlantis::Http;
+
+string opt(string? v) => v != None ? v : "None";
+
+void trav(string input) {
+    console.writeln("  " + input + " => " + opt(canonicalize(input)));
+}
+
+HttpRequest req(string method, string path, string ifNoneMatch) {
+    HttpRequest r = HttpRequest();
+    string extra = ifNoneMatch != "" ? ("If-None-Match: " + ifNoneMatch + "\r\n") : "";
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\n" + extra + "\r\n");
+    return r;
+}
+
+void main() {
+    console.writeln("== P7 canonicalize ==");
+    trav("/a/../../x");     // None (escape)
+    trav("a/b/c");
+    trav("a/./b//c");
+    trav("a/../b");
+    trav("../x");           // None
+    trav("");
+
+    // StaticFiles over the fixture root, behind a fall-through terminal.
+    StaticFiles sf = StaticFiles("packages/atlantis/tests/corpus/static/public", "/");
+    Pipeline p = Pipeline();
+    p.use(sf.mw());
+    var app = p.build((c) => Respond::text(404, "app-miss:" + c.request.path));
+
+    console.writeln("== serve index (GET /) ==");
+    HttpResponse r1 = app(Context(req("GET", "/", "")));
+    console.writeln("  status=" + r1.status.toString() + " ctype=" + r1.headers.firstOr("Content-Type", "-"));
+    console.writeln("  etag=" + r1.headers.firstOr("ETag", "-"));
+    console.writeln("  body=" + r1.body);
+
+    console.writeln("== serve css (GET /style.css) ==");
+    HttpResponse r2 = app(Context(req("GET", "/style.css", "")));
+    console.writeln("  status=" + r2.status.toString() + " ctype=" + r2.headers.firstOr("Content-Type", "-"));
+
+    console.writeln("== conditional GET (If-None-Match matches) ==");
+    string et = r1.headers.firstOr("ETag", "-");
+    HttpResponse r3 = app(Context(req("GET", "/index.html", et)));
+    console.writeln("  status=" + r3.status.toString() + " body.len=" + r3.body.length().toString());
+
+    console.writeln("== HEAD (no body) ==");
+    HttpResponse r4 = app(Context(req("HEAD", "/index.html", "")));
+    console.writeln("  status=" + r4.status.toString() + " body.len=" + r4.body.length().toString() +
+        " hasEtag=" + r4.headers.has("ETag").toString());
+
+    console.writeln("== traversal attempt (GET /%2e%2e/secret) ==");
+    HttpResponse r5 = app(Context(req("GET", "/%2e%2e/secret", "")));
+    console.writeln("  status=" + r5.status.toString());
+
+    console.writeln("== double-encoded dot-dot is a literal miss (GET /%252e%252e/x) ==");
+    HttpResponse r6 = app(Context(req("GET", "/%252e%252e/x", "")));
+    console.writeln("  status=" + r6.status.toString());
+
+    console.writeln("== miss falls through to app (GET /nope.txt) ==");
+    HttpResponse r7 = app(Context(req("GET", "/nope.txt", "")));
+    console.writeln("  status=" + r7.status.toString() + " body=" + r7.body);
+
+    // SSE formatting (finite batch).
+    console.writeln("== SSE ==");
+    ChunkedBody body = ChunkedBody();
+    SseStream sse = SseStream(body);
+    sse.event("hello");
+    sse.namedEvent("tick", "one\ntwo");
+    sse.close();
+    console.writeln("  ended=" + body.isEnded().toString());
+    for (string ln in body.collected().split("\n")) { console.writeln("  |" + ln); }
+
+    // Facade + IActionResponse.
+    console.writeln("== facade + IActionResponse ==");
+    Context fc = Context(req("GET", "/x", ""));
+    console.writeln("  json=" + actionResult(Json("{\"ok\":true}"), fc).body);
+    HttpResponse rr = actionResult(Redirect("/login"), fc);
+    console.writeln("  redirect.status=" + rr.status.toString() + " loc=" + rr.headers.firstOr("Location", "-"));
+    console.writeln("  status=" + actionResult(Status(418, "teapot"), fc).body);
+    console.writeln("  view=" + actionResult(View("home").with("k", "v"), fc).body);
+}

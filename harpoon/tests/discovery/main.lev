@@ -1,0 +1,32 @@
+// M3: the SAME test classes as tests/registry_runner/main.lev, but discovered
+// automatically via @Test — no seedAll(), no __seed/__entry by hand. The
+// report must be BYTE-IDENTICAL to the hand-seeded twin (the rule_orm twin
+// discipline applied to Harpoon itself).
+uses harpoon;
+
+class MathTests {
+    @Test void addsNumbers() { harpoon::assertEqual(4, 2 + 2); }
+    @Test void subtractsNumbers() { harpoon::assertEqual(0, 2 - 2); }
+}
+
+class StringTests {
+    @Test void concatenates() { harpoon::assertEqual("ab", "a" + "b"); }
+    @Test void rejectsEmptyName() { harpoon::assertEqual("", "bob"); }   // FAILs
+    @Test void explodes() { throw RuntimeException("boom"); }             // ERRORs
+    @Test @Skip void flaky() { }                                         // skipped
+}
+
+class LifecycleTests : IDisposable {
+    void close() { console.writeln("      (LifecycleTests torn down)"); }
+    @Test void passes() { harpoon::assertTrue(true); }
+    @Test void fails() { harpoon::assertTrue(false, "deliberate lifecycle failure"); }
+}
+
+// A @Test on a non-void method: the runner reports it as an ERROR (misdeclared),
+// never silently drops it (§5.4). Discovery's third $for catches it — proving
+// discovery generates the same "badSignature" entry the twin hand-seeds.
+class BadTests {
+    @Test int badSignature() => 1;
+}
+
+harpoon::main();

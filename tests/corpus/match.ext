@@ -1,0 +1,42 @@
+// match: resolution by type/value as a control construct (shares the is/catch
+// machinery). Type patterns narrow the subject; closed unions are exhaustive.
+interface IShape { }
+class Circle : IShape { int r = 0; new Sized(int v) { r = v; } int radius() => r; }
+class Square : IShape { int s = 0; new Sized(int v) { s = v; } int side() => s; }
+
+string describe(IShape sh) {
+    return match (sh) {
+        Circle => "circle";          // arm narrows sh to Circle
+        Square => "square";
+        else   => "shape";
+    };
+}
+
+string sign(int n) => match (n) {
+    0    => "zero";
+    1..9 => "small";
+    else => "big";
+};
+
+// Exhaustive match over a closed union — no else needed.
+string label(int | string x) => match (x) {
+    int    => "num";
+    string => "text";
+};
+
+void run() {
+    console.writeln(describe(Circle::Sized(3)));
+    console.writeln(describe(Square::Sized(4)));
+    console.writeln(sign(0));
+    console.writeln(sign(5));
+    console.writeln(sign(42));
+    console.writeln(label(7));
+    console.writeln(label("hi"));
+    // statement form + narrowed method call
+    IShape s = Circle::Sized(9);
+    match (s) {
+        Circle => console.writeln("r=" + s.radius());
+        else   => console.writeln("?");
+    }
+}
+run();

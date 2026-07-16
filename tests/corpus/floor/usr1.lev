@@ -1,0 +1,10 @@
+// signal::on(USR1) delivery (designs/techdesign-terminal-floor.md §3): subscribe,
+// the driver sends SIGUSR1, the loop drains the signalfd and pushes the signo
+// into the stream, the handler prints it and exits. The signalfd blocks USR1,
+// so it is delivered here and never as a default-disposition kill.
+InStream<int> s = signal::on(signal::USR1);
+s.subscribe((n) => {
+    console.writeln("got=" + n.toString());
+    env::exit(0);
+});
+console.writeln("READY");

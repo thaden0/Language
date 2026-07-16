@@ -1,0 +1,51 @@
+# Recon shipped theme (DESIGN §9.7). Dotted keys (R10); TOML never JSON.
+# a11y: every state distinction carries a non-color `attrs` channel, not color alone.
+
+[default]
+fg = "white"
+bg = "black"
+
+[request.url]
+fg = "brightWhite"
+
+[request.url.border]
+fg = "brightBlack"
+
+[request.url.focused.border]
+fg    = "cyan"
+attrs = "bold"
+
+[response.status.ok]
+fg    = "green"
+attrs = "bold"
+
+[response.status.redirect]
+fg    = "yellow"
+attrs = "bold"
+
+[response.status.error]
+fg    = "red"
+attrs = "bold"
+
+[test.pass]
+fg    = "green"
+attrs = "bold"
+
+[test.fail]
+fg    = "red"
+attrs = "bold"
+
+[field.secret]
+fg    = "brightBlack"
+attrs = "dim"
+
+[statusbar]
+fg = "black"
+bg = "cyan"
+
+[sidebar.folder]
+fg    = "brightBlue"
+attrs = "bold"
+
+[sidebar.request]
+fg = "white"

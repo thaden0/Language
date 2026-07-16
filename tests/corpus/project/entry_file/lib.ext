@@ -1,0 +1,1 @@
+namespace Calc { public int add(int a, int b) => a + b; }

@@ -1,0 +1,20 @@
+// §16.5 Phase 3 §8.3: `namespace N` — a rule adds declarations at namespace
+// scope (a registration table / generated helper), reopening N via the
+// ordinary §12 reopen-and-merge machinery.
+namespace W {
+    attribute Register { string label; }
+    rule addToRegistry {
+        match @Register(r) on class C
+        inject `Array<string> $C() => [$r.label];` at namespace Gen
+    }
+}
+uses W;
+
+@Register("widget")
+class Widget { }
+
+@Register("gadget")
+class Gadget { }
+
+console.writeln(Gen::Widget());
+console.writeln(Gen::Gadget());

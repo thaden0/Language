@@ -1,0 +1,14 @@
+// System I/O through the std::sys floor: read stdin lines, write via sysWrite.
+void run() {
+    std::sysWrite(1, "name?\n");
+    string name = std::sysReadLine(0);
+    sysWrite(1, "hello, " + name + "\n");      // implicit std import works too
+    int total = 0;
+    string line = sysReadLine(0);
+    while (line != "") {                        // "" = end of input (interim)
+        total += line.length();
+        line = sysReadLine(0);
+    }
+    console.writeln("read " + total + " more chars");
+}
+run();

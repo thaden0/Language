@@ -1,0 +1,304 @@
+namespace Sonar {
+    // C11 attribute table: `axis`, `ratio`, `resizable` -> setters (`ratio`
+    // is an int percent, distinct name from the backing `ratioPct` field).
+    //
+    // §3.2's own base list is `Container, Bordered` (no Styleable spelled
+    // out), but the theme-aware divider rendering needs `resolveOrDefault`
+    // (T04's `text.lev` helper, `Style resolveOrDefault(Styleable c, ...)`)
+    // exactly like every other themed leaf in this track — so `Styleable`
+    // is added here as a header completion (T04's own anchor-log precedent
+    // for this exact situation), placed LAST per R5 (core-most first,
+    // decorators last). `chrome()`, `paintChrome`, `arrange`, and `paint`
+    // are ALL SplitBox's own explicit leaf overrides (bug.md #60/#61/#65 —
+    // see below) rather than relying on the mixin collapse for any of
+    // them: an intermediate mixin's (`Container`'s) own inherited method
+    // bodies do not reliably reach a SIBLING mixin's (`Bordered`'s)
+    // override, only a genuine LEAF-level redeclaration is safe.
+    class SplitBox : Container, Bordered, Styleable {
+        Axis axis = Axis::Horizontal;
+        int ratioPct = 50;
+        bool resizable = true;
+        int minFirst = 3;
+        int minSecond = 3;
+
+        bool dragging_ = false;
+        Rect dividerRect_ = emptyRect();
+
+        Array<(int) => void> resizeHandlers_ = [];
+        Array<int> resizeTokens_ = [];
+
+        new SplitBox() {
+            // bug.md #53: a lambda that calls a sibling instance method with
+            // a BARE (implicit-`this`) receiver silently misbehaves once
+            // stored and invoked later from a different call frame (every
+            // constructor-registered onMouse/onKey handler). Every call
+            // below uses an explicit `this.` receiver as the workaround.
+            this.onMouse((e) => {
+                if (!resizable) return;
+                if (e.kind == MouseKind::Press && e.button == MouseButton::Left) {
+                    if (this.hitsDivider(e.x, e.y)) {
+                        dragging_ = true;
+                        this.invalidate();
+                        e.handled = true;
+                    }
+                } else if (e.kind == MouseKind::Drag && dragging_) {
+                    this.updateRatioFromPointer(e.x, e.y);
+                    e.handled = true;
+                } else if (e.kind == MouseKind::Release && dragging_) {
+                    dragging_ = false;
+                    this.invalidate();
+                    e.handled = true;
+                }
+            });
+        }
+
+        // ---- attribute-table setters + thin fluent wrappers (R6) ----------
+        void setAxis(Axis value) {
+            if (axis == value) return;
+            axis = value;
+            invalidateLayout();
+        }
+        SplitBox axis(Axis value) { this.setAxis(value); return this; }
+
+        // Programmatic ratio changes never fire `on:resize` (cross-component
+        // convention this track inherits from RadioGroup.setOptions: on:*
+        // fires for user interaction only, not rebind-safety clamping).
+        void setRatio(int pct) {
+            int clamped = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+            if (ratioPct == clamped) return;
+            ratioPct = clamped;
+            invalidateLayout();
+        }
+        SplitBox ratio(int pct) { this.setRatio(pct); return this; }
+
+        void setResizable(bool value) {
+            if (resizable == value) return;
+            resizable = value;
+            invalidate();
+        }
+        SplitBox resizable(bool value) { this.setResizable(value); return this; }
+
+        // bug.md #61/#65: `Container.contentRect()` (declared on Container,
+        // an intermediate mixin) internally calls `this.chrome()` to inset
+        // the box — and per #61's mechanism, that call silently misses
+        // `Bordered`'s override (a sibling mixin, not the leaf) and falls
+        // back to `Component`'s bare `=> padding` default, i.e. NO border
+        // inset — verified against a real build (`sb.chrome().top` read `0`
+        // instead of `1` with a `Single` border set, and `sb.contentRect()`
+        // came back un-inset). Redeclaring `chrome()` directly on the leaf
+        // (inlining `Bordered.chrome()`'s one-line body) fixes it — once
+        // `chrome()` itself is a genuine leaf member, every caller
+        // (including `Container.contentRect()`'s inherited, still-
+        // unmodified body) correctly reaches it.
+        Insets chrome() => padding.plus(border == BorderStyle::NoBorder
+            ? Insets(0, 0, 0, 0)
+            : Insets::Uniform(1));
+
+        // ---- the two-child cap + the "SplitBox is its own layout" rules ---
+        // Return type MUST stay exactly `Container` (the base Container.add
+        // signature) — narrowing to `SplitBox` here would silently create a
+        // second, non-overriding method slot (F6 covariant-return is scoped
+        // to interface satisfaction only in v1; class-to-class override
+        // covariance is a documented non-goal, techdesign-00 §4 F6).
+        //
+        // bug.md #60: `this.Container::add(child)` (the documented "call the
+        // base implementation" qualified-call idiom) does NOT run against
+        // the real receiver on any engine — verified against a real build,
+        // per this track's own contingency note — so `Container.add`'s ~8
+        // lines (cycle check, attach, invalidateLayout) are inlined here
+        // instead of reused via qualification.
+        Container add(IComponent child) {
+            if (children_.length() >= 2)
+                throw SonarException("SplitBox accepts at most two children");
+            if (wouldCreateCycle(this, child))
+                throw SonarException("Cannot add a component to its descendant");
+            children_ = children_.add(child);
+            child.setParent(this);
+            child.__sonarAttach();
+            invalidateLayout();
+            return this;
+        }
+
+        // Divider hit-testing is a per-pixel decision the strategy model
+        // doesn't express; setLayout is rejected loudly rather than silently
+        // ignored. Return type stays `Container` for the same F6 reason.
+        Container setLayout(ILayoutStrategy l) {
+            throw SonarException("SplitBox is its own layout; setLayout is not supported");
+        }
+
+        bool hitsDivider(int x, int y) => dividerRect_.contains(x, y);
+
+        void updateRatioFromPointer(int x, int y) {
+            Rect content = this.contentRect();
+            if (content.isEmpty()) return;
+            int contentMain = axis == Axis::Horizontal ? content.w() : content.h();
+            if (contentMain <= 1) return;
+            int posMain = axis == Axis::Horizontal ? (x - content.x()) : (y - content.y());
+            int pct = posMain * 100 / (contentMain - 1);
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            if (pct == ratioPct) return;
+            ratioPct = pct;
+            this.invalidateLayout();
+            this.fireResize(pct);
+        }
+
+        int onResize((int) => void h) {
+            int token = newHandlerToken();
+            resizeHandlers_ = resizeHandlers_.add(h);
+            resizeTokens_ = resizeTokens_.add(token);
+            return token;
+        }
+        void offResize(int token) {
+            Array<(int) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..resizeTokens_.length() - 1) if (resizeTokens_[i] != token) {
+                hs = hs.add(resizeHandlers_[i]);
+                ts = ts.add(resizeTokens_[i]);
+            }
+            resizeHandlers_ = hs;
+            resizeTokens_ = ts;
+        }
+        void fireResize(int pct) {
+            Array<(int) => void> snapshot = resizeHandlers_;
+            for ((int) => void h in snapshot) h(pct);
+        }
+
+        // clamp(proposed, lo, hi) with a degenerate (hi < lo, box too small
+        // for both minimums) guard that just pins to `lo` rather than
+        // crashing — SplitBox stays usable (if visually cramped) at tiny
+        // sizes instead of throwing mid-layout.
+        int clampFirst(int proposed, int lo, int hi) {
+            if (hi < lo) return lo;
+            if (proposed < lo) return lo;
+            if (proposed > hi) return hi;
+            return proposed;
+        }
+
+        // Bypasses the inherited `layout_` delegation entirely (documented
+        // deviation, §3.2): SplitBox computes its own two-pane + 1-cell-
+        // divider geometry with integer-only math (no float drift).
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            layoutDirty_ = false;
+            Rect content = this.contentRect();
+            if (content.isEmpty()) {
+                dividerRect_ = emptyRect();
+                for (IComponent child in children_) child.arrange(emptyRect());
+                return;
+            }
+
+            int contentMain = axis == Axis::Horizontal ? content.w() : content.h();
+            int proposed = (contentMain - 1) * ratioPct / 100;
+            int lo = minFirst;
+            int hi = contentMain - 1 - minSecond;
+            int firstLen = this.clampFirst(proposed, lo, hi);
+            if (firstLen < 0) firstLen = 0;
+            int secondLen = contentMain - 1 - firstLen;
+            if (secondLen < 0) secondLen = 0;
+
+            Rect firstRect;
+            Rect dividerRect;
+            Rect secondRect;
+            if (axis == Axis::Horizontal) {
+                firstRect = Rect(Point(content.x(), content.y()), Size(firstLen, content.h()));
+                dividerRect = Rect(Point(content.x() + firstLen, content.y()), Size(1, content.h()));
+                secondRect = Rect(Point(content.x() + firstLen + 1, content.y()), Size(secondLen, content.h()));
+            } else {
+                firstRect = Rect(Point(content.x(), content.y()), Size(content.w(), firstLen));
+                dividerRect = Rect(Point(content.x(), content.y() + firstLen), Size(content.w(), 1));
+                secondRect = Rect(Point(content.x(), content.y() + firstLen + 1), Size(content.w(), secondLen));
+            }
+            dividerRect_ = dividerRect;
+
+            int n = children_.length();
+            if (n >= 1) children_[0].arrange(firstRect);
+            if (n >= 2) children_[1].arrange(secondRect);
+        }
+
+        // bug.md #65: relying on the INHERITED `Container.paint()` (declared
+        // on Container, an intermediate mixin) to paint SplitBox's children
+        // silently paints NOTHING for any leaf composing Container together
+        // with a second mixin (Bordered/Styleable here — reproduces even
+        // with an unrelated mixin like Focusable, so it is not specific to
+        // Bordered/Styleable) — verified against a real build: the
+        // children-loop body runs fine when the IDENTICAL code is declared
+        // directly on the leaf, but silently does nothing when inherited
+        // from Container for a multi-mixin leaf. `paint(Surface)` is
+        // therefore overridden here too (not just `paintChrome`), doing
+        // exactly what `Container.paint()` does, so the loop body is
+        // declared on SplitBox itself.
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            Rect content = this.contentRect();
+            s.pushClip(content);
+            for (IComponent child in children_) if (child.visible()) child.paint(s);
+            s.popClip();
+        }
+
+        // bug.md #60: `this.Bordered::paintChrome(s)` (the qualified-call
+        // reuse idiom) does not run against the real receiver on any engine,
+        // so Bordered's border+title draw logic is inlined below instead of
+        // reused via qualification. While inlining, this also applies bug
+        // #59's fix (already landed as the ContentBox/GridBox workaround):
+        // `borderGlyphs()` is decoded via `.chars()` and indexed as an
+        // `Array<char>`, not `.at(byteOffset)` — `.at()` takes a BYTE
+        // offset and every real border glyph is a multi-byte UTF-8
+        // sequence, so the original `glyphs.at(i)` throws for every style
+        // except `NoBorder`.
+        void paintChrome(Surface s) {
+            if (border != BorderStyle::NoBorder && box.w() >= 2 && box.h() >= 2) {
+                Array<char> glyphs = borderGlyphs().chars();
+                Style borderStyle;
+                int left = box.x();
+                int right = box.right() - 1;
+                int top = box.y();
+                int bottom = box.bottom() - 1;
+                s.put(left, top, glyphs[0], borderStyle);
+                s.put(right, top, glyphs[1], borderStyle);
+                s.put(left, bottom, glyphs[2], borderStyle);
+                s.put(right, bottom, glyphs[3], borderStyle);
+                for (int x in left + 1..right - 1) {
+                    s.put(x, top, glyphs[4], borderStyle);
+                    s.put(x, bottom, glyphs[4], borderStyle);
+                }
+                for (int y in top + 1..bottom - 1) {
+                    s.put(left, y, glyphs[5], borderStyle);
+                    s.put(right, y, glyphs[5], borderStyle);
+                }
+
+                Array<char> titleChars = title.chars();
+                int room = box.w() - 4;
+                if (room > 0 && titleChars.length() > 0) {
+                    int count = titleChars.length() < room ? titleChars.length() : room;
+                    bool truncated = titleChars.length() > room;
+                    if (truncated) count = room - 1;
+                    int column = left + 2;
+                    for (int i in 0..count - 1) {
+                        s.put(column, top, titleChars[i], borderStyle);
+                        column = column + glyphWidth(titleChars[i]);
+                    }
+                    if (truncated) {
+                        char ellipsis = '…';
+                        s.put(column, top, ellipsis, borderStyle);
+                    }
+                }
+            }
+
+            if (dividerRect_.isEmpty()) return;
+            string themeKey = dragging_ ? "splitbox.divider.focused" : "splitbox.divider";
+            Style st = resolveOrDefault(this, themeKey);
+            if (axis == Axis::Horizontal) {
+                char glyph = '│';
+                for (int y in dividerRect_.y()..dividerRect_.bottom() - 1)
+                    s.put(dividerRect_.x(), y, glyph, st);
+            } else {
+                char glyph = '─';
+                for (int x in dividerRect_.x()..dividerRect_.right() - 1)
+                    s.put(x, dividerRect_.y(), glyph, st);
+            }
+        }
+    }
+}

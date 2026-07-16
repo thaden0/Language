@@ -1,0 +1,26 @@
+// LA-30 B2 (doc 06) acceptance smoke: group join on close (children run at the
+// join park, FIFO), cancel-at-park raises CancelledException (caught by type),
+// an uncaught cancellation in a group child is ABSORBED by the group boundary
+// (§2 -- no uncaught banner, exit 0), awaitTimeout -> None on timeout and ->
+// value on the ready fast path. Byte-identical on oracle/IR/LLVM.
+Promise<int> dead = Promise();
+void demo() {
+    using TaskGroup g = TaskGroup();
+    g.run(() => { console.writeln("child A ran"); });
+    g.run(() => {
+        try { int x = await dead; }
+        catch (CancelledException e) { console.writeln("B cancelled: " + e.message); }
+    });
+    g.run(() => { int y = await dead; console.writeln("unreached"); });
+    console.writeln("closing");
+}
+void tail() {
+    int? r = awaitTimeout(dead, 25);
+    if (r == None) console.writeln("timeout -> None");
+    Promise<int> fast = Promise(42);
+    int? v = awaitTimeout(fast, 1000);
+    console.writeln("fast: " + v);
+}
+demo();
+console.writeln("closed");
+tail();

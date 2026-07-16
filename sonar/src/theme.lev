@@ -1,0 +1,131 @@
+// Sonar Track 08 — Theming (design §3). `Theme : ITheme` is the bound
+// dependency-injected style source (design §1 layer 2); `Styleable.resolve`
+// (mixins.lev) folds it into the most-specific-first chain (design §2).
+//
+// STORAGE — a forced deviation from the design's literal `Map<string, Style>`,
+// for two independent P0 footguns that both landed after the design was written
+// (2026-07-12) and were escalated to P0 on 2026-07-13:
+//   * #49 — a `Map<K, Struct>` CLASS FIELD silently corrupts memory on LLVM at
+//           3+ entries; and
+//   * #41 — an `Array<struct>` whose struct has an ENUM field (Style has
+//           `Color fg`/`Color bg`) goes stale after unrelated heap activity on
+//           emit-C++/LLVM.
+// A theme routinely holds far more than 3 keys and is populated at construction
+// then read during paint (heavy intervening allocation), so BOTH bugs would
+// bite the natural encodings. The workaround dodges both by storing only
+// primitives: a `Map<string,int>` index into three parallel `Array<int>`
+// carrier columns (fg code / bg code / attrs). `Style` is reconstructed on read
+// (a value struct returned by value — fully supported). See docs/footguns.md
+// (#41, #49 debt rows) — reverting to `Map<string, Style>` is sanctioned once
+// either bug is fixed.
+//
+// Built-in themes are authored as TOML assets (sonar/themes/*.toml), declared
+// in this package's own trident.toml `assets`, and folded to comptime strings
+// via LA-20 `import()`. Design §3 sketches `loadToml(import("..."))` inline in a
+// labeled ctor, but `import()` only folds in a COMPTIME context (a runtime ctor
+// call throws "import() is compile-time-only"); the landed shape is therefore a
+// top-level `comptime` global per asset (verified cross-package on oracle+LLVM).
+namespace Sonar {
+
+    comptime string themeDefaultToml      = import("themes/default.toml");
+    comptime string themeDarkToml         = import("themes/dark.toml");
+    comptime string themeLightToml        = import("themes/light.toml");
+    comptime string themeHighContrastToml = import("themes/highContrast.toml");
+
+    class Theme : ITheme {
+        // key -> row index into the parallel carrier columns (#41/#49 workaround)
+        Map<string, int> keyIndex_ = Map();
+        Array<int> fgCodes_ = [];
+        Array<int> bgCodes_ = [];
+        Array<int> attrsCol_ = [];
+
+        new Theme() { }                                          // empty (defaults do the work)
+        new FromToml(string tomlText) { parseThemeToml(tomlText, this, "theme.toml"); }
+
+        // Built-ins as labeled ctors (design §3 — no statics). Each parses its
+        // TOML asset; a malformed asset fails this ctor (the design §6.2 "cannot
+        // ship a broken built-in" guarantee — its ctor is exercised by the tests).
+        new Default()      { parseThemeToml(themeDefaultToml, this, "default.toml"); }
+        new Dark()         { parseThemeToml(themeDarkToml, this, "dark.toml"); }
+        new Light()        { parseThemeToml(themeLightToml, this, "light.toml"); }
+        new HighContrast() { parseThemeToml(themeHighContrastToml, this, "highContrast.toml"); }
+
+        // Fluent leaf-rule set (design §3, R6). Overwrites an existing key in
+        // place; appends a new row otherwise. Bracket-sugar map write (bug #18).
+        Theme set(string key, Style s) {
+            int? existing = keyIndex_.atOrNone(key);
+            if (existing == None) {
+                keyIndex_[key] = fgCodes_.length();
+                fgCodes_ = fgCodes_.add(s.fg.code());
+                bgCodes_ = bgCodes_.add(s.bg.code());
+                attrsCol_ = attrsCol_.add(s.attrs);
+            } else {
+                fgCodes_ = fgCodes_.with(existing, s.fg.code());
+                bgCodes_ = bgCodes_.with(existing, s.bg.code());
+                attrsCol_ = attrsCol_.with(existing, s.attrs);
+            }
+            return this;
+        }
+
+        // ITheme: raw single-level lookup; a miss yields the transparent
+        // Style() (Default/Default/0) so the resolution fold treats it as a
+        // no-op layer (design §2 step 6 semantics at every step).
+        Style style(string key) {
+            int? i = keyIndex_.atOrNone(key);
+            if (i == None) { Style empty; return empty; }
+            else { return Style(colorFromCode(fgCodes_[i]), colorFromCode(bgCodes_[i]), attrsCol_[i]); }
+        }
+
+        bool has(string key) => keyIndex_.has(key);
+        Array<string> keys() => keyIndex_.keys();
+
+        // Runtime theme switch (design §3, R10): REPLACE this instance's
+        // contents in place. Components capture the bound ITheme reference at
+        // construction (design §6.5), so mutating the bound instance is the only
+        // way a switch reaches already-built components. Then request a frame so
+        // the change lands next frame, never mid-paint (design §6.4 / C9). The
+        // frame request rides T01's ILifecycleHost seam (T09's App implements it);
+        // absent a host (headless tests) it is simply a content swap.
+        void setTheme(Theme other) {
+            keyIndex_ = other.snapshotIndex();
+            fgCodes_ = other.snapshotFg();
+            bgCodes_ = other.snapshotBg();
+            attrsCol_ = other.snapshotAttrs();
+            if (lifecycleHost_ != None) lifecycleHost_.scheduleFrame();
+        }
+
+        // Content accessors for setTheme (pure-value collections copy-on-write,
+        // so these share structurally until the next mutation).
+        Map<string, int> snapshotIndex() => keyIndex_;
+        Array<int> snapshotFg() => fgCodes_;
+        Array<int> snapshotBg() => bgCodes_;
+        Array<int> snapshotAttrs() => attrsCol_;
+    }
+
+    // ---- resolution-key helpers (design §2 grammar `component[.state].part`) ----
+    // Used by Styleable.resolve (mixins.lev) to generalize a requested key up
+    // the fallback chain. States are the closed T04 set, canonicalized here.
+    bool isStateSeg(string s) {
+        return s == "focused" || s == "disabled" || s == "selected";
+    }
+
+    // First segment: the component base (design §2 step 4).
+    string componentBase(string key) {
+        int dot = key.indexOf(".");
+        if (dot < 0) return key;
+        else return key.subStr(0, dot);
+    }
+
+    // The key with any state segment(s) removed, keeping component + part
+    // (design §2 step 3). "input.focused.text" -> "input.text";
+    // "input.focused.selected.text" -> "input.text"; "input.text" unchanged.
+    string keyMinusState(string key) {
+        Array<string> parts = key.split(".");
+        if (parts.length() <= 1) return key;
+        string result = parts[0];
+        for (int i in 1..parts.length() - 1) {
+            if (!isStateSeg(parts[i])) result = result + "." + parts[i];
+        }
+        return result;
+    }
+}

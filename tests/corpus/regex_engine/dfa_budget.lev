@@ -1,0 +1,10 @@
+string noisy(int n) {
+    Array<string> parts = []; int x = 7; int i = 0;
+    while (i < n) { x = (x * 73 + 19) % 65521; parts = parts.add(x % 7 < 3 ? "a" : "b"); i = i + 1; }
+    return parts.concatAll();
+}
+Array<int> explosive = regex::compileProgram("[ab]*a[ab]{15}c", "");
+string row = noisy(50);
+console.writeln(regex::programIsMatchPike(explosive, row));
+console.writeln(regex::programIsMatchDfa(explosive, row));
+console.writeln(regex::programDfaOverflowCountWithBudget(explosive, row, 8) >= 2);

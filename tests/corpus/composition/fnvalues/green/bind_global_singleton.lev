@@ -1,0 +1,14 @@
+// Top-level `bind IFace => globalVar;` (the singleton pattern) — the other
+// sanctioned working sibling of red/bind_local_var.lev (#56).
+interface ICounter { int next(); }
+class Counter : ICounter {
+    int n = 0;
+    int next() { this.n = this.n + 1; return this.n; }
+}
+int useCounter(ICounter c) => c.next();
+Counter globalCounter = Counter();
+bind ICounter => globalCounter;
+void main() {
+    console.writeln(useCounter(inject ICounter).toString());
+}
+main();

@@ -1,0 +1,23 @@
+// §16.5 Phase 3 §10: definition-site qualification. Web declares its own
+// `fmt`; the use site ALSO declares a same-named `fmt`. The injected call
+// must resolve to Web's `fmt` (qualified to Web::fmt during clone) regardless
+// of the use-site's own same-named function — output proves which one ran.
+namespace Web {
+    string fmt(int n) => "web:" + n.toString();
+    attribute Route { string path; }
+    rule wireRoute {
+        match @Route(r) on method m in class C
+        inject `log = log + fmt(1);` at bottom of C.constructor
+    }
+}
+uses Web;
+
+string fmt(int n) => "userland:" + n.toString();
+
+class Ctl {
+    string log = "";
+    @Route("/x") int handle(int a, int b) => a + b;
+}
+
+Ctl c = Ctl();
+console.write(c.log);

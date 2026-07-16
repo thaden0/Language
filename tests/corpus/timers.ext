@@ -1,0 +1,31 @@
+// The event loop: timers are system streams; the program runs while work
+// is pending and exits when none remains (cancel / one-shot expiry).
+class TickCounter {
+    int hits = 0;
+    Timer? owner;                            // set after the timer exists
+    void onTick(int n) {
+        hits += 1;
+        console.writeln("tick " + hits);
+        if (hits == 3 && owner != None) {
+            owner.cancel();                  // releases the last live work
+            console.writeln("cancelled");
+        }
+    }
+}
+
+void run() {
+    Timer third = std::after(60);
+    third.subscribe((n) => console.writeln("third"));
+    Timer first = std::after(20);
+    first.subscribe((n) => console.writeln("first"));
+    Timer second = std::after(40);
+    second.subscribe((n) => console.writeln("second"));
+
+    TickCounter c = TickCounter();
+    Timer rep = std::every(25);
+    c.owner = rep;
+    rep.subscribe((n) => c.onTick(n));
+
+    console.writeln("top-level done");       // loop starts after this
+}
+run();

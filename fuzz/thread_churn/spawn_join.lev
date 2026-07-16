@@ -1,0 +1,20 @@
+// Track 10 M6 (techdesign-threads-3 §9.1): spawn/join churn. @N@ workers are
+// spawned and awaited; the harness asserts main-thread live-at-exit is flat as N
+// grows, reaps == spawns, and transfer-outstanding == 0. fd flatness (§9.4) is
+// checked by the harness running this under a low RLIMIT_NOFILE: a leaked join
+// eventfd per worker would exhaust the fd table and crash, so completion proves
+// the eventfds are closed at reap. Inline `await std::spawn(...)` (no Worker
+// local) sidesteps the IR closure over-capture (bug.md #3). Only this thread
+// prints (§8).
+
+int churn(int n) {
+    int total = 0;
+    int i = 0;
+    while (i < n) {
+        total = total + await std::spawn(() => 2);
+        i = i + 1;
+    }
+    return total;
+}
+
+console.writeln("result=" + churn(@N@).toString());   // == 2 * @N@

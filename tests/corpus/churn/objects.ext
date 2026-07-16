@@ -1,0 +1,28 @@
+// Churn corpus (ARC leak net) — escaping OBJECTS.
+//
+// @N@ is a template hole substituted by fuzz/churn_leak.py with several
+// magnitudes of N. Each iteration allocates a fresh Box that escapes its
+// callee frame (returned from makeBox -> heap/escaping tier, not the arena)
+// and is then dropped. Only `sink` is a program-lifetime root, so the number
+// of objects reachable at exit is CONSTANT in N. The escaping-tier ARC must
+// reclaim the N dropped Boxes, so the ELF meter's `live-at-exit=` must stay
+// flat as N grows. It grows linearly today -> the leak this spec pins down.
+class Box {
+    Array<int> data;
+    int id = 0;
+}
+Box makeBox(int seed) {           // returned value escapes -> escaping tier
+    Box b = Box();
+    b.id = seed;
+    b.data = b.data.add(seed);
+    return b;
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Box b = makeBox(i);       // fresh escaping Box each iteration...
+        sink = sink + b.id;
+    }                             // ...dropped here; the ARC owes N frees
+    console.writeln(sink);
+}
+run(@N@);

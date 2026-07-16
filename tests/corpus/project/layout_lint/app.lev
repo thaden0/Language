@@ -1,0 +1,7 @@
+// Composition root at the project root: only top-level code, no namespace of its
+// own — the lint exempts it (nothing to place).
+uses App::Models;
+uses Data;
+uses Tools;
+console.writeln(save(label()));
+console.writeln(shout(label()));

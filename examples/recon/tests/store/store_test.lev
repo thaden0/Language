@@ -1,0 +1,78 @@
+// Corpus test: cookie jar capture/attach/expire + persistence round-trips.
+namespace Recon {
+
+void main() {
+    int now = 1700000000000;
+
+    console.writeln("== cookie capture/attach ==");
+    CookieJar jar = CookieJar();
+    Array<string> setCookies = [
+        "sid=abc123; Path=/; HttpOnly",
+        "pref=dark; Domain=example.com; Path=/app",
+        "secure_tok=xyz; Path=/; Secure",
+        "temp=1; Max-Age=0"                  // deletion (never stored)
+    ];
+    jar.capture(setCookies, "www.example.com", "/app/page", now);
+    console.writeln("stored=" + jar.cookies.length().toString());
+    // attach for an https request under /app -> gets sid, pref, secure_tok
+    console.writeln("https /app/x: [" + jar.headerFor("www.example.com", "/app/x", true, now) + "]");
+    // http request -> secure cookie excluded
+    console.writeln("http  /app/x: [" + jar.headerFor("www.example.com", "/app/x", false, now) + "]");
+    // path /other -> pref (Path=/app) excluded, sid & secure_tok (Path=/) included
+    console.writeln("https /other: [" + jar.headerFor("www.example.com", "/other", true, now) + "]");
+    // subdomain match on Domain=example.com
+    console.writeln("https api.example.com /app: [" + jar.headerFor("api.example.com", "/app/y", true, now) + "]");
+
+    console.writeln("== expiry ==");
+    CookieJar j2 = CookieJar();
+    j2.capture(["short=1; Max-Age=10"], "h.com", "/", now);   // expires now+10s
+    console.writeln("before: [" + j2.headerFor("h.com", "/", false, now) + "]");
+    console.writeln("after:  [" + j2.headerFor("h.com", "/", false, now + 20000) + "]");
+    j2.prune(now + 20000);
+    console.writeln("pruned=" + j2.cookies.length().toString());
+
+    console.writeln("== jar json round-trip ==");
+    JsonValue jj = jarToJson(jar);
+    CookieJar back = jarFromJson(jj);
+    console.writeln("roundtrip stored=" + back.cookies.length().toString());
+    console.writeln("roundtrip attach: [" + back.headerFor("www.example.com", "/app/x", true, now) + "]");
+
+    console.writeln("== session json round-trip ==");
+    Session s = Session::Named("admin");
+    s.activeEnvName = "Prod";
+    s.jar = jar;
+    JsonValue sj = sessionToJson(s);
+    Session s2 = sessionFromJson(sj);
+    console.writeln("name=" + s2.name + " env=" + s2.activeEnvName + " cookies=" + s2.jar.cookies.length().toString());
+
+    console.writeln("== history json round-trip ==");
+    History h = History();
+    HistoryEntry e = HistoryEntry();
+    e.method = "POST"; e.url = "https://x/y"; e.status = 201; e.elapsedMs = 42; e.bodySize = 128;
+    e.timestamp = "2026-07-14T00:00:00Z";
+    h.add(e);
+    JsonValue hj = historyEntryToJson(h.entries.at(0));
+    HistoryEntry e2 = historyEntryFromJson(hj);
+    console.writeln(e2.method + " " + e2.url + " " + e2.status.toString() + " " + e2.elapsedMs.toString() + " " + e2.bodySize.toString());
+
+    console.writeln("== settings json round-trip ==");
+    Settings st = Settings();
+    st.themeName = "dark"; st.defaultTimeoutMs = 15000; st.followRedirects = false; st.activeSession = "admin";
+    Settings st2 = settingsFromJson(settingsToJson(st));
+    console.writeln(st2.themeName + " " + st2.defaultTimeoutMs.toString() + " " + st2.followRedirects.toString() + " " + st2.activeSession);
+
+    console.writeln("== disk save/load ==");
+    string root = "build/recon_store_test";
+    ensureDirs(root);
+    saveSession(root, s);
+    saveHistory(root, h);
+    saveSettings(root, st);
+    Session? loaded = loadSession(root, "admin");
+    if (loaded != None) { Session l = loaded ?? Session(); console.writeln("loaded session cookies=" + l.jar.cookies.length().toString() + " env=" + l.activeEnvName); }
+    History lh = loadHistory(root);
+    console.writeln("loaded history entries=" + lh.entries.length().toString());
+    Settings ls = loadSettings(root);
+    console.writeln("loaded settings theme=" + ls.themeName + " timeout=" + ls.defaultTimeoutMs.toString());
+}
+
+}

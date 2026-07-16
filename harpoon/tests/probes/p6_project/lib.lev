@@ -1,0 +1,23 @@
+// M0 P6 library: `uses harpoon;` arms discovery, selective `use harpoon::mark;`
+// also arms it (namespace-grain opt-in), and a file with neither stays dark
+// even when it reaches the attribute via an explicit qualified spelling.
+//
+// NOTE: `mark` prints directly via console.writeln (a native I/O call)
+// instead of accumulating into a namespace-scoped Array field. A namespace
+// global's initializer can't read/write other global state at all
+// (known_bugs_1.md #76), so any observation side-channel routed through a
+// user-defined global would be corrupted by that bug and prove nothing;
+// direct native I/O is unaffected and gives this probe's real question (the
+// import-scoping question, orthogonal to #76) a trustworthy answer.
+namespace HP6 {
+    attribute Test { }
+    bool mark(string s) {
+        console.writeln("fired:" + s);
+        return true;
+    }
+    rule seed {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test"))
+        inject `bool $C = HP6::mark([ $for cc in [C] : $cc.name ][0]);` at namespace Gen
+    }
+}

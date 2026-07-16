@@ -1,0 +1,8 @@
+name = "sonar-templates-test"
+entry = "main"
+sources = ["golden.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.1.0"
+as = "Sonar"

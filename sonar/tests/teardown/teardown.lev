@@ -1,0 +1,64 @@
+uses Sonar;
+
+// M6 teardown torture (§8.3/§8.4): idempotent release, handler-throw survival,
+// and the quit checklist actually stopping the input source + timers.
+class CountingRenderer : IRenderer {
+    int acquires = 0;
+    int releases = 0;
+    Size size() => Size(10, 3);
+    void acquire(bool alt, bool mouse, bool paste) { acquires = acquires + 1; }
+    void release() { releases = releases + 1; }
+    void present(Surface s) { }
+    void setCursor(Point? p) { }
+    void bell() { }
+}
+class ScriptedInput : IInputSource {
+    (string) => void sink;
+    bool has = false;
+    int stops = 0;
+    void start((string) => void onBytes) { sink = onBytes; has = true; }
+    void stop() { stops = stops + 1; }
+    void push(string bytes) { if (has) { var f = sink; f(bytes); } }
+}
+class Boom : Focusable {
+    Size contentDesired(Size avail) => Size(2, 1);
+    new Boom() { this.onKey((e) => this.explode()); }
+    void explode() { throw SonarException("handler boom"); }
+}
+
+void main() {
+    // 1) TerminalSession.close() is idempotent (double-release guarded).
+    CountingRenderer cr = CountingRenderer();
+    TerminalSession ts = TerminalSession(cr, true, true, true);
+    ts.close();
+    ts.close();
+    console.writeln("acquires=" + cr.acquires.toString());
+    console.writeln("releases=" + cr.releases.toString());
+
+    // 2) AnsiRenderer.release() before acquire and twice = idempotent, no bytes.
+    AnsiRenderer ar = AnsiRenderer();
+    ar.__capture(true);
+    ar.release();
+    ar.acquire(false, false, false);
+    ar.release();
+    ar.release();
+    string bytes = ar.__drainCapture();
+    console.writeln("ansi-release-idempotent=" + (bytes.length() > 0).toString());
+
+    // 3) A throwing key handler is contained at dispatch (T03); the loop survives
+    //    and teardown still stops the input source.
+    App a = App();
+    CountingRenderer cr2 = CountingRenderer();
+    ScriptedInput si = ScriptedInput();
+    a.__useRenderer(cr2).__useInput(si).__useSignalResize(false);
+    Boom boom = Boom();
+    a.add(boom);
+    a.pumpOnce();
+    a.focus(boom);
+    int before = handlerErrorCount();
+    si.push("x");                       // fires the throwing handler
+    console.writeln("survived-throw=" + (handlerErrorCount() > before).toString());
+    a.stopSession();
+    console.writeln("input-stops=" + si.stops.toString());
+    __sonarResetApp();
+}

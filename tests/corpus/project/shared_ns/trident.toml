@@ -1,0 +1,2 @@
+name = "shared_ns"
+sources = ["one.ext", "two.ext", "three.ext", "main.ext"]

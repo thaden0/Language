@@ -1,0 +1,66 @@
+// Harpoon — the test-case registry (techdesign-unit-test-library.md §5.5).
+namespace harpoon {
+    // The registry. A namespace-scoped mutable Array, appended to by __seed
+    // (called once per test class, either by hand or by a discover.lev rule's
+    // injected startup global). Auto-constructs to [] before any initializer
+    // runs; the compiler's global-init ordering guarantees a namespace
+    // initializer's append survives to the runner (the fix that unblocked
+    // rule-based discovery — see designs/techdesign-unit-test-library.md §13).
+    Array<TestCase> __cases;
+
+    // Explicit constructor — bug #38 (positional auto-construction of a
+    // struct silently drops closure-typed fields). A class, not a struct,
+    // for the same reason plus reference semantics (a TestCase is an
+    // identity, not a value).
+    class TestCase {
+        string className;
+        string methodName;
+        (() => void) run;
+        bool skipped;
+        bool misdeclared;
+        new TestCase(string c, string m, (() => void) r, bool s, bool bad) {
+            className = c;
+            methodName = m;
+            run = r;
+            skipped = s;
+            misdeclared = bad;
+        }
+    }
+
+    // Returns a partial record (className filled in by __seed).
+    TestCase __entry(string methodName, (() => void) fn) {
+        return TestCase("", methodName, fn, false, false);
+    }
+
+    // Runs `body`, then closes `d` on EVERY exit edge including a thrown
+    // assertion (via `using`). The IDisposable-as-teardown lifecycle for a
+    // discovered test class, invoked from the rule-injected entry closure —
+    // `using` lives here, in ordinary code, rather than in the injected
+    // quasiquote template (the fragment statement parser does not accept a
+    // `using` inside a spliced lambda body; routing through this helper is
+    // the same "close over a limitation with a plain function" move the
+    // rest of the library uses).
+    void __dispose(IDisposable d, (() => void) body) {
+        using IDisposable held = d;
+        var f = body;
+        f();
+    }
+
+    // Stamps className onto each partial entry/skip/misdeclared name and
+    // appends to the registry. Order-independent by construction (each call
+    // only ever appends); the runner sorts by class name at report time.
+    // Called once per class — explicitly (hand-seeded tests) or from a
+    // discover.lev rule's injected `namespace HarpoonReg` startup global.
+    bool __seed(string className, Array<TestCase> entries, Array<string> skipNames, Array<string> badNames) {
+        for (TestCase e in entries) {
+            __cases = __cases.add(TestCase(className, e.methodName, e.run, false, false));
+        }
+        for (string s in skipNames) {
+            __cases = __cases.add(TestCase(className, s, () => { }, true, false));
+        }
+        for (string b in badNames) {
+            __cases = __cases.add(TestCase(className, b, () => { }, false, true));
+        }
+        return true;
+    }
+}

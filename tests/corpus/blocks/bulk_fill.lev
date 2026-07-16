@@ -1,0 +1,26 @@
+void main() {
+    Block b = Block(8);
+    b.fill(0, 8, 65);
+    console.writeln(b.toString(0, 8));
+    b.fill(2, 3, 66);
+    console.writeln(b.toString(0, 8));
+
+    Block s = b.slice(2, 3);
+    s.fill(1, 1, 67);
+    console.writeln(b.toString(0, 8));
+    s.fill(3, 0, 0);
+    b.fill(8, 0, 255);
+    console.writeln(b.toString(0, 8));
+
+    Block empty = Block(0);
+    empty.fill(0, 0, 1);
+    console.writeln(empty.length());
+
+    try { b.fill(9, 0, 1); } catch (RuntimeException e) { console.writeln("throw: fill offset"); }
+    try { b.fill(0, 9, 1); } catch (RuntimeException e) { console.writeln("throw: fill length"); }
+    try { b.fill(-1, 1, 1); } catch (RuntimeException e) { console.writeln("throw: fill negative offset"); }
+    try { b.fill(0, -1, 1); } catch (RuntimeException e) { console.writeln("throw: fill negative length"); }
+    try { b.fill(0, 1, -1); } catch (RuntimeException e) { console.writeln("throw: fill low value"); }
+    try { b.fill(0, 1, 256); } catch (RuntimeException e) { console.writeln("throw: fill high value"); }
+}
+main();

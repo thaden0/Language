@@ -1,0 +1,45 @@
+// Track 05 C3: Map key equality — primitives by value, structs field-wise
+// recursive, classes by identity. Kept out of the shared tests/corpus/ dir:
+// the frozen ELF backend (X64Gen.cpp, never extended) keeps the pre-C3
+// identity-only compare for struct/class keys, so this would fail (wrong
+// output) rather than pass there. Runs on: oracle, IR, emit-C++, LLVM.
+struct Point {
+    int x;
+    int y;
+}
+
+class Box {
+    int n;
+}
+
+void run() {
+    // primitive keys: unaffected baseline (value compare, as always).
+    Map<int, string> byInt = Map();
+    byInt[1] = "one";
+    console.writeln(byInt.has(1));
+    console.writeln(byInt[1]);
+
+    Map<string, int> byStr = Map();
+    byStr["a"] = 10;
+    console.writeln(byStr.has("a"));
+
+    // struct keys: two field-equal but DISTINCT Point instances must match
+    // (a struct IS its fields — §9).
+    Map<Point, int> byPoint = Map();
+    Point a = Point(); a.x = 1; a.y = 2;
+    Point b = Point(); b.x = 1; b.y = 2;    // field-equal to a, different instance
+    Point c = Point(); c.x = 9; c.y = 9;    // genuinely different
+    byPoint[a] = 100;
+    console.writeln(byPoint.has(b));         // true: field-equal hit
+    console.writeln(byPoint[b]);             // 100
+    console.writeln(byPoint.has(c));         // false: fields differ
+
+    // class keys: identity only, even with identical field values.
+    Box x = Box(); x.n = 5;
+    Box y = Box(); y.n = 5;
+    Map<Box, int> byBox = Map();
+    byBox[x] = 1;
+    console.writeln(byBox.has(x));           // true: same instance
+    console.writeln(byBox.has(y));           // false: distinct instance, identity rule
+}
+run();

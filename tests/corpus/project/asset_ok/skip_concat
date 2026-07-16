@@ -1,0 +1,5 @@
+LA-20 asset-path test: import() resolves against the project's declared
+assets / the source file's own directory (single-file rootDir mode); the
+concat check copies the concatenated source into an unrelated temp
+directory with no views/ tree beside it, so the invariant's premise
+(layout-independent meaning) does not hold here by design.

@@ -1,0 +1,11 @@
+// Track 10 M3a floor probe (techdesign-threads-3 §2): exercise the capability-
+// probe seam DIRECTLY on the serial reference engines before anything is built
+// on it — the cheap de-risk a sibling track's IR-lowering surprise argues for.
+// sysThreadStart is the probe: it returns -1 where there are no true threads
+// (the interpreters), which is what routes prelude `spawn` to its cooperative
+// loop-task leg. (sysThreadResult is never reached on this leg — the -1 path
+// registers no watch — so it has nothing to probe here; its true-thread lowering
+// is covered on LLVM at M3c.)
+int jfd = std::sysThreadStart(() => 6 * 7);
+console.writeln(jfd);              // -1 : no true threads on the serial engines
+console.writeln(jfd < 0);         // true : so spawn takes the cooperative leg

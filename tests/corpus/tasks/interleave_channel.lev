@@ -1,0 +1,22 @@
+// LA-30 doc 5 §4 "interleave_channel.lev" — producer/consumer over
+// Channel<T> interleaving at awaits only. Channel<T> is the sanctioned
+// cross-worker conduit (A-1 §1, unchanged by LA-30 — reference.md §6.6.66),
+// so the spawn body crosses no Promise and never trips A-1's spawn-body-Promise
+// reject (bug #35, reject route A — see spawn_global_promise_rejected.lev).
+// Verified byte-identical on oracle/IR/LLVM.
+//
+// The consumer parks on `ch.receive()` for 20ms (nothing sent yet); an
+// independent 5ms timer is loop-dispatched as its own task in the
+// meantime and prints first — proving real interleaving happens at the
+// await/park point, not just sequential blocking. Only after the consumer
+// resumes (in completion order, per C1) does it print the received value.
+Channel<int> ch = Channel(4, std::overflowBlock());
+std::sysTimerStart(20, 0, (n) => { ch.send(42); ch.close(); });
+std::sysTimerStart(5, 0, (n) => { console.writeln("independent tick"); });
+
+int consume() {
+    int? v = await ch.receive();
+    if (v != None) { console.writeln("received " + v.toString()); }
+    return 0;
+}
+std::spawn(() => consume());

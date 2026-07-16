@@ -1,0 +1,46 @@
+// F4: comptime code -> code. This is the capability proof: branching and
+// list construction produce structurally different ASTs from runtime strings,
+// while a quasiliteral supplies byte-exact raw payload.
+macro choose(string payload) comptime {
+    if (payload == "<Text title=\"demo\"/>") return meta::parseExpr("10 + 1");
+    return meta::parseExpr("20 + 2");
+}
+
+macro countNodes(string payload) comptime {
+    var pieces = ["0"];
+    int i = 0;
+    while (i < payload.length()) {
+        pieces = pieces.add("+ 1");
+        i = i + 1;
+    }
+    return meta::parseExpr(pieces.joinToString(" "));
+}
+
+// Recursive calls are ordinary comptime-function recursion, distinct from
+// generated `name!(...)` re-entry. The shared comptime budget bounds them.
+macro strip(string payload) comptime {
+    if (payload.length() == 1) return meta::parseExpr(payload);
+    return strip(payload.subStr(1, payload.length() - 1));
+}
+
+macro identity(string payload) comptime {
+    Ast parsed = meta::parseExpr(payload);
+    return parsed;
+}
+
+comptime string imported = import("procedural_macros_fixture.txt");
+int raw = choose!(`<Text title="demo"/>`);
+int other = choose!("anything else");
+int nodes = countNodes!("abcd");
+int recursive = strip!("xx7");
+int fromImport = identity!(imported);
+// Returning an Ast local is safe: each call-site splice clones the carrier.
+int cloneA = identity!("5 + 1");
+int cloneB = identity!("5 + 1");
+
+console.writeln(raw);
+console.writeln(other);
+console.writeln(nodes);
+console.writeln(recursive);
+console.writeln(fromImport);
+console.writeln(cloneA + cloneB);

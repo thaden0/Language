@@ -1,0 +1,4 @@
+// Folder "data" matches the namespace "Data" — lint ok.
+namespace Data {
+    public string save(string s) => "saved:" + s;
+}

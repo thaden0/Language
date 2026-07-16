@@ -1,0 +1,5 @@
+// env.exit terminates immediately with a code — "after" is unreachable, and the
+// process exits 3. designs/exit-codes.md §2 (exit-now) / §7.
+console.writeln("before");
+env::exit(3);
+console.writeln("after");

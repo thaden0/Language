@@ -1,0 +1,17 @@
+name    = "recon-sources-test"
+entry   = "Recon::main"
+sources = [
+    "sources_test.lev",
+    "../../src/ui/sources.lev",
+    "../../src/net/url.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/collection.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar"
+version = "0.1.0"
+as      = "Sonar"

@@ -1,0 +1,6 @@
+// Provides namespace M for the whole program's gather. Per-file scoping
+// (bug.md #8, imports.md) means a file only sees `helper` if IT imports it —
+// not because some other file selectively `use`d it.
+namespace M {
+    int helper(int x) => x + 100;
+}

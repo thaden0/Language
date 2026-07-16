@@ -1,0 +1,28 @@
+== compose ==
+app children=3
+tree roots=2
+root0=▸ Auth
+login label=POST Login
+presents=1
+== select Login ==
+active url=https://api.example.com/auth/login
+panel urlInput=https://api.example.com/auth/login
+active method=POST
+body editor={"u":"ada"}
+== mock response ==
+lastStatus=200
+tests run=1
+  PASS status equals 200
+history=1
+== pretty body first line ==
+{
+presents=2
+== commands ==
+commands=send,quit,cancel,toggle-redirects,next-tab,save-history,export
+toggle redirects ran=true
+followRedirects=false
+== export ==
+export ran=true
+export valid json=true
+history labels=200 POST https://api.example.com/auth/login
+done

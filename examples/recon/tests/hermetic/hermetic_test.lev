@@ -1,0 +1,103 @@
+// Hermetic test: a mock HttpServer on loopback + the RequestSender in one event
+// loop. Exercises redirects (chain + cap + cross-host auth drop), auth headers,
+// and cookie capture/re-attach. No real network. Timing is never printed so the
+// two lanes stay byte-identical.
+namespace Recon {
+
+int PORT = 18092;
+
+HttpResponse route(HttpRequest req) {
+    string path = req.path;
+    if (path.startsWith("/ok"))       { return HttpResponse(200, "hello"); }
+    if (path.startsWith("/redirect")) { HttpResponse r = HttpResponse(302, ""); return r.withHeader("Location", "/final"); }
+    if (path.startsWith("/final"))    { return HttpResponse(200, "arrived"); }
+    if (path.startsWith("/echo-auth")){ return HttpResponse(200, "auth=[" + req.header("Authorization") + "]"); }
+    if (path.startsWith("/setcookie")){
+        HttpResponse r = HttpResponse(200, "set");
+        return r.withHeader("Set-Cookie", "sid=abc123; Path=/");
+    }
+    if (path.startsWith("/echo-cookie")) { return HttpResponse(200, "cookie=[" + req.header("Cookie") + "]"); }
+    if (path.startsWith("/loop"))     { HttpResponse r = HttpResponse(302, ""); return r.withHeader("Location", "/loop"); }
+    return HttpResponse(404, "nope");
+}
+
+// Sequential driver: run steps one after another so output ordering is stable.
+class Driver {
+    HttpServer srv;
+    RequestSender sender;
+    CookieJar jar;
+    int step = 0;
+    new Driver() {
+        srv = HttpServer(PORT);
+        sender = RequestSender();
+        jar = CookieJar();
+        sender.jar = jar;
+    }
+
+    PreparedRequest mk(string method, string path) {
+        PreparedRequest pr = PreparedRequest();
+        pr.method = method;
+        Url u = Url();
+        u.scheme = "http"; u.host = "127.0.0.1"; u.port = PORT; u.path = path;
+        pr.url = u;
+        pr.timeoutMs = 5000;
+        return pr;
+    }
+
+    void start() {
+        if (!srv.ok()) { console.writeln("BIND FAILED"); return; }
+        srv.handle((req) => route(req));
+        this.next();
+    }
+
+    void next() {
+        this.step = this.step + 1;
+        if (this.step == 1) {
+            console.writeln("== 200 ok ==");
+            this.sender.send(this.mk("GET", "/ok"), (o) => this.onStep(o));
+        } else if (this.step == 2) {
+            console.writeln("== redirect follow ==");
+            this.sender.send(this.mk("GET", "/redirect"), (o) => this.onStep(o));
+        } else if (this.step == 3) {
+            console.writeln("== auth header echoed ==");
+            PreparedRequest pr = this.mk("GET", "/echo-auth");
+            pr.headers.set("Authorization", "Bearer XYZ");
+            this.sender.send(pr, (o) => this.onStep(o));
+        } else if (this.step == 4) {
+            console.writeln("== set-cookie captured ==");
+            this.sender.send(this.mk("GET", "/setcookie"), (o) => this.onStep(o));
+        } else if (this.step == 5) {
+            console.writeln("== cookie re-attached ==");
+            this.sender.send(this.mk("GET", "/echo-cookie"), (o) => this.onStep(o));
+        } else if (this.step == 6) {
+            console.writeln("== redirect cap ==");
+            PreparedRequest pr = this.mk("GET", "/loop");
+            pr.redirects.max = 3;
+            this.sender.send(pr, (o) => this.onStep(o));
+        } else {
+            this.srv.stop();
+        }
+    }
+
+    void onStep(RunOutcome o) {
+        this.report(o);
+        this.next();
+    }
+
+    void report(RunOutcome o) {
+        if (o.timedOut) { console.writeln("  timedOut hops=" + o.redirectChain.length().toString()); return; }
+        if (o.cancelled) { console.writeln("  cancelled"); return; }
+        if (!o.error.isEmpty()) { console.writeln("  error=" + o.error); return; }
+        if (o.response != None) {
+            HttpResponse r = o.response ?? HttpResponse(0, "");
+            console.writeln("  status=" + r.status.toString() + " body=[" + r.body + "] hops=" + o.redirectChain.length().toString());
+        }
+    }
+}
+
+void main() {
+    Driver d = Driver();
+    d.start();
+}
+
+}

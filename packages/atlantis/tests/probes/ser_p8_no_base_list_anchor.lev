@@ -1,0 +1,13 @@
+// P-8: negative confirmation -- no anchor targets a class's base list. The
+// nearest legal-looking spellings should FAIL TO PARSE.
+namespace Probe {
+    interface IFoo { }
+    attribute Marker { }
+    rule p8 {
+        match @Marker on class C
+        inject `implements IFoo` at bases of C
+    }
+}
+uses Probe;
+@Marker
+class Widget { }

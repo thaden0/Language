@@ -1,0 +1,39 @@
+// Churn corpus (ARC leak net) — the CallDyn TRANSFER CONTRACT on native reads.
+//
+// Guards the 71ede9d fix that made native at/keys/values honor the +1 result
+// convention: `arr.at(i)` / `map.at(k)` retain the borrowed element before
+// returning it (the caller's frame-exit release must not steal the
+// container's reference), and `keys()`/`values()` return OWNED (+1) arrays
+// that own their element refs. The pool of 4 Items and the 2-entry map are
+// built ONCE (constant roots inside run); the loop then, per iteration,
+// reads a shared element into a local and drops fresh keys()/values()
+// arrays. An at() that returns without retaining lets the local's release
+// free the pool's element — over-release, caught as oracle divergence or a
+// signal death once the block is reused. A keys()/values() result that is
+// not released leaks N arrays. Keys are string LITERALS (data-segment,
+// alloc-free) so the strings leak (see strings.ext) cannot contaminate this
+// signal. Only `sink` survives run(); the root set is CONSTANT in N.
+// @N@ is substituted by fuzz/churn_leak.py.
+class Item { public int id = 0; }
+void run(int n) {
+    Array<Item> pool = [];
+    for (int k in 1..4) {
+        Item it = Item();
+        it.id = k * 10;
+        pool = pool.add(it);          // 4 shared Items, live for the whole run
+    }
+    Map<string, int> m;
+    m["a"] = 1;
+    m["b"] = 2;
+    int sink = 0;
+    for (int i in 1..n) {
+        Item o = pool.at(i % 4);      // borrowed read: at() must retain...
+        sink = sink + o.id;           // ...so this local's drop can't free it
+        Array<string> ks = m.keys();  // owned +1 array, dropped each iteration
+        Array<int> vs = m.values();   // ditto
+        sink = sink + ks.length() + vs.length();
+    }
+    console.writeln(sink);
+    console.writeln(pool.at(0).id);   // the shared Items survived the churn
+}
+run(@N@);

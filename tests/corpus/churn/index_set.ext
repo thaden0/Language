@@ -1,0 +1,33 @@
+// Churn corpus (ARC leak net) — INDEXED WRITES (§11/§15 COW-on-refcount).
+//
+// Each iteration builds an escaping array and writes it through BOTH indexed-
+// store paths: uniquely-owned (mutates in place — no allocation) and aliased
+// (pure-value copy — a fresh escaping buffer whose predecessor dies). A
+// long-lived map is updated in place through an existing key every iteration.
+// Only `sink`, `m`, and the final `keep` survive, so live-at-exit must stay
+// flat: the ARC owes every per-iteration copy and every superseded buffer.
+Array<int> build(int seed) {
+    Array<int> a = Array(8, 0);
+    for (int i in 0..7) {
+        a[i] = seed + i;          // unique base -> COW in place
+    }
+    Array<int> b = a;             // alias: the next write must copy
+    a[0] = seed * 2;              // shared base -> pure-value copy
+    return a;                     // escapes; b's original dies at scope end
+}
+void run(int n) {
+    int sink = 0;
+    Map<int, int> m;
+    m[0] = 0;
+    Array<int> keep;
+    for (int i in 1..n) {
+        Array<int> a = build(i);
+        sink = sink + a[0] + a[7];
+        m[0] = i;                 // unique map, existing key -> update in place
+        keep = a;                 // supersedes last iteration's survivor
+    }
+    console.writeln(sink);
+    console.writeln(m.at(0));
+    console.writeln(keep.length());
+}
+run(@N@);

@@ -1,0 +1,17 @@
+[imports] file -> imports provenance (declares / uses / effective visible namespaces)
+[imports] one.ext
+[imports]   declares: Shared
+[imports]   uses:     (none)
+[imports]   visible:  Shared, std
+[imports] two.ext
+[imports]   declares: Shared
+[imports]   uses:     (none)
+[imports]   visible:  Shared, std
+[imports] three.ext
+[imports]   declares: Shared
+[imports]   uses:     (none)
+[imports]   visible:  Shared, std
+[imports] main.ext
+[imports]   declares: (none)
+[imports]   uses:     Shared
+[imports]   visible:  Shared, std

@@ -1,0 +1,8 @@
+// bug.md #29 E1: a user global named `at` must not capture Array.([])'s
+// unchecked prelude self-call to Array.at.
+int at(Array<int> a, int i) { return a[i]; }
+
+void run() {
+    console.writeln(at([10, 20], 1));
+}
+run();

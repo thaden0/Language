@@ -1,0 +1,178 @@
+// Model -> Postman v2.1 JSON (DESIGN §5.4). The caller renders with
+// .renderPretty(2). Builds the canonical v2.1 shape from the model; where a
+// modeled request carried preserved `event` scripts, they round-trip verbatim.
+namespace Recon {
+
+JsonValue exportCollection(Collection c) {
+    // info
+    JsonValue info = jObj([
+        Pair::Of("_postman_id", jStrNode(c.postmanId)),
+        Pair::Of("name", jStrNode(c.name)),
+        Pair::Of("schema", jStrNode(
+            "https://schema.getpostman.com/json/collection/v" + c.schemaVersion + "/collection.json"))
+    ]);
+
+    Array<JsonValue> items = [];
+    for (CollectionItem child in c.root.children) {
+        items = items.add(exportItem(child));
+    }
+
+    Array<Pair<string,JsonValue>> fields = [
+        Pair::Of("info", info),
+        Pair::Of("item", jArrayOf(items))
+    ];
+    if (c.auth != None) { AuthSpec a = c.auth ?? AuthSpec(); fields = fields.add(Pair::Of("auth", exportAuth(a))); }
+    if (c.variables.length() > 0) {
+        fields = fields.add(Pair::Of("variable", exportVariables(c.variables, false)));
+    }
+    return jObj(fields);
+}
+
+JsonValue exportItem(CollectionItem item) {
+    if (item.isFolder) {
+        Array<JsonValue> kids = [];
+        for (CollectionItem child in item.children) { kids = kids.add(exportItem(child)); }
+        Array<Pair<string,JsonValue>> fields = [
+            Pair::Of("name", jStrNode(item.name)),
+            Pair::Of("item", jArrayOf(kids))
+        ];
+        if (item.auth != None) { AuthSpec a = item.auth ?? AuthSpec(); fields = fields.add(Pair::Of("auth", exportAuth(a))); }
+        if (item.events.length() > 0) { fields = fields.add(Pair::Of("event", exportEvents(item.events))); }
+        return jObj(fields);
+    }
+    // request item
+    Array<Pair<string,JsonValue>> fields = [ Pair::Of("name", jStrNode(item.name)) ];
+    if (item.request != None) {
+        RequestSpec spec = item.request ?? RequestSpec();
+        fields = fields.add(Pair::Of("request", exportRequest(spec)));
+    }
+    if (item.events.length() > 0) { fields = fields.add(Pair::Of("event", exportEvents(item.events))); }
+    return jObj(fields);
+}
+
+JsonValue exportRequest(RequestSpec spec) {
+    Array<JsonValue> headers = [];
+    for (HeaderEntry h in spec.headers) {
+        Array<Pair<string,JsonValue>> hf = [
+            Pair::Of("key", jStrNode(h.name)),
+            Pair::Of("value", jStrNode(h.value))
+        ];
+        if (!h.enabled) { hf = hf.add(Pair::Of("disabled", jBoolNode(true))); }
+        headers = headers.add(jObj(hf));
+    }
+    Array<Pair<string,JsonValue>> fields = [
+        Pair::Of("method", jStrNode(methodName(spec.method))),
+        Pair::Of("header", jArrayOf(headers)),
+        Pair::Of("url", jStrNode(spec.url))
+    ];
+    if (spec.body.mode != BodyMode::NoBody) {
+        fields = fields.add(Pair::Of("body", exportBody(spec.body)));
+    }
+    if (spec.auth != None) { AuthSpec a = spec.auth ?? AuthSpec(); fields = fields.add(Pair::Of("auth", exportAuth(a))); }
+    return jObj(fields);
+}
+
+JsonValue exportBody(RequestBody b) {
+    if (b.mode == BodyMode::Raw) {
+        JsonValue opts = jObj([Pair::Of("raw",
+            jObj([Pair::Of("language", jStrNode(b.rawLanguage))]))]);
+        return jObj([
+            Pair::Of("mode", jStrNode("raw")),
+            Pair::Of("raw", jStrNode(b.raw)),
+            Pair::Of("options", opts)
+        ]);
+    }
+    if (b.mode == BodyMode::UrlEncoded) {
+        return jObj([
+            Pair::Of("mode", jStrNode("urlencoded")),
+            Pair::Of("urlencoded", exportFormFields(b.urlencoded))
+        ]);
+    }
+    if (b.mode == BodyMode::FormData) {
+        return jObj([
+            Pair::Of("mode", jStrNode("formdata")),
+            Pair::Of("formdata", exportFormFields(b.formdata))
+        ]);
+    }
+    if (b.mode == BodyMode::GraphQL) {
+        return jObj([
+            Pair::Of("mode", jStrNode("graphql")),
+            Pair::Of("graphql", jObj([
+                Pair::Of("query", jStrNode(b.graphqlQuery)),
+                Pair::Of("variables", jStrNode(b.graphqlVars))
+            ]))
+        ]);
+    }
+    return jObj([Pair::Of("mode", jStrNode(bodyModeName(b.mode)))]);
+}
+
+JsonValue exportFormFields(Array<FormField> fields) {
+    Array<JsonValue> out = [];
+    for (FormField f in fields) {
+        Array<Pair<string,JsonValue>> ff = [
+            Pair::Of("key", jStrNode(f.key)),
+            Pair::Of("value", jStrNode(f.value)),
+            Pair::Of("type", jStrNode(f.kind))
+        ];
+        if (!f.enabled) { ff = ff.add(Pair::Of("disabled", jBoolNode(true))); }
+        out = out.add(jObj(ff));
+    }
+    return jArrayOf(out);
+}
+
+JsonValue exportAuth(AuthSpec a) {
+    Array<JsonValue> cfg = [];
+    for (string k in a.params.keys()) {
+        cfg = cfg.add(jObj([
+            Pair::Of("key", jStrNode(k)),
+            Pair::Of("value", jStrNode(a.param(k)))
+        ]));
+    }
+    Array<Pair<string,JsonValue>> fields = [ Pair::Of("type", jStrNode(a.kind)) ];
+    if (a.kind != "noauth" && a.kind != "inherit") {
+        fields = fields.add(Pair::Of(a.kind, jArrayOf(cfg)));
+    }
+    return jObj(fields);
+}
+
+JsonValue exportEvents(Array<ScriptBlock> events) {
+    Array<JsonValue> out = [];
+    for (ScriptBlock e in events) {
+        Array<JsonValue> lines = [];
+        for (string line in e.source.split("\n")) { lines = lines.add(jStrNode(line)); }
+        out = out.add(jObj([
+            Pair::Of("listen", jStrNode(e.listen)),
+            Pair::Of("script", jObj([
+                Pair::Of("type", jStrNode("text/javascript")),
+                Pair::Of("exec", jArrayOf(lines))
+            ]))
+        ]));
+    }
+    return jArrayOf(out);
+}
+
+JsonValue exportVariables(Array<Variable> vars, bool enabledPolarity) {
+    Array<JsonValue> out = [];
+    for (Variable v in vars) {
+        Array<Pair<string,JsonValue>> vf = [
+            Pair::Of("key", jStrNode(v.key)),
+            Pair::Of("value", jStrNode(v.value))
+        ];
+        if (v.secret) { vf = vf.add(Pair::Of("type", jStrNode("secret"))); }
+        if (enabledPolarity) { vf = vf.add(Pair::Of("enabled", jBoolNode(v.enabled))); }
+        else if (!v.enabled) { vf = vf.add(Pair::Of("disabled", jBoolNode(true))); }
+        out = out.add(jObj(vf));
+    }
+    return jArrayOf(out);
+}
+
+JsonValue exportEnvironment(Environment e) {
+    return jObj([
+        Pair::Of("id", jStrNode(e.id)),
+        Pair::Of("name", jStrNode(e.name)),
+        Pair::Of("values", exportVariables(e.values, true)),
+        Pair::Of("_postman_variable_scope", jStrNode("environment"))
+    ]);
+}
+
+}

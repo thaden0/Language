@@ -1,0 +1,24 @@
+// techdesign-columnar-arrays.md plan §4: the column-selective locality benchmark.
+// An Array<Wide> (8 int fields, row-major recBytes = 144) of N elements; the timed
+// kernel sums ONE field over the whole array, K times. Construction is O(n) (via
+// lvrt_arr_fill) and OUTSIDE the timed region. A/B is a controlled rebuild:
+// identical source, --columnar vs --no-columnar (default off). LLVM -O2.
+struct Wide { int hot; int c1; int c2; int c3; int c4; int c5; int c6; int c7; }
+void bench(int n, int k) {
+    Wide seed;
+    seed.hot = 1; seed.c1 = 2; seed.c2 = 3; seed.c3 = 4;
+    seed.c4 = 5; seed.c5 = 6; seed.c6 = 7; seed.c7 = 8;
+    Array<Wide> a = Array(n, seed);
+    // vary a few elements so the read is genuinely data-dependent (not constant-foldable)
+    for (int j in 0..99) { Wide w; w.hot = j; w.c1 = j; w.c2 = j; w.c3 = j; w.c4 = j; w.c5 = j; w.c6 = j; w.c7 = j; a[j] = w; }
+
+    int t0 = std::sysNow();
+    int s = 0;
+    for (int rep in 1..k) {
+        for (int i in 0..(n - 1)) { s = s + a[i].hot; }
+    }
+    int t1 = std::sysNow();
+    console.writeln("sum=" + s.toString());
+    console.writeln("elapsed_ms=" + (t1 - t0).toString());
+}
+bench(400000, 100);

@@ -1,0 +1,1 @@
+per-file uses-scoping test: concatenating makes the file declare LibA AND LibB itself, so both Handlers become visible unconditionally (@Handler ambiguous) — the invariant's premise (layout-independent meaning) does not hold here by design

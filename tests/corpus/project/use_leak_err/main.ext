@@ -1,0 +1,2 @@
+// No `use M::helper` here. a.ext's selective import must NOT leak program-wide.
+console.writeln(helper(7));

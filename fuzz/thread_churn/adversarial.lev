@@ -1,0 +1,43 @@
+// Track 10 M6 (techdesign-threads-3 §9.3): adversarial graphs through spawn
+// captures. A single graph with a diamond (shared substructure), a back-edge
+// cycle, and depth is captured by @N@ workers; each flattens+rebuilds it into
+// its own heap and returns a bounded checksum. rebuild-equality is asserted via
+// the output (every worker sees byte-for-byte the same graph, so the sum is
+// exactly N * checksum); live-at-exit stays flat because each worker's cyclic
+// copy is reclaimed wholesale by its heap unmap at reap. Inline await (no Worker
+// local) dodges bug.md #3.
+
+class Node { public int v = 0; public Array<Node> kids = []; }
+
+// diamond + cycle: root -> {a, b} -> shared; shared -> root (back-edge).
+Node makeGraph() {
+    Node shared = Node(); shared.v = 7;
+    Node a = Node(); a.v = 1; a.kids = [shared];
+    Node b = Node(); b.v = 2; b.kids = [shared];
+    Node root = Node(); root.v = 10; root.kids = [a, b];
+    shared.kids = [root];                 // a cycle the flatten walk must terminate on
+    return root;
+}
+
+// bounded 2-level walk (never follows the back-edge): 10 + (1+7) + (2+7) = 27.
+int checksum(Node root) {
+    int s = root.v;
+    for (Node k in root.kids) {
+        s = s + k.v;
+        for (Node g in k.kids) { s = s + g.v; }
+    }
+    return s;
+}
+
+int churn(int n) {
+    Node g = makeGraph();
+    int total = 0;
+    int i = 0;
+    while (i < n) {
+        total = total + await std::spawn(() => checksum(g));
+        i = i + 1;
+    }
+    return total;
+}
+
+console.writeln("result=" + churn(@N@).toString());   // == @N@ * 27

@@ -1,0 +1,19 @@
+// §16.5 Phase 3 §7: expression macros — proposal §10.4's safeStrip, verbatim.
+// `$e` is captured once as a node (no double evaluation); works as an
+// ordinary expression, including under a `comptime` fold.
+namespace Text {
+    macro safeStrip(e) => `($e ?? "").trim()`;
+}
+uses Text;
+
+string? userInput = "  hi there  ";
+console.writeln(safeStrip!(userInput));
+
+string? absent = None;
+console.writeln(safeStrip!(absent));
+
+// §7×§9 deferred folding: a macro call inside a `comptime`-marked expression
+// expands (against the post-fold imports map) before the oracle folds the
+// result to a literal — baked in at compile time, not just at runtime.
+comptime string baked = safeStrip!("  baked at compile time  ");
+console.writeln(baked);

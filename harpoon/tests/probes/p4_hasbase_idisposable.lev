@@ -1,0 +1,21 @@
+// M0 P4: C.hasBase("IDisposable") matches the prelude interface's canonical
+// spelling. R1 implements IDisposable and must match; R2 must not.
+namespace HP4 {
+    rule mark {
+        match on class C
+        where C.hasBase("IDisposable")
+        inject `bool $C = HP4::__mark([ $for cc in [C] : $cc.name ][0]);` at namespace Gen
+    }
+    bool __mark(string s) { console.writeln("matched:" + s); return true; }
+}
+uses HP4;
+
+class R1 : IDisposable {
+    void close() { }
+}
+class R2 {
+    void close() { }
+}
+
+void main() { }
+main();

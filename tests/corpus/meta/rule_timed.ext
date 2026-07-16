@@ -1,0 +1,26 @@
+// Layer D (metaprog Phase 4 §2.2, proposal §10.5): a `@Timed` wrapper captures
+// the method's result through `$body` in expression position (the arrow /
+// single-value-return path), runs prologue/epilogue around it, and returns it.
+namespace Perf {
+    attribute Timed { }
+    rule timed rewrites body of m {
+        match @Timed on method m
+        replace `
+            calls = calls + 1;
+            var __result = $body;
+            return __result;
+        `
+    }
+}
+uses Perf;
+
+class Service {
+    int calls = 0;
+    @Timed
+    int compute(int n) => n * n;
+}
+
+Service s = Service();
+console.writeln(s.compute(3));
+console.writeln(s.compute(4));
+console.writeln(s.calls);

@@ -1,0 +1,26 @@
+// Regression floor for the cycle guard in the bare-class-field auto-construct
+// fix (2026-07-14): a self-referential reference-class field (`Node next`
+// inside `Node`) has no finite default, so it must NOT auto-construct (that
+// would recurse forever) — it keeps the void default, exactly as before the
+// fix. An optional back-edge (`Node? parent`) is the language's intended way
+// to break the cycle: it defaults to None and the non-cyclic Leaf field still
+// auto-constructs. This pins that both the self-cycle and the mutual cycle
+// terminate and stay default, consistently across all four engines.
+class Leaf { int v = 9; }
+class Node {
+    int id = 1;
+    Leaf leaf;          // acyclic -> auto-constructs
+    Node next;          // self-cycle -> stays void default (no infinite loop)
+    Node? parent;       // optional back-edge -> None
+}
+class A { int n = 3; B b; }
+class B { int m = 4; A a; }   // mutual cycle -> both b and a stay default
+void main() {
+    Node node = Node();
+    console.writeln(node.id);
+    console.writeln(node.leaf.v);
+    console.writeln(node.parent == None);
+    A x = A();
+    console.writeln(x.n);
+}
+main();

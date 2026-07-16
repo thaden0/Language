@@ -1,0 +1,9 @@
+void main() {
+    bool ok = term.enableRaw();
+    if (!ok) { console.writeln("NOTTY"); return; }
+    console.writeln("READY\r");
+    string key = std::sysRead(0, 1);
+    console.writeln("KEY=" + key + "\r");
+    throw RuntimeException("boom");       // uncaught; NO term.restore()
+}
+main();

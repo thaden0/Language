@@ -1,0 +1,71 @@
+// Corpus test: JSON path walker + assertion/extraction runner.
+namespace Recon {
+
+void showPath(JsonValue root, string path) {
+    JsonValue? v = evalJsonPath(root, path);
+    if (v != None) { JsonValue node = v; console.writeln(path + " => " + jNumOrStr(node)); }
+    else { console.writeln(path + " => <none>"); }
+}
+
+void main() {
+    string doc = "{\"token\":\"abc\",\"user\":{\"id\":42,\"name\":\"Ada\"},"
+               + "\"tags\":[\"a\",\"b\",\"c\"],\"ok\":true}";
+    JsonValue? parsed = json::parse(doc);
+    if (parsed == None) { console.writeln("PARSE FAILED"); return; }
+    JsonValue root = parsed ?? JsonValue::ofNull();
+
+    console.writeln("== jsonpath ==");
+    showPath(root, "$.token");
+    showPath(root, "$.user.id");
+    showPath(root, "$.user.name");
+    showPath(root, "$.tags[0]");
+    showPath(root, "$.tags[2]");
+    showPath(root, "$.tags[9]");        // OOB -> none
+    showPath(root, "$.missing");        // absent -> none
+    showPath(root, "$.user.nope.deep"); // miss -> none
+    showPath(root, "$.ok");
+
+    console.writeln("== assertions ==");
+    HttpResponse resp = HttpResponse(200, doc);
+    resp = resp.withHeader("Content-Type", "application/json");
+    resp = resp.withHeader("X-Trace", "xyz");
+
+    TestPlan plan = TestPlan();
+    plan.assertions = [
+        Assertion::Of("status", "", "equals", "200"),
+        Assertion::Of("status", "", "inRange", "200..299"),
+        Assertion::Of("status", "", "equals", "404"),
+        Assertion::Of("header", "Content-Type", "contains", "json"),
+        Assertion::Of("header", "X-Missing", "exists", ""),
+        Assertion::Of("header", "X-Trace", "equals", "xyz"),
+        Assertion::Of("body", "", "contains", "Ada"),
+        Assertion::Of("jsonpath", "$.user.id", "equals", "42"),
+        Assertion::Of("jsonpath", "$.user.name", "equals", "Bob"),
+        Assertion::Of("jsonpath", "$.token", "exists", ""),
+        Assertion::Of("jsonpath", "$.user.id", "isType", "number"),
+        Assertion::Of("jsonpath", "$.token", "matches", "^[a-z]+$")
+    ];
+    plan.extractions = [
+        Extraction::Of("jsonpath", "$.token", "authToken"),
+        Extraction::Of("header", "X-Trace", "traceId")
+    ];
+    Extraction reg = Extraction::Of("regexGroup", "id\":(\\d+)", "userId");
+    reg.group = "1";
+    plan.extractions = plan.extractions.add(reg);
+
+    VarResolver vars = VarResolver();
+    vars.addScope(VarScope::Named("environment"));
+
+    Array<TestResult> results = runTests(plan, resp, 12, vars);
+    for (TestResult r in results) {
+        string mark = r.passed ? "PASS" : "FAIL";
+        console.writeln(mark + " | " + r.label + " | " + r.detail);
+    }
+
+    console.writeln("== extractions written to env ==");
+    console.writeln("authToken=" + (vars.lookup("authToken") ?? "<none>"));
+    console.writeln("traceId=" + (vars.lookup("traceId") ?? "<none>"));
+    console.writeln("userId=" + (vars.lookup("userId") ?? "<none>"));
+}
+
+}

@@ -1,0 +1,31 @@
+// Namespaces, uses imports, qualified access, same names in two rooms.
+namespace Room1 {
+    class TheClass { public void welcome() { console.writeln("Welcome"); } }
+    void start() { TheClass t = TheClass(); t.welcome(); }
+}
+namespace Room2 {
+    class TheClass { public void welcome() { console.writeln("Hello"); } }
+    void start() { TheClass t = TheClass(); t.welcome(); }
+}
+namespace M {
+    int helper(int x) => x + 100;
+    string helper(string s) => s + "!";
+}
+Room1::start();
+Room2::start();
+uses M;
+console.writeln(helper(5));
+console.writeln(helper("hey"));
+console.writeln(M::helper(1));
+
+// Bug 1 regression: value globals declared inside a namespace are initialized
+// and read back through their qualified name (primitive and class-typed).
+class Coord { int x; new Coord(int a) { x = a; } }
+namespace Consts {
+    string TABLE = "abcdef";
+    int CODE_X = 7;
+    Coord origin = Coord(9);
+}
+console.writeln(Consts::TABLE);
+console.writeln(Consts::CODE_X);
+console.writeln(Consts::origin.x);

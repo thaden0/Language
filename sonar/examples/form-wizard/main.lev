@@ -1,0 +1,78 @@
+// Sonar example 2 — form-wizard. Input / CheckBox / RadioGroup / Button with a
+// validator and Tab order: the forms showcase. Scripted mode focuses the name
+// field, types into it, Tabs across the controls, and snapshots — exercising
+// Input editing and focus traversal end-to-end (§6).
+uses Sonar;
+
+class Form {
+    Input name;
+    Input email;
+    CheckBox subscribe;
+    RadioGroup plan;
+    Button submit;
+    string status = "";
+
+    new Form(App a) {
+        name = Input();
+        name.setPlaceholder("name");
+        email = Input();
+        email.setPlaceholder("email");
+        email.validator((v) => v.isEmpty() || v.indexOf("@") >= 0);
+        email.setValidatorMessage("email needs an @");
+        subscribe = CheckBox();
+        subscribe.setLabel("Subscribe to updates");
+        plan = RadioGroup();
+        plan.setOptions(["Free", "Pro", "Enterprise"]);
+        submit = Button();
+        submit.setLabel("Submit");
+        submit.onPress(() => this.onSubmit());
+
+        a.add(Text().text("Sign up"));
+        a.add(name);
+        a.add(email);
+        a.add(subscribe);
+        a.add(plan);
+        a.add(submit);
+    }
+
+    void onSubmit() {
+        bool ok = email.validate();
+        status = ok ? "submitted: " + name.value : "fix errors";
+    }
+}
+
+App build() {
+    App a = App().title("form-wizard");
+    Form f = Form(a);
+    return a;
+}
+
+void scripted() {
+    App a = SonarTest::harness(30, 9);
+    Form f = Form(a);
+    a.focus(f.name);
+    ScriptedInput si = SonarTest::input();
+    a.pumpOnce();                                   // start session
+    si.text("Ada");
+    SonarTest::pump(a, si);                          // type "Ada" into name
+    SonarTest::snapText(a, SonarTest::renderer(), "name filled");
+
+    si.key("Tab").key("Tab");                        // -> email -> subscribe
+    SonarTest::pump(a, si);
+    SonarTest::pump(a, si);
+    console.writeln("focus-is-checkbox=" + (a.focused() == f.subscribe).toString());
+
+    // Validate: an empty email is allowed by the validator; a bad one is not.
+    f.email.setValue("nope");
+    console.writeln("bad-email-valid=" + f.email.validate().toString());
+    f.email.setValue("ada@example.com");
+    console.writeln("good-email-valid=" + f.email.validate().toString());
+    f.onSubmit();
+    console.writeln("status=" + f.status);
+    SonarTest::reset();
+}
+
+void main() {
+    if (env::get("SONAR_SCRIPT") != None) { scripted(); return; }
+    build().run();
+}

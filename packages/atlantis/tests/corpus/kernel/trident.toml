@@ -1,0 +1,8 @@
+name = "atlantis-kernel-corpus"
+entry = "main"
+sources = ["kernel.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

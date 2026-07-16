@@ -1,0 +1,38 @@
+// Churn corpus (ARC leak net) — VALUE-STRUCT EXCLUSION path.
+// GREEN on ELF (X64Gen's arena) and on LLVM (the A-M6 arena tier, doc-1 §9):
+// the per-iteration scope-local `Point p` inside makeBag is overwritten by a
+// fresh NewObject every loop pass with no intervening free (the generic ARC
+// release-old is a no-op for value structs) — Ownership.hpp proves `p` never
+// escapes makeBag (it's copied into the dense array, not aliased out), so
+// LlvmGen routes it to the arena tier and bulk-frees every iteration's copy
+// at frame exit, same as X64Gen's beginAlloc/restoreArena.
+//
+// Each iteration builds a Bag holding a dense Array<Point> of value structs
+// (§9 B1: each Point's fields are stored inline in one contiguous buffer, not
+// a pointer per element). Reclaiming the Bag must free the array buffer but
+// must NOT recurse into the inline Point bytes as if they were heap pointers —
+// value structs are copied, not separately allocated. A recursive release that
+// wrongly follows the inline struct data would free garbage addresses
+// (over-release / UAF), surfacing as a crash or corrupted output; one that
+// frees nothing leaks. live-at-exit must end flat in N. @N@ is substituted by
+// fuzz/churn_leak.py.
+struct Point { int x = 0; int y = 0; }
+class Bag { Array<Point> pts; }       // dense inline Array<struct> in a heap object
+Bag makeBag(int seed) {
+    Bag b = Bag();
+    for (int i in 1..4) {
+        Point p = Point();
+        p.x = seed + i; p.y = seed - i;
+        b.pts = b.pts.add(p);         // appends inline struct data (no heap Leaf)
+    }
+    return b;
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Bag b = makeBag(i);           // fresh Bag + dense struct buffer...
+        sink = sink + b.pts.length() + b.pts[0].x;
+    }                                 // ...dropped; free the buffer, skip the structs
+    console.writeln(sink);
+}
+run(@N@);

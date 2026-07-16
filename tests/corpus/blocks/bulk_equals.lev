@@ -1,0 +1,24 @@
+void main() {
+    Block a = Block::fromString("same");
+    Block alias = a;
+    Block same = Block::fromString("same");
+    Block different = Block::fromString("sand");
+    Block short = Block::fromString("sam");
+    console.writeln(a == alias);
+    console.writeln(a == same);
+    console.writeln(a.equals(alias));
+    console.writeln(a.equals(same));
+    console.writeln(a.equals(different));
+    console.writeln(a.equals(short));
+
+    Block root = Block::fromString("xxsameyy");
+    Block view = root.slice(2, 4);
+    console.writeln(view.equals(a));
+    console.writeln(view == a);
+
+    Block empty1 = Block(0);
+    Block empty2 = Block(0);
+    console.writeln(empty1.equals(empty2));
+    console.writeln(empty1 == empty2);
+}
+main();

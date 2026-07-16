@@ -1,0 +1,87 @@
+// Track 09 F1 (M4): JSON — parse/render round-trips, \uXXXX + surrogate pairs,
+// deep nesting (P4), the malformed->None totality table, render escaping, and
+// pretty printing. Numbers render via float.toString() (the "%f" shape the
+// design pins for v1, revisited globally later). LLVM lane excluded: bug.md #30
+// (Map<string, recursive-class> corruption) — runs on --run/--ir/emit-C++.
+
+string rt(string s) {
+    JsonValue? v = json::parse(s);
+    return v != None ? v.render() : "None";
+}
+// decode a JSON string and show its exact UTF-8 bytes (verifies \u / surrogates)
+string bytesOf(string s) {
+    JsonValue? v = json::parse(s);
+    if (v != None) {
+        string? str = v.asStr();
+        return str != None ? encoding::hexEncode(str) : "not-str";
+    }
+    return "None";
+}
+
+void run() {
+    // --- scalars + round-trips ---
+    console.writeln(rt("null"));
+    console.writeln(rt("true"));
+    console.writeln(rt("false"));
+    console.writeln(rt("0"));
+    console.writeln(rt("-42"));
+    console.writeln(rt("3.5"));
+    console.writeln(rt("1e3"));
+    console.writeln(rt("-1.5e-2"));
+    console.writeln(rt("\"hello\""));
+
+    // --- containers, nesting, whitespace tolerance ---
+    console.writeln(rt("[]"));
+    console.writeln(rt("{}"));
+    console.writeln(rt("[1,2,[3,[4]]]"));
+    console.writeln(rt("  {  \"a\" : 1 , \"b\" : [ true , null ] }  "));
+    console.writeln(rt("{\"nested\":{\"x\":[{}]}}"));
+
+    // --- escape decoding (as UTF-8 byte hex) ---
+    console.writeln(bytesOf("\"a\\nb\\tc\""));        // a=61 \n=0a b=62 \t=09 c=63
+    console.writeln(bytesOf("\"\\\"\\\\\\/\""));      // " \ /  -> 22 5c 2f
+    console.writeln(bytesOf("\"\\u0041\""));          // A -> 41
+    console.writeln(bytesOf("\"\\u00e9\""));          // é -> c3 a9
+    console.writeln(bytesOf("\"\\u2603\""));          // snowman -> e2 98 83
+    console.writeln(bytesOf("\"\\ud83d\\ude00\""));   // U+1F600 -> f0 9f 98 80
+    console.writeln(bytesOf("\"\\ud800\""));          // lone high surrogate -> U+FFFD ef bf bd
+    console.writeln(bytesOf("\"\\udc00x\""));         // lone low surrogate -> ef bf bd 78
+
+    // --- render escaping (build a value, render it) ---
+    console.writeln(json::renderStr("a\"b\\c"));      // "a\"b\\c"
+    JsonValue ctrl = JsonValue::ofStr(std::byteToString(10) + std::byteToString(1));
+    console.writeln(ctrl.render());                    // "\n"
+
+    // --- deep nesting (P4 headroom + the depth cap) ---
+    string d100 = "[".repeat(100) + "1" + "]".repeat(100);
+    console.writeln(json::parse(d100) != None ? "d100:ok" : "d100:None");
+    string d200 = "[".repeat(200) + "1" + "]".repeat(200);
+    console.writeln(json::parse(d200) != None ? "d200:ok" : "d200:None");   // > cap -> None
+
+    // --- typed access + loud navigation ---
+    JsonValue? doc = json::parse("{\"port\":8080,\"tags\":[\"a\",\"b\"]}");
+    if (doc != None) {
+        console.writeln(doc.at("port").asNum() != None ? "port-num" : "?");
+        console.writeln(doc.at("tags").at(1).asStr() ?? "?");   // "b"
+        console.writeln(doc.atOrNone("missing") == None ? "missing:None" : "?");
+    }
+
+    // --- malformed -> None (totality; parse never throws) ---
+    console.writeln(rt(""));               // None (empty)
+    console.writeln(rt("   "));            // None (ws only)
+    console.writeln(rt("[1,2,"));          // None (unterminated)
+    console.writeln(rt("[1,2,]"));         // None (trailing comma)
+    console.writeln(rt("{\"a\":}"));       // None (missing value)
+    console.writeln(rt("{\"a\" 1}"));      // None (missing colon)
+    console.writeln(rt("{a:1}"));          // None (unquoted key)
+    console.writeln(rt("tru"));            // None (bad literal)
+    console.writeln(rt("01"));             // None (leading zero)
+    console.writeln(rt("1.2.3"));          // None (trailing garbage)
+    console.writeln(rt("\"unterminated"));  // None (unterminated string)
+    console.writeln(rt("[1 2]"));          // None (missing comma)
+
+    // --- pretty printing ---
+    JsonValue? pv = json::parse("{\"a\":1,\"b\":[2,3]}");
+    if (pv != None) console.writeln(pv.renderPretty(2));
+}
+run();

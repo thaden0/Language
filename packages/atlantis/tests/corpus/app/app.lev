@@ -1,0 +1,68 @@
+// Atlantis Track 04 — App dispatcher acceptance corpus (design §12 M3, §6, R3).
+//
+// Drives Atlantis::App::run with argv passed as a PARAMETER (never reading the process),
+// so the whole command-dispatch surface is verified byte-identical on oracle / IR / LLVM:
+// default `serve`, app-defined commands, help, unknown → usage+1, and the §6.4 exit-code
+// contract. P-7 (fn-typed field in Command + Array<Command> + call-through) is exercised
+// end-to-end here.
+uses Atlantis::App;
+uses Atlantis::Config;
+
+// Command handlers: (Config, argv-tail) => exit code. They print so the corpus can
+// observe which command ran and with what arguments.
+int serveHandler(Config cfg, Array<string> args) {
+    console.writeln("[serve] port=" + cfg.at("PORT", "8080") + " args=" + args.length().toString());
+    return 0;
+}
+int migrateHandler(Config cfg, Array<string> args) {
+    console.writeln("[migrate] running " + args.length().toString() + " step(s)");
+    return 0;
+}
+int seedHandler(Config cfg, Array<string> args) {
+    console.writeln("[seed] fixtures for: " + args.joinToString(","));
+    return 0;
+}
+int failHandler(Config cfg, Array<string> args) {
+    console.writeln("[fail] deliberately returning 3");
+    return 3;
+}
+
+Application buildApp() {
+    Application app = Application();
+    app.name = "myapp";
+    app.config = parseText("PORT=9090\n");
+    // Handlers are lambda-wrapped, not passed as bare function references: a NAMED
+    // free-function reference stored in a fn-typed field and dot-called fails to
+    // resolve on the landed compiler (bug filed, §13); the eta-expansion lambda is the
+    // design's own idiom (§7.3 `(cfg, args) => serve(...)`) and resolves everywhere.
+    app.register(Command("serve",   "Run the HTTP server", (cfg, args) => serveHandler(cfg, args)));
+    app.register(Command("migrate", "Apply DB migrations", (cfg, args) => migrateHandler(cfg, args)));
+    app.register(Command("seed",    "Load fixture data",   (cfg, args) => seedHandler(cfg, args)));
+    app.register(Command("fail",    "Always fails",        (cfg, args) => failHandler(cfg, args)));
+    return app;
+}
+
+void report(string label, int code) {
+    console.writeln(label + " -> exit " + code.toString());
+}
+
+void main() {
+    Application app = buildApp();
+
+    // No subcommand (argv is just the program name) → default `serve`.
+    report("bare", run(app, ["myapp"]));
+
+    // Explicit commands with argv tails.
+    report("serve", run(app, ["myapp", "serve"]));
+    report("migrate", run(app, ["myapp", "migrate", "up", "up"]));
+    report("seed", run(app, ["myapp", "seed", "users", "posts"]));
+
+    // A handler's own non-zero exit propagates (§6.4).
+    report("fail", run(app, ["myapp", "fail"]));
+
+    // help → usage, exit 0.
+    report("help", run(app, ["myapp", "help"]));
+
+    // Unknown command → message + usage, exit 1.
+    report("unknown", run(app, ["myapp", "nope"]));
+}

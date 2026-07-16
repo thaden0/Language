@@ -1,0 +1,32 @@
+// Track 04 (designs/techdesign-04-stdlib-strings.md) M2: toInt/toFloat are
+// now optional-returning natives (strict full-string parse; anything else,
+// or overflow, -> None). This is a NEW-NATIVE test, so it lives outside the
+// top-level tests/corpus/ dir: the frozen ELF backend (docs/
+// techdesign-portable-backend.md; X64Gen.cpp is kept, never extended) still
+// runs the old atoll-style toInt and has no toFloat at all -- see bug.md's
+// toInt migration note and this track's Implementation Log. Runs on oracle,
+// IR, emit-C++, and LLVM (the four actively-maintained engines).
+
+int? a = "123".toInt();
+console.writeln(a != None);      // true
+console.writeln(a ?? (0 - 1));   // 123
+
+int? b = "-45".toInt();
+console.writeln(b ?? (0 - 1));   // -45
+
+console.writeln("12ab".toInt() == None);    // true (trailing garbage)
+console.writeln("".toInt() == None);        // true (empty)
+console.writeln(" 5".toInt() == None);      // true (leading space)
+console.writeln("5 ".toInt() == None);      // true (trailing space)
+console.writeln("+5".toInt() == None);      // true (no '+' accepted)
+console.writeln("-".toInt() == None);       // true ('-' alone)
+console.writeln("007".toInt() ?? (0 - 1));  // 7 (leading zeros fine)
+console.writeln("99999999999999999999999".toInt() == None);  // true (overflow)
+
+float? f1 = "3.5".toFloat();
+console.writeln(f1 != None);                 // true
+console.writeln("abc".toFloat() == None);    // true
+console.writeln("".toFloat() == None);       // true
+console.writeln("inf".toFloat() == None);    // true (non-finite text rejected)
+console.writeln("nan".toFloat() == None);    // true
+console.writeln(" 1.0".toFloat() == None);   // true (surrounding space)

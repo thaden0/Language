@@ -1,0 +1,10 @@
+// Track 10 M3: `(a+)+$` is linear under Thompson simulation, never backtracks.
+void probe(int n) {
+    string s = "a".repeat(n) + "X";
+    Array<int> p = regex::compileProgram("(a+)+$", "");
+    int t0 = std::sysMonotonic();
+    bool hit = regex::programIsMatchPike(p, s);
+    int t1 = std::sysMonotonic();
+    console.writeln(n.toString() + ":" + (t1 - t0).toString() + ":" + hit.toString());
+}
+probe(100); probe(200); probe(400);

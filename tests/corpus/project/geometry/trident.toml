@@ -1,0 +1,3 @@
+name = "geometry"
+entry = "main.ext"
+sources = ["shapes.ext", "area.ext", "util.ext", "main.ext"]

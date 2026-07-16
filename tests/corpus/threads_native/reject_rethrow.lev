@@ -1,0 +1,40 @@
+// Track 10 M3c (techdesign-threads-3 §3.3): a worker whose body THROWS rejects,
+// and `await` rethrows the carried message as a catchable RuntimeException at the
+// join. On the serial engines this exercises the cooperative leg's try/catch
+// (the 0-delay task's uncaught throw -> Worker.reject) plus the Await amendment;
+// on LLVM (threads_native/) the same program exercises the true-thread leg (the
+// worker flattens its exception's message, the spawner rebuilds and rethrows).
+// Byte-identical across all three engines.
+
+int boom() {
+    throw RuntimeException("boom from worker");
+    return 0;                       // unreachable, satisfies the int return type
+}
+
+// A worker that succeeds — its body is created in its OWN scope with no
+// non-flattenable local in view (the tree-walk interpreter snapshots the whole
+// closure env, so a sibling Worker in lexical scope would be copied — bug.md).
+int goodWorker() {
+    Worker<int> g = std::spawn(() => 21 * 2);
+    return await g;
+}
+
+// 1. a worker throw surfaces at await as a catchable RuntimeException.
+int throws() {
+    Worker<int> w = std::spawn(() => boom());
+    return await w;
+}
+try { console.writeln(throws()); }
+catch (RuntimeException e) { console.writeln(e.message); }   // boom from worker
+
+// 2. a rejection is per-worker: a sibling that succeeds still returns its value
+//    (the loop driver survives the failed worker, §3.1 try/catch).
+int okAfterFail() {
+    int r = 0;
+    try {
+        Worker<int> bad = std::spawn(() => boom());
+        r = await bad;
+    } catch (IException e) { r = 0 - 1; }
+    return r + goodWorker();         // -1 + 42 = 41
+}
+console.writeln(okAfterFail());      // 41

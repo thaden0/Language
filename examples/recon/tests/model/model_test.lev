@@ -1,0 +1,75 @@
+// Corpus test: build model objects, round-trip a few through jsonio helpers.
+namespace Recon {
+
+void main() {
+    // --- Method / BodyMode helpers ---
+    console.writeln(methodName(Method::POST));
+    console.writeln(methodFromName("delete").toString());
+    console.writeln(bodyModeFromName("graphql").toString());
+    console.writeln(bodyModeName(BodyMode::UrlEncoded));
+
+    // --- RequestSpec defaults ---
+    RequestSpec r = RequestSpec();
+    r.name = "Get user";
+    r.method = Method::GET;
+    r.url = "https://{{base}}/users/1";
+    r.headers = [HeaderEntry::Of("Accept", "application/json")];
+    console.writeln(r.name);
+    console.writeln(r.headers.at(0).name + "=" + r.headers.at(0).value);
+    console.writeln(r.body.mode.toString());
+    console.writeln(r.auth == None);
+
+    // --- AuthSpec map ---
+    AuthSpec a = AuthSpec::Of("bearer");
+    a.put("token", "abc123");
+    console.writeln(a.kind + " " + a.param("token"));
+
+    // --- Collection tree ---
+    Collection c = Collection();
+    c.name = "My API";
+    CollectionItem folder = CollectionItem::Folder("Users");
+    CollectionItem req = CollectionItem::Request("Get user");
+    folder.children = [req];
+    c.root.children = [folder];
+    console.writeln(c.root.children.at(0).name + "/" + c.root.children.at(0).children.at(0).name);
+    console.writeln(c.root.children.at(0).isFolder);
+    console.writeln(c.root.children.at(0).children.at(0).isFolder);
+
+    // --- Environment scope flatten ---
+    Environment env = Environment::Named("Prod");
+    env.values = [Variable::Of("base", "api.example.com"), Variable::Of("off", "x")];
+    env.values.at(1).enabled = false;
+    VarScope sc = scopeFromEnv(env, "environment");
+    console.writeln(sc.values.atOr("base", "?"));
+    console.writeln(sc.values.has("off"));
+
+    // --- History cap + label ---
+    History h = History();
+    h.cap = 2;
+    HistoryEntry e1 = HistoryEntry(); e1.method = "GET"; e1.url = "u1"; e1.status = 200;
+    HistoryEntry e2 = HistoryEntry(); e2.method = "POST"; e2.url = "u2"; e2.status = 201;
+    HistoryEntry e3 = HistoryEntry(); e3.method = "PUT"; e3.url = "u3"; e3.status = 204;
+    h.add(e1); h.add(e2); h.add(e3);
+    console.writeln(h.entries.length());
+    console.writeln(h.labelAt(0));
+
+    // --- SessionSet ---
+    SessionSet ss = SessionSet();
+    ss.switchTo("admin");
+    console.writeln(ss.active().name);
+    console.writeln(ss.names().joinToString(","));
+
+    // --- jsonio round-trip ---
+    JsonValue obj = jObj([
+        Pair::Of("name", jStrNode("Recon")),
+        Pair::Of("count", JsonValue::ofNum(42.0)),
+        Pair::Of("on", jBoolNode(true))
+    ]);
+    console.writeln(jStr(obj, "name", "?"));
+    console.writeln(jBool(obj, "on", false));
+    console.writeln(numClean(42.0));
+    console.writeln(numClean(3.140000));
+    console.writeln(jNumOrStr(obj.at("count")));
+}
+
+}

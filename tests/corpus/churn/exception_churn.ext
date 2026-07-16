@@ -1,0 +1,36 @@
+// Churn corpus (ARC leak net) — EXCEPTION objects: thrown cross-frame,
+// caught, dropped. GREEN — guards the g_thrown ownership chain.
+//
+// g_thrown owns the in-flight exception: Op::Throw retains it (+1) so the
+// unwinding frame's release-all cannot free it mid-flight (that UAF
+// segfaulted exceptions.ext/files.ext under memory reuse until 71ede9d).
+// The catch BIND consumes that +1: binding releases the PREVIOUSLY bound
+// exception first (a catch in a loop rebinds the same bindReg every
+// iteration — without that release each iteration leaked exactly one
+// exception object, ~64B/iter, which is what this template pinned), and the
+// final bound exception is released by the frame-exit release-all. A missing
+// Throw-retain is the old UAF (crash / oracle divergence under reuse); a
+// missing bind-release is the leak (live-at-exit grows). Only `sink`
+// survives, so the root set is CONSTANT in N.
+//
+// The message is a LITERAL on purpose: heap strings leak separately (see
+// strings.ext) and would contaminate this signal.
+// @N@ is substituted by fuzz/churn_leak.py.
+class Boom : IException {
+    public string message;
+    public int code = 0;
+    public string toString() => message;
+    new Boom(int c) { code = c; message = "boom"; }
+}
+void detonate(int seed) {
+    throw Boom(seed);                 // escapes via throw -> g_thrown owns it
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        try { detonate(i); }          // cross-frame unwind into the catch
+        catch (Boom b) { sink = sink + b.code; }   // bound, read, dropped
+    }
+    console.writeln(sink);
+}
+run(@N@);

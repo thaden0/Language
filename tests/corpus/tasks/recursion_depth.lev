@@ -1,0 +1,25 @@
+// LA-30 doc 3 §5 (G9) — the interpreter stack-depth probe: a self-recursive
+// Leviathan function to depth 10k inside a spawned callback and inside a
+// timer-dispatched callback. Measured cost (hwm_committed at depth 1000):
+// ~5.9 KiB per Leviathan frame on the oracle, ~1.4 KiB on the IR engine, so
+// 10k frames need ~59 MiB — hence the 128 MiB interpreter fiber default
+// (CMakeLists langfront LV_TASK_STACK_DEFAULT; LANG_TASK_STACK overrides).
+// Lazy commit keeps RSS at touched pages; overflow is LOUD (guard page +
+// "raise LANG_TASK_STACK" diagnostic), never silent corruption.
+//
+// Needs tasks (the default since the M5 flip): under the old pump
+// (LANG_PUMP=1 until M6) this depth segfaults on BOTH engines — all nested
+// dispatch shared the one ~8 MiB OS stack, a pre-existing ceiling, not an
+// LA-30 regression. Tasks make it a per-task, sized, diagnosable budget.
+int deep(int n) {
+    if (n == 0) return 0;
+    return deep(n - 1) + 1;
+}
+
+Worker<int> w = std::spawn(() => deep(10000));
+console.writeln(await w);
+
+// and the same depth reached from a timer-dispatched callback's task
+Promise<int> p;
+std::sysTimerStart(1, 0, (n) => { p.resolve(deep(10000)); });
+console.writeln(await p);

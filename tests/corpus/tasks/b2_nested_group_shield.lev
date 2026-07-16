@@ -1,0 +1,45 @@
+// LA-30 B2 (doc 06 §8 "cancel delivered inside close()/unwind" — the shield
+// rule): cancellation delivery is masked while a task is running its own
+// TaskGroup.close() unwind, so `using` nested under a cancellation cannot
+// livelock or abandon a join mid-flight.
+//
+// `outerChild` is itself a group-owned task (owned by `outer`). `outer`'s own
+// close() marks outerChild cancelled BEFORE the scheduler ever dispatches it
+// (cancelAll on a still-RUNNABLE task just sets the mark) — the same
+// mark-before-first-run shape as b2_group_exit_edges' parked-child tests.
+// When outerChild finally runs, it opens+closes its OWN nested TaskGroup
+// (`inner`, inside ownsNestedGroup()); that close() shields itself
+// (sysTaskShield(1)) before its own cancelAll+join park. Without the shield,
+// outerChild's OUTSTANDING outer-cancel mark would fire AT that inner join's
+// park, raising CancelledException out of ownsNestedGroup() uncaught (and,
+// since outerChild is itself group-owned, silently absorbed at `outer`'s
+// boundary — §2) — which would truncate this program's output to just the
+// first two lines below, never reaching outerChild's own await. With the
+// shield working, the mark holds through the inner join and fires only at
+// outerChild's OWN next (unshielded) park, after the inner group has fully
+// closed. Byte-identical on oracle/IR/LLVM.
+
+Promise<int> dead = Promise();
+
+void ownsNestedGroup() {
+    using TaskGroup inner = TaskGroup();
+    inner.run(() => {
+        try { int y = await dead; }
+        catch (CancelledException e) { console.writeln("inner child caught cancel"); }
+    });
+    console.writeln("about to close inner (shielded park incoming)");
+}
+
+void outerChild() {
+    ownsNestedGroup();
+    console.writeln("inner group closed; now hitting the held outer cancel mark");
+    try { int z = await dead; }
+    catch (CancelledException e) { console.writeln("outer child caught outer cancel"); }
+}
+
+void main() {
+    using TaskGroup outer = TaskGroup();
+    outer.run(() => { outerChild(); });
+}
+main();
+console.writeln("done");

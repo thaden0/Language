@@ -1,0 +1,11 @@
+name    = "recon-textarea-test"
+entry   = "Recon::main"
+sources = [
+    "textarea_test.lev",
+    "../../src/ui/textarea.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar"
+version = "0.1.0"
+as      = "Sonar"

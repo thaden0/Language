@@ -1,0 +1,44 @@
+// Command registry (DESIGN §9.6). Commands are named closures; the command bar
+// and keymap both run them. Parallel arrays (not a Map of closures) keep clear
+// of the Map-value footguns and give stable ordering for the palette.
+namespace Recon {
+uses Sonar;
+
+class CommandRegistry {
+    Array<string> names_;
+    Array<() => void> actions_;
+    Array<string> descs_;
+    new CommandRegistry() { }
+
+    void register(string name, string desc, () => void action) {
+        names_ = names_.add(name);
+        descs_ = descs_.add(desc);
+        actions_ = actions_.add(action);
+    }
+
+    bool run(string name) {
+        int idx = names_.indexOf(name);
+        if (idx >= 0) { var f = actions_.at(idx); f(); return true; }
+        return false;
+    }
+
+    Array<string> names() => names_;
+    Array<string> labels() {
+        Array<string> out = [];
+        for (int i = 0; i < names_.length(); i = i + 1) {
+            out = out.add(names_.at(i) + "  —  " + descs_.at(i));
+        }
+        return out;
+    }
+    // filter by a prefix (for the command bar)
+    Array<string> matching(string prefix) {
+        Array<string> out = [];
+        string p = prefix.toLower();
+        for (string n in names_) {
+            if (p.isEmpty() || n.toLower().contains(p)) { out = out.add(n); }
+        }
+        return out;
+    }
+}
+
+}

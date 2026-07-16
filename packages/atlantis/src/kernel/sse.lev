@@ -1,0 +1,35 @@
+// Atlantis Track 01 — SSE helper (design §8.2).
+//
+// Built over the standalone ChunkedBody (seam.lev). v1 buffers (collect-then-send)
+// — correct for a FINITE event batch. Continuous server-push over a long-lived
+// connection (a timer that never ends) needs the Track 09 server-side
+// streaming-response hook (request filed, design §3.4); the surface here is stable
+// across that swap.
+namespace Atlantis {
+    namespace Http {
+
+        Array<Pair<string, string>> sseHeaders() {
+            Array<Pair<string, string>> h = [];
+            h = h.add(Pair::Of("Content-Type", "text/event-stream"));
+            h = h.add(Pair::Of("Cache-Control", "no-cache"));
+            return h;
+        }
+
+        class SseStream {
+            ChunkedBody out;
+            new SseStream(ChunkedBody out) { this.out = out; }
+
+            // multi-line data → one "data:" line per \n-segment, then a blank line.
+            void event(string data) {
+                for (string ln in data.split("\n")) { this.out.write("data: " + ln + "\n"); }
+                this.out.write("\n");
+            }
+            void namedEvent(string name, string data) {
+                this.out.write("event: " + name + "\n");
+                this.event(data);
+            }
+            void ping() { this.out.write(": ping\n\n"); }     // comment — keeps proxies awake
+            void close() { this.out.end(); }
+        }
+    }
+}

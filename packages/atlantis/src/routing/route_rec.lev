@@ -1,0 +1,117 @@
+// Atlantis Track 02 — RouteRec, ParamDesc, MatchResult (design §1.1/§1.2) and the
+// verb/validation attribute declarations this track owns (design commissioning note,
+// C1/C5). Attributes are Layer A (inert, typed annotations, reference.md §6.9) — they
+// carry no auto-wiring rule yet (§2/§5.1 rule-based splicing is blocked on LA-16/LA-22/
+// LA-4, tracked in designs/requests/request-metaprog-splices.md and
+// request-metaprog-attr-values.md; see the design's §13 implementation log).
+namespace Atlantis {
+    namespace Routing {
+
+        attribute Get       { string path; }
+        attribute Post      { string path; }
+        attribute Put       { string path; }
+        attribute Delete    { string path; }
+        attribute Patch     { string path; }
+        attribute RoutePrefix { string path; }
+        attribute Fragment  {}
+
+        attribute Required  {}
+        attribute MaxLen    { int n; }
+        attribute MinLen    { int n; }
+        attribute Min       { int v; }
+        attribute Max       { int v; }
+        attribute Email     {}
+        attribute Url       {}
+
+        // RequestType — interim comptime-int flags (design §0R.2 note: real
+        // spelling wants Track 03's enum + (|), which does not admit an
+        // open-ended OR-combination of a closed member set; this is the
+        // documented interim). Combine with `|` (int bitwise or, reference.md
+        // §3.5b/precedence level 5); Route.hasVerb() below checks with `&`.
+        namespace RequestType {
+            const int GET    = 1;
+            const int POST   = 2;
+            const int PUT    = 4;
+            const int DELETE = 8;
+            const int PATCH  = 16;
+            const int HEAD   = 32;
+        }
+
+        string requestTypeToVerb(int t) {
+            if (t == RequestType::GET)    { return "GET"; }
+            if (t == RequestType::POST)   { return "POST"; }
+            if (t == RequestType::PUT)    { return "PUT"; }
+            if (t == RequestType::DELETE) { return "DELETE"; }
+            if (t == RequestType::PATCH)  { return "PATCH"; }
+            if (t == RequestType::HEAD)   { return "HEAD"; }
+            return "";
+        }
+
+        // Decompose a `RequestType` flag combination into its verb strings
+        // (HEAD is deliberately excluded — Router.resolve() falls a HEAD
+        // request through to a route's registered GET entry, §1.3).
+        Array<string> requestTypeVerbs(int flags) {
+            Array<string> result = [];
+            if ((flags & RequestType::GET) != 0)    { result = result.add("GET"); }
+            if ((flags & RequestType::POST) != 0)   { result = result.add("POST"); }
+            if ((flags & RequestType::PUT) != 0)    { result = result.add("PUT"); }
+            if ((flags & RequestType::DELETE) != 0) { result = result.add("DELETE"); }
+            if ((flags & RequestType::PATCH) != 0)  { result = result.add("PATCH"); }
+            return result;
+        }
+
+        // A handler parameter descriptor (§1.1). `source` is "" at record time;
+        // finalize() classifies it (§1.5) when a rule/manual caller populates it —
+        // Era A's explicit Route builder leaves `params` empty (§4.2/§4.3 table:
+        // "Era A params are (Context) and the check is skipped for that route").
+        struct ParamDesc {
+            string name;
+            string type;
+            string source;
+            new ParamDesc(string name, string type, string source) {
+                this.name = name;
+                this.type = type;
+                this.source = source;
+            }
+        }
+
+        // Pure data (§1.1) — frozen for Track 07's OpenAPI/MCP consumption.
+        // authMode: 0 = unset, 1 = auth, 2 = noauth (int until an enum carrier
+        // is worth the churn — LA-8, matches the design's own interim note).
+        struct RouteRec {
+            string verb;
+            string path;
+            string controller;
+            string action;
+            Array<ParamDesc> params;
+            string returnType;
+            int authMode;
+            string authRole;
+            new RouteRec(string verb, string path, string controller, string action,
+                         Array<ParamDesc> params, string returnType, int authMode, string authRole) {
+                this.verb = verb;
+                this.path = path;
+                this.controller = controller;
+                this.action = action;
+                this.params = params;
+                this.returnType = returnType;
+                this.authMode = authMode;
+                this.authRole = authRole;
+            }
+            string key() => this.controller + "." + this.action;
+        }
+
+        struct MatchResult {
+            int status;
+            string key;
+            Map<string, string> params;
+            string allow;
+            new MatchResult(int status, string key, Map<string, string> params, string allow) {
+                this.status = status;
+                this.key = key;
+                this.params = params;
+                this.allow = allow;
+            }
+        }
+    }
+}

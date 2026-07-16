@@ -1,0 +1,8 @@
+// No `uses`/`use` of HP6 at all. The qualified attribute spelling attaches
+// the marker without importing (qualification bypasses the unqualified-name
+// scope rule), but the RULE itself must still not fire here, because rule
+// activation is gated on the file importing the rule's namespace, not on
+// whether the attribute successfully attached.
+class CTests {
+    @HP6::Test void c1() { }
+}

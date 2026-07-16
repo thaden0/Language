@@ -1,0 +1,24 @@
+// techdesign-columnar §3.1/§5.1: Array(n, fill) sized construction of a
+// columnar-eligible struct, then a field scan + an overwrite.
+struct Cell { int v; int tag; }
+void run() {
+    Cell seed; seed.v = 7; seed.tag = 2;
+    Array<Cell> a = Array(5, seed);
+    console.writeln(a.length());     // 5
+
+    int s = 0;
+    for (int i in 0..4) { s = s + a[i].v; }
+    console.writeln(s);              // 7*5 = 35
+
+    // overwrite one element (full-struct idxset)
+    Cell nc; nc.v = 100; nc.tag = 9;
+    a[2] = nc;
+    console.writeln(a[2].v);         // 100
+    console.writeln(a[2].tag);       // 9
+    console.writeln(a[0].v);         // 7 (others untouched)
+
+    int s2 = 0;
+    for (int i in 0..4) { s2 = s2 + a[i].v; }
+    console.writeln(s2);             // 7*4 + 100 = 128
+}
+run();

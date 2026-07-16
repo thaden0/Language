@@ -1,0 +1,32 @@
+interface IHttpException : IException { int status; }
+struct FieldError { string field; string message; }
+interface IValidationException : IHttpException { Array<FieldError> errors; }
+class HttpException : Exception, IHttpException {
+    int status;
+    new HttpException(int status, string message) {
+        Exception::Exception(message);
+        this.status = status;
+    }
+}
+class NotFoundException : HttpException {
+    new NotFoundException(string what) { HttpException::HttpException(404, "not found: " + what); }
+}
+class ValidationException : HttpException, IValidationException {
+    Array<FieldError> errors;
+    new ValidationException(Array<FieldError> errors) {
+        HttpException::HttpException(422, "validation failed");
+        this.errors = errors;
+    }
+}
+string classify(IException e) {
+    try { throw e; }
+    catch (IValidationException v) { return "validation:" + v.status.toString() + ":" + v.errors.length().toString(); }
+    catch (IHttpException h)       { return "http:" + h.status.toString() + ":" + h.message; }
+    catch (IException x)           { return "other:" + x.message; }
+}
+void main() {
+    console.writeln(classify(NotFoundException("/x")));
+    console.writeln(classify(ValidationException([FieldError("email", "required")])));
+    console.writeln(classify(RuntimeException("boom")));
+}
+main();

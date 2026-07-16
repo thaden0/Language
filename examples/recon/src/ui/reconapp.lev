@@ -1,0 +1,210 @@
+// ReconApp — composition root & orchestration (DESIGN §10). Owns the Sonar App,
+// wires the panel tree to AppState, binds the keymap/commands, and runs the send
+// flow (§10.2). Background work is callbacks + timers — the UI never awaits.
+namespace Recon {
+uses Sonar;
+
+class ReconApp {
+    public App app;
+    public AppState state;
+    public RequestSender sender;
+    public TopBar topBar;
+    public BottomBar bottomBar;
+    public Sidebar sidebar;
+    public RequestPanel reqPanel;
+    public ResponsePanel respPanel;
+    public CommandRegistry commands;
+    public CommandBar commandBar;
+
+    new ReconApp(string configRoot, Array<string> args) {
+        // `app` auto-constructs exactly one App (§3) — it IS Sonar::app().
+        // Do NOT create a second (single-app rule); just configure the field.
+        app.title("Recon");
+        state = AppState();
+        state.configRoot = configRoot;
+        sender = RequestSender();
+        commands = CommandRegistry();
+        topBar = TopBar();
+        bottomBar = BottomBar();
+        sidebar = Sidebar(state);
+        reqPanel = RequestPanel(state);
+        respPanel = ResponsePanel(state);
+        commandBar = CommandBar(commands);
+
+        this.build();
+        this.wireCommands();
+        this.wireKeymap();
+        this.wirePanels();
+        this.loadPersisted();
+        this.openArgs(args);
+        this.refresh();
+    }
+
+    // --- tree composition (§9.1) ---
+    void build() {
+        this.app.setLayout(FlexLayout(Axis::Vertical));
+
+        this.topBar.bar.setHeight(Constraint::Fixed(1));
+        this.app.add(this.topBar.bar);
+
+        SplitBox outer = SplitBox();
+        outer.setAxis(Axis::Horizontal);
+        outer.setRatio(28);
+        // Vertical FlexLayout's main axis is height — a child with no flex
+        // share sizes to its own intrinsic content height instead of filling
+        // the remaining space (sonar-bugs.md #1). Opt in explicitly.
+        outer.setHeight(Constraint::Flex(1));
+        outer.add(this.sidebar.tree);
+
+        SplitBox inner = SplitBox();
+        inner.setAxis(Axis::Vertical);
+        inner.setRatio(45);
+        inner.add(this.reqPanel.root);
+        inner.add(this.respPanel.tabs);
+        outer.add(inner);
+        this.app.add(outer);
+
+        this.bottomBar.bar.setHeight(Constraint::Fixed(1));
+        this.app.add(this.bottomBar.bar);
+    }
+
+    void wirePanels() {
+        // load a request into the editor when a tree node is opened
+        this.sidebar.setOnOpen((item) => this.onNodeOpened(item));
+        // send from the request panel (URL submit or Send button)
+        this.reqPanel.setOnSend(() => this.doSend());
+    }
+
+    void onNodeOpened(CollectionItem item) {
+        this.reqPanel.loadFrom(this.state.active);
+        this.refresh();
+    }
+
+    // --- commands (§9.6) ---
+    void wireCommands() {
+        this.commands.register("send", "send the active request", () => this.doSend());
+        this.commands.register("quit", "exit Recon", () => this.app.quit());
+        this.commands.register("cancel", "cancel the in-flight send", () => this.sender.cancelActive());
+        this.commands.register("toggle-redirects", "toggle following redirects", () => this.toggleRedirects());
+        this.commands.register("next-tab", "focus the next response tab", () => this.nextRespTab());
+        this.commands.register("save-history", "persist history to disk", () => this.persist());
+        this.commands.register("export", "export the active collection to Postman v2.1 JSON", () => this.exportActive());
+    }
+
+    // Export the active collection back to Postman v2.1 JSON (§5.4, T10).
+    bool exportActive() {
+        if (this.state.activeCollection == None) { this.state.lastError = "no active collection"; this.refresh(); return false; }
+        Collection c = this.state.activeCollection ?? Collection();
+        string path = c.sourcePath;
+        if (path.isEmpty()) {
+            if (this.state.configRoot.isEmpty()) { this.state.lastError = "no export path"; this.refresh(); return false; }
+            path = this.state.configRoot + "/" + c.name + ".exported.json";
+        }
+        writeAll(path, exportCollection(c).renderPretty(2));
+        Sonar::log("exported collection to " + path);
+        return true;
+    }
+
+    // History labels for a history pane / re-open list (§4.5, T10).
+    Array<string> historyLabels() {
+        Array<string> out = [];
+        for (int i = 0; i < this.state.history.entries.length(); i = i + 1) {
+            out = out.add(this.state.history.labelAt(i));
+        }
+        return out;
+    }
+
+    void toggleRedirects() {
+        this.state.settings.followRedirects = !this.state.settings.followRedirects;
+        this.refresh();
+    }
+
+    void nextRespTab() { this.respPanel.tabs.select(0); }
+
+    // --- keymap (§9.6) ---
+    void wireKeymap() {
+        Keymap km = this.app.keymap();
+        km.bind("^S", () => this.doSend());
+        km.bind("^Q", () => this.app.quit());
+        km.bind("^P", () => this.commandBar.open());
+        km.bind("Escape", () => this.onEscape());
+    }
+
+    void onEscape() {
+        if (this.state.inFlight) { this.sender.cancelActive(); }
+    }
+
+    // --- send flow (§10.2) ---
+    void doSend() {
+        if (this.state.inFlight) { return; }
+        this.reqPanel.commitTo(this.state.active);
+        PreparedRequest pr = this.state.buildPrepared();
+        if (!this.state.lastError.isEmpty()) { this.refresh(); return; }
+        this.state.beginInFlight();
+        this.sender.jar = this.state.sessions.active().jar;
+        this.refresh();
+        this.sender.send(pr, (o) => this.onOutcome(o));
+    }
+
+    void onOutcome(RunOutcome o) {
+        this.state.onOutcome(o);
+        this.persist();
+        this.refresh();
+    }
+
+    // --- persistence (§8) ---
+    void loadPersisted() {
+        if (this.state.configRoot.isEmpty()) { return; }
+        this.state.settings = loadSettings(this.state.configRoot);
+        this.state.history = loadHistory(this.state.configRoot);
+        Session? s = loadSession(this.state.configRoot, this.state.settings.activeSession);
+        if (s != None) {
+            Session sess = s ?? Session();
+            this.state.sessions.sessions = [sess];
+            this.state.sessions.activeName = sess.name;
+        }
+    }
+
+    void persist() {
+        if (this.state.configRoot.isEmpty()) { return; }
+        saveHistory(this.state.configRoot, this.state.history);
+        saveSession(this.state.configRoot, this.state.sessions.active());
+        saveSettings(this.state.configRoot, this.state.settings);
+    }
+
+    // --- open a collection named on the command line ---
+    void openArgs(Array<string> args) {
+        for (string path in args) {
+            if (path.endsWith(".json")) { this.openCollection(path); }
+        }
+    }
+
+    bool openCollection(string path) {
+        string text = readAll(path);
+        if (text.isEmpty()) { this.state.lastError = "cannot read " + path; return false; }
+        JsonValue? doc = json::parse(text);
+        if (doc == None) { this.state.lastError = "invalid JSON: " + path; return false; }
+        JsonValue d = doc ?? JsonValue::ofNull();
+        Collection? col = importCollection(d, path);
+        if (col == None) { this.state.lastError = importError; return false; }
+        Collection c = col ?? Collection();
+        this.state.collections = this.state.collections.add(c);
+        this.sidebar.loadCollection(c);
+        return true;
+    }
+
+    // --- redraw ---
+    void refresh() {
+        this.topBar.update(this.state);
+        this.bottomBar.update(this.state);
+        this.respPanel.update(this.state);
+        this.app.requestFrame();
+    }
+
+    // --- run / test hooks ---
+    void run() { this.app.run(); }
+    void pump() { this.app.pumpOnce(); }
+    void teardown() { this.app.quit(); this.app.stopSession(); }
+}
+
+}

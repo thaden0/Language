@@ -1,0 +1,2 @@
+uses Lib;
+console.writeln(Lib::tpl());

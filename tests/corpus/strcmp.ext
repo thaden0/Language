@@ -1,0 +1,14 @@
+// String relational operators are lexicographic (bug.md #2): `<` `>` `<=` `>=`
+// compare character data, not a never-populated integer field. Prefixes order
+// before their extensions; empty strings order first; equal strings compare
+// equal. Must agree across every engine.
+console.writeln("a" < "b");            // true
+console.writeln("b" < "a");            // false
+console.writeln("apple" < "apricot");  // true  (first differing byte)
+console.writeln("app" < "apple");      // true  (prefix is smaller)
+console.writeln("apple" < "app");      // false
+console.writeln("" < "a");             // true  (empty is smallest)
+console.writeln("z" >= "a");           // true
+console.writeln("abc" <= "abc");       // true  (equal)
+console.writeln("abc" > "abc");        // false
+console.writeln("Z" < "a");            // true  (ASCII: 'Z'=90 < 'a'=97)

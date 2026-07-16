@@ -1,0 +1,4 @@
+// Folder "helpers" does NOT match the namespace "Tools" — lint WARN (deliberate).
+namespace Tools {
+    public string shout(string s) => s + "!";
+}

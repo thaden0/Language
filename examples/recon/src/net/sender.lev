@@ -1,0 +1,185 @@
+// The request sender (DESIGN §6.4): a continuation state machine over the
+// callback-style HttpClient. Follows redirects by re-issuing, applies a soft
+// timeout with a `settled` guard, and calls the callback exactly once. No await,
+// no spawn — so the UI keeps painting the spinner every frame (§2.1).
+namespace Recon {
+
+class PreparedRequest {
+    public string        method = "GET";
+    public Url           url;
+    public HeaderMap     headers;                 // prelude std::HeaderMap
+    public string        body = "";
+    public int           timeoutMs = 30000;
+    public RedirectPolicy redirects;
+    new PreparedRequest() { url = Url(); headers = HeaderMap(); redirects = RedirectPolicy(); }
+}
+
+class RedirectPolicy {
+    public bool follow = true;
+    public int  max = 10;
+    public bool dropAuthCrossHost = true;
+    new RedirectPolicy() { }
+}
+
+class RunOutcome {                                // exactly one of these states
+    public bool ok = false;
+    public HttpResponse? response = None;         // set when ok
+    public int elapsedMs = 0;
+    public Array<Url> redirectChain;              // the hops taken
+    public bool timedOut = false;
+    public bool cancelled = false;
+    public string error = "";                     // set on a thrown/verification failure
+    new RunOutcome() { }
+}
+
+class RequestSender {
+    public HttpClient client;
+    public CookieJar? jar = None;                 // if set, capture + re-attach across hops
+
+    // per-send continuation state (single active send — a single-user UI)
+    bool settled = false;
+    int  t0 = 0;
+    int  hops = 0;
+    Array<Url> chain;
+    string curMethod = "GET";
+    string curBody = "";
+    Url curUrl;
+    HeaderMap curHeaders;
+    RedirectPolicy policy;
+    std::Timer? timeoutTimer = None;
+    (RunOutcome)=>void onOutcome;
+    bool hasCb = false;
+
+    new RequestSender() { client = HttpClient(); curUrl = Url(); curHeaders = HeaderMap(); policy = RedirectPolicy(); }
+
+    // continuation-style; cb fires exactly once on the event loop (§2.1)
+    void send(PreparedRequest pr, (RunOutcome)=>void cb) {
+        settled = false;
+        hops = 0;
+        chain = [];
+        t0 = std::sysMonotonic();
+        onOutcome = cb;
+        hasCb = true;
+        curMethod = pr.method;
+        curBody = pr.body;
+        curUrl = pr.url;
+        curHeaders = pr.headers;
+        policy = pr.redirects;
+
+        // arm the soft timeout
+        std::Timer timer = std::after(pr.timeoutMs);
+        timer.subscribe((n) => this.onTimeout());
+        timeoutTimer = timer;
+
+        this.issue();
+    }
+
+    void onTimeout() {
+        if (this.settled) { return; }
+        RunOutcome o = RunOutcome();
+        o.timedOut = true;
+        o.elapsedMs = std::sysMonotonic() - this.t0;
+        o.redirectChain = this.chain;
+        this.settle(o);
+    }
+
+    void issue() {
+        // re-attach cookies for the current host
+        if (this.jar != None) {
+            CookieJar j = this.jar ?? CookieJar();
+            string ck = j.headerFor(this.curUrl.host, this.curUrl.path, this.curUrl.isHttps(), std::sysNow());
+            if (!ck.isEmpty()) { this.curHeaders.set("Cookie", ck); }
+        }
+        try {
+            if (this.curUrl.isHttps()) {
+                this.client.requestTls(this.curMethod, this.curUrl.host, this.curUrl.port,
+                    this.curUrl.pathWithQuery(), this.curHeaders, this.curBody,
+                    (resp) => this.onResp(resp));
+            } else {
+                this.client.request(this.curMethod, this.curUrl.host, this.curUrl.port,
+                    this.curUrl.pathWithQuery(), this.curHeaders, this.curBody,
+                    (resp) => this.onResp(resp));
+            }
+        } catch (IRuntimeException e) {
+            RunOutcome o = RunOutcome();
+            o.error = e.message;
+            o.elapsedMs = std::sysMonotonic() - this.t0;
+            o.redirectChain = this.chain;
+            this.settle(o);
+        }
+    }
+
+    void onResp(HttpResponse resp) {
+        if (this.settled) { return; }
+        // capture Set-Cookie into the jar
+        if (this.jar != None) {
+            CookieJar j = this.jar ?? CookieJar();
+            j.capture(resp.headers.all("Set-Cookie"), this.curUrl.host, this.curUrl.path, std::sysNow());
+        }
+        // redirect?
+        if (this.policy.follow && isRedirect(resp.status) && this.hops < this.policy.max) {
+            string loc = resp.headers.firstOr("Location", "");
+            if (!loc.isEmpty()) {
+                Url? next = resolveUrl(this.curUrl, loc);
+                if (next != None) {
+                    Url nextUrl = next ?? Url();
+                    this.hops = this.hops + 1;
+                    this.chain = this.chain.add(nextUrl);
+                    this.applyRedirectRules(resp.status, nextUrl);
+                    this.curUrl = nextUrl;
+                    this.issue();
+                    return;
+                }
+            }
+        }
+        // settle with the response
+        RunOutcome o = RunOutcome();
+        o.ok = true;
+        o.response = resp;
+        o.elapsedMs = std::sysMonotonic() - this.t0;
+        o.redirectChain = this.chain;
+        this.settle(o);
+    }
+
+    // 301/302/303 -> GET + drop body; 307/308 -> preserve. Drop auth cross-host.
+    void applyRedirectRules(int status, Url nextUrl) {
+        if (status == 301 || status == 302 || status == 303) {
+            this.curMethod = "GET";
+            this.curBody = "";
+            this.curHeaders = this.curHeaders.remove("Content-Type");
+        }
+        bool crossHost = nextUrl.host != this.curUrl.host;
+        if (crossHost && this.policy.dropAuthCrossHost) {
+            this.curHeaders = this.curHeaders.remove("Authorization");
+        }
+    }
+
+    void settle(RunOutcome o) {
+        if (this.settled) { return; }
+        this.settled = true;
+        if (this.timeoutTimer != None) {
+            std::Timer t = this.timeoutTimer ?? std::after(0);
+            t.cancel();
+        }
+        if (this.hasCb) {
+            var cb = this.onOutcome;
+            cb(o);
+        }
+    }
+
+    // Esc hard-cancel: mark settled + fire a cancelled outcome.
+    void cancelActive() {
+        if (this.settled) { return; }
+        RunOutcome o = RunOutcome();
+        o.cancelled = true;
+        o.elapsedMs = std::sysMonotonic() - this.t0;
+        o.redirectChain = this.chain;
+        this.settle(o);
+    }
+}
+
+bool isRedirect(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+}

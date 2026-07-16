@@ -1,0 +1,26 @@
+// Hand-written twin of rule_routes.ext: the router.record(...) calls written
+// out by hand. The rule expansion must produce byte-identical output on every
+// engine (the P1 cost-identity acceptance gate).
+class Router {
+    string routes = "";
+    Router record(string method, string path) {
+        routes = routes + method + " " + path + "\n";
+        return this;
+    }
+}
+interface IController { }
+class UserController : IController {
+    Router router;
+    new UserController(Router shared) {
+        router = shared;
+        router.record("GET", "/users");
+        router.record("POST", "/users");
+        router.record("DELETE", "/users/x");
+    }
+    int list()   => 1;
+    int create() => 2;
+    int remove() => 3;
+}
+Router r = Router();
+UserController uc = UserController(r);
+console.write(r.routes);

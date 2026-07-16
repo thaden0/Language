@@ -1,0 +1,326 @@
+namespace Sonar {
+    class Input : Focusable, Styleable, IValidatable, ISingleLine {
+        // Bytes storage (the language's string rule); edited at SCALAR
+        // granularity via .chars().
+        string value = "";
+        string placeholder = "";
+        // None = plain. The T?/union-narrowing showcase this track's design
+        // doc calls out: a masked input paints `mask` per scalar.
+        char? mask = None;
+        // Scalars; -1 = unlimited.
+        int maxLength = -1;
+        // SCALAR index, 0..value.chars().length() inclusive.
+        int cursor = 0;
+        // Viewport offset, CELLS.
+        int scrollCells = 0;
+        bool enabled = true;
+
+        // bug.md #51: `((T) => R)?` (a nullable function type) fails to
+        // parse ("expected '=>'" right after the closing paren). Worked
+        // around with a non-nullable field defaulted to a permissive
+        // no-op lambda plus a `hasValidator_` presence flag, rather than
+        // the T?/None shape the rest of this class uses for optionality.
+        (string) => bool validator_ = (v) => true;
+        bool hasValidator_ = false;
+        string validatorMessage_ = "invalid value";
+        Array<() => bool> extraValidators_ = [];
+        Array<string> extraValidatorMessages_ = [];
+        string lastValidationMessage_ = "";
+
+        Array<(string) => void> changeHandlers_ = [];
+        Array<int> changeTokens_ = [];
+        Array<(string) => void> submitHandlers_ = [];
+        Array<int> submitTokens_ = [];
+
+        new Input() {
+            setTabStop(true);
+            // bug.md #53: a lambda calling an instance method with a bare
+            // (implicit-`this`) receiver silently misbehaves once stored
+            // and invoked later; an explicit `this.` receiver is the
+            // workaround.
+            this.onKey((e) => this.handleKey(e));
+            this.onPaste((e) => this.handlePaste(e));
+        }
+
+        // ---- setters --------------------------------------------------------
+
+        void setValue(string v) {
+            value = v;
+            int n = value.chars().length();
+            if (cursor > n) cursor = n;
+            recomputeScrollIfLaidOut();
+            invalidate();
+        }
+        void setPlaceholder(string v) { placeholder = v; invalidate(); }
+        void setMaxLength(int n) {
+            maxLength = n;
+            Array<char> chars = value.chars();
+            if (n >= 0 && chars.length() > n) {
+                value = chars.slice(0, n).joinToString("");
+                if (cursor > n) cursor = n;
+            }
+            invalidate();
+        }
+        void setEnabled(bool v) {
+            if (enabled == v) return;
+            enabled = v;
+            setTabStop(v);
+            invalidate();
+        }
+        Input mask(char m) {
+            mask = m;
+            invalidate();
+            return this;
+        }
+        Input validator((string) => bool check) {
+            validator_ = check;
+            hasValidator_ = true;
+            return this;
+        }
+        void setValidatorMessage(string msg) { validatorMessage_ = msg; }
+        void addValidator(() => bool check, string message) {
+            extraValidators_ = extraValidators_.add(check);
+            extraValidatorMessages_ = extraValidatorMessages_.add(message);
+        }
+
+        // ---- events -----------------------------------------------------------
+
+        int onChange((string) => void h) {
+            int token = newHandlerToken();
+            changeHandlers_ = changeHandlers_.add(h);
+            changeTokens_ = changeTokens_.add(token);
+            return token;
+        }
+        void offChange(int token) {
+            Array<(string) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..changeTokens_.length() - 1) if (changeTokens_[i] != token) {
+                hs = hs.add(changeHandlers_[i]);
+                ts = ts.add(changeTokens_[i]);
+            }
+            changeHandlers_ = hs;
+            changeTokens_ = ts;
+        }
+        int onSubmit((string) => void h) {
+            int token = newHandlerToken();
+            submitHandlers_ = submitHandlers_.add(h);
+            submitTokens_ = submitTokens_.add(token);
+            return token;
+        }
+        void offSubmit(int token) {
+            Array<(string) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..submitTokens_.length() - 1) if (submitTokens_[i] != token) {
+                hs = hs.add(submitHandlers_[i]);
+                ts = ts.add(submitTokens_[i]);
+            }
+            submitHandlers_ = hs;
+            submitTokens_ = ts;
+        }
+        void fireChange() {
+            Array<(string) => void> snapshot = changeHandlers_;
+            for ((string) => void h in snapshot) h(value);
+        }
+        void fireSubmit() {
+            Array<(string) => void> snapshot = submitHandlers_;
+            for ((string) => void h in snapshot) h(value);
+        }
+
+        // ---- validation ---------------------------------------------------------
+
+        bool validate() {
+            if (hasValidator_ && !validator_(value)) {
+                lastValidationMessage_ = validatorMessage_;
+                return false;
+            }
+            for (int i in 0..extraValidators_.length() - 1) {
+                // bug.md #52: calling the result of an indexing expression
+                // directly (`arr[i]()`) fails to lower on IR; bind to a
+                // local first.
+                var check = extraValidators_[i];
+                if (!check()) {
+                    lastValidationMessage_ = extraValidatorMessages_[i];
+                    return false;
+                }
+            }
+            lastValidationMessage_ = "";
+            return true;
+        }
+        string validationMessage() => lastValidationMessage_;
+
+        // ---- cursor / scroll math (the risk concentrated into one function) ---
+
+        int cellAt(int scalarIdx) {
+            Array<char> chars = value.chars();
+            int n = scalarIdx < chars.length() ? scalarIdx : chars.length();
+            if (n < 0) n = 0;
+            if (mask != None) return glyphWidth(mask) * n;
+            int width = 0;
+            for (int i in 0..n - 1) width = width + glyphWidth(chars[i]);
+            return width;
+        }
+
+        void recomputeScroll(int innerW) {
+            int pos = cellAt(cursor);
+            if (pos < scrollCells) scrollCells = pos;
+            else if (pos >= scrollCells + innerW) scrollCells = pos - innerW + 1;
+            if (scrollCells < 0) scrollCells = 0;
+        }
+
+        void recomputeScrollIfLaidOut() {
+            int innerW = box.inset(this.chrome()).w();
+            if (innerW > 0) recomputeScroll(innerW);
+        }
+
+        Point? cursorPos() {
+            if (!focused || !visible()) return None;
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return None;
+            int cellPos = cellAt(cursor) - scrollCells;
+            if (cellPos < 0 || cellPos >= content.w()) return None;
+            // Framework contract (cf. Recon TextArea.cursorPos): return a
+            // box-RELATIVE point. App.renderFrame adds leaf.box offset itself;
+            // content.x()/y() are already absolute, so subtract box origin to
+            // avoid a double-offset (cursor drifting off to the side).
+            return Point((content.x() - box.x()) + cellPos, content.y() - box.y());
+        }
+
+        // ---- editing ------------------------------------------------------------
+
+        void commitEdit(Array<char> chars) {
+            value = chars.joinToString("");
+            recomputeScrollIfLaidOut();
+            invalidate();
+            fireChange();
+        }
+        void moveCursorTo(int newCursor) {
+            cursor = newCursor;
+            recomputeScrollIfLaidOut();
+            invalidate();
+        }
+
+        int wordJumpLeft(Array<char> chars, int from) {
+            int i = from;
+            while (i > 0 && chars[i - 1] == ' ') i = i - 1;
+            while (i > 0 && chars[i - 1] != ' ') i = i - 1;
+            return i;
+        }
+        int wordJumpRight(Array<char> chars, int from) {
+            int n = chars.length();
+            int i = from;
+            while (i < n && chars[i] == ' ') i = i + 1;
+            while (i < n && chars[i] != ' ') i = i + 1;
+            return i;
+        }
+
+        void handleKey(KeyEvent e) {
+            if (!enabled) return;
+            Array<char> chars = value.chars();
+            int n = chars.length();
+            // bug.md #50: char literals don't retype to `char` in
+            // call-argument position; bind to locals first.
+            char ctrlA = 'A';
+            char ctrlE = 'E';
+
+            if (e.code == KeyCode::Backspace && e.mods == 0) {
+                if (cursor > 0) {
+                    chars = chars.removeAt(cursor - 1);
+                    cursor = cursor - 1;
+                    commitEdit(chars);
+                }
+                e.handled = true;
+            } else if (e.code == KeyCode::Delete && e.mods == 0) {
+                if (cursor < n) {
+                    chars = chars.removeAt(cursor);
+                    commitEdit(chars);
+                }
+                e.handled = true;
+            } else if (e.code == KeyCode::Left && e.mods == Mod::Ctrl) {
+                moveCursorTo(wordJumpLeft(chars, cursor));
+                e.handled = true;
+            } else if (e.code == KeyCode::Right && e.mods == Mod::Ctrl) {
+                moveCursorTo(wordJumpRight(chars, cursor));
+                e.handled = true;
+            } else if (e.code == KeyCode::Left && e.mods == 0) {
+                if (cursor > 0) moveCursorTo(cursor - 1);
+                e.handled = true;
+            } else if (e.code == KeyCode::Right && e.mods == 0) {
+                if (cursor < n) moveCursorTo(cursor + 1);
+                e.handled = true;
+            } else if ((e.code == KeyCode::Home && e.mods == 0) || e.isCtrl(ctrlA)) {
+                moveCursorTo(0);
+                e.handled = true;
+            } else if ((e.code == KeyCode::End && e.mods == 0) || e.isCtrl(ctrlE)) {
+                moveCursorTo(n);
+                e.handled = true;
+            } else if (e.code == KeyCode::Enter && e.mods == 0) {
+                fireSubmit();
+                e.handled = true;
+            } else if (e.code == KeyCode::Char && (e.mods == 0 || e.mods == Mod::Shift)) {
+                if (maxLength < 0 || n < maxLength) {
+                    chars = chars.insertAt(cursor, e.ch);
+                    cursor = cursor + 1;
+                    commitEdit(chars);
+                }
+                e.handled = true;
+            }
+        }
+
+        void handlePaste(PasteEvent e) {
+            if (!enabled) return;
+            Array<char> chars = value.chars();
+            Array<char> pasteChars = e.text.chars();
+            int room = maxLength < 0 ? pasteChars.length() : maxLength - chars.length();
+            if (room < 0) room = 0;
+            int take = pasteChars.length() < room ? pasteChars.length() : room;
+            for (int i in 0..take - 1) {
+                chars = chars.insertAt(cursor, pasteChars[i]);
+                cursor = cursor + 1;
+            }
+            if (take > 0) commitEdit(chars);
+            e.handled = true;
+        }
+
+        // ---- layout / paint -----------------------------------------------------
+
+        Size contentDesired(Size avail) => Size(20, 1);
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+
+            if (value.isEmpty() && !focused) {
+                string themeKey = enabled ? "input.placeholder" : "input.disabled";
+                Style ph = resolveOrDefault(this, themeKey);
+                s.writeText(content.x(), content.y(), clipToWidth(placeholder, content.w()), ph);
+                return;
+            }
+
+            string themeKey = "input";
+            if (!enabled) themeKey = "input.disabled";
+            else if (focused) themeKey = "input.focused";
+            Style st = resolveOrDefault(this, themeKey + ".text");
+
+            Array<char> chars = value.chars();
+            int n = chars.length();
+            int col = -scrollCells;
+            for (int i in 0..n - 1) {
+                char c = mask != None ? mask : chars[i];
+                int cw = glyphWidth(c);
+                int startCol = col;
+                int endCol = col + cw;
+                if (endCol > 0 && startCol < content.w()) {
+                    if (startCol >= 0 && endCol <= content.w()) {
+                        s.put(content.x() + startCol, content.y(), c, st);
+                    } else {
+                        char space = ' ';
+                        for (int cellCol in startCol..endCol - 1)
+                            if (cellCol >= 0 && cellCol < content.w())
+                                s.put(content.x() + cellCol, content.y(), space, st);
+                    }
+                }
+                col = endCol;
+            }
+        }
+    }
+}

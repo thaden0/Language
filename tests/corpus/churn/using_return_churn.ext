@@ -1,0 +1,35 @@
+// Churn corpus (ARC leak net) — `using` cleanup on the RETURN edge specifically
+// (techdesign-02 F3): the value crosses through the per-function chain
+// register before the resource closes and the real Ret fires. Each call
+// allocates a fresh escaping Res, returns through its own `using` scope N
+// times; only `sink` is a program-lifetime root.
+//
+// Res is built via a factory function (not `Res()` inline in the `using`
+// declaration's own frame) — matching every other churn program's convention
+// (see nested_obj_array_obj.ext) and sidestepping an unrelated pre-existing
+// leak in direct inline construction of a class holding an Array field
+// (bug.md: "inline-construct field leak" — confirmed independent of `using`
+// by a plain non-using repro; not this track's bug to fix).
+class Res : IDisposable {
+    Array<int> data;
+    int id = 0;
+    void close() { data = data.add(0 - id); }
+}
+Res makeRes(int seed) {
+    Res r = Res();
+    r.id = seed;
+    r.data = r.data.add(seed);
+    return r;
+}
+int useAndReturn(int seed) {
+    using Res r = makeRes(seed);
+    return r.id;          // crosses r's cleanup-group return stub
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        sink = sink + useAndReturn(i);
+    }
+    console.writeln(sink);
+}
+run(@N@);

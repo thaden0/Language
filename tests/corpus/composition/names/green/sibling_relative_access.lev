@@ -1,0 +1,16 @@
+// Sibling-relative access: code inside a namespace reaching another class
+// declared in the SAME namespace with no qualification at all.
+namespace A {
+    class Helper { int calc(int x) => x * 2; }
+    class User {
+        int use(int v) {
+            Helper h = Helper();
+            return h.calc(v);
+        }
+    }
+}
+void main() {
+    A::User u = A::User();
+    console.writeln(u.use(21).toString());
+}
+main();

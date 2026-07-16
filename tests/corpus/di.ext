@@ -1,0 +1,21 @@
+// Dependency injection (§12.5): bind / inject.
+// Covers implicit parameter fill, the explicit `inject` selector, and
+// nearest-wins block scoping (an inner bind shadows an outer one, then the
+// outer one is restored once the inner scope ends).
+interface IGreeter { string hello(); }
+class Hello : IGreeter { string hello() => "hello"; }
+class Hi    : IGreeter { string hello() => "hi"; }
+
+bind IGreeter => Hello();
+
+string speak(IGreeter g) => g.hello();
+
+console.writeln(speak());                 // implicit fill from the top-level bind
+console.writeln(speak(inject IGreeter));  // explicit selector
+
+void inner() {
+    bind IGreeter => Hi();                // shadows the outer bind (nearest-wins)
+    console.writeln(speak());
+}
+inner();
+console.writeln(speak());                 // outer bind restored after inner scope

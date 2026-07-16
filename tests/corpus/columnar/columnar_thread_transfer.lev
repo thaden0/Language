@@ -1,0 +1,31 @@
+// techdesign-columnar §6.4: a columnar Array<struct> crosses a thread boundary
+// via the flatten/rebuild engine (std::sysThreadTransfer, same-thread probe on
+// all three active engines). The rebuilt array is an independently-owned copy
+// (scalars-only blob), and both sides can be mutated without cross-talk.
+struct V3 { int x; int y; int z; }
+
+int transferIsolation() {
+    Array<V3> a;
+    for (int i in 0..3) { V3 v; v.x = i; v.y = i * 10; v.z = i * 100; a = a.add(v); }
+    Array<V3> c = std::sysThreadTransfer(a);
+    // mutate the ORIGINAL after the transfer — the copy is untouched
+    V3 w; w.x = 999; w.y = 999; w.z = 999;
+    a[1] = w;
+    // sum the copy: original values, not the mutation
+    int s = 0;
+    for (int i in 0..3) { s = s + c[i].x + c[i].y + c[i].z; }
+    return s;   // (0+1+2+3) + (0+10+20+30) + (0+100+200+300) = 6 + 60 + 600 = 666
+}
+
+int transferLengthAndFields() {
+    Array<V3> a;
+    for (int i in 0..4) { V3 v; v.x = i; v.y = i; v.z = i; a = a.add(v); }
+    Array<V3> c = std::sysThreadTransfer(a);
+    // mutate the COPY — the original stays as built
+    V3 w; w.x = 7; w.y = 8; w.z = 9;
+    c[0] = w;
+    return c.length() * 1000 + c[0].x + a[0].x;   // 5*1000 + 7 + 0 = 5007
+}
+
+console.writeln(transferIsolation());        // 666
+console.writeln(transferLengthAndFields());  // 5007

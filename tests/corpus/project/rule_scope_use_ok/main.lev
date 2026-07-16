@@ -1,0 +1,16 @@
+// imports.md §5 coupling: rule activation travels with import visibility, and
+// SELECTIVE imports opt in just like bulk `uses`. Importing Web's names one at
+// a time still activates Web's `reg` rule on this file (sibling of
+// rule_scope_ok, which uses a bulk `uses Web`).
+use Web::IController;
+use Web::Route;
+use Web::Registry;
+class Ctl : IController {
+    Registry hits;
+    new Ctl(Registry r) { hits = r; }
+    @Route("/a") int a() => 1;
+    @Route("/b") int b() => 2;
+}
+Registry reg = Registry();
+Ctl c = Ctl(reg);
+console.writeln(reg.log);

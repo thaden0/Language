@@ -1,0 +1,72 @@
+namespace Sonar { namespace Dom {
+
+    // The current Document global (contract D-C4). Written ONLY through the
+    // namespace free-function setter — the `__setCurrentApp` lowering rule (R3):
+    // a bare-name assignment inside the namespace lowers on every engine, a
+    // qualified `Sonar::Dom::currentDocument_ = ...` does not.
+    Document? currentDocument_ = None;
+    void __setCurrentDocument(Document d) { currentDocument_ = d; }
+    Document document() {
+        Document? d = currentDocument_;
+        if (d != None) return d;
+        throw SonarException("no SonarApp is running (no current Document)");
+    }
+    void __resetDocument() { currentDocument_ = None; }
+
+    // ======================================================================
+    // SonarApp (techdesign-01 §3, contract D-C1)
+    //
+    // The DOM-aware App: owns the Document, adds `document()`, `start()` (an
+    // alias — `run()` stays canonical), a binding sweep at frame start, and
+    // query sugar at the root. A plain `App` user touches none of this.
+    // ======================================================================
+    class SonarApp : App {
+        // Optional: Document has no nullary ctor, so a bare `Document doc_`
+        // cannot auto-construct (§3). Set in the ctor, narrowed on read.
+        Document? doc_ = None;
+
+        new SonarApp() {
+            // App::App() (the single-app guard + lifecycle host + layout) runs
+            // as the base initializer before this body.
+            Document d = Document(this);
+            doc_ = d;
+            __setCurrentDocument(d);       // R3 global via a free fn
+            // Pre-register the root `quit` action (D-C7). Explicit `this.`
+            // receiver in the stored lambda — #53 discipline.
+            d.__actionsFor(this).add("quit", () => this.quit());
+        }
+
+        Document document() {
+            Document? d = doc_;
+            if (d != None) return d;
+            throw SonarException("SonarApp has no Document");
+        }
+
+        void start() { this.run(); }        // alias; run() stays canonical
+
+        // frame hook: sweep DOM bindings, then the landed frame (D05 fills the
+        // sweep body; interim no-op).
+        void renderFrame() {
+            Document? d = doc_;
+            if (d != None) d.__sweepBindings();
+            this.App::renderFrame();        // qualified base call (landed, #64-fixed)
+        }
+
+        // ---- query sugar at the root ---------------------------------------
+        DomNode query(string selector) {
+            Document d = this.document();
+            return DomNode(queryStr(d, this, selector), d);
+        }
+        DomNodeList queryAll(string selector) {
+            Document d = this.document();
+            return DomNodeList(queryAllStr(d, this, selector), d);
+        }
+        DomNode? queryOrNone(string selector) {
+            Document d = this.document();
+            IComponent? hit = queryOrNoneStr(d, this, selector);
+            if (hit != None) return DomNode(hit, d);
+            return None;
+        }
+    }
+
+}}

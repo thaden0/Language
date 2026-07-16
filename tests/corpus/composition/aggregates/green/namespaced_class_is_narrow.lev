@@ -1,0 +1,26 @@
+// Regression floor for bug #36 (`x is ConcreteClass` used to silently
+// evaluate false on emit-C++ for a class satisfying an interface via a
+// NAMESPACED declaration, while oracle/IR/LLVM all narrowed correctly).
+// Fixed 2026-07-14 on master (emit-C++'s `is` test falls back to in.sym for
+// a namespaced class). The original bug's repro needed the real ~20-member
+// Sonar Component/IComponent shape to reproduce; this namespaced-interface
+// shape is the smallest repro that reproduced the "namespaced" trigger once
+// the fix's own commit message identified it.
+namespace NsThing {
+    interface IThing { int id(); string label(); }
+    class Base : IThing {
+        int tag_ = 1;
+        int id() => tag_;
+        string label() => "base";
+    }
+}
+uses NsThing;
+void main() {
+    IThing t = Base();
+    if (t is Base) {
+        console.writeln("narrowed");
+    } else {
+        console.writeln("not narrowed");
+    }
+}
+main();

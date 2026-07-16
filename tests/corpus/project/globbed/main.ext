@@ -1,0 +1,6 @@
+uses Lib;
+void run() {
+    console.writeln(one() + two());     // 3 — both files gathered via the glob
+    console.writeln(Lib::one());
+}
+run();

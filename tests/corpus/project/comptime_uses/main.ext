@@ -1,0 +1,12 @@
+// §9: the comptime-if's condition is folded before imports are computed, so
+// only the taken branch's `uses` is visible when rule/attribute scoping runs
+// — LibA's rule fires here, LibB's does not.
+comptime if (true) { uses LibA; } else { uses LibB; }
+
+class Plugin {
+    string log = "";
+    @Handler("x") int handle() => 1;
+}
+
+Plugin p = Plugin();
+console.writeln(p.log);

@@ -1,0 +1,93 @@
+# Sonar built-in theme: Light (design §3)
+#
+# Light background, dark foreground. a11y rule (design §3): every state
+# distinction carries a non-color channel (attrs), never color alone.
+
+[default]
+fg = "black"
+bg = "white"
+
+[text]
+fg = "black"
+
+[input]
+fg = "black"
+bg = "white"
+
+[input.focused]
+fg    = "black"
+bg    = "brightYellow"
+attrs = "bold"
+
+[input.disabled]
+fg    = "brightBlack"
+attrs = "dim"
+
+[button]
+fg = "white"
+bg = "blue"
+
+[button.focused]
+fg    = "white"
+bg    = "brightBlue"
+attrs = "bold"
+
+[button.disabled]
+fg    = "brightBlack"
+attrs = "dim"
+
+[checkbox]
+fg = "black"
+
+[checkbox.focused]
+fg    = "blue"
+attrs = "bold"
+
+[radio]
+fg = "black"
+
+[radio.focused]
+fg    = "blue"
+attrs = "bold"
+
+[radio.selected]
+fg    = "blue"
+attrs = "underline"
+
+[progress]
+fg = "brightBlack"
+
+[progress.bar]
+fg = "green"
+
+[spinner]
+fg = "blue"
+
+[contentbar]
+fg = "black"
+bg = "brightWhite"
+
+[border]
+fg = "brightBlack"
+
+[border.focused]
+fg    = "blue"
+attrs = "bold"
+
+[title]
+fg    = "black"
+attrs = "bold"
+
+[scrollbar]
+fg = "brightBlack"
+
+[scrollbar.thumb]
+fg = "black"
+
+[menu.item]
+fg = "black"
+
+[menu.item.selected]
+fg    = "black"
+bg    = "brightYellow"
+attrs = "reverse"

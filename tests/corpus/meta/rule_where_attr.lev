@@ -1,0 +1,22 @@
+// bug.md #26: an @-attribute whose rule `where`-clause excludes a decl must NOT
+// trigger the "attribute matched no imported rule" warning — a rule DID consider
+// it (the exclusion is intentional), so it is not a forgotten `uses`.
+namespace W {
+    attribute Traced { }
+    rule onlyNonVoid {
+        match @Traced on method m in class C
+        where m.returnType != "void"
+        inject `hits = hits + 1;` at bottom of C.constructor
+    }
+}
+uses W;
+
+class C {
+    int hits = 0;
+    new C() { }
+    @Traced int a() => 1;    // non-void: where true, rule fires (attr consumed)
+    @Traced void b() { }     // void: where false, excluded -> not dangling, no warning
+}
+
+C c = C();
+console.writeln(c.hits);     // 1 — one non-void @Traced method fired

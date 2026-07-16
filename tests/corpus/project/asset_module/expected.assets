@@ -1,0 +1,2 @@
+[assets] consumed assets (path, bytes, hash if known, owning module)
+[assets] views/lib.html  19 B  sha256:0b150c80f5700c342da25d28c20d99bdb55375f20034a936078bbf7b042a0307  (module ".../lib")

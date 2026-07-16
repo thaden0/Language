@@ -1,0 +1,24 @@
+// Churn corpus (ARC leak net) — escaping ARRAYS.
+//
+// @N@ is a template hole substituted by fuzz/churn_leak.py. Each iteration
+// builds a small heap-backed Array that escapes its callee frame (returned
+// from build) and is then dropped. Only `sink` survives, so objects reachable
+// at exit are CONSTANT in N. The escaping-tier ARC must reclaim the N dropped
+// arrays (and their COW realloc leftovers), so `live-at-exit=` must stay flat
+// as N grows.
+Array<int> build(int seed) {
+    Array<int> a;
+    a = a.add(seed);
+    a = a.add(seed + 1);
+    a = a.add(seed + 2);
+    return a;                     // returned value escapes -> escaping tier
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Array<int> a = build(i);  // fresh escaping array each iteration...
+        sink = sink + a.length();
+    }                             // ...dropped here; the ARC owes N frees
+    console.writeln(sink);
+}
+run(@N@);

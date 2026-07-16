@@ -1,0 +1,60 @@
+// Atlantis Track 01 — C4 exception declarations (design §4.1).
+//
+// Any user/framework class becomes status-mapped by implementing IHttpException —
+// catch by contract, not base class (multiple inheritance earning its keep, C4).
+// The mapping itself lives in ErrorMapper (error_mapper.lev); these are the carriers.
+namespace Atlantis {
+    namespace Http {
+        interface IHttpException : IException { int status; }
+
+        struct FieldError {
+            string field;
+            string message;
+            new FieldError(string field, string message) {
+                this.field = field;
+                this.message = message;
+            }
+        }
+        interface IValidationException : IHttpException { Array<FieldError> errors; }
+
+        class HttpException : Exception, IHttpException {
+            int status;
+            new HttpException(int status, string message) {
+                Exception::Exception(message);       // base-ctor form (P-probe P2 pins the syntax)
+                this.status = status;
+            }
+        }
+        class NotFoundException : HttpException {
+            new NotFoundException(string what) {
+                HttpException::HttpException(404, "not found: " + what);
+            }
+        }
+        class BadRequestException : HttpException {
+            new BadRequestException(string why) {
+                HttpException::HttpException(400, why);
+            }
+        }
+        class UnauthorizedException : HttpException {
+            new UnauthorizedException() {
+                HttpException::HttpException(401, "unauthorized");
+            }
+        }
+        class ForbiddenException : HttpException {
+            new ForbiddenException() {
+                HttpException::HttpException(403, "forbidden");
+            }
+        }
+        class PayloadTooLargeException : HttpException {
+            new PayloadTooLargeException(int limit) {
+                HttpException::HttpException(413, "body exceeds " + limit.toString() + " bytes");
+            }
+        }
+        class ValidationException : HttpException, IValidationException {
+            Array<FieldError> errors;
+            new ValidationException(Array<FieldError> errors) {
+                HttpException::HttpException(422, "validation failed");
+                this.errors = errors;
+            }
+        }
+    }
+}

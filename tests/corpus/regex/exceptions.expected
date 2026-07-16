@@ -1,0 +1,8 @@
+caught:regex: unterminated group at offset 13
+13
+caught2:regex: repetition too large
+true
+false
+false
+caught3:regex: unterminated group at offset 4
+caught-iface:regex: unterminated class at offset 1

@@ -1,0 +1,30 @@
+// Qualified type names (§12) in type positions AND direct qualified
+// construction: NS::Class(), NS::Class(args), and NS::Class::Label().
+namespace Room1 { public class TheClass { public string greet() => "Welcome"; } }
+namespace Room2 { public class TheClass { public string greet() => "Hello"; } }
+namespace Geo {
+    public class Circle {
+        public int r = 0;
+        new Circle(int radius) { r = radius; }
+        new Unit() { r = 1; }
+    }
+}
+
+string describe(Room1::TheClass c) => c.greet();     // qualified param type
+
+void run() {
+    Room1::TheClass a = Room1::TheClass();           // direct qualified construction...
+    Room2::TheClass b = Room2::TheClass();           // ...same name, distinct per namespace
+    console.writeln(a.greet());
+    console.writeln(b.greet());
+    console.writeln(describe(a));
+
+    Geo::Circle c = Geo::Circle(5);                  // qualified ctor with args
+    console.writeln(c.r);
+    Geo::Circle u = Geo::Circle::Unit();             // qualified label ctor
+    console.writeln(u.r);
+
+    try { throw RuntimeException("boom"); }
+    catch (std::RuntimeException e) { console.writeln(e.message); }   // qualified catch
+}
+run();

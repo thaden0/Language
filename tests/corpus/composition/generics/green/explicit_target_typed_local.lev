@@ -1,0 +1,13 @@
+// The sanctioned workaround for bug #43's nested-call-argument shape: bind
+// the inner generic construction to an explicitly-typed local first.
+struct Foo {
+    int a;
+    Map<string, string> m;
+    new Foo(int a, Map<string, string> m) { this.a = a; this.m = m; }
+}
+void main() {
+    Map<string, string> m = Map();
+    Foo f = Foo(1, m);
+    console.writeln(f.a.toString());
+}
+main();

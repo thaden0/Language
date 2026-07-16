@@ -1,0 +1,17 @@
+[imports] file -> imports provenance (declares / uses / effective visible namespaces)
+[imports] shapes.ext
+[imports]   declares: Geo
+[imports]   uses:     (none)
+[imports]   visible:  Geo, std
+[imports] area.ext
+[imports]   declares: Geo
+[imports]   uses:     (none)
+[imports]   visible:  Geo, std
+[imports] util.ext
+[imports]   declares: Util
+[imports]   uses:     (none)
+[imports]   visible:  Util, std
+[imports] main.ext
+[imports]   declares: <root>
+[imports]   uses:     Geo, Util
+[imports]   visible:  <root>, Geo, Util, std

@@ -1,0 +1,2 @@
+[why] name 'two' in main.ext
+[why]   resolves to Shared::two (1 visible candidate, no ambiguity)

@@ -1,0 +1,21 @@
+text/html
+2
+n
+application/json
+3
+1
+POST /submit HTTP/1.1
+x
+hello
+f
+t
+GET /
+HTTP/1.1 404 Not Found
+Content-Length: 4
+Connection: close
+X-Trace: abc
+
+nope
+200 Hello World
+Hello World
+Hello World

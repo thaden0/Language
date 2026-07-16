@@ -1,0 +1,9 @@
+// A `::`-reached method reference (LA-25), stored in a local, invoked
+// directly (receiver becomes the first parameter).
+class Calc { int square(int x) => x * x; }
+void main() {
+    var f = Calc::square;
+    Calc c = Calc();
+    console.writeln(f(c, 6).toString());
+}
+main();

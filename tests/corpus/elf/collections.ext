@@ -1,0 +1,34 @@
+// Collections + closures compiled by the PURE backend (own x86-64 + ELF, no
+// g++/libc): pure arrays, maps, ranges, for-in iteration, indexers, and the
+// in-language LINQ surface (where/map/reduce/join over lambdas) — all in raw
+// machine code with tagged heap values.
+void run() {
+    Array nums = [1..6];
+    console.writeln(nums.where((n) => n % 2 == 0).joinToString(","));   // 2,4,6
+    console.writeln(nums.map((n) => n * 10).joinToString(","));          // 10,...,60
+    console.writeln(nums.reduce(0, (a, b) => a + b));                    // 21
+    console.writeln(nums.reverse().take(3).joinToString(","));          // 6,5,4
+    console.writeln(nums);                                               // [1, 2, 3, 4, 5, 6]
+
+    Array a = [1, 2, 3];
+    a[1] = 99;
+    console.writeln(a.first());                                          // 1
+    console.writeln(a);                                                  // [1, 99, 3]
+
+    Map<string, int> ages;
+    ages["alice"] = 30;
+    ages["bob"] = 25;
+    ages["alice"] = 31;
+    console.writeln(ages);                                               // {alice: 31, bob: 25}
+    console.writeln(ages.at("bob"));                                     // 25
+    console.writeln(ages.has("carol"));                                  // false
+    console.writeln(ages.keys().joinToString("/"));                     // alice/bob
+    int total = 0;
+    for (Pair e in ages) total += e.second;
+    console.writeln(total);                                              // 56
+
+    Array x = [1, 2, 3];
+    Array y = [2, 3, 4];
+    for (Pair p in x.join(y, (m, n) => m == n)) console.writeln(p.first);  // 2, 3
+}
+run();

@@ -1,0 +1,8 @@
+class Box { int value = 0; }
+Box a = Box();
+Box alias = a;
+Box other = Box();
+console.writeln(a == alias);
+console.writeln(a != alias);
+console.writeln(a == other);
+console.writeln(a != other);

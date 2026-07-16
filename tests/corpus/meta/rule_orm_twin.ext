@@ -1,0 +1,11 @@
+// Hand-written twin of rule_orm.ext: the $for-spliced schema() written by
+// hand. Must be byte-identical to the expanded rule's output (P1).
+class User {
+    int id;
+    string name;
+    int internalCounter;
+    Array<string> schema() => ["users", "id", "name"];
+}
+
+User u = User();
+console.write(u.schema().joinToString(","));

@@ -1,0 +1,15 @@
+// HTTP written in the language: a server + client over the socket streams.
+// The handler is (HttpRequest) => HttpResponse; the client reads until close.
+void run() {
+    HttpServer server = HttpServer(8092);
+    server.handle((req) => HttpResponse(200, req.method + " " + req.path));
+
+    HttpClient client = HttpClient();
+    client.get("127.0.0.1", 8092, "/hello", (resp) => {
+        console.writeln("status " + resp.status);
+        console.writeln("body: " + resp.body);
+        server.stop();
+    });
+    console.writeln("http up");
+}
+run();

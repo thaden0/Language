@@ -1,0 +1,24 @@
+// Track 04 M3: byte-level access. New natives -> excluded from the frozen
+// ELF backend's lanes (see toint_tofloat.ext's header note; same reasoning).
+// fromByte has no static-native home (no `static` keyword exists in the
+// language yet), so the design's own pre-registered fallback is used: the
+// free function std::byteToString(int).
+
+console.writeln("ABC".byteAt(0));               // 65
+console.writeln("ABC".byteAt(2));               // 67
+console.writeln(std::byteToString(65));         // A
+console.writeln(std::byteToString(0).length()); // 1
+
+try {
+    "AB".byteAt(5);
+    console.writeln("no throw");
+} catch (RuntimeException e) {
+    console.writeln("caught: " + e.message);    // caught: index 5 out of bounds (length 2)
+}
+
+try {
+    std::byteToString(300);
+    console.writeln("no throw");
+} catch (RuntimeException e) {
+    console.writeln("caught: " + e.message);    // caught: byte value 300 out of range 0..255
+}

@@ -1,0 +1,15 @@
+// bug.md #14: a user-defined class's `(<<)`/`(>>)` transfer operator failed
+// to lower on the emit-C++ backend (unconditional "native backend: operator"
+// error), the only one of the four actively-maintained engines where this
+// didn't already work. Minimal repro from the bug entry, now pinned across
+// every engine this directory runs on.
+class Sink {
+    string val = "";
+    Sink (<<)(string x) { val = val + x; return this; }
+}
+void run() {
+    Sink s = Sink();
+    s << "hi" << ", " << "there";
+    console.writeln(s.val);
+}
+run();

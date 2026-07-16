@@ -1,0 +1,2 @@
+name = "attr_scope_err"
+sources = ["lib.ext", "main.ext"]

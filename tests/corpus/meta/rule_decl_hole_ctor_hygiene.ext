@@ -1,0 +1,20 @@
+// bug.md #22: a class declaration hole in call position must keep denoting
+// that class even when the rule also gives the generated function `$C`'s name.
+// Before the hygiene identity was preserved, `$C()` captured the enclosing
+// function, recursed forever, and crashed the compiler process.
+interface IThing { string label(); }
+namespace Fw {
+    attribute Injectable { }
+    rule factories {
+        match @Injectable on class C
+        inject `IThing $C() => $C();` at namespace Generated
+    }
+}
+uses Fw;
+
+@Injectable
+class UserService : IThing {
+    string label() => "service";
+}
+
+console.writeln(Generated::UserService().label());

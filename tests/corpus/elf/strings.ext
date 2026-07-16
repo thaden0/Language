@@ -1,0 +1,11 @@
+string greet(string name) => "Hello, " + name + "!";
+void run() {
+    console.writeln(greet("world"));
+    console.writeln("x=" + 11);            // int stringify + concat
+    console.writeln("sum=" + (2 + 3));
+    string s;                              // default empty string
+    console.writeln("[" + s + "]");
+    int n = 0 - 5;
+    console.writeln("n is " + n);
+}
+run();

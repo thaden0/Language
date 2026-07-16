@@ -1,0 +1,77 @@
+// Regression: a retained TcpStream handle must be INERT after close().
+//
+// The OS recycles descriptor numbers (POSIX hands out the lowest free fd),
+// so once a stream's fd is closed, the same number can come back as an
+// UNRELATED connection. Before the fix, TcpStream.close() left `fd` set and
+// `<<`/close() unguarded, so a stale handle's write landed inside the next
+// connection that recycled the number, and its close() killed it. Found via
+// the lcurl fixture server: a leftover per-connection timer wrote its
+// payload into the NEXT client's response (examples/curl/test, --max-time).
+//
+// Shape: conn A is accepted and immediately closed server-side, but the
+// server retains the handle. Conn B's accept recycles A's fd number. The
+// stale handle then writes and closes — both must be no-ops. Client B must
+// receive exactly "hello-B-bye": no ghost bytes, no early close.
+
+class Harness {
+    TcpListener? lis;
+    TcpStream? stale;
+    Timer? guard;                        // safety net: a hung run prints and
+                                         // drains instead of stalling the lane
+    int clientB = 0 - 1;
+    int watchB = 0 - 1;
+    string acc = "";
+    int step = 0;
+
+    void bail() {
+        console.writeln("TIMEOUT acc=" + acc);
+        if (watchB >= 0) { std::sysUnwatch(watchB); watchB = 0 - 1; }
+        if (clientB >= 0) { std::sysClose(clientB); clientB = 0 - 1; }
+        if (lis != None) lis.stop();
+    }
+
+    void onAccept(TcpStream c) {
+        Harness self = this;
+        if (step == 0) {
+            step = 1;
+            stale = c;
+            c.close();                       // server closes A; handle retained
+            if (stale != None) stale << "ghost-early";   // must be a no-op
+            clientB = std::sysTcpConnect("127.0.0.1", 8095);
+            watchB = std::sysWatch(clientB, (r) => self.pumpB());
+        } else {
+            step = 2;
+            c << "hello-B";
+            if (stale != None) stale << "ghost-late";    // fd now recycled by B
+            if (stale != None) stale.close();            // must not kill B
+            c << "-bye";                     // only arrives if B survived
+            c.close();
+            if (lis != None) lis.stop();
+        }
+    }
+
+    void pumpB() {
+        string? chunk = std::sysRecv(clientB, 4096);
+        if (chunk == None) {                 // EOF: B's bytes are complete
+            console.writeln(acc);
+            std::sysUnwatch(watchB);
+            std::sysClose(clientB);
+            if (guard != None) guard.cancel();
+        } else if (chunk != None) {
+            if (chunk != "") acc = acc + chunk;
+        }
+    }
+}
+
+void run() {
+    Harness h = Harness();
+    TcpListener lis = TcpListener(8095);
+    h.lis = lis;
+    Timer g = std::after(5000);
+    h.guard = g;
+    g.subscribe((n) => h.bail());
+    lis.connections((c) => h.onAccept(c));
+    int a = std::sysTcpConnect("127.0.0.1", 8095);
+    console.writeln("connected " + (a >= 0));
+}
+run();

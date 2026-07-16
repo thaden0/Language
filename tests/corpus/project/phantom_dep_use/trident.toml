@@ -1,0 +1,6 @@
+name = "phantom_dep_use"
+entry = "main"
+sources = ["main.ext"]
+
+[[dep]]
+path = "mid"

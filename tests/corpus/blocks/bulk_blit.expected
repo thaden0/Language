@@ -1,0 +1,9 @@
+.cdefg..
+ababcd
+cdefef
+0101234589
+0101234589
+0
+throw: blit dst
+throw: blit src
+throw: blit length

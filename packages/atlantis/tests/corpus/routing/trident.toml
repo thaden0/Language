@@ -1,0 +1,8 @@
+name = "atlantis-routing-corpus"
+entry = "main"
+sources = ["routing.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

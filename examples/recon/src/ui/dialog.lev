@@ -1,0 +1,46 @@
+// Dialogs (DESIGN §9.4). The design predates Sonar shipping Modal/alert/confirm
+// (they landed after RESEARCH.md was written); we compose the now-shipped Modal
+// rather than hand-rolling a fragile custom Container-leaf over the raw overlay
+// stack. Same intent (dialogs over the overlay stack), far more robust.
+namespace Recon {
+uses Sonar;
+
+// A one-field prompt: label + Input; Enter accepts, Esc cancels.
+class PromptDialog {
+    public Modal modal;
+    public Input input;
+    (string) => void onAccept;
+    bool hasAccept = false;
+
+    new PromptDialog(string title, string label, string initial) {
+        modal = Modal();
+        modal.title(title);
+        Text prompt = Text();
+        prompt.text(label);
+        modal.add(prompt);
+        input = Input();
+        input.setValue(initial);
+        modal.add(input);
+        this.input.onSubmit((v) => this.accept(v));
+    }
+
+    void setOnAccept((string) => void cb) { onAccept = cb; hasAccept = true; }
+
+    void open(App app) {
+        this.modal.open();
+        app.focus(this.input);
+    }
+
+    void accept(string v) {
+        this.modal.close();
+        if (this.hasAccept) { var cb = this.onAccept; cb(v); }
+    }
+}
+
+// Yes/No confirm over Sonar::confirm (returns a Promise<bool>).
+Promise<bool> confirmDialog(string title, string message) => Sonar::confirm(title, message);
+
+// A transient notice.
+Modal alertDialog(string title, string message) => Sonar::alert(title, message);
+
+}

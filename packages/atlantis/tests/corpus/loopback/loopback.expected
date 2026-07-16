@@ -1,0 +1,5 @@
+GET /hi -> 200 : hello /hi
+GET /healthz -> 200 : ok
+GET /missing -> 404 ctype=application/problem+json
+GET /crash -> 500 leaks=false
+log lines=5

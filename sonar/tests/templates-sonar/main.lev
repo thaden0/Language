@@ -1,0 +1,11 @@
+uses Sonar;
+
+// External `.sonar` template (design §3.5): designers edit the .sonar file;
+// `import()` reads it at comptime (LA-20, trident `assets`), and `sonar!`
+// expands the same engine over it. No backticks/escaping in the file.
+comptime string panelTpl = import("panel.sonar");
+
+void main() {
+    Container panel = sonar!(panelTpl);
+    console.writeln("children=" + panel.children().length().toString());   // 3
+}

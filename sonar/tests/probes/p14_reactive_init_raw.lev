@@ -1,0 +1,17 @@
+// T11 R-1 probe issue #2: a field initializer (`int count = 0`) writes the raw
+// slot at construction, BYPASSING the injected set-view — so no ping fires
+// before the first explicit write (pings stays 0 after construction).
+namespace R {
+    attribute Reactive { }
+    rule rInt { match @Reactive on field f in class C : IHost where f.type == "int" inject `set $f(int v) { $f = v; this.__ping(); }` at member of C }
+    interface IHost { void __ping(); }
+}
+uses R;
+class Box : IHost {
+    @Reactive int n = 42;
+    int pings = 0;
+    new Box() { }
+    void __ping() { pings = pings + 1; }
+}
+Box b = Box();
+console.writeln("after ctor n=" + b.n.toString() + " pings=" + b.pings.toString());

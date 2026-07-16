@@ -1,0 +1,29 @@
+// Track 10 M6 (techdesign-threads-3 §8; techdesign-threads-2 §4.1/M2): the
+// arena/allocator save-restore microbench. Every function frame reads the
+// TLS-backed hot-state cursors (lv_g_arena_cursor for arena save/restore, the
+// g_heap_* free-list for escaping-tier alloc) — the M2 pass made them
+// _Thread_local (initial-exec on ELF, one %fs-relative load). This tight loop
+// churns 20M heap alloc+free through those cursors and times it via
+// sysMonotonic, so the TLS cost is measured, not assumed. Run before/after on
+// the same host; the initial-exec model is one extra segment-relative load, so
+// the figure sits within run-to-run noise.
+
+class Box { public int v = 0; }
+
+int bench(int iters) {
+    int acc = 0;
+    int i = 0;
+    while (i < iters) {
+        Box b = Box();        // heap alloc (rtObjNew, TLS free-list) ...
+        b.v = i;
+        acc = acc + b.v;
+        i = i + 1;            // ... dropped at scope end -> free-list return
+    }
+    return acc;
+}
+
+int t0 = std::sysMonotonic();
+int r = bench(20000000);
+int t1 = std::sysMonotonic();
+console.writeln("iters=20000000 ms=" + (t1 - t0).toString());
+console.writeln("checksum=" + r.toString());

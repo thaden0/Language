@@ -1,0 +1,5 @@
+name = "asset_module"
+sources = ["main.lev"]
+
+[[dep]]
+path = "lib"

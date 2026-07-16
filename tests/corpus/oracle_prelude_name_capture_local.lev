@@ -1,0 +1,14 @@
+// bug.md #29 E5: the failure is independent of the enclosing function's return
+// expression; merely declaring a user global named `at` used to poison a[i].
+int at(Array<int> a, int i) { return a[i]; }
+
+int readSecond(Array<int> a) {
+    int x = a[1];
+    console.writeln(x);
+    return 0;
+}
+
+void run() {
+    readSecond([10, 20]);
+}
+run();

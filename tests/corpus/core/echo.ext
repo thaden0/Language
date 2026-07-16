@@ -1,0 +1,8 @@
+void run() {
+    string first = sysReadLine(0);
+    sysWrite(1, "echo: " + first + "\n");
+    string second = sysReadLine(0);
+    if (second == "") console.writeln("eof");
+    console.writeln("native io works");
+}
+run();

@@ -1,0 +1,6 @@
+65
+67
+A
+1
+caught: index 5 out of bounds (length 2)
+caught: byte value 300 out of range 0..255

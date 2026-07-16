@@ -1,0 +1,27 @@
+// Churn corpus (ARC leak net) — MAP with heap-typed, SHARED values.
+//
+// Each iteration builds a Map whose values are heap objects, and deliberately
+// stores the SAME object under two keys (objects are references, §18). This is
+// the owned-vs-borrowed / over-release trap: a recursive release that frees
+// each map slot's value independently would free the shared Rec twice
+// (double-free / UAF). Correct reclamation frees it exactly once. A missed
+// release leaks; a double-free corrupts output or crashes — the harness
+// differential-checks ELF stdout vs the oracle and flags a non-zero exit, so
+// it catches both. @N@ is substituted by fuzz/churn_leak.py.
+class Rec { Array<int> data; }
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Map<int, Rec> m;
+        Rec r = Rec();
+        r.data = r.data.add(i);
+        m[i] = r;                     // the map holds two references...
+        m[i + 100000] = r;            // ...to the ONE Rec (shared value)
+        Rec r2 = Rec();
+        r2.data = r2.data.add(i * 2);
+        m[i + 1] = r2;
+        sink = sink + m.keys().length() + m.at(i).data.length();
+    }                                 // ...map dropped; free each Rec exactly once
+    console.writeln(sink);
+}
+run(@N@);

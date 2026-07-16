@@ -1,0 +1,29 @@
+interface IValue { }
+class Value : IValue { }
+interface IMaybe { IValue? value(); }
+class Maybe : IMaybe { Value value() => Value(); }
+
+interface R<T> { R<T> self(); }
+class ConcreteR : R<int> { ConcreteR self() => this; }
+
+interface IBase { IBase self(); }
+interface IRefined : IBase { IRefined self(); }
+class Refined : IRefined { Refined self() => this; }
+
+interface ILeft { IBase make(); }
+interface IRight { IRefined make(); }
+class Both : ILeft, IRight { distinct Refined make() => Refined(); }
+
+// Multiple same-parameter candidates are already coexisting slots. The first
+// assignable declaration deterministically satisfies the interface.
+class Multi : ILeft {
+    Refined make() => Refined();
+    IBase make() => Refined();
+}
+
+IMaybe maybe = Maybe();
+IValue? value = maybe.value();
+R<int> r = ConcreteR();
+R<int> again = r.self();
+ILeft left = Both();
+console.writeln("covariant edges ok");

@@ -1,0 +1,31 @@
+// §16.5 Phase 3 §6: $_params / $_args forward the matched method's whole
+// parameter list into an injected lambda, without hand-writing its shape.
+namespace W {
+    interface IController { }
+    attribute Route { string path; }
+    rule registerRoutes {
+        match @Route(r) on method m in class C : IController
+        inject `router.record($r.path, ($_params) => this.$m($_args))`
+               at bottom of C.constructor
+    }
+}
+uses W;
+
+class Router {
+    string log = "";
+    Router record(string path, (int) => int handler) {
+        log = log + path + "=" + handler(10).toString() + ";";
+        return this;
+    }
+}
+
+class Ctl : IController {
+    Router router;
+    new Ctl(Router r) { router = r; }
+    @Route("/double") int double_(int n) => n * 2;
+    @Route("/square") int square(int n) => n * n;
+}
+
+Router r = Router();
+Ctl c = Ctl(r);
+console.write(r.log);

@@ -1,0 +1,21 @@
+// Integer scalar core compiled by the PURE backend (own x86-64 + ELF, no
+// g++/libc): recursion, loops, arithmetic, comparisons, negatives, bools.
+int fib(int n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }
+int gcd(int a, int b) { while (b != 0) { int r = a % b; a = b; b = r; } return a; }
+bool isPrime(int n) {
+    if (n < 2) return false;
+    for (int d = 2; d * d <= n; d += 1) if (n % d == 0) return false;
+    return true;
+}
+void run() {
+    console.writeln(fib(15));
+    console.writeln(gcd(48, 36));
+    int t = 0;
+    for (int i in 1..100) t += i;
+    console.writeln(t);
+    console.writeln(0 - 7);
+    console.writeln(17 % 5);
+    console.writeln(isPrime(97));
+    console.writeln(isPrime(91));
+}
+run();

@@ -1,0 +1,17 @@
+// Track 06: the deferred transcendental group — float.pow(float) and the
+// math::log/log2/exp/sin/cos/tan/atan2 free functions. Fully covered on
+// oracle/IR/emit-C++ (libm) and LLVM; deliberately deferred with a clean
+// diagnostic on the frozen ELF backend (the zero-dep boundary — polynomial
+// emission is a later project), so this dir is excluded from ELF's lane
+// (see CMakeLists.txt).
+void main() {
+    console.writeln((2.0).pow(10.0));
+    console.writeln(math::log(math::e));
+    console.writeln(math::log2(8.0));
+    console.writeln(math::exp(1.0));
+    console.writeln(math::sin(0.0));
+    console.writeln(math::cos(0.0));
+    console.writeln(math::tan(0.0));
+    console.writeln(math::atan2(1.0, 1.0));
+}
+main();

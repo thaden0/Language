@@ -1,0 +1,8 @@
+interface Item { string paint(); }
+class A : Item { string paint() => "a"; }
+class B : Item { string paint() => "b"; }
+void main() {
+    Array<Item> items = [A(), B()];
+    for (Item item in items) console.writeln(item.paint());
+}
+main();

@@ -1,0 +1,25 @@
+// Columnar churn (ARC leak net) — FUSED FIELD SCAN, must be GREEN. The columnar
+// buffer is built ONCE (in a field, so old-buffer reclamation rides the field
+// write — the local-self-append-in-a-loop wart is pre-existing and shared with
+// row-major dense, so it is deliberately avoided here). The churn loop scans one
+// field per element via arr[j].hot, which FUSES to ColGet — no gather, no
+// allocation — so live-at-exit must stay perfectly flat in N. This is the
+// leak-flatness proof of the v1 win (§5.4). @N@ substituted by fuzz/churn_leak.py.
+struct W { int hot; int c1; int c2; }
+class Holder { Array<W> data; }
+Holder build() {
+    Holder h = Holder();
+    for (int k in 0..7) { W w; w.hot = k; w.c1 = k * 2; w.c2 = k * 3; h.data = h.data.add(w); }
+    return h;
+}
+void run(int n) {
+    Holder h = build();
+    int sink = 0;
+    for (int i in 1..n) {
+        int s = 0;
+        for (int j in 0..7) { s = s + h.data[j].hot; }   // ColGet: zero allocation
+        sink = sink + s;
+    }
+    console.writeln(sink);
+}
+run(@N@);

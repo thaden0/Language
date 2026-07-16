@@ -1,0 +1,8 @@
+name = "sonar-events-smoke"
+entry = "main"
+sources = ["smoke.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.1.0"
+as = "Sonar"

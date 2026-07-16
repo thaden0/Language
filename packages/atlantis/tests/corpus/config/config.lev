@@ -1,0 +1,87 @@
+// Atlantis Track 04 — Config acceptance corpus (design §12 M1 / probe P-9).
+//
+// Drives Atlantis::Config::parseText (the engine-portable parser core) so the .env
+// grammar (§4.2), typed error-accumulating reads (§4.4), prefix sections (§5), and
+// redacted dump() (§4.5) are verified byte-identical on oracle / IR / LLVM. File- and
+// env-backed load() is the interpreter-only wrapper over this exact parser (§4.3).
+//
+// Names are reached BARE via `uses Atlantis::Config;`: a doubly-nested free function
+// (Atlantis::Config::parseText) does NOT resolve when spelled with full qualification
+// from outside the Atlantis tree — the IR backend cannot even lower the deep name —
+// but `uses` + a bare call resolves on every engine (§13 finding).
+uses Atlantis::Config;
+
+void main() {
+    // ---- §4.2 good parse: comments, quoted+escaped value, raw value, empty value ----
+    string env =
+        "# a comment line\n" +
+        "\n" +                                     // blank line
+        "APP_NAME=myapp\n" +
+        "GREETING=\"hello\\tworld\"\n" +           // quoted, \t escape
+        "PORT=8080\n" +
+        "DEBUG=true\n" +
+        "EMPTY=\n" +                               // present but empty (distinct from absent)
+        "  SPACED  =  trimmed  \n" +               // key/value trimmed
+        "SMTP_HOST=mail.example.com\n" +
+        "SMTP_PORT=2525\n";
+
+    Config cfg = parseText(env);
+    console.writeln("size=" + cfg.size().toString());
+    console.writeln("APP_NAME=" + cfg.at("APP_NAME", "?"));
+    console.writeln("SPACED=[" + cfg.at("SPACED", "?") + "]");
+    string? g = cfg.atOrNone("GREETING");
+    if (g == None) { console.writeln("GREETING absent"); }
+    else { console.writeln("GREETING has tab=" + g.contains("\t").toString() + " len=" + g.length().toString()); }
+    console.writeln("EMPTY present=" + cfg.has("EMPTY").toString() + " value=[" + cfg.at("EMPTY", "MISS") + "]");
+    console.writeln("MISSING present=" + cfg.has("NOPE").toString());
+
+    // ---- §4.4 typed reads, no errors ----
+    Errors ok = Errors();
+    console.writeln("PORT int=" + cfg.readInt("PORT", 80, ok).toString());
+    console.writeln("DEBUG bool=" + cfg.readBool("DEBUG", false, ok).toString());
+    console.writeln("absent int falls back=" + cfg.readInt("NOPE", 99, ok).toString());
+    console.writeln("clean errors=" + ok.length().toString());
+
+    // ---- §4.4 typed reads, accumulate every error into one collector ----
+    Config badc = parseText("N1=abc\nB1=maybe\n");
+    Errors errs = Errors();
+    console.writeln("bad int=" + badc.readInt("N1", -1, errs).toString());
+    console.writeln("bad bool=" + badc.readBool("B1", false, errs).toString());
+    console.writeln("accumulated=" + errs.length().toString());
+    for (string e in errs.all()) { console.writeln("  err: " + e); }
+
+    // ---- §4.4 require: present returns, absent throws a ConfigException ----
+    console.writeln("require APP_NAME=" + cfg.require("APP_NAME"));
+    try {
+        cfg.require("NOPE");
+        console.writeln("require NOPE: NO THROW (bug)");
+    } catch (ConfigException ce) {
+        console.writeln("require NOPE threw: " + ce.errors.at(0));
+    }
+
+    // ---- §5 sections: prefix strip ----
+    Config smtp = cfg.section("SMTP_");
+    console.writeln("smtp.HOST=" + smtp.at("HOST", "?"));
+    console.writeln("smtp.PORT=" + smtp.at("PORT", "?"));
+    console.writeln("smtp still has prefixed key=" + smtp.has("SMTP_HOST").toString());
+
+    // ---- §4.2 malformed: every violation class, all reported at once ----
+    string mal =
+        "GOOD=1\n" +
+        "no_equals_here\n" +                       // line 2: missing '='
+        "1BAD=x\n" +                               // line 3: invalid key
+        "GOOD=2\n" +                               // line 4: duplicate key
+        "ESC=\"bad\\q\"\n" +                       // line 5: unsupported escape
+        "UNTERM=\"open\n";                          // line 6: unterminated quote
+    try {
+        parseText(mal);
+        console.writeln("malformed: NO THROW (bug)");
+    } catch (ConfigException ce) {
+        console.writeln("malformed errors=" + ce.errors.length().toString());
+        for (string e in ce.errors) { console.writeln("  " + e); }
+    }
+
+    // ---- §4.5 dump() redacts secrets; insertion (line) order is stable ----
+    Config dc = parseText("USER=bob\nDB_PASSWORD=s3cr3t\nAPI_KEY=xyz\nHOST=local\n");
+    console.write(dc.dump());
+}

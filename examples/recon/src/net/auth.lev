@@ -1,0 +1,63 @@
+// Auth resolution (DESIGN §6.2). Cascade + applyAuth onto the outgoing HeaderMap.
+namespace Recon {
+
+// Track unsupported auth kinds so the UI can surface them (§1.2 honesty).
+string authNote = "";
+
+// Cascade: request auth -> folder auth -> collection auth. noauth disables an
+// inherited one; inherit / None falls through (§5.1).
+AuthSpec effectiveAuth(RequestSpec req, AuthSpec? folderAuth, AuthSpec? colAuth) {
+    if (req.auth != None) {
+        AuthSpec a = req.auth ?? AuthSpec();
+        if (a.kind != "inherit") { return a; }
+    }
+    if (folderAuth != None) {
+        AuthSpec a = folderAuth ?? AuthSpec();
+        if (a.kind != "inherit") { return a; }
+    }
+    if (colAuth != None) {
+        AuthSpec a = colAuth ?? AuthSpec();
+        if (a.kind != "inherit") { return a; }
+    }
+    return AuthSpec::Of("noauth");
+}
+
+// Resolve {{vars}} in the values, then write the appropriate header (or query).
+void applyAuth(AuthSpec a, VarResolver vars, HeaderMap hdrs, Url url) {
+    authNote = "";
+    if (a.kind == "noauth" || a.kind == "inherit") { return; }
+    if (a.kind == "basic") {
+        string user = vars.resolve(a.param("username"));
+        string pass = vars.resolve(a.param("password"));
+        string token = encoding::base64Encode(user + ":" + pass);
+        hdrs.set("Authorization", "Basic " + token);
+        return;
+    }
+    if (a.kind == "bearer") {
+        string token = vars.resolve(a.param("token"));
+        hdrs.set("Authorization", "Bearer " + token);
+        return;
+    }
+    if (a.kind == "apikey") {
+        string keyName = vars.resolve(a.param("key"));
+        string keyVal  = vars.resolve(a.param("value"));
+        string loc = a.param("in");
+        if (loc.isEmpty()) { loc = "header"; }
+        if (loc == "query") {
+            string q = encoding::percentEncode(keyName) + "=" + encoding::percentEncode(keyVal);
+            if (url.query.isEmpty()) { url.query = q; }
+            else { url.query = url.query + "&" + q; }
+        } else {
+            hdrs.set(keyName, keyVal);
+        }
+        return;
+    }
+    if (a.kind == "digest") {
+        // Stretch (§6.2): a full challenge/response needs a prior 401 round.
+        authNote = "digest auth is not supported in v1 (needs a 401 challenge round)";
+        return;
+    }
+    authNote = "auth type '" + a.kind + "' is not supported";
+}
+
+}

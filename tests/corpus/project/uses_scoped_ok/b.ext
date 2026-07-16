@@ -1,0 +1,2 @@
+uses M;
+console.writeln(helper(2));

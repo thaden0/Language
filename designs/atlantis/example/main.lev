@@ -1,0 +1,30 @@
+namespace app {
+    class Main() {
+        private readonly Atlantis::Builder builder;
+        private readonly Atlantis::App app;
+
+        new Main() {
+            // Build App
+            builder = Atlantis::Builder();        
+            app = builder.Build();
+            app.useAuthentication();
+            app.useAuthorization();
+
+            // Bind Routes
+            addRoutes();
+
+            // Dependency Injection
+            addBindings();
+        }
+
+        // Bind Routes
+        private void addRoutes() {
+            App::Routes::addRoutes(app);
+        }
+
+        // Dependency Injection
+        private void addBindings() {
+            App::AddBindings();
+        }
+    }
+}

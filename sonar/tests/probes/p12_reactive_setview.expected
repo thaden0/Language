@@ -1,0 +1,3 @@
+init 0 pings=0
+set5 5 pings=1
+inc  6 pings=2

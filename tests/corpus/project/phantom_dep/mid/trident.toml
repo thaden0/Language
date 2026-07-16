@@ -1,0 +1,5 @@
+name = "mid"
+sources = ["*.ext"]
+
+[[dep]]
+path = "base"

@@ -1,0 +1,21 @@
+// Regression floor for the bare-reference-class-field auto-construction bug
+// (found + fixed 2026-07-14 while building this corpus). info.md §3 promises
+// "every type has a nullary construction path" and a bare field declaration
+// auto-constructs — but a bare *reference-class* field with no initializer
+// used to keep a void default, so reading through it printed nothing on
+// run/ir/llvm (exit 0, no diagnostic) and SEGFAULTED on emit-C++. The fix
+// (src/Symbols.hpp bareFieldAutoConstructs + Eval::initFields + Lowerer::
+// synthesizeInit) auto-constructs a bare reference-class field exactly as it
+// already did value structs, guarded against self-referential types that have
+// no finite default (see bare_class_field_selfref_default.lev).
+class Inner { int x = 5; }
+class Outer { Inner i; }             // bare reference-class field
+class Mid { Inner a; }
+class Deep { Mid m; }                // acyclic chain, each level auto-constructs
+void main() {
+    Outer o = Outer();
+    console.writeln(o.i.x);          // 5 — i auto-constructed
+    Deep d = Deep();
+    console.writeln(d.m.a.x);        // 5 — the whole chain auto-constructed
+}
+main();

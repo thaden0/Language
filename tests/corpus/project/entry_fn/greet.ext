@@ -1,0 +1,1 @@
+namespace Greet { public string hello() => "hi from entry"; }

@@ -1,0 +1,17 @@
+// `uses NS;` + bare name resolves fine as long as the referencing code is
+// NOT inside a subsequently reopened namespace block — the working half of
+// bug #45's own documented scope (only uses+reopening together fails).
+namespace A {
+    namespace B {
+        class Context { int x = 5; }
+    }
+}
+uses A::B;
+class User {
+    Context c;      // bare field, auto-constructs (§3)
+}
+void main() {
+    User u = User();
+    console.writeln(u.c.x.toString());
+}
+main();

@@ -1,0 +1,117 @@
+// Atlantis Track 01 — the H-1 seam (design §3): the ONE place that touches
+// prelude HTTP members Track 09 owns, plus the Server, clock, and streaming
+// body. Rule: no kernel file except this one names a prelude HTTP internal, so a
+// Track 09 change is absorbed here.
+//
+// Track 09 HAS LANDED, so this is the "real tier": each helper is a thin call
+// over the hardened HeaderMap / HttpRequest / HttpResponse / HttpServer. The stub
+// tier (a raw request parser over TcpStream) is therefore unnecessary and omitted.
+namespace Atlantis {
+    namespace Http {
+
+        // -- request side (case-insensitive; -1 content-length when absent/unparseable) --
+        string? reqHeader(HttpRequest r, string name) => r.headers.first(name);
+        Array<string> reqHeaders(HttpRequest r, string name) => r.headers.all(name);
+        int reqContentLength(HttpRequest r) {
+            string? v = r.headers.first("Content-Length");
+            if (v != None) {
+                int? n = v.toInt();
+                if (n != None) { return n; }
+            }
+            return 0 - 1;
+        }
+
+        // -- response side --
+        HttpResponse mkResponse(int status, string body, Array<Pair<string, string>> headers) {
+            HttpResponse r = HttpResponse(status, body);
+            for (Pair p in headers) { r.withHeader(p.first, p.second); }
+            return r;
+        }
+
+        // -- clock --
+        int nowMs() => std::sysNow();
+        string isoNow() => DateTime::now().iso8601();
+        string httpNow() => DateTime::now().httpDate();
+
+        // The kernel yield primitive (§8.3): schedule a resume on the next tick.
+        Promise<int> nextTick() {
+            Promise<int> p = Promise();
+            std::after(0).subscribe((t) => { p.resolve(t); });
+            return p;
+        }
+
+        // The streaming body (design §8.1). A STANDALONE class carrying the C2
+        // "body writes an OutStream<string>" surface (the sanctioned fallback to
+        // subclassing OutStream<string>, P-probe P5). v1 buffers chunks and the
+        // Server flushes them as one wire body (collect-then-send) — correct
+        // output for FINITE producers (static files, §5.4). True incremental
+        // server-push (unbounded SSE) awaits a Track 09 server-side
+        // streaming-response hook — filed as
+        // designs/requests/request-http-streaming-response.md (design §3.4).
+        class ChunkedBody {
+            string buffer = "";
+            bool ended = false;
+            () => void onCloseCb;
+            bool hasClose = false;
+
+            ChunkedBody write(string chunk) { this.buffer = this.buffer + chunk; return this; }
+            ChunkedBody (<<)(string chunk) { this.buffer = this.buffer + chunk; return this; }
+            void end() { this.ended = true; }
+            void onClose(() => void cb) { this.onCloseCb = cb; this.hasClose = true; }
+            string collected() => this.buffer;
+            bool isEnded() => this.ended;
+        }
+
+        HttpResponse mkStreaming(int status, Array<Pair<string, string>> headers,
+                                 (ChunkedBody) => void writer) {
+            ChunkedBody out = ChunkedBody();
+            var w = writer;
+            w(out);                                   // finite producer runs to end()
+            HttpResponse r = HttpResponse(status, out.collected());
+            for (Pair p in headers) { r.withHeader(p.first, p.second); }
+            return r;
+        }
+
+        // The server (design §3.3). Wraps Track 09's hardened HttpServer:
+        // keep-alive, per-connection 500 net (an uncaught app throw becomes 500 +
+        // Connection: close, loop survives) — the last-resort layer BELOW the
+        // kernel's ErrorMapper (three layers total, §4.4). One fresh Context per
+        // request, including per keep-alive request on one connection (§2.2 —
+        // never pooled/reused).
+        class Server {
+            int port;
+            (Context) => HttpResponse app;
+            HttpServer http;
+            bool draining;
+
+            new Server(int port, (Context) => HttpResponse app) {
+                this.port = port;
+                this.app = app;
+                this.http = HttpServer(port);
+                this.draining = false;
+            }
+
+            bool ok() => this.http.ok();
+
+            void start() {
+                Server self = this;
+                this.http.handle((req) => self.dispatch(req));
+            }
+
+            HttpResponse dispatch(HttpRequest req) {
+                var a = this.app;
+                Context ctx = Context(req);
+                return a(ctx);
+            }
+
+            // §7.4 graceful drain: flip readiness (Health returns 503) and stop
+            // accepting; in-flight keep-alive requests complete; the loop exits
+            // when work drains. Signal-driven stop() is a 5-line addition once
+            // LA-10 lands.
+            void stop() {
+                this.draining = true;
+                this.http.stop();
+            }
+        }
+    }
+}

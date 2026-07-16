@@ -1,0 +1,3 @@
+// Each file that wants M imports it for itself (bug.md #8: file-scoped).
+uses M;
+console.writeln(helper(1));

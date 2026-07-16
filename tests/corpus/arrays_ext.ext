@@ -1,0 +1,98 @@
+// Track 05 M2: map<U>/select<U>/reduce<A> — lambda-return generic inference.
+void run() {
+    Array<int> nums = [1, 2, 3, 4];
+
+    // map to a DIFFERENT element type (int -> string) — the headline probe.
+    Array<string> asStrings = nums.map((n) => n.toString());
+    console.writeln(asStrings.joinToString(","));
+
+    // select is map's alias; same cross-type inference.
+    Array<string> viaSelect = nums.select((n) => "#" + n.toString());
+    console.writeln(viaSelect.joinToString(","));
+
+    // reduce to a DIFFERENT type from the seed (string acc over int elements).
+    string joined = nums.reduce("", (acc, n) => acc + n.toString());
+    console.writeln(joined);
+
+    // chained maps: T must survive into the second lambda's parameter type.
+    Array<string> chained = nums.map((n) => n * 100).map((m) => m.toString());
+    console.writeln(chained.joinToString(","));
+
+    // block-bodied lambda return still infers.
+    Array<string> blockBody = nums.map((n) => { return n.toString(); });
+    console.writeln(blockBody.at(0));
+
+    // --- Track 05 M3: Array additions (§2) + aggregates -----------------
+
+    Array<int> a = [3, 1, 4, 1, 5, 9, 2, 6];
+
+    console.writeln(a.unique().joinToString(","));
+    console.writeln(a.flatMap((n) => [n, n * 10]).joinToString(","));
+
+    Array<Pair<int, string>> z = a.zip(["a", "b", "c"]);
+    console.writeln(z.length());
+    console.writeln(z.at(0).first);
+    console.writeln(z.at(0).second);
+
+    console.writeln(a.takeWhile((n) => n < 5).joinToString(","));
+    console.writeln(a.skipWhile((n) => n < 5).joinToString(","));
+    console.writeln(a.indexWhere((n) => n == 9));
+    console.writeln(a.indexWhere((n) => n == 999));
+
+    Array<Pair<int, int>> wi = a.withIndex();
+    console.writeln(wi.at(3).first);
+    console.writeln(wi.at(3).second);
+
+    console.writeln(a.insertAt(0, 100).joinToString(","));
+    console.writeln(a.removeAt(0).joinToString(","));
+    console.writeln(a.with(0, 100).joinToString(","));
+    console.writeln(a.slice(1, 3).joinToString(","));
+
+    console.writeln(a.sort((x, y) => x - y).joinToString(","));
+
+    // Stability: equal keys (both dupes of `1`) must keep their ORIGINAL
+    // relative order after sorting by a different, non-unique field.
+    Array<Pair<int, string>> tagged = [
+        Pair::Of(1, "first-one"), Pair::Of(0, "zero"), Pair::Of(1, "second-one")
+    ];
+    Array<Pair<int, string>> stableSorted =
+        tagged.sortBy((p) => p.first);
+    console.writeln(stableSorted.at(0).second);
+    console.writeln(stableSorted.at(1).second);
+    console.writeln(stableSorted.at(2).second);
+
+    // find / None narrowing.
+    int? hit = a.find((n) => n > 5);
+    if (hit != None) console.writeln(hit); else console.writeln("none");
+    int? miss = a.find((n) => n > 100);
+    if (miss != None) console.writeln(miss); else console.writeln("none");
+    console.writeln(a.firstOrNone());
+    Array<int> emptyArr = [];
+    int? fe = emptyArr.firstOrNone();
+    if (fe != None) console.writeln(fe); else console.writeln("none");
+
+    Array<string> words = ["bb", "a", "ccc"];
+    console.writeln(words.sortBy((w) => w.length()).joinToString(","));
+    console.writeln(words.minBy((w) => w.length()));
+    console.writeln(words.maxBy((w) => w.length()));
+
+    // groupBy golden output.
+    Map<string, Array<int>> grouped = a.groupBy((n) => n % 2 == 0 ? "even" : "odd");
+    console.writeln(grouped["odd"].joinToString(","));
+    console.writeln(grouped["even"].joinToString(","));
+
+    console.writeln(std::sum(a));
+    int? mi = std::min(a);
+    int? ma = std::max(a);
+    console.writeln(mi);
+    console.writeln(ma);
+    console.writeln(std::average(a));
+
+    Array<float> fa = [1.5, 2.5, 3.0];
+    console.writeln(std::sum(fa));
+    console.writeln(std::average(fa));
+
+    int? emptyMin = std::min(emptyArr);
+    if (emptyMin != None) console.writeln(emptyMin); else console.writeln("none");
+}
+run();

@@ -1,0 +1,620 @@
+// Atlantis Track 03 -- Serialization & DTOs (design techdesign-03-serialization.md).
+//
+// M1: the "Atlantis root" helper library (§5.3) -- pure library, no rules.
+// Everything a splice can name is declared here at Atlantis root (single-level
+// qualification, §5.3): the marker interface (§16 addendum: IJsonSerializable),
+// the attributes, the guard, and the __atlEnc/__atlDec/__atlZipObj overload sets.
+namespace Atlantis {
+
+    attribute Serializable { }
+    attribute JsonIgnore { }
+
+    // §16 addendum point 1: the marker is IJsonSerializable (supersedes the
+    // §§2-14 body text's "ISerializable" spelling -- a pure rename applied here).
+    interface IJsonSerializable { JsonValue toJson(); }
+
+    // ---- §6.4 error channel: ValidationException (C4), never a second type ----
+    void __atlMissing(string key) {
+        throw Http::ValidationException([Http::FieldError(key, "missing")]);
+    }
+    void __atlWrongType(string key, string expected) {
+        throw Http::ValidationException([Http::FieldError(key, "expected " + expected)]);
+    }
+    void __atlRequireObject(JsonValue v) {
+        if (!v.isObject()) {
+            throw Http::ValidationException([Http::FieldError("$", "expected a JSON object")]);
+        }
+    }
+
+    // ---- §5.2 guard: refuses unsupported field shapes with a named message ----
+    // Ordinary hermetic comptime code over meta::Class -- pure string checks
+    // (meta::Field.type is a canonical string, e.g. "int | None", "Map<string, int>",
+    // "(int, string) => bool" -- confirmed against the resolver, P-probe discipline).
+    bool __atlGuard(meta::Class c) {
+        if (!c.hasBase("IJsonSerializable")) {
+            throw RuntimeException("@Serializable " + c.name +
+                ": missing ': IJsonSerializable' -- every @Serializable type must " +
+                "declare it (required for FromJson/keys generation to fire, §16 addendum)");
+        }
+        for (meta::Field f in c.fields) {
+            if (f.hasAttr("JsonIgnore")) { continue; }
+            if (f.name.startsWith("__atl")) {
+                throw RuntimeException("@Serializable " + c.name + ": field '" + f.name +
+                    "' starts with the reserved '__atl' prefix (§2.2)");
+            }
+            string t = f.type;
+            if (t.contains("=>")) {
+                throw RuntimeException("@Serializable " + c.name + ": field '" + f.name +
+                    "' has function type '" + t + "' -- function-typed fields cannot be " +
+                    "serialized (§5.2); use @JsonIgnore");
+            }
+            if (t.contains("|")) {
+                bool isOptional = t.endsWith(" | None") &&
+                                   !t.subStr(0, t.length() - 7).contains("|");
+                if (!isOptional) {
+                    throw RuntimeException("@Serializable " + c.name + ": field '" + f.name +
+                        "' has union type '" + t + "' -- only T? (T | None) is supported, " +
+                        "not a general union (§5.2); use @JsonIgnore");
+                }
+            }
+            if (t.startsWith("Map<") && !t.startsWith("Map<string,")) {
+                throw RuntimeException("@Serializable " + c.name + ": field '" + f.name +
+                    "' has type '" + t + "' -- JSON object keys must be strings; use " +
+                    "Map<string, ...> or @JsonIgnore (§5.2)");
+            }
+        }
+        return true;
+    }
+
+    // ---- __atlZipObj: pairs keys[i]/values[i] into a fresh insertion-ordered object ----
+    JsonValue __atlZipObj(Array<string> ks, Array<JsonValue> vs) {
+        Map<string, JsonValue> m = Map();
+        int i = 0;
+        while (i < ks.length()) {
+            m[ks.at(i)] = vs.at(i);
+            i = i + 1;
+        }
+        return JsonValue::ofObject(m);
+    }
+
+    // ==== §5.1 encode surface: JsonValue __atlEnc(T) -- all fresh trees (H-8) ====
+
+    JsonValue __atlEnc(int v) => JsonValue::ofNum(v.toFloat());
+    JsonValue __atlEnc(int? v) {
+        if (v == None) { return JsonValue::ofNull(); } else { return JsonValue::ofNum(v.toFloat()); }
+    }
+    JsonValue __atlEnc(float v) => JsonValue::ofNum(v);
+    JsonValue __atlEnc(float? v) {
+        if (v == None) { return JsonValue::ofNull(); } else { return JsonValue::ofNum(v); }
+    }
+    JsonValue __atlEnc(bool v) => JsonValue::ofBool(v);
+    JsonValue __atlEnc(bool? v) {
+        if (v == None) { return JsonValue::ofNull(); } else { return JsonValue::ofBool(v); }
+    }
+    JsonValue __atlEnc(string v) => JsonValue::ofStr(v);
+    JsonValue __atlEnc(string? v) {
+        if (v == None) { return JsonValue::ofNull(); } else { return JsonValue::ofStr(v); }
+    }
+    JsonValue __atlEnc(DateTime v) => JsonValue::ofStr(v.iso8601());
+    JsonValue __atlEnc(DateTime? v) {
+        if (v == None) { return JsonValue::ofNull(); } else { return JsonValue::ofStr(v.iso8601()); }
+    }
+    // §6.5: a JsonValue-typed field embeds as-is on encode (its subtree aliases
+    // the field) -- documented aliasing exception, flips to deepCopy() when
+    // Track 09 grows one.
+    JsonValue __atlEnc(JsonValue v) => v;
+    // Every nested serializable type -- one overload covers all of them (interface
+    // dispatch, §5.1). Decode has no interface-level static path (labeled ctors
+    // are not interface members), so __atlDec stays per-concrete-type (§4.3).
+    JsonValue __atlEnc(IJsonSerializable v) => v.toJson();
+
+    // bug #54 FIXED (2026-07-15): a generic body's overloaded call on a
+    // type-parameter value now resolves PER concrete instantiation (LA-18's
+    // demand-trigger widened to this shape -- designs/requests/accepted/
+    // request-generic-overload-monomorphization.md). §5.1's former P-4
+    // monomorphic fallback -- the per-element-type Array overload ladder
+    // (Array<int>/<float>/<bool>/<string>) -- collapses to this single generic
+    // helper: byte-identical for those element types (each element re-resolves
+    // `__atlEnc(x)` inside the specialized copy), and it now additionally covers
+    // an Array of any scalar or nested-serializable element type for free.
+    JsonValue __atlEnc<T>(Array<T> v) {
+        Array<JsonValue> items = [];
+        for (T x in v) { items = items.add(Atlantis::__atlEnc(x)); }
+        return JsonValue::ofArray(items);
+    }
+    JsonValue __atlEnc(Map<string, string> v) {
+        Map<string, JsonValue> out = Map();
+        for (Pair e in v) { out[e.first] = Atlantis::__atlEnc(e.second); }
+        return JsonValue::ofObject(out);
+    }
+
+    // ==== §4.3 decode surface: witness dispatch, T __atlDec(src, keys, idx, T) ====
+    // Shared shape (§4.3): src == None -> return witness (no-op pass, §4.2's
+    // implicit-nullary-construction / hand-written-ctor no-op case); missing key
+    // -> optional witness None, required witness throws; kind mismatch throws;
+    // int rejects non-integral numbers (§6.6).
+
+    int __atlDec(JsonValue? src, Array<string> keys, int idx, int witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                float? n = item.asNum();
+                if (n == None) { Atlantis::__atlWrongType(key, "integer"); return witness; }
+                else {
+                    int truncated = n.toInt();
+                    if (truncated.toFloat() != n) { Atlantis::__atlWrongType(key, "integer"); return witness; }
+                    else { return truncated; }
+                }
+            }
+        }
+    }
+    int? __atlDec(JsonValue? src, Array<string> keys, int idx, int? witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { return None; }
+            else {
+                if (item.isNull()) { return None; }
+                else {
+                    float? n = item.asNum();
+                    if (n == None) { Atlantis::__atlWrongType(key, "integer"); return None; }
+                    else {
+                        int truncated = n.toInt();
+                        if (truncated.toFloat() != n) { Atlantis::__atlWrongType(key, "integer"); return None; }
+                        else { return truncated; }
+                    }
+                }
+            }
+        }
+    }
+
+    float __atlDec(JsonValue? src, Array<string> keys, int idx, float witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                float? n = item.asNum();
+                if (n == None) { Atlantis::__atlWrongType(key, "number"); return witness; }
+                else { return n; }
+            }
+        }
+    }
+    float? __atlDec(JsonValue? src, Array<string> keys, int idx, float? witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { return None; }
+            else {
+                if (item.isNull()) { return None; }
+                else {
+                    float? n = item.asNum();
+                    if (n == None) { Atlantis::__atlWrongType(key, "number"); return None; }
+                    else { return n; }
+                }
+            }
+        }
+    }
+
+    bool __atlDec(JsonValue? src, Array<string> keys, int idx, bool witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                bool? b = item.asBool();
+                if (b == None) { Atlantis::__atlWrongType(key, "boolean"); return witness; }
+                else { return b; }
+            }
+        }
+    }
+    bool? __atlDec(JsonValue? src, Array<string> keys, int idx, bool? witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { return None; }
+            else {
+                if (item.isNull()) { return None; }
+                else {
+                    bool? b = item.asBool();
+                    if (b == None) { Atlantis::__atlWrongType(key, "boolean"); return None; }
+                    else { return b; }
+                }
+            }
+        }
+    }
+
+    string __atlDec(JsonValue? src, Array<string> keys, int idx, string witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                string? s = item.asStr();
+                if (s == None) { Atlantis::__atlWrongType(key, "string"); return witness; }
+                else { return s; }
+            }
+        }
+    }
+    string? __atlDec(JsonValue? src, Array<string> keys, int idx, string? witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { return None; }
+            else {
+                if (item.isNull()) { return None; }
+                else {
+                    string? s = item.asStr();
+                    if (s == None) { Atlantis::__atlWrongType(key, "string"); return None; }
+                    else { return s; }
+                }
+            }
+        }
+    }
+
+    // §6.2: DateTime <-> iso8601 (Z-normalized UTC). Epoch-number timestamps
+    // not accepted in v1 (one wire format).
+    DateTime __atlDec(JsonValue? src, Array<string> keys, int idx, DateTime witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                string? s = item.asStr();
+                if (s == None) { Atlantis::__atlWrongType(key, "iso8601 timestamp"); return witness; }
+                else {
+                    DateTime? d = datetime::parseIso8601(s);
+                    if (d == None) { Atlantis::__atlWrongType(key, "iso8601 timestamp"); return witness; }
+                    else { return d; }
+                }
+            }
+        }
+    }
+    DateTime? __atlDec(JsonValue? src, Array<string> keys, int idx, DateTime? witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { return None; }
+            else {
+                if (item.isNull()) { return None; }
+                else {
+                    string? s = item.asStr();
+                    if (s == None) { Atlantis::__atlWrongType(key, "iso8601 timestamp"); return None; }
+                    else {
+                        DateTime? d = datetime::parseIso8601(s);
+                        if (d == None) { Atlantis::__atlWrongType(key, "iso8601 timestamp"); return None; }
+                        else { return d; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Raw passthrough field (§4.3): the sub-tree is handed over directly, not
+    // copied (same H-8 caveat as the encode side, §6.5).
+    JsonValue __atlDec(JsonValue? src, Array<string> keys, int idx, JsonValue witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else { return item; }
+        }
+    }
+
+    // Array<T>/Map<string,string> decode counterparts to the encode set above
+    // (same P-4 monomorphic-fallback scope).
+    Array<int> __atlDec(JsonValue? src, Array<string> keys, int idx, Array<int> witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                Array<JsonValue>? arr = item.asArray();
+                if (arr == None) { Atlantis::__atlWrongType(key, "array"); return witness; }
+                else {
+                    Array<int> out = [];
+                    for (JsonValue e in arr) {
+                        float? n = e.asNum();
+                        if (n == None) { Atlantis::__atlWrongType(key, "array of integers"); }
+                        else { out = out.add(n.toInt()); }
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+    Array<float> __atlDec(JsonValue? src, Array<string> keys, int idx, Array<float> witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                Array<JsonValue>? arr = item.asArray();
+                if (arr == None) { Atlantis::__atlWrongType(key, "array"); return witness; }
+                else {
+                    Array<float> out = [];
+                    for (JsonValue e in arr) {
+                        float? n = e.asNum();
+                        if (n == None) { Atlantis::__atlWrongType(key, "array of numbers"); }
+                        else { out = out.add(n); }
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+    Array<bool> __atlDec(JsonValue? src, Array<string> keys, int idx, Array<bool> witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                Array<JsonValue>? arr = item.asArray();
+                if (arr == None) { Atlantis::__atlWrongType(key, "array"); return witness; }
+                else {
+                    Array<bool> out = [];
+                    for (JsonValue e in arr) {
+                        bool? b = e.asBool();
+                        if (b == None) { Atlantis::__atlWrongType(key, "array of booleans"); }
+                        else { out = out.add(b); }
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+    Array<string> __atlDec(JsonValue? src, Array<string> keys, int idx, Array<string> witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                Array<JsonValue>? arr = item.asArray();
+                if (arr == None) { Atlantis::__atlWrongType(key, "array"); return witness; }
+                else {
+                    Array<string> out = [];
+                    for (JsonValue e in arr) {
+                        string? s = e.asStr();
+                        if (s == None) { Atlantis::__atlWrongType(key, "array of strings"); }
+                        else { out = out.add(s); }
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+    Map<string, string> __atlDec(JsonValue? src, Array<string> keys, int idx, Map<string, string> witness) {
+        if (src == None) { return witness; }
+        else {
+            string key = keys.at(idx);
+            JsonValue? item = src.atOrNone(key);
+            if (item == None) { Atlantis::__atlMissing(key); return witness; }
+            else {
+                Map<string, JsonValue>? obj = item.asObject();
+                if (obj == None) { Atlantis::__atlWrongType(key, "object"); return witness; }
+                else {
+                    Map<string, string> out = Map();
+                    for (Pair e in obj) {
+                        string? s = e.second.asStr();
+                        if (s == None) { Atlantis::__atlWrongType(key, "object of strings"); }
+                        else { out[e.first] = s; }
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+
+    // ==== M2: the rule set. Declaration order below is load-bearing (§4.1,
+    // P-2-confirmed): guard first (a sentinel -- never actually injects),
+    // then keys, then R1 (FromJson skeleton) -> R2 (per-field apply) -> R3
+    // (seal), each appending into the SAME rule-injected constructor. ====
+    //
+    // NEW FINDING (not in the design's own §1/§10 capability matrix, found
+    // implementing this track): rule SUBJECT-kind matching is EXACT
+    // (declKindMatches, Rules.cpp:1317 — `di.kindWord == kind`, no leniency),
+    // unlike ENCLOSER-kind matching (`in class C`, Rules.cpp:1152-1155),
+    // which explicitly also accepts `struct`/`interface` ancestors. So
+    // `match @Attr on class C` does NOT fire on `@Attr struct S { ... }` —
+    // confirmed with a minimal standalone repro (`on class C` silent no-op
+    // on a struct subject; an `on struct C` twin fires correctly, same
+    // template, same class). Since §2.1's contract needs BOTH `struct` DTOs
+    // and `class` entities to generate identically, every SUBJECT-position
+    // class-level rule below ships as a class/struct PAIR (R2 -- the only
+    // field-subject, ENCLOSER-position rule -- already covers both via the
+    // existing leniency, proven by P-1b). A symmetry ask (unify class/struct
+    // at subject position, or an `on type C` kind) is filed as an addendum
+    // to designs/requests/request-metaprog-splices.md; duplication is the
+    // interim, and it is exact and mechanical (verified safe).
+
+    // §5.2: refuses unsupported shapes with a named diagnostic. `where`
+    // always evaluates to `... && false`, so this rule never actually fires
+    // -- it exists purely to run __atlGuard's checks (§5.2's sentinel idiom).
+    rule serializableGuardClass {
+        match @Serializable on class C
+        where Atlantis::__atlGuard(C) && false
+        inject `0;` at bottom of C.constructor
+    }
+    rule serializableGuardStruct {
+        match @Serializable on struct C
+        where Atlantis::__atlGuard(C) && false
+        inject `0;` at bottom of C.constructor
+    }
+
+    // §3 Mechanism A (`this.$f` inside a $for element template) is BLOCKED —
+    // P-1a (this design's §10) reproduced the exact source-predicted failure
+    // ("'$f' is an attribute value, not a member name", Rules.cpp:1522-1534).
+    // toJson() is therefore NOT generated in v1 (§3.2 escape hatch): every
+    // @Serializable type hand-writes `JsonValue toJson()` itself (the
+    // IJsonSerializable requirement makes this a crisp pass-2 error if
+    // forgotten, §2.1(c)). LA-15 (member-selector splice) is the unblock —
+    // already filed at P1 as item (A) of designs/requests/request-metaprog-
+    // splices.md (independently converged from Tracks 02/03/04/06 before
+    // this track began); no new ticket needed. `$f.name` reification (used
+    // below) is unaffected -- proven by rule_orm, reconfirmed by P-6.
+    //
+    // __atlKeys() DOES generate today: `$f.name` is a value-hole field read,
+    // not a member-name splice (§1's capability matrix).
+    rule serializableKeysClass {
+        match @Serializable on class C
+        where C.hasBase("IJsonSerializable")
+        inject `Array<string> __atlKeys() =>
+            [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : $f.name ];`
+            at member of C
+    }
+    rule serializableKeysStruct {
+        match @Serializable on struct C
+        where C.hasBase("IJsonSerializable")
+        inject `Array<string> __atlKeys() =>
+            [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : $f.name ];`
+            at member of C
+    }
+
+    // R1: skeleton. Guarded (§3.3) so a hand-written `FromJson` overrides
+    // generation instead of colliding with it (P-6 confirmed labeled ctors
+    // are visible in C.methods by their label name).
+    rule serializableFromJsonSkeletonClass {
+        match @Serializable on class C
+        where C.hasBase("IJsonSerializable") &&
+              C.methods.where((m) => m.name == "FromJson").length() == 0
+        inject `JsonValue? __atlSrc;` at member of C
+        inject `int __atlIdx;` at member of C
+        inject `new FromJson(JsonValue v) {
+            Atlantis::__atlRequireObject(v);
+            this.__atlSrc = v;
+            this.__atlIdx = 0;
+        }` at member of C
+    }
+    rule serializableFromJsonSkeletonStruct {
+        match @Serializable on struct C
+        where C.hasBase("IJsonSerializable") &&
+              C.methods.where((m) => m.name == "FromJson").length() == 0
+        inject `JsonValue? __atlSrc;` at member of C
+        inject `int __atlIdx;` at member of C
+        inject `new FromJson(JsonValue v) {
+            Atlantis::__atlRequireObject(v);
+            this.__atlSrc = v;
+            this.__atlIdx = 0;
+        }` at member of C
+    }
+
+    // R2: per-field apply (fires once per field, declaration order -- ONE
+    // rule so order holds, §4.1). Attr-less match (§1): gated on the
+    // interface only, not on @Serializable itself (meta::Class has no attrs
+    // in v1 -- LA-16, already filed as item (F) of request-metaprog-attr-
+    // values.md). §11#2's accepted caveat applies unchanged: a hand-written
+    // `: IJsonSerializable` WITHOUT `@Serializable` still gets matched here
+    // and fails with "unknown member __atlSrc" -- documented, not fixed
+    // (needs LA-16 to gate on the attribute instead).
+    rule serializableApply {
+        match on field f in class C : IJsonSerializable
+        where !f.hasAttr("JsonIgnore")
+        inject `this.$f = Atlantis::__atlDec(this.__atlSrc, this.__atlKeys(), this.__atlIdx, this.$f);
+                this.__atlIdx = this.__atlIdx + 1;`
+            at bottom of C.constructor
+    }
+
+    // R3: epilogue -- drop the parse tree (H-8: FromJson never retains `v`).
+    rule serializableSealClass {
+        match @Serializable on class C
+        where C.hasBase("IJsonSerializable")
+        inject `this.__atlSrc = None;` at bottom of C.constructor
+    }
+    rule serializableSealStruct {
+        match @Serializable on struct C
+        where C.hasBase("IJsonSerializable")
+        inject `this.__atlSrc = None;` at bottom of C.constructor
+    }
+
+    // §4.3 nested serializable types: a per-class __atlDec overload pair
+    // (required + optional), plus a per-class __atlEnc($C?) overload for the
+    // OPTIONAL nested case specifically -- `$C?` (a union with None) is not
+    // itself assignable to the IJsonSerializable interface, so the hand-
+    // written `__atlEnc(IJsonSerializable v)` overload above only covers the
+    // REQUIRED nested case (ordinary interface-parameter applicability, P-5
+    // confirmed $C-in-type-position + $C::Label(...) splicing); optional
+    // nested fields need this explicit None-check twin. Decode has no
+    // interface-level static path at all (labeled ctors are not interface
+    // members, §16 point 5), so it stays per-concrete-type for both arities.
+    //
+    // Scope note (§11#9, P-4 fallback): this does NOT extend to
+    // Array<$C>/Map<string,$C> (nested-serializable collections) -- only the
+    // fixed Array<int|float|bool|string>/Map<string,string> overloads above
+    // are supported for collection fields in v1, logged per §5.1's own
+    // designed degradation.
+    rule serializableNestedClass {
+        match @Serializable on class C
+        where C.hasBase("IJsonSerializable")
+        inject `$C __atlDec(JsonValue? src, Array<string> keys, int idx, $C witness) {
+            if (src == None) { return witness; }
+            else {
+                string key = keys.at(idx);
+                JsonValue? item = src.atOrNone(key);
+                if (item == None) { Atlantis::__atlMissing(key); return witness; }
+                else { return $C::FromJson(item); }
+            }
+        }
+        $C? __atlDec(JsonValue? src, Array<string> keys, int idx, $C? witness) {
+            if (src == None) { return witness; }
+            else {
+                string key = keys.at(idx);
+                JsonValue? item = src.atOrNone(key);
+                if (item == None) { return None; }
+                else {
+                    if (item.isNull()) { return None; }
+                    else { return $C::FromJson(item); }
+                }
+            }
+        }
+        JsonValue __atlEnc($C? witness) {
+            if (witness == None) { return JsonValue::ofNull(); }
+            else { return witness.toJson(); }
+        }` at namespace Atlantis
+    }
+    rule serializableNestedStruct {
+        match @Serializable on struct C
+        where C.hasBase("IJsonSerializable")
+        inject `$C __atlDec(JsonValue? src, Array<string> keys, int idx, $C witness) {
+            if (src == None) { return witness; }
+            else {
+                string key = keys.at(idx);
+                JsonValue? item = src.atOrNone(key);
+                if (item == None) { Atlantis::__atlMissing(key); return witness; }
+                else { return $C::FromJson(item); }
+            }
+        }
+        $C? __atlDec(JsonValue? src, Array<string> keys, int idx, $C? witness) {
+            if (src == None) { return witness; }
+            else {
+                string key = keys.at(idx);
+                JsonValue? item = src.atOrNone(key);
+                if (item == None) { return None; }
+                else {
+                    if (item.isNull()) { return None; }
+                    else { return $C::FromJson(item); }
+                }
+            }
+        }
+        JsonValue __atlEnc($C? witness) {
+            if (witness == None) { return JsonValue::ofNull(); }
+            else { return witness.toJson(); }
+        }` at namespace Atlantis
+    }
+}

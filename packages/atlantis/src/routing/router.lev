@@ -1,0 +1,287 @@
+// Atlantis Track 02 — the Router: segment trie, precedence, 404/405, finalize
+// boot checks, two-phase dispatch (design §1). `HttpResponse`/`HttpRequest`/
+// `HeaderMap` are `std` prelude types (implicitly imported, reference.md §5.1)
+// — bare, no qualification. `Context`/`NotFoundException` are this track's
+// framework-specific `Atlantis::Http` types, reached with a single `Http::`
+// (bug.md #37's proven-working sibling-qualification form; `uses Atlantis::Http;`
+// does not reach code lexically nested inside this file's own `namespace
+// Atlantis { ... }` reopening — a second, narrower instance of #37's "nested
+// namespace path resolution gap" found implementing this track, see the
+// design's §13 log). `Http::Respond` is avoided for the same reason
+// (`Http::Respond::text` is TWO `::` past the sibling reach and fails at IR
+// lowering, "not yet lowerable: name 'Http'"); the one 405 response this file
+// builds is constructed directly instead.
+namespace Atlantis {
+    namespace Routing {
+
+        // §1.3 path handling — trailing-slash normalize + query strip, no
+        // filesystem/URL-parsing natives exist yet (reference.md §6.6.57 lists
+        // URL-string parsing as roadmap), so the router does its own byte work.
+        string routePathOnly(string rawPath) {
+            int q = rawPath.indexOf("?");
+            return q >= 0 ? rawPath.subStr(0, q) : rawPath;
+        }
+
+        Array<string> splitPathSegments(string path) {
+            string p = path;
+            if (p.length() > 1 && p.endsWith("/")) { p = p.subStr(0, p.length() - 1); }
+            if (p.startsWith("/")) { p = p.subStr(1, p.length() - 1); }
+            if (p == "") { return []; }
+            return p.split("/");
+        }
+
+        int compareStrings(string a, string b) {
+            if (a < b) { return 0 - 1; }
+            if (a > b) { return 1; }
+            return 0;
+        }
+
+        // §1.3 trie node. `statics`/`byVerb` are pure Maps rebound through the
+        // owning (reference-type) Node's field — the same `obj.field[k] = v`
+        // idiom already proven throughout the kernel (static_files.lev, etc.).
+        class RouteNode {
+            Map<string, RouteNode> statics = Map();
+            RouteNode? param;
+            RouteNode? wildcard;
+            Map<string, string> byVerb = Map();
+        }
+
+        class Router {
+            RouteNode root = RouteNode();
+            // `key -> index into routeList`, NOT `key -> RouteRec` directly —
+            // a `Map<K, Struct>` class FIELD silently corrupts memory on the
+            // LLVM backend once it holds 3+ entries (oracle/IR are unaffected;
+            // a segfault/bus-error surfaces later, on return from whatever
+            // method touched it — filed, see the design's §13 log). Indexing
+            // through the (struct-array-valued, LLVM-safe) `routeList` avoids
+            // ever storing a struct as a map value.
+            Map<string, int> keyIndex = Map();
+            Map<string, (Http::Context) => HttpResponse> handlersByKey = Map();
+            Array<RouteRec> routeList = [];
+            Map<string, int> pendingAuthMode = Map();
+            Map<string, string> pendingAuthRole = Map();
+            bool finalized = false;
+
+            // §1.2 registration — also performs the eager boot checks (duplicate
+            // verb+path, *wildcard-not-final): this implementation validates them
+            // at record() time rather than batched in finalize() (a documented,
+            // strictly-earlier-failing deviation from §1.5's batching — see the
+            // design's §13 implementation log).
+            Router record(RouteRec rec, (Http::Context) => HttpResponse h) {
+                Array<string> segs = splitPathSegments(rec.path);
+                RouteNode cur = this.root;
+                int i = 0;
+                while (i < segs.length()) {
+                    string seg = segs.at(i);
+                    bool isLast = i == segs.length() - 1;
+                    if (seg.startsWith(":")) {
+                        cur.param = cur.param ?? RouteNode();
+                        cur = cur.param ?? cur;
+                    } else if (seg.startsWith("*")) {
+                        if (!isLast) {
+                            throw RuntimeException("Router.record: *wildcard must be the final path segment: " + rec.path);
+                        }
+                        cur.wildcard = cur.wildcard ?? RouteNode();
+                        cur = cur.wildcard ?? cur;
+                    } else {
+                        if (!cur.statics.has(seg)) { cur.statics[seg] = RouteNode(); }
+                        cur = cur.statics.at(seg);
+                    }
+                    i = i + 1;
+                }
+                if (cur.byVerb.has(rec.verb)) {
+                    throw RuntimeException("Router.record: duplicate route " + rec.verb + " " + rec.path);
+                }
+                cur.byVerb[rec.verb] = rec.key();
+                this.keyIndex[rec.key()] = this.routeList.length();
+                this.handlersByKey[rec.key()] = h;
+                this.routeList = this.routeList.add(rec);
+                return this;
+            }
+
+            // §2.4 — order-independent w.r.t. record(): staged, joined at finalize().
+            void markAuth(string controller, string action, int mode, string role) {
+                string k = controller + "." + action;
+                this.pendingAuthMode[k] = mode;
+                this.pendingAuthRole[k] = role;
+            }
+
+            RouteNode? matchNode(RouteNode node, Array<string> segs, int i) {
+                if (i == segs.length()) {
+                    return node.byVerb.isEmpty() ? None : node;
+                }
+                string seg = segs.at(i);
+                if (node.statics.has(seg)) {
+                    RouteNode? r = this.matchNode(node.statics.at(seg), segs, i + 1);
+                    if (r != None) { return r; }
+                }
+                if (node.param != None) {
+                    RouteNode p = node.param ?? node;
+                    RouteNode? r = this.matchNode(p, segs, i + 1);
+                    if (r != None) { return r; }
+                }
+                if (node.wildcard != None) {
+                    RouteNode w = node.wildcard ?? node;
+                    if (!w.byVerb.isEmpty()) { return w; }
+                }
+                return None;
+            }
+
+            // Recover `:name`/`*name` captures by re-splitting the winning
+            // route's own path (§1.3 — names live per-route, not per-node).
+            Map<string, string> extractParams(string routePath, Array<string> segs) {
+                Array<string> routeSegs = splitPathSegments(routePath);
+                Map<string, string> result = Map();
+                int i = 0;
+                while (i < routeSegs.length()) {
+                    string rs = routeSegs.at(i);
+                    if (rs.startsWith(":")) {
+                        string name = rs.subStr(1, rs.length() - 1);
+                        string raw = segs.at(i);
+                        string? d = encoding::percentDecode(raw);
+                        result[name] = d ?? raw;
+                    } else if (rs.startsWith("*")) {
+                        string name = rs.subStr(1, rs.length() - 1);
+                        Array<string> rest = segs.slice(i, segs.length() - i);
+                        result[name] = rest.joinToString("/");
+                    }
+                    i = i + 1;
+                }
+                return result;
+            }
+
+            MatchResult resolve(string verb, string rawPath) {
+                Map<string, string> noParams = Map();
+                Array<string> segs = splitPathSegments(routePathOnly(rawPath));
+                RouteNode? found = this.matchNode(this.root, segs, 0);
+                if (found == None) { return MatchResult(404, "", noParams, ""); }
+                RouteNode n = found ?? this.root;
+                string v = verb;
+                if (v == "HEAD" && !n.byVerb.has("HEAD") && n.byVerb.has("GET")) { v = "GET"; }
+                if (n.byVerb.has(v)) {
+                    string key = n.byVerb.at(v);
+                    Map<string, string> params = this.extractParams(this.recOf(key).path, segs);
+                    return MatchResult(200, key, params, "");
+                }
+                Array<string> verbs = n.byVerb.keys().sort((a, b) => compareStrings(a, b));
+                return MatchResult(405, "", noParams, verbs.joinToString(", "));
+            }
+
+            // §1.5 boot checks — stray auth markers, authDefault enforcement,
+            // and (Era-A-aware) the :seg <-> ParamDesc coverage check, skipped
+            // when a route carries no descriptors (§4.3's Era-A row).
+            void finalize(string authDefault) {
+                for (string k in this.pendingAuthMode.keys()) {
+                    if (!this.keyIndex.has(k)) {
+                        throw RuntimeException("Router.finalize: @Auth/@NoAuth marker for '" + k +
+                            "' matches no registered route");
+                    }
+                }
+                int defaultMode = authDefault == "auth" ? 1 : (authDefault == "noauth" ? 2 : 0);
+                Array<string> offenders = [];
+                Array<RouteRec> rebuilt = [];
+                // `rebuilt` is appended in the same order `this.routeList` is
+                // walked, so index i keeps meaning "the same route" — the
+                // existing `keyIndex` (key -> index) needs no rebuilding.
+                for (RouteRec rec in this.routeList) {
+                    string key = rec.key();
+                    // rec.authMode is already set when the fluent Route
+                    // builder (route.lev) called .requireAuth()/.noAuth() at
+                    // record() time; pendingAuthMode is the attribute-marker
+                    // staging path (§2.4). Either may supply it.
+                    int mode = rec.authMode != 0 ? rec.authMode : this.pendingAuthMode.atOr(key, 0);
+                    string role = rec.authRole != "" ? rec.authRole : this.pendingAuthRole.atOr(key, "");
+                    if (mode == 0) {
+                        if (authDefault == "explicit") { offenders = offenders.add(rec.verb + " " + rec.path); }
+                        else { mode = defaultMode; }
+                    }
+                    if (!rec.params.isEmpty()) {
+                        this.checkParamCoverage(rec);
+                    }
+                    RouteRec resolved = RouteRec(rec.verb, rec.path, rec.controller, rec.action,
+                                                  rec.params, rec.returnType, mode, role);
+                    rebuilt = rebuilt.add(resolved);
+                }
+                if (!offenders.isEmpty()) {
+                    throw RuntimeException("Router.finalize: authDefault=explicit requires every route to call " +
+                        ".requireAuth()/.noAuth() (or an auth attribute); missing on: " + offenders.joinToString(", "));
+                }
+                this.routeList = rebuilt;
+                this.finalized = true;
+            }
+
+            void checkParamCoverage(RouteRec rec) {
+                for (string seg in splitPathSegments(rec.path)) {
+                    if (seg.startsWith(":")) {
+                        string name = seg.subStr(1, seg.length() - 1);
+                        bool covered = false;
+                        for (ParamDesc p in rec.params) {
+                            if (p.name == name && (p.type == "int" || p.type == "string")) { covered = true; }
+                        }
+                        if (!covered) {
+                            throw RuntimeException("Router.finalize: route " + rec.verb + " " + rec.path +
+                                " has no int/string param descriptor named '" + name + "'");
+                        }
+                    }
+                }
+                for (ParamDesc p in rec.params) {
+                    if (p.source == "path") {
+                        bool found = false;
+                        for (string seg in splitPathSegments(rec.path)) {
+                            if (seg == (":" + p.name)) { found = true; }
+                        }
+                        if (!found) {
+                            throw RuntimeException("Router.finalize: route " + rec.verb + " " + rec.path +
+                                " declares path param '" + p.name + "' with no matching :segment");
+                        }
+                    }
+                }
+            }
+
+            (Http::Context) => HttpResponse handlerOf(string key) => this.handlersByKey.at(key);
+            RouteRec recOf(string key) => this.routeList.at(this.keyIndex.at(key));
+            Array<RouteRec> routes() => this.routeList;
+            int authModeOf(string key) => this.recOf(key).authMode;
+            string authRoleOf(string key) => this.recOf(key).authRole;
+
+            // §1.4 the Track 08 handshake: resolveMiddleware runs early (fills
+            // routeParams + stamps the route key), dispatchHandler is the
+            // terminal O(1) handler lookup. Both ordinary C2 shapes
+            // (reference.md's Handler/Middleware), placed explicitly by the
+            // composition root — methods, not free functions, because a
+            // namespace-scope free function whose declared return type is
+            // itself a lambda type fails to parse (see the design's §13
+            // implementation log / the filed bug); methods with a lambda
+            // return type are the codebase's own established idiom (`.mw()`
+            // throughout src/kernel/*.lev).
+            (Http::Context, (Http::Context) => HttpResponse) => HttpResponse resolveMiddleware() {
+                Router self = this;
+                return (c, next) => {
+                    MatchResult m = self.resolve(c.request.method, c.request.path);
+                    if (m.status == 404) { throw Http::NotFoundException(c.request.path); }
+                    if (m.status == 405) {
+                        HttpResponse r = HttpResponse(405, "method not allowed");
+                        r.withHeader("Allow", m.allow);
+                        r.withHeader("Content-Type", "text/plain; charset=utf-8");
+                        return r;
+                    }
+                    c.routeParams = m.params;
+                    c.items["atlantis.route"] = m.key;
+                    return next(c);
+                };
+            }
+
+            (Http::Context) => HttpResponse dispatchHandler() {
+                Router self = this;
+                // A chained call — `expr(...)(...)` where `expr(...)` is
+                // itself a call, not a plain value — does not lower on the IR
+                // backend (filed; see the design's §13 log); bind the
+                // intermediate handler to a local first.
+                return (c) => {
+                    var h = self.handlerOf(c.items.atOr("atlantis.route", ""));
+                    return h(c);
+                };
+            }
+        }
+    }
+}

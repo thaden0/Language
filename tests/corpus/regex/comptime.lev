@@ -1,0 +1,12 @@
+// doc 1 §3 / doc 2 §1.1: comptime compileProgram + Regex::FromProgram — the
+// program compiles at BUILD time; construction at runtime is O(1) wrap.
+comptime Array<int> EMAIL_P = regex::compileProgram("^[\\w.+-]+@[\\w-]+\\.[\\w.]+$", "");
+
+void run() {
+    Regex emailRe = Regex::FromProgram(EMAIL_P);
+    console.writeln(emailRe.isMatch("user@example.com"));
+    console.writeln(emailRe.isMatch("not-an-email"));
+    Array<bool> hits = emailRe.isMatchAll(["a@b.com", "nope", "x.y@z.co"]);
+    for (bool h in hits) { console.writeln(h); }
+}
+run();

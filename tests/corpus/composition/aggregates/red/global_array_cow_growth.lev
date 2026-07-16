@@ -1,0 +1,20 @@
+// bug #73: reassigning a GLOBAL Array<T> grown element-by-element leaks
+// every intermediate COW buffer on LLVM native (superseded global-slot
+// payloads are never released in the escaping-tier bump heap) — O(N²) live
+// bytes for O(N) data, dying `lvrt: heap exhausted` near N≈10k. The
+// identical loop on a LOCAL array reclaims fine (that shape is the
+// sanctioned workaround: build local, assign the global once). Interpreters
+// and emit-C++ print 10000. Original casualty: tests/corpus/tasks/
+// park_storm.lev, kept interpreter-lanes-only until this is fixed.
+Array<int> xs;
+
+void build(int n) {
+    int i = 0;
+    while (i < n) {
+        xs = xs.add(i);
+        i = i + 1;
+    }
+}
+
+build(10000);
+console.writeln(xs.length().toString());

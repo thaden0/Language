@@ -1,0 +1,26 @@
+// bug.md #8: a block-level `uses` imports for exactly the block it appears in.
+// Before the fix it was silently inert — the bare call errored with "unknown
+// function". Here it drives a function import and a class-typed import, plus an
+// import confined to a nested block (which must not escape that block).
+namespace Lib {
+    int bump(int x) => x + 100;
+    class Box { int n; new Box(int v) { n = v; } }
+}
+
+void useFn() {
+    uses Lib;
+    console.writeln(bump(5));            // 105
+    Box b = Box(9);
+    console.writeln(b.n);               // 9
+}
+
+void nested() {
+    {
+        uses Lib;
+        console.writeln(bump(1));        // 101
+    }
+    console.writeln("after block");     // the block import does not leak out here
+}
+
+useFn();
+nested();

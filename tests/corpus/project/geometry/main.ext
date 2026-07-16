@@ -1,0 +1,10 @@
+uses Geo;
+uses Util;
+void run() {
+    Circle c = Circle::Sized(5);
+    console.writeln(Util::tag("geometry"));
+    console.writeln(c.area10());
+    console.writeln(square(7));
+    console.writeln(describe(c));
+}
+run();

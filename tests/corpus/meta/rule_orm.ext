@@ -1,0 +1,25 @@
+// §16.5 Phase 3 §5: $for list splices, adapted from proposal §10.2 (an ORM
+// column map) to the actual meta.* surface (§3): attribute VALUES aren't
+// reflected (attrs are names only, by design — see meta::Field), so columns
+// are named by the field itself rather than an @Column("alias") override.
+namespace Orm {
+    attribute Table { string name; }
+    attribute Column { }
+    rule buildSchema {
+        match @Table(t) on class C
+        inject `Array<string> schema() =>
+            [ $t.name, $for f in C.fields.where((x) => x.hasAttr("Column")) : $f.name ];`
+               at member of C
+    }
+}
+uses Orm;
+
+@Table("users")
+class User {
+    @Column int id;
+    @Column string name;
+    int internalCounter;
+}
+
+User u = User();
+console.write(u.schema().joinToString(","));

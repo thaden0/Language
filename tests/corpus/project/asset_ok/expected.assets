@@ -1,0 +1,4 @@
+[assets] consumed assets (path, bytes, hash if known, owning module)
+[assets] views/index.html  14 B  sha256:860e54827aac082096bee04bf39bbb540958590c744d4759ea92020c0282097a  (module "")
+[assets] views/nested/frag.html  17 B  sha256:b657076498ee96040c28789aa954fbc04fda2ab75e5282d52d77c4613a0ebbf0  (module "")
+[assets] schema.sql  9 B  sha256:17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a  (module "")

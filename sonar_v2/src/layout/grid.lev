@@ -1,0 +1,113 @@
+namespace Sonar {
+    Array<int> distributeTracks(Array<Constraint> tracks, int totalAvail, int gapSize) {
+        int n = tracks.length();
+        Array<int> sizes = Array(n, 0);
+        Array<Constraint> flexTracks = [];
+        Array<int> flexIdx = [];
+        int fixed = 0;
+        for (int i in 0..n - 1) {
+            Constraint c = tracks[i];
+            if (c.isConcrete()) { sizes[i] = c.concrete; fixed = fixed + c.concrete; }
+            else { flexTracks = flexTracks.add(c); flexIdx = flexIdx.add(i); }
+        }
+        int gaps = n > 1 ? gapSize * (n - 1) : 0;
+        int remaining = totalAvail - fixed - gaps;
+        if (remaining < 0) remaining = 0;
+        Array<int> shares = distributeFlexShares(flexTracks, remaining);
+        for (int i in 0..flexIdx.length() - 1) sizes[flexIdx[i]] = shares[i];
+        return sizes;
+    }
+
+    Array<int> trackOffsets(Array<int> sizes, int gapSize, int start) {
+        Array<int> offsets = Array(sizes.length(), 0);
+        int cursor = start;
+        for (int i in 0..sizes.length() - 1) {
+            offsets[i] = cursor;
+            cursor = cursor + sizes[i] + gapSize;
+        }
+        return offsets;
+    }
+
+    class GridLayout : ILayoutStrategy {
+        int rows;
+        int cols;
+        int gap_ = 0;
+        Array<Constraint> rowConstraints_;
+        Array<Constraint> colConstraints_;
+
+        new GridLayout(int r, int c) {
+            rows = r;
+            cols = c;
+            Array<Constraint> rc = [];
+            for (int i in 0..r - 1) rc = rc.add(Constraint::Flex(1));
+            rowConstraints_ = rc;
+            Array<Constraint> cc = [];
+            for (int i in 0..c - 1) cc = cc.add(Constraint::Flex(1));
+            colConstraints_ = cc;
+        }
+
+        GridLayout gap(int g) { gap_ = g; return this; }
+
+        GridLayout rowConstraint(int i, Constraint c) {
+            if (i < 0 || i >= rows) return this;
+            Array<Constraint> updated = [];
+            for (int idx in 0..rows - 1) updated = updated.add(idx == i ? c : rowConstraints_[idx]);
+            rowConstraints_ = updated;
+            return this;
+        }
+
+        GridLayout colConstraint(int i, Constraint c) {
+            if (i < 0 || i >= cols) return this;
+            Array<Constraint> updated = [];
+            for (int idx in 0..cols - 1) updated = updated.add(idx == i ? c : colConstraints_[idx]);
+            colConstraints_ = updated;
+            return this;
+        }
+
+        int clampIndex(int value, int maxIndex) {
+            if (maxIndex < 0) return 0;
+            if (value < 0) return 0;
+            if (value > maxIndex) return maxIndex;
+            return value;
+        }
+
+        Size measure(Array<IComponent> kids, Size avail) {
+            for (IComponent child in kids) if (child.visible()) child.measure(avail);
+
+            // v1 tracks are Fixed/Flex/Bounded only (§3) — no per-track
+            // content measure pass, so children don't inform track sizing.
+            int naturalW = 0;
+            for (int i in 0..cols - 1) naturalW = naturalW + clampAxis(colConstraints_[i], 0);
+            int naturalH = 0;
+            for (int i in 0..rows - 1) naturalH = naturalH + clampAxis(rowConstraints_[i], 0);
+            int colGaps = cols > 1 ? gap_ * (cols - 1) : 0;
+            int rowGaps = rows > 1 ? gap_ * (rows - 1) : 0;
+            return Size(naturalW + colGaps, naturalH + rowGaps);
+        }
+
+        void arrange(Array<IComponent> kids, Rect content) {
+            Array<int> colSizes = distributeTracks(colConstraints_, content.w(), gap_);
+            Array<int> rowSizes = distributeTracks(rowConstraints_, content.h(), gap_);
+            Array<int> colOffsets = trackOffsets(colSizes, gap_, content.x());
+            Array<int> rowOffsets = trackOffsets(rowSizes, gap_, content.y());
+
+            for (IComponent child in kids) if (child.visible()) {
+                int row0 = clampIndex(child.gridRow, rows - 1);
+                int col0 = clampIndex(child.gridCol, cols - 1);
+                int rowSpan = child.gridRowSpan < 1 ? 1 : child.gridRowSpan;
+                int colSpan = child.gridColSpan < 1 ? 1 : child.gridColSpan;
+                int row1 = row0 + rowSpan - 1; if (row1 > rows - 1) row1 = rows - 1;
+                int col1 = col0 + colSpan - 1; if (col1 > cols - 1) col1 = cols - 1;
+
+                int x = colOffsets[col0];
+                int y = rowOffsets[row0];
+                int right = colOffsets[col1] + colSizes[col1];
+                int bottom = rowOffsets[row1] + rowSizes[row1];
+                int w = right - x; if (w < 0) w = 0;
+                int h = bottom - y; if (h < 0) h = 0;
+
+                child.arrange(Rect(Point(x, y), Size(w, h)));
+            }
+        }
+    }
+}

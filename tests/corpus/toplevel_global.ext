@@ -1,0 +1,17 @@
+// bug.md #2: a bare top-level (un-namespaced) Var is a GLOBAL — readable and
+// writable from functions on every engine, initialized in statement order at
+// top level (not hoisted to @ginit). Both engines model it as one shared
+// storage location: a function's write is visible to a later top-level read.
+int G = 1;
+console.writeln(G);
+void bump() { G = G + 1; }
+bump();
+console.writeln(G);
+const int C = 40;
+int readC() => C + 2;
+console.writeln(readC());
+G = G * 10;
+console.writeln(G);
+string greeting = "hi";
+string shout() => greeting + "!";
+console.writeln(shout());

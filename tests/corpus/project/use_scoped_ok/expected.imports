@@ -1,0 +1,15 @@
+[imports] file -> imports provenance (declares / uses / effective visible namespaces)
+[imports] lib.ext
+[imports]   declares: M
+[imports]   uses:     (none)
+[imports]   visible:  M, std
+[imports] a.ext
+[imports]   declares: (none)
+[imports]   uses:     M
+[imports]   use:      M::helper
+[imports]   visible:  M, std
+[imports] b.ext
+[imports]   declares: (none)
+[imports]   uses:     M
+[imports]   use:      M::other as oth
+[imports]   visible:  M, std

@@ -1,0 +1,136 @@
+// Source adapters over Recon's model (DESIGN §9.2). Each implements a Sonar
+// virtualization interface. Headless-testable (call the methods directly).
+namespace Recon {
+uses Sonar;
+
+// A tree source over a Collection. TreeNodeId.id indexes a flat registry the
+// source owns (§9.2). Rebuild via build(); nodes never move within a build.
+class ReconTreeSource : ITreeSource {
+    Array<CollectionItem> nodes;      // id -> item
+    Array<Array<int>> childIds;       // id -> child ids
+    Array<int> rootIds;
+    public Collection collection;
+    new ReconTreeSource() { collection = Collection(); }
+
+    void build(Collection col) {
+        collection = col;
+        nodes = [];
+        childIds = [];
+        rootIds = [];
+        for (CollectionItem top in col.root.children) {
+            int id = this.register(top);
+            rootIds = rootIds.add(id);
+        }
+    }
+
+    // register a node + its subtree, returning its id
+    int register(CollectionItem item) {
+        int id = nodes.length();
+        nodes = nodes.add(item);
+        childIds = childIds.add([]);       // placeholder; filled after recursion
+        Array<int> kids = [];
+        if (item.isFolder) {
+            for (CollectionItem c in item.children) { kids = kids.add(this.register(c)); }
+        }
+        childIds = childIds.with(id, kids);
+        return id;
+    }
+
+    CollectionItem itemFor(TreeNodeId n) {
+        if (n.id >= 0 && n.id < nodes.length()) { return nodes.at(n.id); }
+        return CollectionItem();
+    }
+
+    int rootCount() => rootIds.length();
+    TreeNodeId rootAt(int i) => TreeNodeId(rootIds.at(i));
+    int childCount(TreeNodeId n) {
+        if (n.id >= 0 && n.id < childIds.length()) { return childIds.at(n.id).length(); }
+        return 0;
+    }
+    TreeNodeId childAt(TreeNodeId n, int i) => TreeNodeId(childIds.at(n.id).at(i));
+    bool hasChildren(TreeNodeId n) => this.childCount(n) > 0;
+
+    string labelAt(TreeNodeId n) {
+        CollectionItem item = this.itemFor(n);
+        if (item.isFolder) { return "▸ " + item.name; }
+        string glyph = "  ";
+        if (item.request != None) {
+            RequestSpec r = item.request ?? RequestSpec();
+            glyph = methodGlyph(r.method);
+        }
+        return glyph + " " + item.name;
+    }
+}
+
+string methodGlyph(Method m) {
+    if (m == Method::GET)    { return "GET "; }
+    if (m == Method::POST)   { return "POST"; }
+    if (m == Method::PUT)    { return "PUT "; }
+    if (m == Method::PATCH)  { return "PATC"; }
+    if (m == Method::DELETE) { return "DEL "; }
+    if (m == Method::HEAD)   { return "HEAD"; }
+    return "OPTS";
+}
+
+// Table source over an Array<HeaderEntry>: columns [enabled, name, value].
+class HeaderTableSource : ITableSource {
+    public Array<HeaderEntry> rows;
+    new HeaderTableSource() { }
+    int rowCount() => rows.length();
+    int colCount() => 3;
+    string cellAt(int r, int c) {
+        if (r < 0 || r >= rows.length()) { return ""; }
+        HeaderEntry h = rows.at(r);
+        if (c == 0) { return h.enabled ? "[x]" : "[ ]"; }
+        if (c == 1) { return h.name; }
+        return h.value;
+    }
+}
+
+// Table source over query params / urlencoded fields.
+class FieldTableSource : ITableSource {
+    public Array<FormField> rows;
+    new FieldTableSource() { }
+    int rowCount() => rows.length();
+    int colCount() => 3;
+    string cellAt(int r, int c) {
+        if (r < 0 || r >= rows.length()) { return ""; }
+        FormField f = rows.at(r);
+        if (c == 0) { return f.enabled ? "[x]" : "[ ]"; }
+        if (c == 1) { return f.key; }
+        return f.value;
+    }
+}
+
+// Response headers as a 2-column table.
+class RespHeaderTableSource : ITableSource {
+    public Array<Header> rows;      // prelude std::Header {name,value}
+    new RespHeaderTableSource() { }
+    void setFrom(HeaderMap m) { rows = m.entries(); }
+    int rowCount() => rows.length();
+    int colCount() => 2;
+    string cellAt(int r, int c) {
+        if (r < 0 || r >= rows.length()) { return ""; }
+        Header h = rows.at(r);
+        if (c == 0) { return h.name; }
+        return h.value;
+    }
+}
+
+// Cookies as a table.
+class CookieTableSource : ITableSource {
+    public Array<Cookie> rows;
+    new CookieTableSource() { }
+    int rowCount() => rows.length();
+    int colCount() => 4;
+    string cellAt(int r, int c) {
+        if (r < 0 || r >= rows.length()) { return ""; }
+        Cookie ck = rows.at(r);
+        if (c == 0) { return ck.name; }
+        if (c == 1) { return ck.value; }
+        if (c == 2) { return ck.domain; }
+        return ck.path;
+    }
+}
+
+}

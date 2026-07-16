@@ -1,0 +1,12 @@
+namespace Web {
+    interface IController { }
+    attribute Route { string path; }
+    rule reg {
+        match @Route(r) on method m in class C : IController
+        inject `hits.record($r.path)` at bottom of C.constructor
+    }
+    class Registry {
+        string log = "";
+        Registry record(string p) { log = log + p + ";"; return this; }
+    }
+}

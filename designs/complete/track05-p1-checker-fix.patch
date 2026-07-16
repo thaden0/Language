@@ -1,0 +1,296 @@
+diff --git a/src/Checker.cpp b/src/Checker.cpp
+index a9dcb03..fb4e654 100644
+--- a/src/Checker.cpp
++++ b/src/Checker.cpp
+@@ -515,31 +515,17 @@ Type Checker::typeOfInner(const Expr* e) {
+             r.args.push_back(elem);
+             return r;
+         }
+-        case ExprKind::Lambda: {
++        case ExprKind::Lambda:
+             // Walk the body so calls inside it are statically resolved (their
+             // `resolved` set) and checked — otherwise a call in a lambda body
+             // falls through to a by-name runtime/lower fallback that only worked
+             // while `uses` leaked names into the global scope (bug.md #8). The
+-            // lambda's own type stays unmodeled; params bind as their declared
+-            // type (else unknown), and its `return`s are its own, so the
+-            // enclosing function's returnType_ must not check them.
+-            env_.emplace_back();
+-            for (const Param& p : e->params)
+-                env_.back()[p.name] = {p.type ? fromTypeRef(p.type.get()) : unknown(), p.isConst};
+-            Type savedRt = returnType_; const TypeRef* savedRtr = returnTypeRef_;
+-            returnType_ = Type{}; returnTypeRef_ = nullptr;
+-            // techdesign-02 F1: a break/continue inside this lambda can never
+-            // exit a loop in the ENCLOSING function — the lambda body is its
+-            // own loop-nesting scope.
+-            int savedLoopDepth = loopDepth_;
+-            loopDepth_ = 0;
+-            if (e->block) check(e->block.get());
+-            else if (e->a) typeOf(e->a.get());
+-            loopDepth_ = savedLoopDepth;
+-            returnType_ = savedRt; returnTypeRef_ = savedRtr;
+-            env_.pop_back();
++            // lambda's own type stays unmodeled OUTSIDE a generic call: params
++            // bind as their declared type (else unknown). Lambdas in call-
++            // argument position never reach here — typeOfCall defers them and
++            // walks them via checkLambdaBody with real param types instead.
++            checkLambdaBody(e, {});
+             return unknown();
+-        }
+         case ExprKind::Fork:
+             for (const ExprPtr& a : e->list) typeOf(a.get());
+             return unknown();
+@@ -682,9 +668,26 @@ Type Checker::typeOfMember(const Expr* e) {
+     return unknown();
+ }
+ 
++// Lambda arguments are DEFERRED here (typed unknown for overload choice — same
++// score they got before) and walked exactly once afterward: the success paths
++// walk them inside genericReturn with parameter types substituted from the
++// bound type vars (lambda-last inference, Track 05 §1); any path that returns
++// without resolving a callee falls through to the sweep below, which walks
++// them with declared/unknown params — the old behavior (bug.md #8 still holds:
++// every lambda body is walked so its inner calls get `resolved` pinned).
+ Type Checker::typeOfCall(const Expr* e) {
++    std::vector<char> lambdaWalked(e->list.size(), 0);
++    Type r = typeOfCallInner(e, lambdaWalked);
++    for (size_t i = 0; i < e->list.size(); ++i)
++        if (e->list[i]->kind == ExprKind::Lambda && !lambdaWalked[i])
++            checkLambdaBody(e->list[i].get(), {});
++    return r;
++}
++
++Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
+     std::vector<Type> argTypes;
+-    for (const ExprPtr& a : e->list) argTypes.push_back(typeOf(a.get()));
++    for (const ExprPtr& a : e->list)
++        argTypes.push_back(a->kind == ExprKind::Lambda ? unknown() : typeOf(a.get()));
+     Expr* call = const_cast<Expr*>(e);   // to record the resolved overload
+     const Expr* callee = e->a.get();
+ 
+@@ -728,6 +731,21 @@ Type Checker::typeOfCall(const Expr* e) {
+                                    /*allowInject=*/false);
+         call->resolved = ctor;
+         call->resolvedClass = ctorClass;
++        // Lambda ctor args: walk each with its declared function-type param
++        // types (no generic binding here — inferConstruction owns the class's
++        // type args); marks them walked so the sweep doesn't re-walk.
++        if (ctor)
++            for (size_t i = 0; i < ctor->params.size() && i < e->list.size(); ++i) {
++                const Expr* a = e->list[i].get();
++                if (a->kind != ExprKind::Lambda) continue;
++                const TypeRef* pt = ctor->params[i].type.get();
++                std::vector<Type> ptypes;
++                if (pt && pt->kind == TypeKind::Function)
++                    for (const TypeRefPtr& fp : pt->funcParams)
++                        ptypes.push_back(fromTypeRef(fp.get()));
++                checkLambdaBody(a, ptypes);
++                lambdaWalked[i] = 1;
++            }
+         return inferConstruction(ctorClass, ctor, argTypes, nullptr, e->span);
+     }
+ 
+@@ -741,7 +759,7 @@ Type Checker::typeOfCall(const Expr* e) {
+         if (!cands.empty()) {
+             if (const Stmt* fn = resolve(cands, "function")) {
+                 call->resolved = fn;
+-                return genericReturn(nullptr, fn, unknown(), argTypes);
++                return genericReturn(nullptr, fn, unknown(), argTypes, e, &lambdaWalked);
+             }
+             return unknown();   // overloads existed but none applied (already errored)
+         }
+@@ -749,7 +767,7 @@ Type Checker::typeOfCall(const Expr* e) {
+         if (thisClass_ && !slotsNamed(thisClass_->shape, callee->text).empty()) {
+             if (const Stmt* m = resolve(methodOverloads(thisClass_, callee->text), "method")) {
+                 call->resolved = m;
+-                return genericReturn(thisClass_, m, classType(thisClass_), argTypes);
++                return genericReturn(thisClass_, m, classType(thisClass_), argTypes, e, &lambdaWalked);
+             }
+             return unknown();
+         }
+@@ -768,7 +786,7 @@ Type Checker::typeOfCall(const Expr* e) {
+                     if (s->kind == SymbolKind::Function && s->decl) cands.push_back(s->decl);
+             if (const Stmt* fn = resolve(cands, "function")) {
+                 call->resolved = fn;
+-                return genericReturn(nullptr, fn, unknown(), argTypes);
++                return genericReturn(nullptr, fn, unknown(), argTypes, e, &lambdaWalked);
+             }
+             return unknown();
+         }
+@@ -805,7 +823,7 @@ Type Checker::typeOfCall(const Expr* e) {
+                 // fall back to dynamic dispatch by name (findMethod / CallDyn).
+                 bool ifaceRecv = bt.sym && bt.sym->decl && bt.sym->decl->isInterface;
+                 call->resolved = ifaceRecv ? nullptr : m;
+-                Type r = genericReturn(bt.sym, m, bt, argTypes);
++                Type r = genericReturn(bt.sym, m, bt, argTypes, e, &lambdaWalked);
+                 if (addNone && r.kind != TKind::Unknown) {
+                     Type u{TKind::Union, nullptr, r.canonical + " | None", {}, nullptr, {}};
+                     u.unionMembers = {r, primType("None")};
+@@ -1194,7 +1212,17 @@ Type Checker::substitute(const TypeRef* t,
+         if (s && s->kind == SymbolKind::Primitive) return primitive(t->canonical);
+         if (s && s->kind == SymbolKind::Class) {
+             Type r{TKind::Class, s, std::string(s->name), {}, nullptr, {}};
+-            for (const TypeRefPtr& g : t->generics) r.args.push_back(substitute(g.get(), subst));
++            bool anyUnbound = false;
++            for (const TypeRefPtr& g : t->generics) {
++                Type at = substitute(g.get(), subst);
++                if (at.kind == TKind::Unknown) anyUnbound = true;
++                r.args.push_back(std::move(at));
++            }
++            // An unbound var (e.g. U in map<U> when the lambda's return type
++            // couldn't be inferred) degrades to the RAW head — assignable to
++            // any instantiation (§2.5's leniency, same as the HKT path above)
++            // — never the malformed hard-error form 'Array<>'.
++            if (anyUnbound) { r.args.clear(); return r; }
+             if (!r.args.empty()) {
+                 r.canonical += "<";
+                 for (size_t i = 0; i < r.args.size(); ++i) {
+@@ -1210,16 +1238,76 @@ Type Checker::substitute(const TypeRef* t,
+     return fromTypeRef(t);
+ }
+ 
++// Walk a lambda body with supplied parameter types (declared types win; missing
++// entries fall back to unknown, the old behavior). Returns the inferred return
++// type: an expression body's type, or a block body's uniform Return type —
++// mixed or absent returns yield unknown, which substitute() degrades leniently.
++Type Checker::checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTypes) {
++    env_.emplace_back();
++    for (size_t i = 0; i < lam->params.size(); ++i) {
++        const Param& p = lam->params[i];
++        Type pt = p.type ? fromTypeRef(p.type.get())
++                         : (i < paramTypes.size() ? paramTypes[i] : unknown());
++        env_.back()[p.name] = {std::move(pt), p.isConst};
++    }
++    Type savedRt = returnType_; const TypeRef* savedRtr = returnTypeRef_;
++    returnType_ = Type{}; returnTypeRef_ = nullptr;
++    // techdesign-02 F1: a break/continue inside this lambda can never exit a
++    // loop in the ENCLOSING function — the lambda body is its own loop scope.
++    int savedLoopDepth = loopDepth_;
++    loopDepth_ = 0;
++    std::vector<Type> rets;
++    std::vector<Type>* savedLr = lambdaReturns_;
++    Type ret = unknown();
++    if (lam->block) {
++        lambdaReturns_ = &rets;
++        check(lam->block.get());
++        lambdaReturns_ = savedLr;
++        bool uniform = !rets.empty();
++        for (const Type& t : rets)
++            if (t.canonical.empty() || t.canonical != rets[0].canonical) uniform = false;
++        if (uniform) ret = rets[0];
++    } else if (lam->a) {
++        lambdaReturns_ = nullptr;   // an expr body's nested lambdas own their returns
++        ret = typeOf(lam->a.get());
++        lambdaReturns_ = savedLr;
++    }
++    loopDepth_ = savedLoopDepth;
++    returnType_ = savedRt; returnTypeRef_ = savedRtr;
++    env_.pop_back();
++    return ret;
++}
++
+ // The return Type of a (possibly generic) method/function call: bind class
+ // params from the receiver, method params from the arguments, then substitute.
++// Lambda arguments run LAST (when `call`/`lambdaWalked` are given): value
++// arguments have already bound what they can (T from the receiver, A from a
++// seed), so each lambda's parameter types are known; its body then infers the
++// return type, which binds the remaining vars (U in `map<U>((T) => U fn)`).
+ Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
+-                            const std::vector<Type>& args) {
++                            const std::vector<Type>& args,
++                            const Expr* call, std::vector<char>* lambdaWalked) {
+     std::unordered_map<std::string_view, Type> subst;
+     if (cls && cls->decl)
+         for (size_t i = 0; i < cls->decl->generics.size() && i < receiver.args.size(); ++i)
+             subst[cls->decl->generics[i]] = receiver.args[i];
+     for (size_t i = 0; i < fn->params.size() && i < args.size(); ++i)
+         unify(fn->params[i].type.get(), args[i], subst);
++    if (call && lambdaWalked) {
++        for (size_t i = 0; i < fn->params.size() && i < call->list.size(); ++i) {
++            const Expr* a = call->list[i].get();
++            if (a->kind != ExprKind::Lambda || (*lambdaWalked)[i]) continue;
++            const TypeRef* pt = fn->params[i].type.get();
++            std::vector<Type> ptypes;
++            if (pt && pt->kind == TypeKind::Function)
++                for (const TypeRefPtr& fp : pt->funcParams)
++                    ptypes.push_back(substitute(fp.get(), subst));
++            Type ret = checkLambdaBody(a, ptypes);
++            if (pt && pt->kind == TypeKind::Function && pt->funcRet)
++                unify(pt->funcRet.get(), ret, subst);
++            (*lambdaWalked)[i] = 1;
++        }
++    }
+     return substitute(fn->type.get(), subst);
+ }
+ 
+@@ -1329,6 +1417,7 @@ void Checker::check(Stmt* s) {
+         case StmtKind::Return:
+             if (s->expr) {
+                 Type t = typeInitExpr(s->expr.get(), returnTypeRef_);
++                if (lambdaReturns_) lambdaReturns_->push_back(t);
+                 if (returnType_.kind != TKind::Unknown && !assignable(t, returnType_))
+                     error(s->expr->span, "cannot return '" + t.canonical + "' as '" +
+                           returnType_.canonical + "'");
+diff --git a/src/Checker.hpp b/src/Checker.hpp
+index 077154f..e2693ca 100644
+--- a/src/Checker.hpp
++++ b/src/Checker.hpp
+@@ -68,6 +68,10 @@ private:
+     // check(). Not a stack: nested blocks reset it around their own children.
+     bool usingOkHere_ = false;
+     std::vector<std::unordered_map<std::string_view, LocalBinding>> env_;  // locals stack
++    // When non-null, checking is inside a lambda body whose return type is
++    // being inferred: Return statements record their type here instead of
++    // checking against returnType_ (which is cleared inside lambdas anyway).
++    std::vector<Type>* lambdaReturns_ = nullptr;
+     // Flow-narrowing overlay: path ("x", "req.host") -> narrowed type. Consulted
+     // before declared types; erased when the path (or a prefix) is assigned.
+     std::unordered_map<std::string, Type> narrow_;
+@@ -96,8 +100,15 @@ private:
+     Type typeOfInner(const Expr* e);
+     Type typeOfMember(const Expr* e);
+     Type typeOfCall(const Expr* e);
++    Type typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked);
+     Type typeOfBinary(const Expr* e);
+ 
++    // Walk a lambda's body with its parameters bound to `paramTypes` (falling
++    // back to declared types / unknown), returning the body's inferred return
++    // type (expr body: its type; block body: the uniform Return type, else
++    // unknown). This is the lambda-last leg of generic inference (Track 05 §1).
++    Type checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTypes);
++
+     // An initializer/return expression, typed with a target type available so
+     // generic construction can infer type args from the target (§9).
+     Type typeInitExpr(const Expr* e, const TypeRef* expected);
+@@ -128,8 +139,15 @@ private:
+     const Stmt* lookupBind(const std::string& canonical);   // nearest-wins
+ 
+     // Generic call inference/substitution (uniform for methods and functions).
++    // When `call`/`lambdaWalked` are supplied, lambda arguments are checked
++    // LAST (after value arguments bind type vars): each lambda's param types
++    // come from its function-type parameter position (substituted), its body
++    // is walked once, and its inferred return type unifies against the
++    // function type's return position — binding U in `map<U>((T) => U fn)`.
+     Type genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
+-                       const std::vector<Type>& args);
++                       const std::vector<Type>& args,
++                       const Expr* call = nullptr,
++                       std::vector<char>* lambdaWalked = nullptr);
+     void unify(const TypeRef* param, const Type& arg,
+                std::unordered_map<std::string_view, Type>& subst);
+     Type substitute(const TypeRef* t,
+diff --git a/src/Resolver.cpp b/src/Resolver.cpp
+index d0464c1..190a979 100644
+--- a/src/Resolver.cpp
++++ b/src/Resolver.cpp
+@@ -212,8 +212,8 @@ class Array<T> {
+         return r;
+     }
+     Array<T> filter((T) => bool pred) => this.where(pred);
+-    Array<T> map((T) => T fn) {
+-        Array<T> r = [];
++    Array<U> map<U>((T) => U fn) {
++        Array<U> r = [];
+         for (T x in this) r = r.add(fn(x));
+         return r;
+     }

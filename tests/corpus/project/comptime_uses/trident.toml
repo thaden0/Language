@@ -1,0 +1,2 @@
+name = "comptime_uses"
+sources = ["lib_a.ext", "lib_b.ext", "main.ext"]

@@ -1,0 +1,5 @@
+use HP6::mark;
+
+class BTests {
+    @Test void b1() { }
+}

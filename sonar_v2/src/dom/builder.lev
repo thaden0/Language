@@ -1,0 +1,169 @@
+namespace Sonar { namespace Dom {
+
+    // ======================================================================
+    // DomBuilder (techdesign-02 §3.3, M3) — depth-first build of a parsed
+    // DomTplNode tree into a live component subtree, recording meta into the
+    // Document as it goes. Parents are constructed and their attrs applied
+    // before children are added, so onAttach fires with live parent links.
+    //
+    // Attribute contract: `Document.__recordBuild` owns id/class routing +
+    // serializable meta recording; `applyAttr` here owns the component
+    // *setters* (layout/style/per-tag), skipping id/class (already handled).
+    // ======================================================================
+
+    // ---- enum name ladders (no Map<string, enum> shapes — #40) -------------
+    Dock dockFromName(string v) {
+        if (v == "Top")    return Dock::Top;
+        if (v == "Bottom") return Dock::Bottom;
+        if (v == "Left")   return Dock::Left;
+        if (v == "Right")  return Dock::Right;
+        if (v == "Fill")   return Dock::Fill;
+        throw SonarException("dock=\"" + v + "\" is not one of Top/Bottom/Left/Right/Fill");
+    }
+    Align alignFromName(string v) {
+        if (v == "Start")   return Align::Start;
+        if (v == "Center")  return Align::Center;
+        if (v == "End")     return Align::End;
+        if (v == "Stretch") return Align::Stretch;
+        throw SonarException("align=\"" + v + "\" is not one of Start/Center/End/Stretch");
+    }
+    Overflow wrapFromName(string v) {
+        if (v == "Clip")   return Overflow::Clip;
+        if (v == "Scroll") return Overflow::Scroll;
+        if (v == "Wrap")   return Overflow::Wrap;
+        throw SonarException("wrap=\"" + v + "\" is not one of Clip/Scroll/Wrap");
+    }
+    int intAttr(string name, string v) {
+        int? n = v.toInt();
+        if (n != None) return n;
+        throw SonarException("attribute '" + name + "=\"" + v + "\"' must be an integer");
+    }
+
+    void setNodeText(IComponent c, string t) {
+        if (c is Text)       { c.text(t);     return; }
+        if (c is Button)     { c.setLabel(t); return; }
+        if (c is MenuItem)   { c.label(t);    return; }
+        if (c is ContentBar) { c.setLeft(t);  return; }
+        if (c is Input)      { c.setValue(t); return; }
+        if (c is Modal)      { c.setTitle(t); return; }
+        if (c is CheckBox)   { c.setLabel(t); return; }
+        // no text channel on this leaf: the text child is ignored (documented)
+    }
+
+    // Side-effect application. Returns nothing; throws E-D5/E-D6 on bad input.
+    void applyAttr(IComponent c, Document doc, string tag, string name, string value) {
+        // id/class are recorded (and their side effects run) by __recordBuild.
+        if (name == "id" || name == "class") return;
+        // action/hotkey are D04 — recorded as serializable meta by __recordBuild,
+        // no setter here (interim).
+        if (name == "action" || name == "hotkey") return;
+        if (name == "theme") throw SonarException("theme=\"" + value + "\" is not supported yet (E-D6)");
+
+        // hidden: the semantic class (D-C6)
+        if (name == "hidden") { if (value == "true") c.addClass("hidden"); return; }
+
+        // universal layout/style
+        if (name == "width")  { c.setWidth(Constraint::Fixed(intAttr(name, value)));  return; }
+        if (name == "height") { c.setHeight(Constraint::Fixed(intAttr(name, value))); return; }
+        if (name == "flex")   { int f = intAttr(name, value); c.setWidth(Constraint::Flex(f)); c.setHeight(Constraint::Flex(f)); return; }
+        if (name == "dock")   { c.dock = dockFromName(value); return; }
+        if (name == "padding"){ c.padding = Insets::Uniform(intAttr(name, value)); return; }
+        if (name == "row")     { c.gridRow = intAttr(name, value); return; }
+        if (name == "col")     { c.gridCol = intAttr(name, value); return; }
+        if (name == "rowSpan") { c.gridRowSpan = intAttr(name, value); return; }
+        if (name == "colSpan") { c.gridColSpan = intAttr(name, value); return; }
+        if (name == "title")   { if (c is Bordered) c.setTitle(value); return; }
+
+        // per-tag setters (the T04/T05 tables; the common shapes)
+        if (c is Input) {
+            if (name == "placeholder") { c.setPlaceholder(value); return; }
+            if (name == "value")       { c.setValue(value); return; }
+            if (name == "maxLength")   { c.setMaxLength(intAttr(name, value)); return; }
+        }
+        if (c is Text) {
+            if (name == "align") { c.align(alignFromName(value)); return; }
+            if (name == "wrap")  { c.wrap(wrapFromName(value));   return; }
+        }
+        if (c is CheckBox) {
+            if (name == "checked") { c.setChecked(value == "true"); return; }
+            if (name == "label")   { c.setLabel(value); return; }
+        }
+
+        // user-registered per-tag appliers
+        if (registry().applyUser(c, tag, name, value)) return;
+
+        // Unknown attr on a known tag: lenient — it is recorded as serializable
+        // meta by __recordBuild, just with no setter (a documented v1
+        // simplification of E-D4's did-you-mean).
+    }
+
+    // ---- build -------------------------------------------------------------
+
+    IComponent buildElement(DomTplNode node, Document doc) {
+        IComponent c = registry().create(node.tag);
+        doc.__recordBuild(c, node.tag, node.attrNames, node.attrValues);
+        int i = 0;
+        for (string name in node.attrNames) {
+            applyAttr(c, doc, node.tag, name, node.attrValues[i]);
+            i = i + 1;
+        }
+        if (c is Container) {
+            Array<IComponent> kids = buildFragment(node.children, doc);
+            for (IComponent kid in kids) c.add(kid);
+        } else {
+            // leaf: text/hole children become its display text
+            string label = "";
+            for (DomTplNode kid in node.children) {
+                if (kid.kind == DOM_TEXT) label = joinLabel(label, kid.text);
+                else if (kid.kind == DOM_HOLE) label = joinLabel(label, doc.get(kid.holeExpr));
+                else throw SonarException("<" + node.tag + "> is a leaf and cannot hold element children");
+            }
+            if (label != "") setNodeText(c, label);
+        }
+        return c;
+    }
+
+    string joinLabel(string acc, string piece) {
+        if (acc == "") return piece;
+        return acc + " " + piece;
+    }
+
+    Array<IComponent> buildFragment(Array<DomTplNode> nodes, Document doc) {
+        Array<IComponent> out = [];
+        for (DomTplNode node in nodes) {
+            if (node.kind == DOM_ELEMENT) {
+                out = out.add(buildElement(node, doc));
+            } else if (node.kind == DOM_TEXT) {
+                Text t = Text(); t.text(node.text);
+                doc.__recordBuild(t, "span", [], []);
+                out = out.add(t);
+            } else {
+                // runtime {{hole}}: resolve once against expose()/store (D05
+                // wires live sweeps; interim resolves at build time).
+                Text t = Text(); t.text(doc.get(node.holeExpr));
+                doc.__recordBuild(t, "span", [], []);
+                out = out.add(t);
+            }
+        }
+        return out;
+    }
+
+    // ---- string entry points (D03's FlexContainer(markup) ctor delegates) --
+    Array<IComponent> buildMarkupFragment(string markup, Document doc) {
+        Array<DomTplNode> roots = parseMarkup(markup);
+        if (roots.length() == 0) throw SonarException("markup is empty (E-D12: a node is required)");
+        return buildFragment(roots, doc);
+    }
+
+    // Single component: one root returns itself; multiple roots auto-wrap in a
+    // vertical flow container (the anchor's fragment rule, §2).
+    IComponent buildMarkup(string markup, Document doc) {
+        Array<IComponent> roots = buildMarkupFragment(markup, doc);
+        if (roots.length() == 1) return roots[0];
+        Container wrap = Container();
+        wrap.setLayout(FlexLayout(Axis::Vertical));
+        for (IComponent r in roots) wrap.add(r);
+        return wrap;
+    }
+
+}}

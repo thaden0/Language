@@ -1,0 +1,39 @@
+// Recon native test layer model (DESIGN §7.1). The JS-script substitute.
+namespace Recon {
+
+class Assertion {
+    public string source   = "status";  // "status" | "header" | "body" | "jsonpath"
+    public string arg      = "";         // header name, or a JSON path like "$.token"
+    public string op       = "equals";   // equals|notEquals|contains|matches|exists|inRange|isType
+    public string expected = "";         // comparison target ("200", "200..299", "string", a regex)
+    new Assertion() { }
+    new Of(string src, string a, string operation, string exp) {
+        source = src; arg = a; op = operation; expected = exp;
+    }
+}
+
+class Extraction {
+    public string source  = "jsonpath";    // "jsonpath" | "header" | "regexGroup"
+    public string arg     = "";            // path / header name / pattern
+    public string group   = "1";           // for regexGroup
+    public string varName = "";            // destination variable
+    public string scope   = "environment"; // which scope to write
+    new Extraction() { }
+    new Of(string src, string a, string dest) { source = src; arg = a; varName = dest; }
+}
+
+class TestResult {
+    public string label  = "";
+    public bool   passed = false;
+    public string detail = "";        // "expected 200, got 404"
+    new TestResult() { }
+    new Of(string l, bool ok, string d) { label = l; passed = ok; detail = d; }
+}
+
+class TestPlan {
+    public Array<Assertion>  assertions;
+    public Array<Extraction> extractions;
+    new TestPlan() { }
+}
+
+}

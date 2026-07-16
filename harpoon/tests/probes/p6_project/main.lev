@@ -1,0 +1,6 @@
+uses HP6;
+
+void main() {
+    console.writeln("main done");
+}
+main();

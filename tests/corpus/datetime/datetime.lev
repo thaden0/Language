@@ -1,0 +1,80 @@
+// Track 09 F2 (M2): DateTime & Duration — civil-time round-trips over the
+// Hinnant integer algorithm. Corpus spans the epoch, leap years (2000/1900/
+// 2024), month ends, and http/iso format+parse round-trips (§6 problem #7).
+
+string dt(int epochMs) {
+    DateTime d = DateTime::ofEpochMs(epochMs);
+    return d.year().toString() + "-" + datetime::pad2(d.month()) + "-" +
+           datetime::pad2(d.day()) + " " + datetime::pad2(d.hour()) + ":" +
+           datetime::pad2(d.minute()) + ":" + datetime::pad2(d.second()) +
+           " wd=" + d.weekday().toString();
+}
+string hp(string s) {
+    DateTime? d = datetime::parseHttpDate(s);
+    return d != None ? d.epochMs.toString() : "None";
+}
+string ip(string s) {
+    DateTime? d = datetime::parseIso8601(s);
+    return d != None ? d.epochMs.toString() : "None";
+}
+
+void run() {
+    // --- the epoch and a known instant ---
+    console.writeln(dt(0));                    // 1970-01-01 00:00:00 wd=4 (Thu)
+    console.writeln(dt(784111777000));         // 1994-11-06 08:49:37 wd=0 (Sun)
+    console.writeln(dt(1751803200000));        // 2025-07-06 12:00:00 wd=0
+
+    // --- leap-year day handling: 2000 (leap), 1900 (not), 2024 (leap) ---
+    // 2000-02-29:  11017 days -> epochMs 951782400000
+    console.writeln(dt(951782400000));         // 2000-02-29 00:00:00
+    console.writeln(dt(1709164800000));        // 2024-02-29 00:00:00
+    // 1900-03-01 (pre-epoch, negative): Hinnant handles the negative day
+    console.writeln(dt(0 - 2203891200000));    // 1900-03-01 00:00:00
+
+    // --- month-end boundary ---
+    console.writeln(dt(1704067199000));        // 2023-12-31 23:59:59
+
+    // --- format round-trips ---
+    DateTime a = DateTime::ofEpochMs(784111777000);
+    console.writeln(a.httpDate());             // Sun, 06 Nov 1994 08:49:37 GMT
+    console.writeln(a.iso8601());              // 1994-11-06T08:49:37Z
+    DateTime b = DateTime::ofEpochMs(1751803200123);
+    console.writeln(b.iso8601());              // 2025-07-06T12:00:00.123Z
+
+    // --- parse round-trips (parse then re-emit epoch) ---
+    console.writeln(hp("Sun, 06 Nov 1994 08:49:37 GMT"));   // 784111777000
+    console.writeln(ip("1994-11-06T08:49:37Z"));            // 784111777000
+    console.writeln(ip("2025-07-06T12:00:00.123Z"));        // 1751803200123
+    console.writeln(ip("2025-07-06T13:00:00+01:00"));       // 1751803200000 (->UTC)
+    console.writeln(ip("2025-07-06T11:00:00-01:00"));       // 1751803200000 (->UTC)
+
+    // --- malformed -> None (totality) ---
+    console.writeln(hp("Sun 06 Nov 1994 08:49:37 GMT"));    // None (missing IMF-fixdate comma)
+    console.writeln(hp("Sun, 06 Xxx 1994 08:49:37 GMT"));   // None (bad month)
+    console.writeln(ip("2025-07-06"));                       // None (too short)
+    console.writeln(ip("2025-07-06T12:00:00Zextra"));        // None (trailing garbage)
+    console.writeln(ip("2025/07/06T12:00:00Z"));             // None (bad separator)
+
+    // --- Duration arithmetic + formatting ---
+    Duration d1 = Duration::ofHours(1).plus(Duration::ofMinutes(2)).plus(Duration::ofSeconds(3));
+    console.writeln(d1.toString());            // 1h02m03s
+    console.writeln(Duration::ofSeconds(90).toString());    // 1m30s
+    console.writeln(Duration::ofMillis(250).toString());    // 250ms
+    console.writeln(Duration::ofSeconds(0 - 5).toString()); // -5s
+    DateTime later = a.plus(Duration::ofDays(1));
+    console.writeln(later.minus(a).toString()); // 24h00m00s
+
+    // --- round-trip property (§6 #7): civil<->epoch is a bijection over a wide
+    // deterministic span (~1906..2033, ~10k samples at a ~4.6-day stride). ---
+    int bad = 0;
+    int e = 0 - 2000000000000;
+    while (e < 2000000000000) {
+        DateTime dd = DateTime::ofEpochMs(e);
+        int rebuilt = datetime::epochFromCivil(dd.year(), dd.month(), dd.day(),
+                                               dd.hour(), dd.minute(), dd.second(), dd.milli());
+        if (rebuilt != e) bad = bad + 1;
+        e = e + 400000317;
+    }
+    console.writeln(bad == 0 ? "roundtrip ok" : "roundtrip FAIL " + bad.toString());
+}
+run();

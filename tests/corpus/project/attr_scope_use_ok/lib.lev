@@ -1,0 +1,6 @@
+// The attribute lives in namespace Web. imports.md §5: a file opts into Web's
+// attributes by importing from Web — whether in bulk (`uses Web`) or
+// selectively (`use Web::Tag`). Both add Web to the file's effective import set.
+namespace Web {
+    attribute Tag { int level; }
+}

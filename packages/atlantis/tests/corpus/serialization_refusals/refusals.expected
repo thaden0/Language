@@ -1,0 +1,74 @@
+./../../../src/json/serializable.lev:457:15: error: rule 'serializableGuardStruct' where-clause evaluation failed: @Serializable BadMapKey: field 'counts' has type 'Map<int, string>' -- JSON object keys must be strings; use Map<string, ...> or @JsonIgnore (§5.2)
+          where Atlantis::__atlGuard(C) && false
+                ^~~~~~~~
+./../../../src/json/serializable.lev:457:15: error: rule 'serializableGuardStruct' where-clause evaluation failed: @Serializable BadFunctionField: field 'transform' has function type '(int) => int' -- function-typed fields cannot be serialized (§5.2); use @JsonIgnore
+          where Atlantis::__atlGuard(C) && false
+                ^~~~~~~~
+./../../../src/json/serializable.lev:457:15: error: rule 'serializableGuardStruct' where-clause evaluation failed: @Serializable BadUnionField: field 'tagged' has union type 'int | string' -- only T? (T | None) is supported, not a general union (§5.2); use @JsonIgnore
+          where Atlantis::__atlGuard(C) && false
+                ^~~~~~~~
+./../../../src/json/serializable.lev:457:15: error: rule 'serializableGuardStruct' where-clause evaluation failed: @Serializable BadReservedField: field '__atlBogus' starts with the reserved '__atl' prefix (§2.2)
+          where Atlantis::__atlGuard(C) && false
+                ^~~~~~~~
+./../../../src/json/serializable.lev:457:15: error: rule 'serializableGuardStruct' where-clause evaluation failed: @Serializable MissingInterface: missing ': IJsonSerializable' -- every @Serializable type must declare it (required for FromJson/keys generation to fire, §16 addendum)
+          where Atlantis::__atlGuard(C) && false
+                ^~~~~~~~
+./../../../src/json/serializable.lev:529:27: error: no overload of 'function' matches the arguments
+          inject `this.$f = Atlantis::__atlDec(this.__atlSrc, this.__atlKeys(), this.__atlIdx, this.$f);
+                            ^~~~~~~~
+./../../../src/json/serializable.lev:529:17: error: cannot assign 'int' to '(int) => int'
+          inject `this.$f = Atlantis::__atlDec(this.__atlSrc, this.__atlKeys(), this.__atlIdx, this.$f);
+                  ^~~~
+./../../../src/json/serializable.lev:529:27: error: no overload of 'function' matches the arguments
+          inject `this.$f = Atlantis::__atlDec(this.__atlSrc, this.__atlKeys(), this.__atlIdx, this.$f);
+                            ^~~~~~~~
+./../../../src/json/serializable.lev:598:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:607:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:610:25: error: narrow the union before calling members (use '!= None' or 'is')
+                      if (item.isNull()) { return None; }
+                          ^~~~
+./../../../src/json/serializable.lev:617:27: error: narrow the union before calling members (use '!= None' or 'is')
+              else { return witness.toJson(); }
+                            ^~~~~~~
+./../../../src/json/serializable.lev:598:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:607:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:610:25: error: narrow the union before calling members (use '!= None' or 'is')
+                      if (item.isNull()) { return None; }
+                          ^~~~
+./../../../src/json/serializable.lev:617:27: error: narrow the union before calling members (use '!= None' or 'is')
+              else { return witness.toJson(); }
+                            ^~~~~~~
+./../../../src/json/serializable.lev:598:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:607:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:610:25: error: narrow the union before calling members (use '!= None' or 'is')
+                      if (item.isNull()) { return None; }
+                          ^~~~
+./../../../src/json/serializable.lev:617:27: error: narrow the union before calling members (use '!= None' or 'is')
+              else { return witness.toJson(); }
+                            ^~~~~~~
+./../../../src/json/serializable.lev:598:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:607:35: error: narrow the union before calling members (use '!= None' or 'is')
+                  JsonValue? item = src.atOrNone(key);
+                                    ^~~
+./../../../src/json/serializable.lev:610:25: error: narrow the union before calling members (use '!= None' or 'is')
+                      if (item.isNull()) { return None; }
+                          ^~~~
+./../../../src/json/serializable.lev:617:27: error: narrow the union before calling members (use '!= None' or 'is')
+              else { return witness.toJson(); }
+                            ^~~~~~~
+
+24 error(s)

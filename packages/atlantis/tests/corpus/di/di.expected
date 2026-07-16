@@ -1,0 +1,8 @@
+singleton: 1
+singleton: 2
+transient: 1
+transient: 1
+chained: users over sql
+request-scoped: [req-42] handling
+shadow: injected sees the fake -> 99
+singleton after shadow: 3

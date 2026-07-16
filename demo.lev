@@ -1,0 +1,224 @@
+// ============================================================
+//  Feature Demo — exercises every feature worked out so far.
+//  Not practical; a tour. Reads top to bottom.
+// ============================================================
+
+
+namespace Demo {
+
+// ------------------------------------------------------------
+//  Interface — a contract that allocates nothing
+// ------------------------------------------------------------
+public interface Named {
+    string label;              // required member; the class allocates it
+    string describe();         // required behavior
+}
+
+
+// ------------------------------------------------------------
+//  Base class A — inline + sectional access, constructors, get/set,
+//  operators, distinct fields, a private arrow method
+// ------------------------------------------------------------
+class Counter : Named {
+
+    // Inline access modifiers
+    public string label;
+    public distinct int value = 0;      // distinct: survives same-typed collision
+
+    // get/set are typed views over the 'value' slot
+    get value() => value;
+    set value(int v) value = v;
+
+    // Sectional access modifier
+    public:
+        string describe() => label;
+
+        // Constructor: marked by 'new'. Name is a label only.
+        new Counter() {
+            label = "unnamed";
+        }
+
+        // Overload: same 'new' marker, different parameters.
+        new Counter(string startLabel) {
+            label = startLabel;
+        }
+
+        // The label need not match the class name.
+        new WithValue(string startLabel, int start) {
+            label = startLabel;
+            value = start;
+        }
+
+        // Operators are methods whose name is a symbol. An object operator
+        // returns its own type — the value that lands in the left-hand side.
+        Counter (+)(int val) => Counter::WithValue(label, value + val);
+        Counter (-)(int val) => Counter::WithValue(label, value - val);
+        bool    (==)(int val) => value == val;   // (!=) derives as !(==)
+
+    private:
+        // Body is the next statement — block form.
+        int doubledBlock(int a) { return a + a; }
+
+        // Same, arrow-sugar form (=> shortens return).
+        int doubledArrow(int a) => a + a;
+}
+
+
+// ------------------------------------------------------------
+//  Base class B — used to force a same-typed field collision
+// ------------------------------------------------------------
+class Tag {
+    public distinct int value = 99;     // same name+type as Counter.value
+    public string note = "tag-note";
+}
+
+
+// ------------------------------------------------------------
+//  Derived class — multiple inheritance, :: qualification,
+//  field resolution by type, generics
+// ------------------------------------------------------------
+class Widget<T> : Counter, Tag {
+
+    public T payload;
+
+    new Widget() {
+        Counter::Counter();       // a 'new' call applies to "this"
+        Tag::Tag();
+
+        // Same-typed 'value' kept distinct on both sides:
+        //   this.Counter::value == 0
+        //   this.Tag::value     == 99
+        this.Counter::value = 5;      // explicit qualification, no collision
+        this.Tag::value     = 7;
+
+        // 'note' comes only from Tag — no collision, bare access is fine
+        note = "widget";
+
+        // console.write(value)       // invalid: two int 'value' slots, no type context
+    }
+
+    // A second constructor selected by label.
+    new Blank() {
+        Counter::Counter();
+        Tag::Tag();
+    }
+}
+
+
+// ------------------------------------------------------------
+//  Free function — generics inferred, union return, Result-style
+//  error-as-value, promise on its own thread, await
+// ------------------------------------------------------------
+
+// Union return: either an int or an error string.
+int | string classify(int n) {
+    return n < 0 ? "negative" : n;
+}
+
+// Promise<T> is an ordinary object; await is the one privileged operation.
+// The body returns an actual Promise (no implicit wrapping, §14); T is inferred.
+Promise<int> slowSquare(int n) {
+    => Promise(n * n);
+}
+
+
+// ------------------------------------------------------------
+//  Entry point — ties it together
+// ------------------------------------------------------------
+void run() {
+
+    // Bare declaration auto-constructs (no null state).
+    Counter c1;                                   // label == "unnamed"
+    Counter c2 = Counter("start");                // overload by parameter
+    Counter c3 = Counter::WithValue("seed", 3);   // explicit label selection
+
+    // get/set views over the slot.
+    c1.value = 10;                                // set view
+    int v = c1.value;                             // get view  -> 10
+
+    // Operators-as-methods.
+    Counter sum  = c1 + 5;                        // (+)  -> 15
+    Counter diff = c1 - 2;                        // (-)  -> 8
+    bool    hit  = c1 == 10;                      // (==) -> true
+    bool    miss = c1 != 10;                      // (!=) derived -> false
+
+    // var is an inference marker — static type, spelling inferred.
+    var label = c2.describe();                    // label : string
+
+    // Generic; T inferred from the target type.
+    Widget<string> w = Widget();
+    w.payload = "cargo";
+
+    // Union handling — resolution by type at the use site.
+    int | string result = classify(-4);           // "negative"
+    int | string ok     = classify(9);            // 9
+
+    // Strings are handles; content ops reach through, moves do not.
+    string greeting = "Hello";
+    int    glen     = greeting.length();          // 5
+    string part     = greeting.subStr(0, 2);      // "He"
+
+    // Arrays — dense, pure methods, rebind to "change".
+    Array nums = [1, 2, 3, 4, 5, 6];
+    Array even = nums.where((el) => el % 2 == 0);  // [2, 4, 6]
+    nums = nums.concat(even);                       // [1,2,3,4,5,6,2,4,6]
+    int  head = nums.first();                       // 1
+
+    // Join family — by key, with hidden index; group join.
+    Array<Counter> counters = [ Counter("a"), Counter("b") ];
+    Array<Tag>     tags     = [ Tag(), Tag() ];
+    Array joined = counters.join(tags, (co, tg) => co.value == tg.value);
+    Array grouped = counters.groupJoin(tags, (co, tg) => true);
+
+    // Streams — typed views over a StreamBuffer; capability by type.
+    StreamBuffer buffer;
+    OutStream<int> writer = OutStream(buffer);
+    InStream<int>  reader = InStream(buffer);
+    writer << 42;                                   // insert operator
+    int pulled = reader >> ;                         // extract operator
+
+    // IOStream — composition of both ends over one shared buffer.
+    IOStream<int> duplex = IOStream(buffer);
+    duplex << 7;
+    int back = duplex >> ;
+
+    // System event stream — demand-driven, sub/pub activation.
+    InStream<int> ticks = System::events::timer;    // activates on use
+    ticks.subscribe((t) => console.writeln("tick"));
+
+    // spawn a raw worker (low tier); the handle is its join (Track 10).
+    Worker<int> worker = std::spawn(() => doHeavyThing());
+
+    // Promise on its own thread (high tier); await it.
+    int squared = await slowSquare(6);              // 36
+
+    console.writeln(label);
+    console.writeln(greeting);
+}
+
+// A worker body for spawn.
+int doHeavyThing() {
+    // isolation by default: this owns what it captured (copy-always)
+    return 0;
+}
+
+}   // namespace Demo
+
+
+// ------------------------------------------------------------
+//  Second namespace — same type name, no collision, :: to reach in
+// ------------------------------------------------------------
+namespace Other {
+    class Widget<T> {
+        public void ping() => console.writeln("other widget");
+    }
+    void run() {
+        Widget<int> w = Widget();
+        w.ping();
+    }
+}
+
+
+// Whole-program: both namespaces gathered into one unit, reached by ::
+Demo::run();
+Other::run();

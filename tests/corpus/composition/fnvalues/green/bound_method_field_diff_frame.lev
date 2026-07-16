@@ -1,0 +1,14 @@
+// A bound method reference (obj.method, F3) captured into a class field in
+// one frame, invoked via dot-call from a different call frame.
+class Greeter { string greet(string name) => "hi " + name; }
+class Holder {
+    (string) => string fn;
+    new Holder(Greeter g) { fn = g.greet; }
+    string call(string n) => fn(n);
+}
+void main() {
+    Greeter g = Greeter();
+    Holder h = Holder(g);
+    console.writeln(h.call("bob"));
+}
+main();

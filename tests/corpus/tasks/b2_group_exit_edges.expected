@@ -1,0 +1,24 @@
+--- fallthrough ---
+body
+child ran (fallthrough)
+--- return ---
+before return
+child ran (return edge)
+result=7
+--- throw ---
+child ran (throw edge)
+caught: boom
+--- break ---
+iter
+child ran (break edge)
+after loop
+--- parked child catches its own cancel ---
+closing with a parked child
+child caught cancel
+--- uncaught cancel absorbed at group boundary ---
+closing with an uncaught-cancel child
+--- nested groups (both compose) ---
+body
+outer child ran
+inner child ran
+done

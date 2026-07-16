@@ -1,0 +1,8 @@
+// LA-20 project test: assets = [...] + ** recursive glob, resolved through a
+// real trident-built plan (moduleId "" = root project).
+comptime string tpl = import("views/index.html");
+comptime string frag = import("views/nested/frag.html");
+comptime string sql = import("schema.sql");
+console.writeln(tpl);
+console.writeln(frag);
+console.writeln(sql);

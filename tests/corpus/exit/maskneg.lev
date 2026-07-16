@@ -1,0 +1,2 @@
+// 8-bit truncation (§5): exit(-1) -> 255 (the conventional "all bits set").
+env::exit(-1);

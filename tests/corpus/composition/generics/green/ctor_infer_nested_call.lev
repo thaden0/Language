@@ -1,0 +1,16 @@
+// Regression floor for bug #43 (a generic constructor's type argument used
+// to not infer through target-type propagation into a NESTED call argument
+// — Map() here, whose K/V is recoverable from Foo's own constructor
+// parameter type). Fixed 2026-07-14 on master (thread the constructor
+// parameter's type into its argument as the target). See also
+// generics/green/explicit_target_typed_local.lev.
+struct Foo {
+    int a;
+    Map<string, string> m;
+    new Foo(int a, Map<string, string> m) { this.a = a; this.m = m; }
+}
+void main() {
+    Foo f = Foo(1, Map());
+    console.writeln(f.a.toString());
+}
+main();

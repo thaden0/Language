@@ -1,0 +1,18 @@
+// Map<string, EnumType> with exactly ONE entry — clean on every engine per
+// bug #40's own note; the red-lane sibling needs 2+ entries.
+enum Kind { AA, BB, CC }
+Map<string, Kind> buildMap() {
+    Map<string, Kind> names = Map();
+    names["a"] = Kind::AA;
+    return names;
+}
+Map<string, Kind> myMap = buildMap();
+void main() {
+    Kind? found = myMap.atOrNone("a");
+    console.writeln(found != None);
+    if (found != None) {
+        Kind val = found;
+        console.writeln(val == Kind::AA);
+    }
+}
+main();

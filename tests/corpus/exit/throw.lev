@@ -1,0 +1,5 @@
+// An uncaught exception at top level exits 1 (gap b) — a crashed program reports
+// failure to a shell / `set -e` / CI — and the traceback still prints.
+// designs/exit-codes.md §5 / §7.
+console.writeln("before");
+throw RuntimeException("boom");

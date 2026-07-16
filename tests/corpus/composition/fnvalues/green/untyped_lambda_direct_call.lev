@@ -1,0 +1,7 @@
+// Untyped lambda parameters infer from the target function type and call
+// directly — the working sibling of red/typed_lambda_params.lev (#39).
+void main() {
+    var f = (x) => x + 1;
+    console.writeln(f(41));
+}
+main();

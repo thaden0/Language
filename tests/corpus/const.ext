@@ -1,0 +1,91 @@
+// const.md: a slot's write view scopes to its initialization window. Pure
+// compile-accept feature (no runtime representation) — every case here is
+// legal, and the point is that it compiles and runs identically to the
+// equivalent `var` code would.
+
+// (Bare top-level global const-ness is covered in tests/test_checker.cpp —
+// the IR backend doesn't yet lower a bare top-level global read at all,
+// const or not, a pre-existing gap unrelated to const.md; see bug.md.)
+namespace Consts {
+    const int CODE = 7;                    // namespace-scoped global
+}
+
+struct Point {
+    int x;
+    int y;
+    int dot() => x * x + y * y;            // non-mutating: callable through const
+    mutating void translate(int dx, int dy) { x = x + dx; y = y + dy; }
+}
+
+class Session {
+    public const string id = "s-1";        // field, initializer form: a named
+                                            // compile-time constant (techdesign-
+                                            // readonly §1.1) — `const` on fields
+    readonly int seq;                      // field, ctor form: a construction-time-
+    new Session(int s) { seq = s; }        // fixed value (techdesign-readonly §4.3/§4.4)
+    int seqValue() => seq;                 // — this idiom moved from `const` to `readonly`
+}
+
+class Box { int n = 0; }
+
+int sumConst(const Array<int> xs) {        // const parameter
+    int total = 0;
+    for (const int x in xs) total = total + x;   // const for-in binding
+    return total;
+}
+
+void run() {
+    // locals: explicit type, `const var`, and `let` (== const var, §5)
+    const int localX = 10;
+    const var localY = 20;
+    let localZ = 12;
+    console.writeln(localX + localY + localZ);           // 42
+
+    // global
+    console.writeln(Consts::CODE);                         // 7
+
+    // fields: both forms
+    Session s = Session(99);
+    console.writeln(s.id);                                 // s-1
+    console.writeln(s.seqValue());                         // 99
+
+    // params + for-in
+    console.writeln(sumConst([1, 2, 3, 4]));                // 10
+
+    // non-mutating struct method through a const binding
+    const Point p = Point();
+    console.writeln(p.dot());                               // 0 (default 0,0)
+
+    // indexer reads through a const pure array
+    const Array<int> arr = Array(3, 7);
+    console.writeln(arr[0]);                                // 7
+
+    // narrowing on a const optional: unaffected by the invalidation-on-assign
+    // rule (a const can't be assigned, so there's nothing new here — the
+    // narrowing works exactly as it would for `var`, for the whole if-branch)
+    const string? host = "internal.example.com";
+    if (host != None) {
+        console.writeln("host: " + host + " (" + host.length() + ")");
+    }
+
+    // not transitive: a const binding's value assigns freely; aliasing into
+    // a var binding and mutating the ALIAS's own slot is unaffected
+    const Box b = Box();
+    Box alias = b;
+    alias.n = 5;
+    console.writeln(alias.n);                               // 5
+    console.writeln(b.n);                                    // 5 (same object: aliased)
+
+    // aliasing a const struct COPIES the value (structs have no identity);
+    // mutating the copy never touches the const original
+    const Point q = Point();
+    Point r = q;
+    r.translate(1, 1);
+    console.writeln(q.dot());                                // 0 — q unchanged
+    console.writeln(r.dot());                                // 2 — (1,1)
+
+    // the prelude's own const globals (console, OpenMode flags) keep working
+    console.writeln(std::read.bits);                         // 1
+    console.writeln(std::read.has(std::read));                // true
+}
+run();

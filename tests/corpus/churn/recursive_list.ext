@@ -1,0 +1,33 @@
+// Churn corpus (ARC leak net) — RECURSIVE structure: a linked list.
+//
+// Each iteration builds a chain of LNodes (each holding an optional reference
+// to the next), then drops the head. Reclaiming it needs the recursive-release
+// path to walk the `next` chain to its `None` terminator. A release that frees
+// only the head leaks the tail; a recursive release that mishandles the shared
+// walk could also over-release. Either way live-at-exit must end flat in N.
+// @N@ is substituted by fuzz/churn_leak.py.
+class LNode {
+    int val = 0;
+    LNode? next;                      // optional self-reference (None-terminated)
+}
+LNode chain(int len, int seed) {
+    LNode head = LNode();
+    head.val = seed;
+    LNode cur = head;
+    for (int i in 1..len) {
+        LNode n = LNode();
+        n.val = seed + i;
+        cur.next = n;                 // link: the chain escapes together
+        cur = n;
+    }
+    return head;
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        LNode h = chain(5, i);        // fresh 6-node chain each iteration...
+        sink = sink + h.val;
+    }                                 // ...dropped; the ARC owes the whole chain
+    console.writeln(sink);
+}
+run(@N@);

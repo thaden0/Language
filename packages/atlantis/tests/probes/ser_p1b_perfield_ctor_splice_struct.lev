@@ -1,0 +1,18 @@
+// P-1b: attr-less per-field rule splicing this.$f into bottom of C.constructor,
+// on a STRUCT. Expected: PASS.
+namespace Probe {
+    interface ISerializable { }
+    rule p1b {
+        match on field f in class C : ISerializable
+        inject `this.$f = this.$f + 1;` at bottom of C.constructor
+    }
+}
+uses Probe;
+
+struct Widget : ISerializable {
+    int a;
+    int b;
+}
+
+Widget w = Widget();
+console.write(w.a.toString() + "," + w.b.toString());

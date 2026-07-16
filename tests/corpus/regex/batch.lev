@@ -1,0 +1,13 @@
+// doc 2 §1.1 DBMS batch forms: one warm engine across a column.
+void run() {
+    Regex digitsRe = Regex("^\\d+$");
+    Array<bool> hits = digitsRe.isMatchAll(["123", "abc", "", "42"]);
+    for (bool h in hits) { console.writeln(h); }
+
+    Regex aRe = Regex("a");
+    Array<int> counts = aRe.countAll(["", "aba", "aaa", "bbb"]);
+    for (int c in counts) { console.writeln(c); }
+
+    console.writeln(aRe.count("banana"));
+}
+run();

@@ -1,0 +1,23 @@
+namespace Sonar { namespace Dom {
+
+    // Interim D-C5 Position seam. The full Position (live get/set views over the
+    // arranged box origin, `anchorTo`, absolute placement honoured by DOM
+    // containers) is owned by D03 (techdesign-03). D01 only needs the type to
+    // exist so `Component.position_` resolves and `DomNode.position()` returns a
+    // live object; this minimal version stores a desired origin + method and is
+    // replaced wholesale when D03 lands.
+    enum PositionMethod { Flow, Absolute }
+
+    class Position {
+        PositionMethod method = PositionMethod::Flow;
+        int x = 0;
+        int y = 0;
+        int z = 0;
+
+        Position setMethod(PositionMethod m) { method = m; return this; }
+        Position setX(int v) { x = v; return this; }
+        Position setY(int v) { y = v; return this; }
+        Position setZ(int v) { z = v; return this; }
+    }
+
+}}

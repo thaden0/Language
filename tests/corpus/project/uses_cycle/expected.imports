@@ -1,0 +1,13 @@
+[imports] file -> imports provenance (declares / uses / effective visible namespaces)
+[imports] a.ext
+[imports]   declares: A
+[imports]   uses:     B
+[imports]   visible:  A, B, std
+[imports] b.ext
+[imports]   declares: B
+[imports]   uses:     A
+[imports]   visible:  A, B, std
+[imports] main.ext
+[imports]   declares: (none)
+[imports]   uses:     A
+[imports]   visible:  A, std

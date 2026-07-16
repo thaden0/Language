@@ -1,0 +1,8 @@
+// A dependency imports its OWN declared asset — the module-scoped table
+// (LA-20 §5) resolves it without the consuming app knowing the dep's tree.
+namespace Lib {
+    string tpl() {
+        comptime string t = import("views/lib.html");
+        return t;
+    }
+}

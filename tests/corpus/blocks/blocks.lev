@@ -1,0 +1,51 @@
+// Track 03 §3 — Block: fixed-length mutable byte buffer (contract C4). New VKind,
+// oracle+IR+emit-C++ only (no ELF: X64Gen frozen; no LLVM: LV_BLOCK ABI deferred).
+
+void main() {
+    // construction + length + print form
+    Block b = Block(8);
+    console.writeln(b.length());          // 8
+    console.writeln(b);                   // Block(len=8)
+
+    // byteAt / setByte round-trip
+    b.setByte(0, 72);
+    b.setByte(1, 105);
+    console.writeln(b.byteAt(0));          // 72
+    console.writeln(b.toString(0, 2));     // Hi
+
+    // int32 little-endian, sign-extended
+    b.setInt32(2, 305419896);              // 0x12345678
+    console.writeln(b.int32At(2));         // 305419896
+    b.setInt32(2, 0 - 1);                  // 0xFFFFFFFF -> -1 sign-extended
+    console.writeln(b.int32At(2));         // -1
+
+    // int64 little-endian
+    b.setInt64(0, 1099511627776);          // 2^40
+    console.writeln(b.int64At(0));         // 1099511627776
+
+    // slice is an ALIASING view: write through the slice is visible in parent
+    Block b2 = Block(4);
+    b2.setByte(0, 10); b2.setByte(1, 20); b2.setByte(2, 30); b2.setByte(3, 40);
+    Block s = b2.slice(1, 2);
+    console.writeln(s.length());           // 2
+    console.writeln(s.byteAt(0));          // 20
+    s.setByte(0, 99);
+    console.writeln(b2.byteAt(1));         // 99  (aliased mutation)
+    console.writeln(s.byteAt(0));          // 99
+
+    // fromString / toString round-trip
+    Block c = Block::fromString("hello");
+    console.writeln(c.length());           // 5
+    console.writeln(c.toString(0, 5));     // hello
+    console.writeln(c.byteAt(4));          // 111 ('o')
+    console.writeln(c.toString(1, 3));     // ell
+
+    // bounds + range checks all throw (loud, catchable)
+    try { b.byteAt(100); } catch (RuntimeException e) { console.writeln("throw: byteAt"); }
+    try { b.setByte(0, 256); } catch (RuntimeException e) { console.writeln("throw: setByte range"); }
+    try { b.int32At(6); } catch (RuntimeException e) { console.writeln("throw: int32At OOB"); }
+    try { b.slice(4, 10); } catch (RuntimeException e) { console.writeln("throw: slice OOB"); }
+    try { c.toString(0, 99); } catch (RuntimeException e) { console.writeln("throw: toString OOB"); }
+    console.writeln("done");
+}
+main();

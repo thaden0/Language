@@ -1,0 +1,9 @@
+plan {
+    mode = "check";
+    entry { kind = "function"; target = "main"; }
+    src { path = "@DIR@/main.ext"; moduleId = ""; origin = ""; }
+    src { path = "@DIR@/mid/m.ext"; moduleId = "mid"; origin = "mid"; }
+    src { path = "@DIR@/mid/base/b.ext"; moduleId = "base"; origin = "base"; }
+    edge { from = ""; to = "mid"; }
+    edge { from = "mid"; to = "base"; }
+}

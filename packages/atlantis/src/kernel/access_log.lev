@@ -1,0 +1,68 @@
+// Atlantis Track 01 — the request-logging middleware (design §6.2/§6.3).
+//
+// AccessLog OBSERVES only — it never maps an exception to a status (C4's mapping
+// belongs to ErrorMapper). Placed OUTSIDE ErrorMapper (default order
+// [AccessLog, ErrorMapper, …]) so it always sees the FINAL status (including
+// mapped 500s) and can time error paths. Its catch arm is a bug-net for a crash
+// in ErrorMapper itself: it logs a line and RETHROWS (server-level 500 net below).
+//
+// Instance state (seq, bootMs) is per-pipeline → per-worker under LA-1; no global
+// counter anywhere (§9). Request ids are unique per process:
+// "${bootMs.toHex()}-${seq.toHex()}"; a worker index prefixes it when LA-1 lands.
+namespace Atlantis {
+    namespace Http {
+        class AccessLog {
+            Log::Logger log;
+            int seq;
+            int bootMs;
+            int slowMs;      // dev-mode slow-handler warning threshold (H-3)
+
+            new AccessLog(Log::Logger log) {
+                this.log = log;
+                this.seq = 0;
+                this.bootMs = nowMs();
+                this.slowMs = 1000;
+            }
+
+            HttpResponse handle(Context c, (Context) => HttpResponse next) {
+                int t0 = nowMs();
+                this.seq = this.seq + 1;
+                c.items["requestId"] = this.bootMs.toHex() + "-" + this.seq.toHex();
+                try {
+                    HttpResponse resp = next(c);
+                    this.line(c, resp.status, nowMs() - t0);
+                    return resp;
+                } catch (IException e) {           // ErrorMapper bug net only — observe, rethrow
+                    this.line(c, 500, nowMs() - t0);
+                    throw e;
+                }
+            }
+
+            // The request line: status/durMs render as JSON NUMBERS (built here,
+            // not via the generic string-field API), + level "warn"/"slow":true
+            // when durMs > slowMs.
+            void line(Context c, int status, int durMs) {
+                bool slow = durMs > this.slowMs;
+                string lvl = slow ? "warn" : "info";
+                int lvlNum = slow ? 2 : 1;
+                string j = "{" +
+                    "\"ts\":" + jsonQuote(isoNow()) + "," +
+                    "\"level\":" + jsonQuote(lvl) + "," +
+                    "\"msg\":\"request\"," +
+                    "\"requestId\":" + jsonQuote(c.items.atOr("requestId", "-")) + "," +
+                    "\"method\":" + jsonQuote(c.request.method) + "," +
+                    "\"path\":" + jsonQuote(c.request.path) + "," +
+                    "\"status\":" + status.toString() + "," +
+                    "\"durMs\":" + durMs.toString();
+                if (slow) { j = j + ",\"slow\":true"; }
+                j = j + "}";
+                this.log.raw(lvlNum, j);
+            }
+
+            (Context, (Context) => HttpResponse) => HttpResponse mw() {
+                AccessLog self = this;
+                return (c, next) => self.handle(c, next);
+            }
+        }
+    }
+}

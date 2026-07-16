@@ -1,0 +1,8 @@
+name = "atlantis-app-corpus"
+entry = "main"
+sources = ["app.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

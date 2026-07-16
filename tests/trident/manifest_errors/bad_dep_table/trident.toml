@@ -1,0 +1,5 @@
+name = "bad_dep_table"
+sources = ["main.lev"]
+
+[[widget]]
+path = "x"

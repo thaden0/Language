@@ -1,0 +1,14 @@
+pre-attach=0
+attach: bind ^S=1,timer 250=2
+saves=2 ticks=1
+detach: unbind 1,canceltimer 2
+ed invalid=1 msg=name required
+ed valid=0
+poller: bind ^P=3,timer 1000=4
+polls=2
+derived bound: bind ^B=5
+trace=derived;
+form1=A failed
+form2=B failed
+form3=0
+tree failures=1

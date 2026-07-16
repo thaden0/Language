@@ -1,0 +1,230 @@
+// Atlantis Track 04 — Atlantis::Config (design §4-5, C6).
+//
+// The configuration layer: a strict `.env` grammar (§4.2), typed error-accumulating
+// reads (§4.4), prefix sections (§5), and redacted `dump()` (§4.5). Two entry shapes:
+//   - parseText(string)  — the pure, engine-portable parser (oracle/IR/LLVM); the
+//     acceptance corpus drives THIS so config semantics are verified on every engine.
+//   - load()/load(path)  — the File-backed wrapper (interpreter path; File I/O is not a
+//     compiled-backend target, reference §6.6). parseText carries all the grammar.
+//
+// IMPLEMENTATION FINDING (probe, §13): the design's typed-read signatures accumulate
+// errors into an `Array<string> errs` PARAMETER. Under the language's value semantics
+// an Array parameter is a copy — `errs = errs.add(x)` rebinds the callee's local only
+// and the caller never sees it (probe-proven: caller len stays 0). The accumulator is
+// therefore a reference-type collector, `Errors` (a class), whose `add` mutates the one
+// shared instance. Same intent, honest mechanism.
+namespace Atlantis {
+    namespace Config {
+
+        // ---- §4.1 error channel -------------------------------------------------
+        interface IConfigException : IException { }
+
+        class ConfigException : Exception, IConfigException {
+            Array<string> errors;                       // every problem, not just the first
+            new ConfigException(Array<string> errs) {
+                Exception::Exception("configuration errors:\n" + errs.joinToString("\n"));
+                this.errors = errs;
+            }
+        }
+
+        // Reference-type accumulator (see the finding above). Threaded through the
+        // boot-time loadX/validateX helpers so ONE run lists every mistake (§5).
+        class Errors {
+            Array<string> items = [];
+            void add(string msg) { this.items = this.items.add(msg); }
+            int length() => this.items.length();
+            bool isEmpty() => this.items.isEmpty();
+            bool any() => this.items.length() > 0;
+            string at(int i) => this.items.at(i);
+            Array<string> all() => this.items;
+        }
+
+        // ---- key charset helpers (§4.2 pt 3 — no regex, LA-13 boundary) ---------
+        bool isKeyStart(char c) => c.isAlpha() || c.code() == 95;        // 95 == '_'
+        bool isKeyPart(char c)  => c.isAlpha() || c.isDigit() || c.code() == 95;
+
+        bool isValidKey(string key) {
+            if (key.isEmpty()) { return false; }
+            if (!isKeyStart(key.at(0))) { return false; }
+            int i = 1;
+            int n = key.length();
+            while (i < n) {
+                if (!isKeyPart(key.at(i))) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+
+        // ---- §4.2 pt 4: value unescape (exactly \" \\ \n \t) --------------------
+        // Returns None on an unsupported escape or a trailing backslash (a §4.2 error).
+        string? unescapeValue(string s) {
+            string out = "";
+            int i = 0;
+            int n = s.length();
+            while (i < n) {
+                string ch = s.subStr(i, 1);
+                if (ch == "\\") {
+                    if (i + 1 >= n) { return None; }            // trailing backslash
+                    string nx = s.subStr(i + 1, 1);
+                    if (nx == "\"")      { out = out + "\""; }
+                    else if (nx == "\\") { out = out + "\\"; }
+                    else if (nx == "n")  { out = out + "\n"; }
+                    else if (nx == "t")  { out = out + "\t"; }
+                    else                 { return None; }        // unsupported escape
+                    i = i + 2;
+                } else {
+                    out = out + ch;
+                    i = i + 1;
+                }
+            }
+            return out;
+        }
+
+        // A parsed value: the quoted body (unescaped) or the raw trimmed text.
+        // None signals a grammar violation (unterminated quote / bad escape).
+        string? parseValue(string raw) {
+            if (raw.startsWith("\"")) {
+                if (raw.length() < 2 || !raw.endsWith("\"")) { return None; }   // unterminated
+                return unescapeValue(raw.subStr(1, raw.length() - 2));
+            } else {
+                return raw;                                     // single quotes are ordinary chars
+            }
+        }
+
+        // ==== §4.2 the parser — all-errors-then-throw ============================
+        Config parseText(string text) {
+            Map<string, string> values = Map();
+            Array<string> errs = [];
+            Array<string> lines = text.splitLines();
+            int lineNo = 0;
+            for (string rawLine in lines) {
+                lineNo = lineNo + 1;
+                string line = rawLine.trim();
+                if (line.isEmpty())      { continue; }          // blank
+                if (line.startsWith("#")) { continue; }          // whole-line comment
+
+                int eq = line.indexOf("=");
+                if (eq < 0) {
+                    errs = errs.add("line " + lineNo.toString() + ": missing '=' (expected KEY=VALUE)");
+                    continue;
+                }
+                string key = line.subStr(0, eq).trim();
+                string rawVal = line.subStr(eq + 1, line.length() - (eq + 1)).trim();
+
+                if (!isValidKey(key)) {
+                    errs = errs.add("line " + lineNo.toString() + ": invalid key '" + key + "'");
+                    continue;
+                }
+                if (values.has(key)) {
+                    errs = errs.add("line " + lineNo.toString() + ": duplicate key '" + key + "'");
+                    continue;
+                }
+                string? parsed = parseValue(rawVal);
+                if (parsed == None) {
+                    errs = errs.add("line " + lineNo.toString() + ": bad value for '" + key + "'");
+                } else {
+                    values[key] = parsed;                       // else-arm narrows parsed to string
+                }
+            }
+            if (errs.length() > 0) { throw ConfigException(errs); }
+            return Config(values);
+        }
+
+        // An empty config. `Map()` only infers K/V from a declared-target binding, not
+        // as a bare constructor argument (§13 finding), so build the map in a local.
+        Config empty() {
+            Map<string, string> m = Map();
+            return Config(m);
+        }
+
+        // ==== §4.2/§4.3 File-backed loaders (interpreter path) ==================
+        // A missing .env is legal (§4.2): empty config; defaults + env still apply.
+        Config load() => load(".env");
+        Config load(string path) {
+            if (!std::fileExists(path)) { return empty(); }
+            using File f = File(path, std::read);
+            string text = f.read(f.size());
+            return parseText(text);
+        }
+
+        // ==== the Config value ==================================================
+        class Config {
+            Map<string, string> values;
+            new Config(Map<string, string> values) { this.values = values; }
+
+            int size() => this.values.length();
+            bool has(string key) => this.values.has(key);
+            string? atOrNone(string key) => this.values.atOrNone(key);
+            string at(string key, string fallback) => this.values.atOrNone(key) ?? fallback;
+
+            string require(string key) {
+                string? v = this.values.atOrNone(key);
+                if (v == None) { throw ConfigException(["missing required key '" + key + "'"]); }
+                else { return v; }
+            }
+
+            // §4.4 typed reads: loud, error-accumulating, fallback on absence/bad value.
+            // Guard-arms use `else` (not early return): flow narrowing does not carry
+            // past an early `return`/`continue` on this compiler (§13 finding).
+            int readInt(string key, int fallback, Errors errs) {
+                string? v = this.values.atOrNone(key);
+                if (v == None) {
+                    return fallback;
+                } else {
+                    int? n = v.toInt();                         // strict optional parse
+                    if (n == None) {
+                        errs.add("key '" + key + "': expected int, got '" + v + "'");
+                        return fallback;
+                    } else {
+                        return n;
+                    }
+                }
+            }
+            // §4.4 bool grammar is STRICT: "true" | "false" only.
+            bool readBool(string key, bool fallback, Errors errs) {
+                string? v = this.values.atOrNone(key);
+                if (v == None) {
+                    return fallback;
+                } else if (v == "true") {
+                    return true;
+                } else if (v == "false") {
+                    return false;
+                } else {
+                    errs.add("key '" + key + "': expected bool (true|false), got '" + v + "'");
+                    return fallback;
+                }
+            }
+
+            // §5 sections: key prefixes. Returns a fresh Config with the prefix
+            // stripped, so section structs read bare names.
+            Config section(string prefix) {
+                Map<string, string> sub = this.values.whereEntries((k, v) => k.startsWith(prefix));
+                Map<string, string> out = Map();
+                int pl = prefix.length();
+                for (Pair e in sub) {
+                    out[e.first.subStr(pl, e.first.length() - pl)] = e.second;
+                }
+                return Config(out);
+            }
+
+            // §4.5 secrets hygiene: dump() is the ONLY stringifier (no toString()),
+            // and it redacts any key naming a secret. For the operator, not logs.
+            string dump() {
+                string out = "";
+                for (string k in this.values.keys()) {
+                    string shown = "****";
+                    if (!isSecretKey(k)) { shown = this.values.atOr(k, ""); }
+                    out = out + k + "=" + shown + "\n";
+                }
+                return out;
+            }
+        }
+
+        // §4.5 redaction predicate: case-insensitive substring match.
+        bool isSecretKey(string key) {
+            string u = key.toUpper();
+            return u.contains("PASSWORD") || u.contains("SECRET") ||
+                   u.contains("TOKEN")    || u.contains("KEY")    || u.contains("PRIVATE");
+        }
+    }
+}

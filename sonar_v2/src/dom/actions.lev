@@ -1,0 +1,71 @@
+namespace Sonar { namespace Dom {
+
+    // Interim D-C7 ActionRegistry seam. The full registry (responder-chain
+    // dispatch node -> ancestors -> app, markup `action`/`slug(label)` wiring,
+    // hotkeys via the T07 pending seam, greying disabled items) is owned by D04
+    // (techdesign-04). D01 only needs the type to exist so `Document.actions_`
+    // and `DomNode.actions()` resolve; this minimal version holds per-node named
+    // handlers as parallel primitive/closure columns (never Array<struct> — #74)
+    // and fires locally. Replaced wholesale when D04 lands.
+    class ActionRegistry {
+        // Weak-free interim: hold the owning component so a future responder
+        // chain can walk from it. D04 upgrades the back-ref discipline.
+        IComponent owner_;
+        Array<string>     names_    = [];
+        Array<() => void> handlers_ = [];
+        Array<bool>       enabled_  = [];
+
+        new ActionRegistry(IComponent owner) { owner_ = owner; }
+
+        int indexOf(string name) {
+            int i = 0;
+            for (string n in names_) { if (n == name) return i; i = i + 1; }
+            return -1;
+        }
+
+        ActionRegistry add(string name, () => void handler) {
+            int at = indexOf(name);
+            if (at >= 0) { handlers_ = handlers_.with(at, handler); return this; }
+            names_    = names_.add(name);
+            handlers_ = handlers_.add(handler);
+            enabled_  = enabled_.add(true);
+            return this;
+        }
+
+        bool has(string name) => indexOf(name) >= 0;
+
+        ActionRegistry remove(string name) {
+            int at = indexOf(name);
+            if (at < 0) return this;
+            Array<string>     nn = []; Array<() => void> hh = []; Array<bool> ee = [];
+            int i = 0;
+            for (string n in names_) {
+                if (i != at) { nn = nn.add(n); hh = hh.add(handlers_[i]); ee = ee.add(enabled_[i]); }
+                i = i + 1;
+            }
+            names_ = nn; handlers_ = hh; enabled_ = ee;
+            return this;
+        }
+
+        void setEnabled(string name, bool on) {
+            int at = indexOf(name);
+            if (at >= 0) enabled_ = enabled_.with(at, on);
+        }
+
+        bool isEnabled(string name) {
+            int at = indexOf(name);
+            return at >= 0 && enabled_[at];
+        }
+
+        // Interim: local fire only (D04 adds the responder chain).
+        bool fire(string name) {
+            int at = indexOf(name);
+            if (at < 0) return false;
+            if (!enabled_[at]) return false;
+            () => void h = handlers_[at];
+            h();
+            return true;
+        }
+    }
+
+}}

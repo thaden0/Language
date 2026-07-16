@@ -1,0 +1,41 @@
+// M0 P2: PASSES (after the compiler fix). The registration vehicle — a
+// rule-injected `namespace Reg { bool $C = HP2::__seed(...); }` whose
+// initializer runs at startup and appends to a registry array — now works:
+// prints "2" then the two qualified method names.
+//
+// It was originally FALSIFIED (known_bugs_1.md #76 / #75 / #79 / #80): a
+// namespace-scoped global's initializer saw other globals at an absent slot
+// and its side-effecting appends were silently lost. The fix reworked global
+// initialization so EVERY global auto-constructs before any initializer runs
+// (designs/complete/techdesign-unit-test-library.md §13). __cases lives inside
+// `namespace HP2` — the top-level-workaround for #75 is retired — and the
+// class name uses the ergonomic `$C.name` reifier (the `[ $for cc in [C] :
+// $cc.name ][0]` dance is no longer needed either).
+namespace HP2 {
+    attribute Test { }
+    Array<string> __cases;
+    rule seed {
+        match on class C
+        where C.methods.any((x) => x.hasAttr("Test"))
+        inject `bool $C = HP2::__seed($C.name, [ $for m in C.methods.where((x) => x.hasAttr("Test")) : $m.name ]);`
+               at namespace Reg
+    }
+    bool __seed(string className, Array<string> names) {
+        for (string n in names) __cases = __cases.add(className + "::" + n);
+        return true;
+    }
+}
+uses HP2;
+
+class BTests {
+    @Test void bMethod() { }
+}
+class ATests {
+    @Test void aMethod() { }
+}
+
+void main() {
+    console.writeln(HP2::__cases.length());
+    for (string c in HP2::__cases) console.writeln(c);
+}
+main();

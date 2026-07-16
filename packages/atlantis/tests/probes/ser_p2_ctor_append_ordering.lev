@@ -1,0 +1,39 @@
+// P-2: R1 (class-level, injects a labeled FromJson ctor) -> R2 (per-field,
+// appends into "bottom of C.constructor", must land in R1's FromJson) -> R3
+// (class-level, appends last). Traced via __log to pin exact ordering.
+namespace Probe {
+    interface ISerializable { }
+    attribute Serializable { }
+
+    rule r1 {
+        match @Serializable on class C
+        where C.hasBase("ISerializable")
+        inject `int __log;` at member of C
+        inject `new FromJson(int v) {
+            this.__log = 0;
+        }` at member of C
+    }
+
+    rule r2 {
+        match on field f in class C : ISerializable
+        inject `this.$f = this.$f + 1;
+                this.__log = this.__log * 10 + this.$f;`
+            at bottom of C.constructor
+    }
+
+    rule r3 {
+        match @Serializable on class C
+        where C.hasBase("ISerializable")
+        inject `this.__log = this.__log + 1000;` at bottom of C.constructor
+    }
+}
+uses Probe;
+
+@Serializable
+class Widget : ISerializable {
+    int a;
+    int b;
+}
+
+Widget w = Widget::FromJson(7);
+console.write(w.__log.toString());

@@ -1,0 +1,7 @@
+// Regression floor for bug #39 (typed lambda parameters, (int x) => ...,
+// used to fail to parse). Fixed 2026-07-14 on master.
+void main() {
+    var f = (int x) => x + 1;
+    console.writeln(f(41));
+}
+main();

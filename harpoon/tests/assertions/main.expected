@@ -1,0 +1,44 @@
+ok   assertEqual int pass
+ok   assertEqual int fail
+ok   assertEqual string pass
+ok   assertEqual string fail
+ok   assertEqual bool pass
+ok   assertEqual bool fail
+ok   assertEqual char pass
+ok   assertEqual char fail
+ok   assertEqual float pass (within eps)
+ok   assertEqual float fail
+ok   assertEqual array int pass
+ok   assertEqual array int fail (value)
+ok   assertEqual array int fail (length)
+ok   assertEqual array string pass
+ok   assertEqual array string fail
+ok   assertEqual array float pass
+ok   assertEqual array float fail
+ok   assertEqual array bool pass
+ok   assertEqual array bool fail
+ok   assertEqual generic struct pass
+ok   assertEqual generic struct fail
+ok   assertEqual generic enum pass
+ok   assertEqual generic enum fail
+ok   assertNotEqual int pass
+ok   assertNotEqual int fail
+ok   assertSame pass
+ok   assertSame fail
+ok   assertNotSame pass
+ok   assertNotSame fail
+ok   assertTrue pass
+ok   assertTrue fail
+ok   assertFalse pass
+ok   assertFalse fail
+ok   assertNone pass
+ok   assertNone fail
+ok   assertSome pass
+ok   assertSome fail
+ok   assertThrows pass
+ok   assertThrows fail (nothing thrown)
+ok   assertThrows mustContain pass
+ok   assertThrows mustContain fail
+ok   fail always throws
+---
+42 passed, 0 failed

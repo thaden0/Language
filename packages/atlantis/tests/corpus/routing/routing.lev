@@ -1,0 +1,169 @@
+// Atlantis Track 02 — routing & controllers acceptance corpus (design §11
+// M2/M3 shape): trie precedence/404/405, Route/Controller/App wiring (§0R),
+// Era-A parameter binding (§4.2), validation (§5, explicit form), authDefault
+// enforcement in all three modes (§6), and the escape hatch (§7). Driven
+// without a socket (synthetic requests through the built app), matching
+// Track 01's kernel corpus style — deterministic, identical on oracle/IR/LLVM.
+uses Atlantis::Http;
+uses Atlantis::Routing;
+uses Atlantis::Log;
+
+class HomeController : Controller {
+    HttpResponse index(Context ctx) => this.okText("home");
+}
+
+class UserController : Controller {
+    HttpResponse show(Context ctx) {
+        int id = this.pathInt(ctx, "id");
+        Map<string, JsonValue> m = Map();
+        m["id"] = JsonValue::ofNum(id.toFloat());
+        m["name"] = JsonValue::ofStr("user-" + id.toString());
+        return this.ok(JsonValue::ofObject(m));
+    }
+    HttpResponse create(Context ctx) {
+        JsonValue body = this.jsonBody(ctx);
+        Array<Check> checks = [
+            Check("email", [CRule("Required", 0), CRule("Email", 0)]),
+            Check("age", [CRule("Min", 0)])
+        ];
+        Validation::validate(body, checks);
+        return this.created("/users/1", body);
+    }
+    HttpResponse list(Context ctx) {
+        string? q = this.queryStr(ctx, "q");
+        return this.okText("q=" + (q ?? "-"));
+    }
+}
+
+HttpRequest mkReq(string method, string path, string body, string contentType) {
+    HttpRequest r = HttpRequest();
+    int cl = body.length();
+    string ctHeader = contentType != "" ? ("Content-Type: " + contentType + "\r\n") : "";
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\n" + ctHeader +
+        "Content-Length: " + cl.toString() + "\r\n\r\n" + body);
+    return r;
+}
+
+void hr(HttpResponse r) {
+    console.writeln("  status=" + r.status.toString() +
+        " ctype=" + r.headers.firstOr("Content-Type", "-") +
+        " allow=" + r.headers.firstOr("Allow", "-"));
+    console.writeln("  body=" + r.body);
+}
+
+App buildApp(string authDefault) {
+    Logger log = Logger(CaptureSink(), 0);
+    Builder builder = Builder();
+    App app = builder.setPort(0).Build();
+    app.useErrorMapping(log);
+    app.useRouting();
+
+    // Each `Route<C>` is bound to an explicitly-typed local, UNCHAINED,
+    // before `AddRoute<C>` — a target type is required for `C` to infer
+    // through a *nested* generic-constructor argument position (a filed
+    // compiler gap shared with plain `Foo(1, Map())`-shaped calls), and that
+    // target-type propagation does not reach back through a fluent method
+    // chain either — the builder calls run as separate statements (both
+    // filed; see the design's §13 log).
+    Route<HomeController> homeIndex = Route("/", () => HomeController(), HomeController::index);
+    homeIndex.requestType(RequestType::GET);
+    homeIndex.noAuth();
+    app.AddRoute(homeIndex);
+
+    Route<UserController> userShow = Route("/users/:id", () => UserController(), UserController::show);
+    userShow.requestType(RequestType::GET);
+    userShow.noAuth();
+    app.AddRoute(userShow);
+
+    Route<UserController> userCreate = Route("/users", () => UserController(), UserController::create);
+    userCreate.requestType(RequestType::POST);
+    userCreate.requireAuth();
+    app.AddRoute(userCreate);
+
+    Route<UserController> userList = Route("/users", () => UserController(), UserController::list);
+    userList.requestType(RequestType::GET);
+    userList.noAuth();
+    app.AddRoute(userList);
+
+    app.finalize(authDefault);
+    return app;
+}
+
+void main() {
+    console.writeln("== M3 Era-A end-to-end (authDefault=auth) ==");
+    App app = buildApp("auth");
+    var handler = app.buildHandler();
+
+    console.writeln("-- GET / --");
+    hr(handler(Context(mkReq("GET", "/", "", ""))));
+
+    console.writeln("-- GET /users/42 (path param binding) --");
+    hr(handler(Context(mkReq("GET", "/users/42", "", ""))));
+
+    console.writeln("-- GET /users/abc (pathInt throws -> 400) --");
+    hr(handler(Context(mkReq("GET", "/users/abc", "", ""))));
+
+    console.writeln("-- GET /users?q=hi (query param binding) --");
+    hr(handler(Context(mkReq("GET", "/users?q=hi", "", ""))));
+
+    console.writeln("-- GET /users (no query) --");
+    hr(handler(Context(mkReq("GET", "/users", "", ""))));
+
+    console.writeln("-- POST /users valid body (201) --");
+    hr(handler(Context(mkReq("POST", "/users", "{\"email\":\"a@b.com\",\"age\":5}", "application/json"))));
+
+    console.writeln("-- POST /users invalid body (422) --");
+    hr(handler(Context(mkReq("POST", "/users", "{\"age\":-1}", "application/json"))));
+
+    console.writeln("-- POST /users wrong content-type (415) --");
+    hr(handler(Context(mkReq("POST", "/users", "not json", "text/plain"))));
+
+    console.writeln("-- GET /nope (404) --");
+    hr(handler(Context(mkReq("GET", "/nope", "", ""))));
+
+    console.writeln("-- DELETE /users (405, Allow header) --");
+    hr(handler(Context(mkReq("DELETE", "/users", "", ""))));
+
+    console.writeln("-- route table (Track 07 handoff shape) --");
+    Array<RouteRec> routes = app.router.routes();
+    for (RouteRec rec in routes) {
+        console.writeln("  " + rec.verb + " " + rec.path + " -> " + rec.key() +
+            " authMode=" + rec.authMode.toString());
+    }
+
+    console.writeln("== authDefault=noauth ==");
+    App appNo = buildApp("noauth");
+    console.writeln("mode(list)=" + appNo.router.authModeOf("Route./users [GET]").toString());
+    console.writeln("mode(create, explicit requireAuth wins)=" +
+        appNo.router.authModeOf("Route./users [POST]").toString());
+
+    console.writeln("== authDefault=explicit (boot error) ==");
+    Router explicitRouter = Router();
+    var noopHandler = (c) => okStatus(200);
+    Array<ParamDesc> noParams = [];
+    explicitRouter.record(RouteRec("GET", "/needs-marker", "Demo", "needsMarker", noParams, "", 0, ""), noopHandler);
+    bool threw = false;
+    string msg = "";
+    try {
+        explicitRouter.finalize("explicit");
+    } catch (RuntimeException e) {
+        threw = true;
+        msg = e.message;
+    }
+    console.writeln("threw=" + threw.toString());
+    console.writeln("hasOffender=" + msg.contains("GET /needs-marker").toString());
+
+    console.writeln("== escape hatch (§7, raw router.record) ==");
+    Router er = Router();
+    var healthHandler = (c) => okStatus(200);
+    Array<ParamDesc> noParams2 = [];
+    er.record(RouteRec("GET", "/healthz", "Manual", "healthz", noParams2, "", 2, ""), healthHandler);
+    er.finalize("auth");
+    MatchResult mr = er.resolve("GET", "/healthz");
+    console.writeln("escape-hatch status=" + mr.status.toString() + " key=" + mr.key);
+}
+
+HttpResponse okStatus(int s) {
+    HttpResponse r = HttpResponse(s, "");
+    return r;
+}

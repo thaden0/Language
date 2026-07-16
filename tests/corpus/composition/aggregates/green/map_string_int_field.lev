@@ -1,0 +1,16 @@
+// Map<string,int> class field, 3+ entries, read-back+compare — control
+// case showing a primitive-valued Map is unaffected by bug #40 (which is
+// specific to a user-enum-typed Map value).
+class Registry {
+    Map<string, int> counts = Map();
+    void bump(string k) { counts[k] = (counts.atOrNone(k) ?? 0) + 1; }
+    int get(string k) => counts.atOrNone(k) ?? -1;
+}
+void main() {
+    Registry r = Registry();
+    r.bump("a"); r.bump("b"); r.bump("c"); r.bump("a");
+    console.writeln(r.get("a").toString());
+    console.writeln(r.get("b").toString());
+    console.writeln(r.get("c").toString());
+}
+main();

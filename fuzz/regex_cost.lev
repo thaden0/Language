@@ -1,0 +1,18 @@
+// Track 10 regex P1: native-call/operation floor used by the in-language DFA.
+void probe() {
+    int n = 1000000;
+    int sum = 0;
+    int t0 = std::sysMonotonic();
+    int i = 0; while (i < n) { sum = sum + "x".byteAt(0); i = i + 1; }
+    int t1 = std::sysMonotonic();
+    Array<int> one = [7]; i = 0;
+    while (i < n) { sum = sum + one.at(0); i = i + 1; }
+    int t2 = std::sysMonotonic(); i = 0;
+    while (i < n) { sum = sum + ((i >> 3) & 31); i = i + 1; }
+    int t3 = std::sysMonotonic();
+    console.writeln("byteAt-ms=" + (t1 - t0).toString());
+    console.writeln("arrayAt-ms=" + (t2 - t1).toString());
+    console.writeln("bitwise-ms=" + (t3 - t2).toString());
+    console.writeln("checksum=" + sum.toString());
+}
+probe();

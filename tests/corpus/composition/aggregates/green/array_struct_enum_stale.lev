@@ -1,0 +1,44 @@
+// Regression floor for bug #41 [P0] (Array<struct> with an enum-typed
+// field going stale/wrong after unrelated heap activity elsewhere in the
+// program). known_bugs_1.md still lists #41 as open, but this exact repro
+// (write-order sensitive: the struct is stored before the intervening
+// allocation) is clean on run/ir/cpp/llvm against the current runtime —
+// confirmed 2026-07-14 by rebuilding runtime/lv_*.c fresh (the build tree's
+// checked-in liblvrt.a was stale from 2026-07-12 and masked the fix). Keep
+// this pinned here so a future runtime change can't silently regress it;
+// the owner should close #41 as fixed. See also the still-valid class-based
+// workaround at aggregates/green/array_class_enum_workaround.lev.
+enum Kind { Alpha, Beta, Gamma }
+struct Rec { int mods; Kind kind; char ch; }
+
+class Holder {
+    Array<Rec> items = [];
+    void store(int m, Kind k, char c) {
+        items = items.add(Rec(m, k, c));
+    }
+    bool matches(int m, Kind k) {
+        for (Rec r in items) {
+            if (r.mods == m && r.kind == k) return true;
+        }
+        return false;
+    }
+}
+
+struct FillPair { int a; int b; int c; int d; }
+class Filler {
+    Array<int> f1 = []; Array<int> f2 = []; Array<int> f3 = []; Array<int> f4 = [];
+    Array<int> f5 = []; Array<int> f6 = []; Array<int> f7 = []; Array<int> f8 = [];
+    Array<int> f9 = []; Array<int> f10 = []; Array<int> f11 = []; Array<int> f12 = [];
+    Array<int> f13 = []; Array<int> f14 = []; Array<int> f15 = [];
+    FillPair rect = FillPair(0, 0, 0, 0);
+    FillPair insets = FillPair(1, 1, 1, 1);
+    Kind kind = Kind::Beta;
+}
+
+void main() {
+    Holder h = Holder();
+    h.store(17, Kind::Alpha, 'Q');   // struct write BEFORE the intervening allocation
+    Filler filler = Filler();         // unrelated allocation burst
+    console.writeln(h.matches(17, Kind::Alpha));
+}
+main();

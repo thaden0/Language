@@ -1,0 +1,10 @@
+name = "calc-tests"
+sources = ["calc_tests.lev"]
+
+[[dep]]
+path = "../../.."
+as = "harpoon"
+
+[[dep]]
+path = "../app"
+as = "calc"

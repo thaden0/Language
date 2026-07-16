@@ -1,0 +1,87 @@
+// Track 10 M2/M3 smoke: TestRenderer snapshot format + ScriptedInput chord
+// encoder round-trip + the SonarTest harness. Differential across all engines.
+uses Sonar;
+
+// A non-drawing focusable leaf (empty paint) that records keystrokes — exercises
+// focus/input without the Surface fill/put path.
+class Field : Focusable {
+    string name;
+    int keys = 0;
+    new Field(string n) { name = n; this.onKey((e) => this.bump()); }
+    void bump() { keys = keys + 1; }
+    Size contentDesired(Size avail) => Size(4, 1);
+    Point? cursorPos() => Point(1, 0);
+}
+
+// A drawing leaf that paints its label so channel 1 shows real glyphs.
+class Label : Component {
+    string text;
+    new Label(string t) { text = t; }
+    Size contentDesired(Size avail) => Size(text.length(), 1);
+    void paintContent(Surface s) {
+        s.writeText(box.x(), box.y(), text, Style(Color::Default, Color::Default, 0));
+    }
+}
+
+// Show the encoder output as visible bytes so the round-trip is legible.
+string vis(string s) {
+    StringBuilder o = StringBuilder();
+    for (char c in s.chars()) {
+        int b = c.code();
+        if (b == 27) o.add("\\e");
+        else if (b < 32) o.add("\\" + b.toString());
+        else o.add(c.toString());
+    }
+    return o.toString();
+}
+
+void main() {
+    // ---- chord encoder round-trip (encode -> decode == identity) ----
+    console.writeln("== chord encode ==");
+    Array<string> chords = ["x", "^S", "M-a", "Tab", "Enter", "Up", "Down",
+                            "Left", "Right", "Home", "End", "PageUp", "Delete",
+                            "F1", "F5", "F12", "S-Up", "BackTab"];
+    for (string spec in chords)
+        console.writeln(spec + " -> " + vis(SonarTest::encodeChord(spec)));
+
+    // ---- decode round-trip: feed encoded bytes, assert the KeyEvent ----
+    console.writeln("== round-trip ==");
+    StringBuilder trace = StringBuilder();
+    InputDecoder dec = InputDecoder(
+        (k) => trace.add(k.code.toString() + "/" + k.mods.toString() + "/"
+                          + (k.code == KeyCode::Char ? k.ch.toString() : "-") + " "),
+        (m) => trace.add("mouse "),
+        (p) => trace.add("paste "));
+    for (string spec in chords) dec.feed(SonarTest::encodeChord(spec));
+    console.writeln(trace.toString());
+
+    // ---- harness + snapshot (drawing tree) ----
+    App a = SonarTest::harness(12, 3);
+    a.add(Label("Hello"));
+    a.add(Label("World"));
+    SonarTest::snap(a, SonarTest::renderer(), "two labels");
+
+    // ---- textOnly channel ----
+    SonarTest::snapText(a, SonarTest::renderer(), "text only");
+    SonarTest::reset();
+
+    // ---- scripted input drives focus/keys ----
+    console.writeln("== scripted input ==");
+    App b = SonarTest::harness(8, 2);
+    Field f1 = Field("one");
+    Field f2 = Field("two");
+    b.add(f1);
+    b.add(f2);
+    b.focus(f1);
+    ScriptedInput si = SonarTest::input();
+    si.key("x").key("x").key("Tab");
+    b.pumpOnce();                       // start session (register sink), paint
+    SonarTest::pump(b, si);             // deliver "x"
+    SonarTest::pump(b, si);             // deliver "x"
+    SonarTest::pump(b, si);             // deliver Tab
+    console.writeln("f1keys=" + f1.keys.toString());
+    console.writeln("focus=" + (b.focused() == f2 ? "two" : "other"));
+    console.writeln("presents=" + SonarTest::renderer().presents().toString());
+    console.writeln("acquired=" + SonarTest::renderer().acquired().toString());
+    SonarTest::reset();
+}

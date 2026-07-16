@@ -1,0 +1,76 @@
+// Atlantis Track 01 — Atlantis::Log, structured JSON-lines logging (design §6).
+//
+// One JSON object per line; escaping is never hand-rolled (jsonQuote, H-8). Field
+// values are strings in the generic API; the request-log line (AccessLog, §6.3)
+// builds its own line so status/durMs render as JSON numbers. Sink binding is DI
+// (`bind ILogSink => ConsoleSink();`); tests bind a CaptureSink.
+//
+// jsonQuote/isoNow live in the sibling namespace Atlantis::Http; reached here as
+// `Http::…` (a cross-nested-namespace `uses` does not penetrate a separate
+// namespace block's scope on the landed compiler — bug.md).
+namespace Atlantis {
+    namespace Log {
+
+        struct LogField {
+            string key;
+            string value;
+            new LogField(string key, string value) {
+                this.key = key;
+                this.value = value;
+            }
+        }
+
+        interface ILogSink { void write(string line); }        // one complete line, no newline
+
+        class ConsoleSink : ILogSink {
+            void write(string line) { console.writeln(line); }  // single call = interleave-safe
+        }
+
+        // A test/buffer sink: keeps every line for assertion.
+        class CaptureSink : ILogSink {
+            Array<string> lines = [];
+            void write(string line) { this.lines = this.lines.add(line); }
+            int count() => this.lines.length();
+            string at(int i) => this.lines.at(i);
+        }
+
+        // levels: int until enum lands (LA-8): 0 debug, 1 info, 2 warn, 3 error
+        const int debug = 0;
+        const int info = 1;
+        const int warn = 2;
+        const int error = 3;
+
+        class Logger {
+            ILogSink sink;
+            int minLevel;
+            new Logger(ILogSink sink, int minLevel) { this.sink = sink; this.minLevel = minLevel; }
+
+            void debug(string msg, Array<LogField> f) { this.emit(0, "debug", msg, f); }
+            void info(string msg, Array<LogField> f)  { this.emit(1, "info",  msg, f); }
+            void warn(string msg, Array<LogField> f)  { this.emit(2, "warn",  msg, f); }
+            void error(string msg, Array<LogField> f) { this.emit(3, "error", msg, f); }
+
+            // Write a pre-built line at a level (respects minLevel). AccessLog
+            // uses this so status/durMs stay JSON numbers, not stringified fields.
+            void raw(int lvl, string line) {
+                if (lvl < this.minLevel) { return; }
+                this.sink.write(line);
+            }
+
+            void emit(int lvl, string name, string msg, Array<LogField> fields) {
+                if (lvl < this.minLevel) { return; }
+                string line = "{" +
+                    "\"ts\":" + Http::jsonQuote(Http::isoNow()) + "," +
+                    "\"level\":" + Http::jsonQuote(name) + "," +
+                    "\"msg\":" + Http::jsonQuote(msg);
+                for (LogField f in fields) {
+                    line = line + "," + Http::jsonQuote(f.key) + ":" + Http::jsonQuote(f.value);
+                }
+                line = line + "}";
+                // Cap at 8 KiB so one bad value can't flood the sink (§6.1).
+                if (line.length() > 8192) { line = line.subStr(0, 8180) + "\",\"trunc\":true}"; }
+                this.sink.write(line);
+            }
+        }
+    }
+}

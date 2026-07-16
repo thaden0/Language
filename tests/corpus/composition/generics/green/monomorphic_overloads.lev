@@ -1,0 +1,27 @@
+// The sanctioned workaround for bug #54: one monomorphic overload per
+// concrete container type instead of a single generic body dispatching on
+// an overloaded free function.
+namespace Probe {
+    interface ISerializable { string tag(); }
+    string encInt(int v) => "I" + v.toString();
+    string encStr(string v) => "S" + v;
+
+    Array<string> encArrInt(Array<int> v) {
+        Array<string> out = [];
+        for (int item in v) { out = out.add(Probe::encInt(item)); }
+        return out;
+    }
+    Array<string> encArrStr(Array<string> v) {
+        Array<string> out = [];
+        for (string item in v) { out = out.add(Probe::encStr(item)); }
+        return out;
+    }
+}
+uses Probe;
+void main() {
+    Array<int> xs = [1, 2, 3];
+    Array<string> ss = ["a", "b"];
+    console.write(Probe::encArrInt(xs).joinToString(",") + "|" +
+                  Probe::encArrStr(ss).joinToString(","));
+}
+main();

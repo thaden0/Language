@@ -1,0 +1,12 @@
+// Array<struct> where every field is scalar (columnar-eligible), 3+
+// entries, read-back+compare — unaffected by bug #41 (which needs an
+// enum-typed field to trigger).
+struct Point { int x; int y; }
+void main() {
+    Array<Point> pts = [];
+    pts = pts.add(Point(1, 2));
+    pts = pts.add(Point(3, 4));
+    pts = pts.add(Point(5, 6));
+    console.writeln((pts[0].x + pts[1].y + pts[2].x).toString());
+}
+main();

@@ -1,0 +1,17 @@
+using Atlantis::Controllers;
+
+namespace App::Controllers {
+
+    class AuthController : Controller {    // Atlantis::Controllers::Controller
+
+        private readonly IUserService userService;
+
+        new AuthController(IUserService userService) this.userService = userService;
+
+        LoginResponse Login(ILoginRequest loginRequest) => userService.Login(loginRequest);
+
+        LogoutResponse Logout(ILogoutRequest logoutRequest) => userService.Logout(logoutRequest);
+
+    }
+
+}

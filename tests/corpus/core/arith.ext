@@ -1,0 +1,17 @@
+void run() {
+    int x = 2 + 3 * 4;
+    console.writeln(x);
+    x += 8;
+    x /= 2;
+    console.writeln(x);
+    console.writeln(x % 4);
+    console.writeln(0 - x);
+    console.writeln("x=" + x);
+    bool p = x > 10 && x < 20;
+    bool q = x > 100 || x == 11;
+    console.writeln(p);
+    console.writeln(q);
+    console.writeln(!p);
+    console.writeln(x > 5 ? "big" : "small");
+}
+run();

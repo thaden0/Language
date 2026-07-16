@@ -1,0 +1,18 @@
+// techdesign-columnar plan §4 honesty section: the NON-WIN regime. A 2-field
+// struct (recBytes = 48) with BOTH fields consumed per element. Row-major reads
+// both fields from one cache line; columnar touches two separate columns — so
+// columnar may be marginally SLOWER here. Reported, not hidden.
+struct Small { int x; int y; }
+void bench(int n, int k) {
+    Small seed; seed.x = 1; seed.y = 2;
+    Array<Small> a = Array(n, seed);
+    for (int j in 0..99) { Small w; w.x = j; w.y = j; a[j] = w; }
+    int t0 = std::sysNow();
+    int s = 0;
+    for (int rep in 1..k) {
+        for (int i in 0..(n - 1)) { s = s + a[i].x + a[i].y; }   // BOTH fields
+    }
+    int t1 = std::sysNow();
+    console.writeln("elapsed_ms=" + (t1 - t0).toString());
+}
+bench(1000000, 50);

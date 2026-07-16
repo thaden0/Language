@@ -1,0 +1,187 @@
+uses Sonar;
+
+Component fixedBox(int w, int h) {
+    Component c = Component();
+    c.setWidth(Constraint::Fixed(w));
+    c.setHeight(Constraint::Fixed(h));
+    return c;
+}
+
+Text fixedLine(string text, int h) {
+    Text t = Text();
+    t.text(text);
+    t.setHeight(Constraint::Fixed(h));
+    return t;
+}
+
+string readRow(Surface s, int y, int x0, int w) {
+    string result = "";
+    for (int x in x0..x0 + w - 1) {
+        int scalar = s.cells().int32At(s.cellOffset(x, y));
+        result = result + std::charFromCode(scalar).toString();
+    }
+    return result;
+}
+
+void main() {
+    // ---- ContentBox: defaults --------------------------------------------
+    ContentBox defaults = ContentBox();
+    console.writeln(defaults.overflow == Overflow::Clip);
+    console.writeln(defaults.border == BorderStyle::NoBorder);
+
+    // ---- ContentBox: Overflow::Wrap is a construction-time throw ---------
+    ContentBox bad = ContentBox();
+    try {
+        bad.overflow(Overflow::Wrap);
+        console.writeln("no throw");
+    } catch (SonarException e) {
+        console.writeln("threw");
+    }
+    console.writeln(bad.overflow == Overflow::Clip);
+
+    // ---- ContentBox: Clip mode — layout may overflow, paint clips --------
+    ContentBox clip = ContentBox();
+    clip.border(BorderStyle::Single);
+    clip.title("Box");
+    clip.add(fixedLine("Line1", 1));
+    clip.add(fixedLine("Line2", 1));
+    clip.add(fixedLine("Line3", 1));
+    clip.add(fixedLine("Line4", 1));
+    clip.add(fixedLine("Line5", 1));
+    clip.arrange(Rect(Point(0, 0), Size(10, 5)));
+
+    Surface clipSurface = Surface(10, 5);
+    Style plain;
+    clipSurface.clear(plain);
+    clip.paint(clipSurface);
+    console.writeln(readRow(clipSurface, 0, 0, 10));
+    console.writeln(readRow(clipSurface, 1, 1, 5));
+    console.writeln(readRow(clipSurface, 2, 1, 5));
+    console.writeln(readRow(clipSurface, 3, 1, 5));
+    console.writeln(readRow(clipSurface, 4, 1, 5));
+
+    // ---- ContentBox: Scroll mode — contentSize, scrollbar, translation ---
+    ContentBox scroll = ContentBox();
+    scroll.overflow(Overflow::Scroll);
+    for (int i in 0..9) scroll.add(fixedLine("Row" + i.toString(), 1));
+    scroll.arrange(Rect(Point(0, 0), Size(10, 4)));
+
+    console.writeln(scroll.contentSize.h);
+    console.writeln(scroll.contentSize.h > scroll.contentRect().h());
+
+    Surface scrollSurface = Surface(10, 4);
+    scrollSurface.clear(plain);
+    scroll.paint(scrollSurface);
+    console.writeln(readRow(scrollSurface, 0, 0, 9));
+    console.writeln(readRow(scrollSurface, 1, 0, 9));
+    console.writeln(readRow(scrollSurface, 2, 0, 9));
+    console.writeln(readRow(scrollSurface, 3, 0, 9));
+
+    // scrollTo clamping: below zero and past max both clamp.
+    scroll.scrollTo(0, 0 - 5);
+    console.writeln(scroll.scrollY);
+    scroll.scrollTo(0, 999);
+    console.writeln(scroll.scrollY);
+
+    // scrollBy(0, -8) from max (6) clamps back down to 0.
+    scroll.scrollBy(0, 0 - 8);
+    console.writeln(scroll.scrollY);
+
+    // scroll by 2 and re-paint: rows translate (re-arrange on scroll).
+    scroll.scrollBy(0, 2);
+    console.writeln(scroll.scrollY);
+    Surface scrolledSurface = Surface(10, 4);
+    scrolledSurface.clear(plain);
+    scroll.paint(scrolledSurface);
+    console.writeln(readRow(scrolledSurface, 0, 0, 9));
+    console.writeln(readRow(scrolledSurface, 1, 0, 9));
+    console.writeln(readRow(scrolledSurface, 2, 0, 9));
+    console.writeln(readRow(scrolledSurface, 3, 0, 9));
+
+    // scrollbar column (rightmost cell of the content area) is non-blank.
+    console.writeln(readRow(scrolledSurface, 0, 9, 1));
+    console.writeln(readRow(scrolledSurface, 1, 9, 1));
+    console.writeln(readRow(scrolledSurface, 2, 9, 1));
+    console.writeln(readRow(scrolledSurface, 3, 9, 1));
+
+    // ---- ContentBox: PageDown/PageUp/arrow key scroll (bubble-reachable) --
+    ContentBox keyScroll = ContentBox();
+    keyScroll.overflow(Overflow::Scroll);
+    for (int i in 0..9) keyScroll.add(fixedLine("Row" + i.toString(), 1));
+    keyScroll.arrange(Rect(Point(0, 0), Size(10, 4)));
+    keyScroll.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(keyScroll.scrollY);
+    keyScroll.fireKey(KeyEvent(KeyCode::PageDown, std::charFromCode(0), 0));
+    console.writeln(keyScroll.scrollY);
+    keyScroll.fireKey(KeyEvent(KeyCode::PageUp, std::charFromCode(0), 0));
+    console.writeln(keyScroll.scrollY);
+    keyScroll.fireKey(KeyEvent(KeyCode::Up, std::charFromCode(0), 0));
+    console.writeln(keyScroll.scrollY);
+
+    // Clip-mode boxes don't claim scroll keys (nothing to scroll).
+    ContentBox clipKeys = ContentBox();
+    KeyEvent clipEvent = KeyEvent(KeyCode::PageDown, std::charFromCode(0), 0);
+    clipKeys.fireKey(clipEvent);
+    console.writeln(clipEvent.handled);
+
+    // ---- ContentBox: pad() fluent wrapper ---------------------------------
+    ContentBox padded = ContentBox();
+    padded.pad(Insets::Uniform(2));
+    console.writeln(padded.padding.top);
+    console.writeln(padded.padding.left);
+
+    // ---- GridBox: 2x2 placement via gridRow/gridCol/spans ----------------
+    GridBox grid = GridBox(2, 2);
+    Component topLeft = fixedBox(1, 1); topLeft.gridRow = 0; topLeft.gridCol = 0;
+    Component topRight = fixedBox(1, 1); topRight.gridRow = 0; topRight.gridCol = 1;
+    Component bottomSpan = fixedBox(1, 1); bottomSpan.gridRow = 1; bottomSpan.gridCol = 0; bottomSpan.gridColSpan = 2;
+    grid.add(topLeft);
+    grid.add(topRight);
+    grid.add(bottomSpan);
+    grid.arrange(Rect(Point(0, 0), Size(20, 10)));
+    console.writeln(topLeft.box.x());
+    console.writeln(topLeft.box.y());
+    console.writeln(topLeft.box.w());
+    console.writeln(topLeft.box.h());
+    console.writeln(topRight.box.x());
+    console.writeln(topRight.box.y());
+    console.writeln(bottomSpan.box.x());
+    console.writeln(bottomSpan.box.y());
+    console.writeln(bottomSpan.box.w());
+
+    // ---- GridBox: gap/colConstraint forwarding actually changes sizes ----
+    GridBox fixedCol = GridBox(1, 2);
+    fixedCol.gap(2);
+    fixedCol.colConstraint(0, Constraint::Fixed(6));
+    Component left = fixedBox(1, 1); left.gridRow = 0; left.gridCol = 0;
+    Component right = fixedBox(1, 1); right.gridRow = 0; right.gridCol = 1;
+    fixedCol.add(left);
+    fixedCol.add(right);
+    fixedCol.arrange(Rect(Point(0, 0), Size(20, 5)));
+    console.writeln(left.box.w());
+    console.writeln(right.box.x());
+    console.writeln(right.box.w());
+
+    // ---- GridBox: rowConstraint forwarding --------------------------------
+    GridBox fixedRow = GridBox(2, 1);
+    fixedRow.rowConstraint(0, Constraint::Fixed(3));
+    Component top = fixedBox(1, 1); top.gridRow = 0; top.gridCol = 0;
+    Component bottom = fixedBox(1, 1); bottom.gridRow = 1; bottom.gridCol = 0;
+    fixedRow.add(top);
+    fixedRow.add(bottom);
+    fixedRow.arrange(Rect(Point(0, 0), Size(5, 10)));
+    console.writeln(top.box.h());
+    console.writeln(bottom.box.y());
+    console.writeln(bottom.box.h());
+
+    // ---- GridBox: border composition (Bordered mixin) ---------------------
+    GridBox bordered = GridBox(1, 1);
+    bordered.setBorder(BorderStyle::Single);
+    Component only = fixedBox(1, 1); only.gridRow = 0; only.gridCol = 0;
+    bordered.add(only);
+    bordered.arrange(Rect(Point(0, 0), Size(6, 4)));
+    console.writeln(only.box.x());
+    console.writeln(only.box.y());
+    console.writeln(only.box.w());
+    console.writeln(only.box.h());
+}

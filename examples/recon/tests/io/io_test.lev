@@ -1,0 +1,118 @@
+// Corpus test: Postman import over fixtures, tree walk, and export round-trip.
+// Run from repo root (the corpus runner cds there); fixture paths are root-relative.
+namespace Recon {
+
+string readFile(string path) {
+    if (!std::fileExists(path)) { return ""; }
+    using File f = File(path, std::read);
+    return f.read(f.size());
+}
+
+string ind(int depth) => "  ".repeat(depth);
+
+void walk(CollectionItem item, int depth) {
+    if (item.isFolder) {
+        console.writeln(ind(depth) + "[folder] " + item.name + " (" + item.children.length().toString() + ")");
+        for (CollectionItem c in item.children) { walk(c, depth + 1); }
+    } else {
+        string line = ind(depth) + "[req] " + item.name;
+        if (item.request != None) {
+            RequestSpec r = item.request ?? RequestSpec();
+            line = line + " " + methodName(r.method) + " " + r.url;
+            line = line + " body=" + r.body.mode.toString();
+            if (r.auth != None) { AuthSpec a = r.auth ?? AuthSpec(); line = line + " auth=" + a.kind; }
+        }
+        console.writeln(line);
+        if (item.events.length() > 0) {
+            console.writeln(ind(depth + 1) + "events=" + item.events.length().toString()
+                + " first-listen=" + item.events.at(0).listen);
+        }
+    }
+}
+
+void main() {
+    string colJson = readFile("examples/recon/fixtures/sample.postman_collection.json");
+    JsonValue? doc = json::parse(colJson);
+    if (doc == None) { console.writeln("COLLECTION PARSE FAILED (len=" + colJson.length().toString() + ")"); return; }
+    JsonValue d = doc ?? JsonValue::ofNull();
+
+    Collection? imported = importCollection(d, "sample.json");
+    if (imported == None) { console.writeln("IMPORT FAILED: " + importError); return; }
+    Collection col = imported ?? Collection();
+
+    console.writeln("== collection ==");
+    console.writeln("name=" + col.name);
+    console.writeln("id=" + col.postmanId);
+    console.writeln("schema=" + col.schemaVersion);
+    if (col.auth != None) { AuthSpec a = col.auth ?? AuthSpec(); console.writeln("colAuth=" + a.kind + " token=" + a.param("token")); }
+    console.writeln("vars:");
+    for (Variable v in col.variables) {
+        console.writeln("  " + v.key + "=" + v.value + " enabled=" + v.enabled.toString());
+    }
+
+    console.writeln("== tree ==");
+    for (CollectionItem top in col.root.children) { walk(top, 0); }
+
+    // Inspect the Search urlencoded body
+    console.writeln("== search body ==");
+    CollectionItem search = col.root.children.at(2);
+    if (search.request != None) {
+        RequestSpec r = search.request ?? RequestSpec();
+        for (FormField f in r.body.urlencoded) {
+            console.writeln("  field " + f.key + "=" + f.value + " enabled=" + f.enabled.toString());
+        }
+    }
+
+    // Login apikey? No — login is noauth; Get user is apikey.
+    console.writeln("== get-user auth ==");
+    CollectionItem getUser = col.root.children.at(1);
+    if (getUser.request != None) {
+        RequestSpec r = getUser.request ?? RequestSpec();
+        if (r.auth != None) {
+            AuthSpec a = r.auth ?? AuthSpec();
+            console.writeln("kind=" + a.kind + " key=" + a.param("key") + " in=" + a.param("in"));
+        }
+    }
+
+    // Round-trip: export -> reimport -> compare structure.
+    console.writeln("== round-trip ==");
+    JsonValue exported = exportCollection(col);
+    string rendered = exported.renderPretty(2);
+    JsonValue? reparsed = json::parse(rendered);
+    if (reparsed == None) { console.writeln("EXPORT REPARSE FAILED"); return; }
+    JsonValue rd = reparsed ?? JsonValue::ofNull();
+    Collection? reimported = importCollection(rd, "roundtrip");
+    if (reimported == None) { console.writeln("REIMPORT FAILED: " + importError); return; }
+    Collection col2 = reimported ?? Collection();
+    console.writeln("name eq: " + (col.name == col2.name).toString());
+    console.writeln("tops eq: " + (col.root.children.length() == col2.root.children.length()).toString());
+    console.writeln("login events preserved: "
+        + col2.root.children.at(0).children.at(0).events.length().toString());
+
+    // Environment import
+    console.writeln("== environment ==");
+    string envJson = readFile("examples/recon/fixtures/sample.postman_environment.json");
+    JsonValue? edoc = json::parse(envJson);
+    if (edoc != None) {
+        JsonValue ed = edoc ?? JsonValue::ofNull();
+        Environment? env = importEnvironment(ed);
+        if (env != None) {
+            Environment e = env ?? Environment();
+            console.writeln("env=" + e.name + " id=" + e.id);
+            for (Variable v in e.values) {
+                console.writeln("  " + v.key + "=" + v.value + " enabled=" + v.enabled.toString() + " secret=" + v.secret.toString());
+            }
+        }
+    }
+
+    // v1 legacy refusal
+    console.writeln("== v1 refusal ==");
+    JsonValue? v1 = json::parse("{\"requests\":[]}");
+    if (v1 != None) {
+        JsonValue v1d = v1 ?? JsonValue::ofNull();
+        Collection? refused = importCollection(v1d, "v1");
+        console.writeln("refused=" + (refused == None).toString() + " reason=" + importError);
+    }
+}
+
+}

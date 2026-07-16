@@ -1,0 +1,48 @@
+null
+true
+false
+0.000000
+-42.000000
+3.500000
+1000.000000
+-0.015000
+"hello"
+[]
+{}
+[1.000000,2.000000,[3.000000,[4.000000]]]
+{"a":1.000000,"b":[true,null]}
+{"nested":{"x":[{}]}}
+610a620963
+225c2f
+41
+c3a9
+e29883
+f09f9880
+efbfbd
+efbfbd78
+"a\"b\\c"
+"\n\u0001"
+d100:ok
+d200:None
+port-num
+b
+missing:None
+None
+None
+None
+None
+None
+None
+None
+None
+None
+None
+None
+None
+{
+  "a": 1.000000,
+  "b": [
+    2.000000,
+    3.000000
+  ]
+}

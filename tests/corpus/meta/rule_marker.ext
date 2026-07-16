@@ -1,0 +1,30 @@
+// §16.5 Phase 3 §8.2: an author-placed `@anchor("name")` marker. Two rules
+// stack onto the SAME marker and accumulate in rule declaration order; the
+// marker statement itself stays in the tree.
+namespace W {
+    attribute Traced { }
+    rule ruleOne {
+        match @Traced on method m
+        inject `log = log + "one;";` at marker "audit"
+    }
+    rule ruleTwo {
+        match @Traced on method m
+        inject `log = log + "two;";` at marker "audit"
+    }
+}
+uses W;
+
+class Tracer {
+    string log = "";
+
+    @Traced
+    void compute() {
+        log = log + "start;";
+        @anchor("audit");
+        log = log + "end;";
+    }
+}
+
+Tracer t = Tracer();
+t.compute();
+console.writeln(t.log);

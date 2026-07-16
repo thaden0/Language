@@ -1,0 +1,87 @@
+// LA-29 acceptance — a LIVE want-write-on-a-read-watch, proving LA-2 §2.3's
+// poll-mask augmentation fires. The server shrinks SO_SNDBUF and drives with a
+// READ-ONLY watch (never a write watch); the client shrinks SO_RCVBUF and uses
+// verifyMode 2 (encrypt-only) against an oversized cert whose Certificate flight
+// cannot fit the collapsed window. sysTlsHandshake therefore returns 2
+// (want-write); only the augmentation adding POLLOUT can wake a pure read watch,
+// so completion == the inversion fired. A broken augmentation deadlocks and
+// trips the watchdog (distinct output => FAIL fast). Port 8444 (corpus_net_ports
+// lock keeps TLS lanes off each other).
+int PORT = 8444;
+
+// A deliberately NAÏVE server driver: it ALWAYS re-arms a read watch, whatever
+// direction the handshake wants. This is what forces a broken augmentation into
+// a deadlock (the prelude tlsAccept would arm the correct direction and hide it).
+class ReadOnlyServerDrive {
+    int fd = 0 - 1;
+    int watchId = 0 - 1;
+    int timerId = 0 - 1;
+    bool sawWantWrite = false;
+    bool done = false;
+    int lfd = 0 - 1;
+    int accWatch = 0 - 1;
+
+    void begin(int cfd, int listenFd, int accW) {
+        fd = cfd; lfd = listenFd; accWatch = accW;
+        int armed = std::sysTlsAccept(fd, "tests/certs/server-big-cert.pem",
+                                          "tests/certs/server-big-key.pem", "");
+        if (armed < 0) { report(false); return; }        // setup failure -> loud FAIL line
+        ReadOnlyServerDrive self = this;
+        timerId = std::sysTimerStart(8000, 0, (n) => self.watchdog());
+        step();
+    }
+    void step() {
+        if (done) return;
+        int r = std::sysTlsHandshake(fd);
+        if (r == 2) { sawWantWrite = true; }              // <- the inversion signal
+        if (r == 0) { report(true); return; }             // handshake completed
+        if (r < 0)  { report(false); return; }
+        // NAÏVE: read-only re-arm for BOTH want-read (1) AND want-write (2).
+        if (watchId >= 0) { std::sysUnwatch(watchId); }
+        ReadOnlyServerDrive self = this;
+        watchId = std::sysWatch(fd, (ready) => self.step());   // NEVER sysWatchWrite
+    }
+    void watchdog() {
+        if (done) return;
+        // Deadlock path: the augmentation did not wake the read-only watch.
+        report(false);
+    }
+    void report(bool completed) {
+        if (done) return;
+        done = true;
+        if (watchId >= 0) { std::sysUnwatch(watchId); }
+        if (timerId >= 0) { std::sysTimerCancel(timerId); }
+        if (fd >= 0) { std::sysClose(fd); }
+        std::sysUnwatch(accWatch);
+        std::sysClose(lfd);
+        if (completed) { console.writeln("want-write observed: true"); }
+        else           { console.writeln("want-write observed: false"); }
+        console.writeln("handshake complete: " + completed.toString());
+    }
+}
+
+void run() {
+    int lfd = std::sysTcpListen(PORT);
+    ReadOnlyServerDrive drv = ReadOnlyServerDrive();
+    // Forward self-reference (accWatch used inside the closure that produces
+    // it) is rejected by the resolver — declare first, assign second, exactly
+    // as the want-write idiom requires (mechanical detail, not a STOP).
+    int accWatch = 0 - 1;
+    accWatch = std::sysWatch(lfd, (ready) => {
+        int cfd = std::sysAccept(lfd);
+        if (cfd >= 0) {
+            std::sysSocketBuffer(cfd, 2048, 0);           // shrink server SEND buffer
+            drv.begin(cfd, lfd, accWatch);
+        }
+    });
+
+    std::connectTimeout("127.0.0.1", PORT, 5000, (fd) => {
+        if (fd < 0) { console.writeln("connect FAILED"); return; }
+        std::sysSocketBuffer(fd, 0, 2048);                // shrink client RECV buffer
+        int armed = std::sysTlsConnect(fd, "127.0.0.1", "", "", 2);  // encrypt-only
+        if (armed < 0) { console.writeln("client setup failed"); return; }
+        std::tlsDrive(fd, (result) => { });               // client drives normally
+    });
+    console.writeln("inversion up");
+}
+run();

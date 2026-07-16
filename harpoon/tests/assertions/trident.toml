@@ -1,0 +1,6 @@
+name = "harpoon-tests-assertions"
+sources = ["main.lev"]
+
+[[dep]]
+path = "../.."
+as = "harpoon"

@@ -1,0 +1,3 @@
+comptime Array<int> STATIC_PROGRAM = regex::compileProgram("^a+b$", "");
+console.writeln(regex::programIsMatch(STATIC_PROGRAM, "aaab"));
+console.writeln(regex::programIsMatch(STATIC_PROGRAM, "xaaab"));

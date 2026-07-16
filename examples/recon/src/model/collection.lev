@@ -1,0 +1,36 @@
+// Recon collection model (DESIGN §4.2).
+namespace Recon {
+
+class ScriptBlock {            // preserved verbatim for round-trip export
+    public string listen = "";                 // "prerequest" | "test"
+    public string source = "";                 // exec[] joined with "\n"
+    new ScriptBlock() { }
+    new Of(string l, string src) { listen = l; source = src; }
+}
+
+class CollectionItem {         // one node: folder OR request (isFolder discriminates)
+    public string name = "";
+    public bool   isFolder = false;
+    public Array<CollectionItem> children;      // meaningful when isFolder
+    public RequestSpec? request = None;         // meaningful when !isFolder
+    public AuthSpec?    auth    = None;         // folder/request-level default
+    public Array<ScriptBlock> events;           // preserved verbatim
+    public JsonValue?   raw     = None;         // original node, for lossless-ish export (§5.4)
+    new CollectionItem() { }
+    new Folder(string n)  { name = n; isFolder = true; }
+    new Request(string n) { name = n; request = RequestSpec(); }
+}
+
+class Collection {
+    public string name = "";
+    public string postmanId = "";
+    public string schemaVersion = "2.1.0";
+    public CollectionItem root;                 // a synthetic folder holding top-level items
+    public Array<Variable> variables;           // collection-level vars
+    public AuthSpec? auth = None;               // collection-level default auth
+    public JsonValue? raw = None;               // original document (export fidelity)
+    public string sourcePath = "";              // where it was imported from
+    new Collection() { root = CollectionItem::Folder("<root>"); }
+}
+
+}

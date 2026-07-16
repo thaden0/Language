@@ -1,0 +1,21 @@
+// Atlantis Track 04 — repro for bug.md #55.
+// A NAMED free-function reference stored in a fn-typed field, then dot-called, fails to
+// resolve at runtime; a lambda-wrapping the same function works.
+//   ./build/leviathan --run packages/atlantis/tests/probes/di_p2_fnfield_named_ref.lev
+// Expected (intended): direct=5 and wrapped=5. Actual: direct throws
+// "Uncaught RuntimeException: cannot resolve call target 'handler'".
+int add(int a, int b) => a + b;
+
+class Box {
+    (int, int) => int handler;
+    new Box((int, int) => int handler) { this.handler = handler; }
+}
+
+void run() {
+    Box w = Box((a, b) => add(a, b));       // lambda-wrapped — WORKS
+    console.writeln("wrapped=" + w.handler(2, 3).toString());
+
+    Box d = Box(add);                        // bare named reference — FAILS at the call
+    console.writeln("direct=" + d.handler(2, 3).toString());
+}
+run();

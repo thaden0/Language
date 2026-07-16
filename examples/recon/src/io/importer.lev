@@ -1,0 +1,261 @@
+// Postman collection/environment import (DESIGN §5.3). Total: bad JSON already
+// yields None upstream (json::parse); v1 legacy is refused with a clear message.
+namespace Recon {
+
+// Refusal is carried out-of-band: importCollection returns None and sets a
+// module-level reason a caller can surface. (No exceptions for expected input.)
+string importError = "";
+
+Collection? importCollection(JsonValue doc, string sourcePath) {
+    importError = "";
+    if (!doc.isObject()) { importError = "top level is not a JSON object"; return None; }
+
+    // v1 legacy detection: a top-level `requests` array (no `item`).
+    if (jHas(doc, "requests") && !jHas(doc, "item")) {
+        importError = "Postman v1 (legacy) collections are not supported; re-export as v2.1";
+        return None;
+    }
+
+    Collection col = Collection();
+    col.raw = doc;
+    col.sourcePath = sourcePath;
+
+    JsonValue? infoNode = jField(doc, "info");
+    if (infoNode != None) {
+        JsonValue info = infoNode;
+        col.name = jStr(info, "name", "Untitled");
+        col.postmanId = jStr(info, "_postman_id", "");
+        string schema = jStr(info, "schema", "");
+        col.schemaVersion = schemaVersionOf(schema);
+    } else {
+        col.name = "Untitled";
+    }
+
+    // collection-level variables (disabled polarity)
+    col.variables = parseVariables(jArr(doc, "variable"), false);
+
+    // collection-level auth
+    JsonValue? authNode = jField(doc, "auth");
+    if (authNode != None) { JsonValue an = authNode; col.auth = parseAuth(an); }
+
+    // items
+    Array<CollectionItem> tops = [];
+    for (JsonValue itemNode in jArr(doc, "item")) {
+        CollectionItem? ci = parseItem(itemNode);
+        if (ci != None) { CollectionItem c = ci; tops = tops.add(c); }
+    }
+    col.root.children = tops;
+    return col;
+}
+
+string schemaVersionOf(string schema) {
+    if (schema.contains("v2.1.0")) { return "2.1.0"; }
+    if (schema.contains("v2.0.0")) { return "2.0.0"; }
+    return "2.1.0";
+}
+
+CollectionItem? parseItem(JsonValue node) {
+    if (!node.isObject()) { return None; }
+    string name = jStr(node, "name", "");
+    // folder: has an `item` array; request: has a `request`.
+    if (jHas(node, "item")) {
+        CollectionItem folder = CollectionItem::Folder(name);
+        folder.raw = node;
+        JsonValue? a = jField(node, "auth");
+        if (a != None) { JsonValue an = a; folder.auth = parseAuth(an); }
+        folder.events = parseEvents(jArr(node, "event"));
+        Array<CollectionItem> kids = [];
+        for (JsonValue childNode in jArr(node, "item")) {
+            CollectionItem? c = parseItem(childNode);
+            if (c != None) { CollectionItem ci = c; kids = kids.add(ci); }
+        }
+        folder.children = kids;
+        return folder;
+    }
+    if (jHas(node, "request")) {
+        CollectionItem item = CollectionItem::Request(name);
+        item.raw = node;
+        item.events = parseEvents(jArr(node, "event"));
+        JsonValue? reqNode = jField(node, "request");
+        if (reqNode != None) {
+            JsonValue rn = reqNode;
+            RequestSpec spec = parseRequest(rn, name);
+            item.request = spec;
+            item.auth = spec.auth;
+        }
+        return item;
+    }
+    return None;    // neither folder nor request
+}
+
+RequestSpec parseRequest(JsonValue node, string name) {
+    RequestSpec spec = RequestSpec();
+    spec.name = name;
+    // `request` may be a bare URL string (minimal collections)
+    if (node.isStr()) {
+        string? s = node.asStr();
+        spec.url = s ?? "";
+        return spec;
+    }
+    spec.method = methodFromName(jStr(node, "method", "GET"));
+    spec.url = parseUrlField(jField(node, "url"));
+    spec.headers = parseHeaders(jArr(node, "header"));
+    JsonValue? bodyNode = jField(node, "body");
+    if (bodyNode != None) { JsonValue bn = bodyNode; spec.body = parseBody(bn); }
+    JsonValue? authNode = jField(node, "auth");
+    if (authNode != None) { JsonValue an = authNode; spec.auth = parseAuth(an); }
+    return spec;
+}
+
+// url may be a string (v2.0) or an object with `raw` (v2.1).
+string parseUrlField(JsonValue? urlNode) {
+    if (urlNode != None) {
+        JsonValue node = urlNode ?? JsonValue::ofNull();
+        if (node.isStr()) { string? s = node.asStr(); return s ?? ""; }
+        if (node.isObject()) {
+            string raw = jStr(node, "raw", "");
+            if (!raw.isEmpty()) { return raw; }
+            return reconstructUrl(node);
+        }
+    }
+    return "";
+}
+
+// Fallback: rebuild a URL from structured host/path/query fields.
+string reconstructUrl(JsonValue node) {
+    string proto = jStr(node, "protocol", "https");
+    Array<string> hostSegs = [];
+    for (JsonValue h in jArr(node, "host")) {
+        if (h.isStr()) { string? s = h.asStr(); hostSegs = hostSegs.add(s ?? ""); }
+    }
+    string host = hostSegs.joinToString(".");
+    Array<string> pathSegs = [];
+    for (JsonValue p in jArr(node, "path")) {
+        if (p.isStr()) { string? s = p.asStr(); pathSegs = pathSegs.add(s ?? ""); }
+    }
+    string path = pathSegs.joinToString("/");
+    string port = jStr(node, "port", "");
+    Array<string> qs = [];
+    for (JsonValue q in jArr(node, "query")) {
+        if (!jBool(q, "disabled", false)) {
+            qs = qs.add(jStr(q, "key", "") + "=" + jStr(q, "value", ""));
+        }
+    }
+    string url = proto + "://" + host;
+    if (!port.isEmpty()) { url = url + ":" + port; }
+    url = url + "/" + path;
+    if (qs.length() > 0) { url = url + "?" + qs.joinToString("&"); }
+    return url;
+}
+
+Array<HeaderEntry> parseHeaders(Array<JsonValue> arr) {
+    Array<HeaderEntry> out = [];
+    for (JsonValue h in arr) {
+        HeaderEntry e = HeaderEntry();
+        e.name = jStr(h, "key", "");
+        e.value = jStr(h, "value", "");
+        e.enabled = !jBool(h, "disabled", false);   // header uses `disabled`
+        out = out.add(e);
+    }
+    return out;
+}
+
+RequestBody parseBody(JsonValue node) {
+    RequestBody body = RequestBody();
+    string mode = jStr(node, "mode", "");
+    body.mode = bodyModeFromName(mode);
+    if (mode == "raw") {
+        body.raw = jStr(node, "raw", "");
+        JsonValue? opts = jField(node, "options");
+        if (opts != None) {
+            JsonValue o = opts;
+            JsonValue? rawOpts = jField(o, "raw");
+            if (rawOpts != None) { JsonValue r = rawOpts; body.rawLanguage = jStr(r, "language", "text"); }
+        }
+    } else if (mode == "urlencoded") {
+        body.urlencoded = parseFormFields(jArr(node, "urlencoded"));
+    } else if (mode == "formdata") {
+        body.formdata = parseFormFields(jArr(node, "formdata"));
+    } else if (mode == "graphql") {
+        JsonValue? g = jField(node, "graphql");
+        if (g != None) {
+            JsonValue gn = g;
+            body.graphqlQuery = jStr(gn, "query", "");
+            body.graphqlVars  = jStr(gn, "variables", "");
+        }
+    }
+    return body;
+}
+
+Array<FormField> parseFormFields(Array<JsonValue> arr) {
+    Array<FormField> out = [];
+    for (JsonValue f in arr) {
+        FormField ff = FormField();
+        ff.key = jStr(f, "key", "");
+        ff.value = jStr(f, "value", "");
+        ff.kind = jStr(f, "type", "text");
+        ff.enabled = !jBool(f, "disabled", false);
+        out = out.add(ff);
+    }
+    return out;
+}
+
+// auth: { "type": "bearer", "bearer": [ {key,value} ] }  (config array named by type)
+AuthSpec parseAuth(JsonValue node) {
+    string kind = jStr(node, "type", "noauth");
+    AuthSpec a = AuthSpec::Of(kind);
+    Array<JsonValue> cfg = jArr(node, kind);
+    for (JsonValue entry in cfg) {
+        string k = jStr(entry, "key", "");
+        string v = jStr(entry, "value", "");
+        if (!k.isEmpty()) { a.put(k, v); }
+    }
+    return a;
+}
+
+Array<ScriptBlock> parseEvents(Array<JsonValue> arr) {
+    Array<ScriptBlock> out = [];
+    for (JsonValue ev in arr) {
+        string listen = jStr(ev, "listen", "");
+        JsonValue? scriptNode = jField(ev, "script");
+        string source = "";
+        if (scriptNode != None) {
+            JsonValue sn = scriptNode;
+            Array<string> lines = [];
+            for (JsonValue line in jArr(sn, "exec")) {
+                if (line.isStr()) { string? s = line.asStr(); lines = lines.add(s ?? ""); }
+            }
+            source = lines.joinToString("\n");
+        }
+        out = out.add(ScriptBlock::Of(listen, source));
+    }
+    return out;
+}
+
+// Variables. `enabledPolarity` == true means the JSON uses `enabled` (environment
+// files); false means it uses `disabled` (collection variables). §4.3 note.
+Array<Variable> parseVariables(Array<JsonValue> arr, bool enabledPolarity) {
+    Array<Variable> out = [];
+    for (JsonValue v in arr) {
+        Variable entry = Variable();
+        entry.key = jStr(v, "key", "");
+        entry.value = jStr(v, "value", "");
+        if (enabledPolarity) { entry.enabled = jBool(v, "enabled", true); }
+        else { entry.enabled = !jBool(v, "disabled", false); }
+        entry.secret = jStr(v, "type", "default") == "secret";
+        out = out.add(entry);
+    }
+    return out;
+}
+
+Environment? importEnvironment(JsonValue doc) {
+    importError = "";
+    if (!doc.isObject()) { importError = "environment is not a JSON object"; return None; }
+    Environment env = Environment();
+    env.id = jStr(doc, "id", "");
+    env.name = jStr(doc, "name", "Environment");
+    env.values = parseVariables(jArr(doc, "values"), true);   // environment uses `enabled`
+    return env;
+}
+
+}

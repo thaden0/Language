@@ -1,0 +1,43 @@
+// Objects compiled by the PURE backend (own x86-64 + ELF, no g++/libc): heap
+// object layout, MI + distinct fields, label constructors, operator methods
+// (incl. derived !=), get/set accessor views, method dispatch — all in raw
+// machine code with tagged values.
+class A { distinct int v = 1; }
+class B { distinct int v = 2; }
+class C : A, B {
+    int sum() => this.A::v + this.B::v;
+}
+class Counter {
+    int n = 0;
+    new Seed(int start) { n = start; }
+    Counter (+)(int d) => Counter::Seed(n + d);
+    bool (==)(int v) => n == v;
+    int val() => n;
+}
+class Box {
+    int raw = 0;
+    get raw() => raw;
+    set raw(int x) raw = x * 2;
+}
+class Point {
+    int x = 0;
+    int y = 0;
+    new At(int px, int py) { x = px; y = py; }
+    Point (+)(Point o) => Point::At(x + o.x, y + o.y);
+    int manhattan() => x + y;
+}
+void run() {
+    console.writeln(C().sum());          // 3
+    Counter c = Counter::Seed(3);
+    console.writeln((c + 4).val());      // 7
+    console.writeln(c == 3);             // true
+    console.writeln(c != 3);             // false (derived)
+    Box b = Box();
+    b.raw = 10;
+    console.writeln(b.raw);              // 20
+    Point p = Point::At(2, 3) + Point::At(4, 5);
+    console.writeln(p.x);                // 6
+    console.writeln(p.y);                // 8
+    console.writeln(p.manhattan());      // 14
+}
+run();

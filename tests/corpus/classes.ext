@@ -1,0 +1,38 @@
+// MI + distinct, label ctors, operators, get/set views, ([]) indexers.
+class A { distinct int v = 1; }
+class B { distinct int v = 2; }
+class C : A, B {
+    int sum() => this.A::v + this.B::v;
+}
+class Counter {
+    int n = 0;
+    new Seed(int start) { n = start; }
+    Counter (+)(int d) => Counter::Seed(n + d);
+    bool (==)(int v) => n == v;
+    int val() => n;
+}
+class Box {
+    int raw = 0;
+    get raw() => raw;
+    set raw(int x) raw = x * 2;
+}
+class Grid {
+    Array<int> cells;
+    new Sized(int n) { for (int i in 1..n) cells = cells.add(0); }
+    get ([])(int i) => cells[i];
+    set ([])(int i, int v) cells[i] = v;
+}
+void run() {
+    console.writeln(C().sum());
+    Counter c = Counter::Seed(3);
+    console.writeln((c + 4).val());
+    console.writeln(c == 3);
+    console.writeln(c != 3);
+    Box b = Box();
+    b.raw = 10;
+    console.writeln(b.raw);
+    Grid g = Grid::Sized(3);
+    g[1] = 7;
+    console.writeln(g[1]);
+}
+run();

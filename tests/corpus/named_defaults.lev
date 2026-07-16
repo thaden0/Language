@@ -1,0 +1,38 @@
+void show(int a = 1, string s = "x", bool b = false) {
+    console.writeln(a.toString() + ":" + s + ":" + b.toString());
+}
+
+void gap(int a = 7, int b) {
+    console.writeln(a + b);
+}
+
+int choose(int x) => 10;
+int choose(int x, int y = 0) => 20;
+string selected(string text) => "text:" + text;
+string selected(int number) => "number:" + number.toString();
+
+class Greeter {
+    int n;
+    string word;
+    new Greeter(int count = 2, string text = "hi") {
+        n = count;
+        word = text;
+    }
+    void print(string suffix = "!") {
+        console.writeln(n.toString() + word + suffix);
+    }
+}
+
+void folded(int seconds = 60 * 60) { console.writeln(seconds); }
+
+show();
+show(9);
+show(b: true);
+show(9, b: true);
+show(s: "y", a: 3);
+gap(b: 5);
+console.writeln(choose(1));
+console.writeln(selected(text: "named"));
+Greeter g = Greeter(text: "yo", count: 3);
+g.print(suffix: "?");
+folded();

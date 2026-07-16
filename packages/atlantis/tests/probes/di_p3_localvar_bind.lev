@@ -1,0 +1,25 @@
+// Atlantis Track 04 — repro for bug.md #56.
+// A block-scope `bind IFace => localVar;` (binding a local-variable reference) yields an
+// injection value on which interface-method dispatch fails; the `=> Ctor()` body form and
+// a top-level `=> globalVar` bind both work.
+//   ./build/leviathan --run packages/atlantis/tests/probes/di_p3_localvar_bind.lev
+// Expected (intended): ctorForm=1 then localVar=1. Actual: localVar throws
+// "Uncaught RuntimeException: cannot resolve call target 'next'".
+interface ICounter { int next(); }
+class Counter : ICounter { int n = 0; int next() { this.n = this.n + 1; return this.n; } }
+int useCounter(ICounter c) => c.next();
+
+void ctorForm() {
+    bind ICounter => Counter();              // factory body — WORKS
+    console.writeln("ctorForm=" + useCounter(inject ICounter).toString());
+}
+void localVarForm() {
+    Counter local = Counter();
+    bind ICounter => local;                  // bind a local-var reference — FAILS
+    console.writeln("localVar=" + useCounter(inject ICounter).toString());
+}
+void run() {
+    ctorForm();
+    localVarForm();
+}
+run();

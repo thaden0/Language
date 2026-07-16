@@ -1,0 +1,37 @@
+== version/nowMs ==
+0.1.0
+true
+== single-app rule ==
+second-app-throws
+== app() accessor ==
+true
+== pumpOnce present + acquire ==
+presents=1
+acquires=0
+screen=20x4
+== config after run throws ==
+reconfig-throws
+== focus + tab traversal ==
+focused=one
+afterTab=two
+afterTab2=one
+== key to focused ==
+f1keys=2
+== keymap chord ==
+chord=1
+== every/cancelEvery ==
+timer-registered-and-cancelled
+== overlays ==
+hasOverlay=true
+hasOverlay=false
+== cursor after frame (focused f1) ==
+cursor=1,0
+== quit + teardown ==
+input-stops=1
+== AnsiRenderer diff (direct surface) ==
+^[0m^[H^[2J^[1;1H^[1;31mhi^[0m    ^[2;1H      
+changed=12
+nochange=[]
+^[0m^[2;4H^[32mX
+changed2=1
+bell=?

@@ -1,0 +1,127 @@
+// Atlantis Track 03 -- §7 content negotiation. Consumed by Tracks 01/02
+// (a controller's Accept-driven response type, a binder's Content-Type gate).
+// String ops only -- no regex (LA-13 lands after this design was drafted, but
+// this seam never needed it: Accept-header grammar is comma/semicolon split).
+namespace Atlantis {
+    namespace Json {
+
+        struct MediaRange {
+            string type;
+            string sub;
+            float q;
+            new MediaRange(string type, string sub, float q) {
+                this.type = type;
+                this.sub = sub;
+                this.q = q;
+            }
+        }
+
+        // Tolerant parse: split on ',' ; each range splits on ';' for params;
+        // 'q=' parsed strictly to float in [0,1] (malformed q -> 1.0);
+        // malformed ranges (no '/') are skipped; an absent/empty header
+        // behaves as */* (RFC 9110).
+        Array<MediaRange> parseAccept(string header) {
+            Array<MediaRange> out = [];
+            string h = header.trim();
+            if (h.isEmpty()) {
+                out = out.add(MediaRange("*", "*", 1.0));
+                return out;
+            }
+            for (string rawPart in h.split(",")) {
+                string part = rawPart.trim();
+                if (part.isEmpty()) { continue; }
+                Array<string> pieces = part.split(";");
+                string typePart = pieces.at(0).trim();
+                int slash = typePart.indexOf("/");
+                if (slash < 0) { continue; }   // malformed range: skipped
+                string type = typePart.subStr(0, slash).trim();
+                string sub = typePart.subStr(slash + 1, typePart.length() - slash - 1).trim();
+                if (type.isEmpty() || sub.isEmpty()) { continue; }
+                float q = 1.0;
+                int i = 1;
+                while (i < pieces.length()) {
+                    string param = pieces.at(i).trim().toLower();
+                    if (param.startsWith("q=")) {
+                        string qs = param.subStr(2, param.length() - 2).trim();
+                        float? parsed = qs.toFloat();
+                        if (parsed == None) { q = 1.0; }
+                        else {
+                            if (parsed < 0.0 || parsed > 1.0) { q = 1.0; }
+                            else { q = parsed; }
+                        }
+                    }
+                    i = i + 1;
+                }
+                out = out.add(MediaRange(type, sub, q));
+            }
+            if (out.isEmpty()) { out = out.add(MediaRange("*", "*", 1.0)); }
+            return out;
+        }
+
+        // Selection: for each producible type (server-preference order), use
+        // its MOST SPECIFIC matching range (exact > type/* > */*); among
+        // producible types, rank by that range's q desc, then specificity
+        // desc, then producible-array order. q=0 excludes. None => caller
+        // answers 406.
+        string? negotiate(string? acceptHeader, Array<string> producible) {
+            Array<MediaRange> ranges = parseAccept(acceptHeader ?? "");
+            string? best = None;
+            float bestQ = -1.0;
+            int bestSpecificity = -1;
+            int pIdx = 0;
+            while (pIdx < producible.length()) {
+                string prod = producible.at(pIdx);
+                int slash = prod.indexOf("/");
+                string pType = slash < 0 ? prod : prod.subStr(0, slash);
+                string pSub = slash < 0 ? "" : prod.subStr(slash + 1, prod.length() - slash - 1);
+                bool matched = false;
+                float matchQ = 0.0;
+                int matchSpecificity = -1;
+                int ri = 0;
+                while (ri < ranges.length()) {
+                    MediaRange r = ranges.at(ri);
+                    bool typeMatch = r.type == "*" || r.type == pType;
+                    bool subMatch = r.sub == "*" || r.sub == pSub;
+                    if (typeMatch && subMatch) {
+                        int specificity = (r.type == "*" ? 0 : 2) + (r.sub == "*" ? 0 : 1);
+                        if (specificity > matchSpecificity) {
+                            matched = true;
+                            matchQ = r.q;
+                            matchSpecificity = specificity;
+                        }
+                    }
+                    ri = ri + 1;
+                }
+                if (matched && matchQ > 0.0) {
+                    bool better = matchQ > bestQ || (matchQ == bestQ && matchSpecificity > bestSpecificity);
+                    if (better) {
+                        best = prod;
+                        bestQ = matchQ;
+                        bestSpecificity = matchSpecificity;
+                    }
+                }
+                pIdx = pIdx + 1;
+            }
+            return best;
+        }
+
+        // §7 415 stance predicate: application/json or any +json suffix;
+        // charset tolerated but must be utf-8 if present.
+        bool isJsonContent(HeaderMap h) {
+            string ct = h.firstOr("Content-Type", "").trim();
+            if (ct.isEmpty()) { return false; }
+            string lower = ct.toLower();
+            int semi = lower.indexOf(";");
+            string mediaType = semi < 0 ? lower : lower.subStr(0, semi);
+            mediaType = mediaType.trim();
+            string paramsRest = semi < 0 ? "" : lower.subStr(semi + 1, lower.length() - semi - 1);
+            bool typeOk = mediaType == "application/json" || mediaType.endsWith("+json");
+            if (!typeOk) { return false; }
+            if (paramsRest.contains("charset=")) {
+                bool utf8Ok = paramsRest.contains("charset=utf-8") || paramsRest.contains("charset=\"utf-8\"");
+                if (!utf8Ok) { return false; }
+            }
+            return true;
+        }
+    }
+}

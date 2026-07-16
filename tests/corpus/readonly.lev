@@ -1,0 +1,73 @@
+// techdesign-readonly.md (LA-28): `readonly` — construction-time-fixed
+// instance fields, the construction-time sibling of `const`'s compile-time-
+// fixed slot (§1). Pure front-end feature at runtime (§6): a readonly field
+// compiles to an ordinary slot exactly like `var` would, so every case here
+// just needs to compile-accept and run identically to the `var` equivalent.
+// Mirrors tests/corpus/const.ext's shape.
+
+struct Point {
+    readonly int x;
+    readonly int y;
+    new Point(int px, int py) { x = px; y = py; }   // struct ctor window may write it
+    int dot() => x * x + y * y;
+}
+
+class Box { int n = 0; }
+
+class Session {
+    readonly string id = "s-1";        // field, initializer form
+    readonly int seq;                  // field, ctor form
+    new Session(int s) { seq = s; }    // ...the ctor window may write it, exactly once
+    int seqValue() => seq;
+}
+
+class Base {
+    readonly int seq;
+    new Base(int s) { seq = s; }
+    int seqValue() => seq;
+}
+class Derived : Base {
+    // Reached via Base::Ctor, never a direct write to the inherited field —
+    // a base's readonly field is writable only by the base's own ctors.
+    new Derived(int s) { Base::Base(s); }
+}
+
+// A readonly field holding a reference: the binding itself is fixed, but the
+// referenced object's own fields still mutate freely (non-transitive, §5).
+class Holder {
+    readonly Box b;
+    new Holder() { b = Box(); }
+    void bump() { b.n = 5; }
+    int peek() => b.n;
+}
+
+// MI collision: same name + type disagreeing on readonly-ness would be
+// ambiguous; `distinct` keeps both, reachable only by qualification. Bare
+// construction of C must default-init both bases with no explicit ctor call,
+// so this uses the readonly INITIALIZER form (the ctor form would need an
+// explicit `A::A()` from C's own ctor — see the Base/Derived case above).
+class A { distinct readonly int v = 1; }
+class B { distinct int v = 2; }
+class C : A, B {
+    int sum() => this.A::v + this.B::v;
+}
+
+void run() {
+    Point p = Point(3, 4);
+    console.writeln(p.dot());                               // 25
+
+    Session s = Session(99);
+    console.writeln(s.id);                                  // s-1
+    console.writeln(s.seqValue());                            // 99
+
+    Derived d = Derived(7);
+    console.writeln(d.seqValue());                            // 7
+
+    Holder h = Holder();
+    h.bump();
+    console.writeln(h.peek());                                // 5
+
+    C c = C();
+    console.writeln(c.sum());                                 // 3 (1 + 2, both bases kept)
+}
+run();

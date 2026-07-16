@@ -1,0 +1,15 @@
+typed: [hello] lines=1 cur=0,5
+second line: [hello\nworld] lines=2 cur=1,5
+home: [hello\nworld] lines=2 cur=1,0
+insert at col0: [hello\nXworld] lines=2 cur=1,1
+backspace: [hello\nworld] lines=2 cur=1,0
+join lines: [helloworld] lines=1 cur=0,5
+setText: [abc\ndef\nghi] lines=3 cur=0,0
+down+right2: [abc\ndef\nghi] lines=3 cur=1,2
+up (clamp col): [abc\ndef\nghi] lines=3 cur=0,2
+end: [abc\ndef\nghi] lines=3 cur=0,3
+delete at eol joins: [abcdef\nghi] lines=2 cur=0,3
+paste: [one\ntwo\nthree] lines=3 cur=2,5
+unicode: [café!] lines=1 cur=0,5
+readOnly: [locked] lines=1 cur=0,0
+cursor=5,1

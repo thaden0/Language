@@ -1,0 +1,5 @@
+uses HP6;
+
+class ATests {
+    @Test void a1() { }
+}

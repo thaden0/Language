@@ -1,0 +1,94 @@
+// LA-30 B2 (doc 06 §10 acceptance): TaskGroup.close() on every `using` exit
+// edge (fall-off/return/throw/break), plus the §2 absorption rule for an
+// uncaught CancelledException in a group child (vs a child that catches it
+// itself), plus nested groups composing by scoping (using's established
+// rule, reference.md §5.2/§6.6.65). Byte-identical on oracle/IR/LLVM.
+//
+// NOTE on nested-group print order (G13): children run in spawn/FIFO order
+// (C1) on the ONE shared per-thread run queue, regardless of which group's
+// close() happens to trigger the scheduler quiescing. This corpus therefore
+// does not assert an ordering between the two groups' children — only that
+// both groups compose (every child runs, both joins complete, no hang).
+
+Promise<int> dead = Promise();
+
+void testFallthrough() {
+    using TaskGroup g = TaskGroup();
+    g.run(() => { console.writeln("child ran (fallthrough)"); });
+    console.writeln("body");
+}
+
+int testReturn() {
+    using TaskGroup g = TaskGroup();
+    g.run(() => { console.writeln("child ran (return edge)"); });
+    console.writeln("before return");
+    return 7;
+}
+
+void testThrow() {
+    try {
+        using TaskGroup g = TaskGroup();
+        g.run(() => { console.writeln("child ran (throw edge)"); });
+        throw RuntimeException("boom");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+}
+
+void testBreak() {
+    while (true) {
+        using TaskGroup g = TaskGroup();
+        g.run(() => { console.writeln("child ran (break edge)"); });
+        console.writeln("iter");
+        break;
+    }
+    console.writeln("after loop");
+}
+
+// A group child parked on a dead promise: close() cancels it, it wakes with
+// CancelledException, catches it itself (a legal refusal — §2), and the
+// group's join still completes (the child returns normally after the catch).
+void testParkedChildCatchesCancel() {
+    using TaskGroup g = TaskGroup();
+    g.run(() => {
+        try { int x = await dead; console.writeln("unreached"); }
+        catch (CancelledException e) { console.writeln("child caught cancel"); }
+    });
+    console.writeln("closing with a parked child");
+}
+
+// The same shape, but the child does NOT catch it: an uncaught
+// CancelledException in a group-owned task is ABSORBED at the group
+// boundary (§2 — cancellation is not a program error). No uncaught banner,
+// no crash, exit 0.
+void testUncaughtCancelAbsorbed() {
+    using TaskGroup g = TaskGroup();
+    g.run(() => { int x = await dead; console.writeln("unreached"); });
+    console.writeln("closing with an uncaught-cancel child");
+}
+
+// Two TaskGroups nested in one block (the using.ext testNestedTwoInOneBlock
+// shape): both close on fallthrough, both joins complete.
+void testNestedGroups() {
+    using TaskGroup outer = TaskGroup();
+    outer.run(() => { console.writeln("outer child ran"); });
+    using TaskGroup inner = TaskGroup();
+    inner.run(() => { console.writeln("inner child ran"); });
+    console.writeln("body");
+}
+
+console.writeln("--- fallthrough ---");
+testFallthrough();
+console.writeln("--- return ---");
+console.writeln("result=" + testReturn());
+console.writeln("--- throw ---");
+testThrow();
+console.writeln("--- break ---");
+testBreak();
+console.writeln("--- parked child catches its own cancel ---");
+testParkedChildCatchesCancel();
+console.writeln("--- uncaught cancel absorbed at group boundary ---");
+testUncaughtCancelAbsorbed();
+console.writeln("--- nested groups (both compose) ---");
+testNestedGroups();
+console.writeln("done");

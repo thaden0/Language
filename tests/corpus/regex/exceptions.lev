@@ -1,0 +1,41 @@
+// doc 2 §2.1: pattern-as-code (ctor, namespace convenience fns) throws
+// RegexException; pattern-as-data (regex::compile) is None on malformed,
+// never a throw.
+void run() {
+    try {
+        Regex bad = Regex("(unterminated");
+        console.writeln("should not reach");
+    } catch (RegexException e) {
+        console.writeln("caught:" + e.message);
+        console.writeln(e.offset);
+    }
+
+    try {
+        Regex bad2 = Regex("a{1000000}");
+        console.writeln("should not reach 2");
+    } catch (RegexException e) {
+        console.writeln("caught2:" + e.message);
+    }
+
+    Regex? ok = regex::compile("a+");
+    console.writeln(ok != None);
+    Regex? bad3 = regex::compile("(unterminated");
+    console.writeln(bad3 != None);
+    Regex? bad4 = regex::compile("[a-");
+    console.writeln(bad4 != None);
+
+    try {
+        regex::isMatch("x", "(bad");
+        console.writeln("should not reach 3");
+    } catch (RegexException e) {
+        console.writeln("caught3:" + e.message);
+    }
+
+    // a caught RegexException is also catchable by contract as IException.
+    try {
+        Regex bad5 = Regex("[");
+    } catch (IException e) {
+        console.writeln("caught-iface:" + e.message);
+    }
+}
+run();

@@ -1,0 +1,80 @@
+{
+  "info": {
+    "_postman_id": "11112222-3333-4444-5555-666677778888",
+    "name": "Sample API",
+    "description": "A small collection for Recon import tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [ { "key": "token", "value": "{{token}}" } ]
+  },
+  "variable": [
+    { "key": "base", "value": "api.example.com", "type": "string" },
+    { "key": "off", "value": "hidden", "disabled": true }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "login endpoints",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.environment.set(\"token\", pm.response.json().token);", "pm.test(\"ok\", function(){});" ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Debug", "value": "1", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user\":\"{{user}}\",\"pass\":\"{{pass}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "https://{{base}}/auth/login?remember=true",
+              "protocol": "https",
+              "host": [ "{{base}}" ],
+              "path": [ "auth", "login" ],
+              "query": [ { "key": "remember", "value": "true" } ]
+            },
+            "auth": { "type": "noauth" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get user",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Accept", "value": "application/json" } ],
+        "url": "https://{{base}}/users/42",
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "X-Api-Key" },
+            { "key": "value", "value": "{{apiKey}}" },
+            { "key": "in", "value": "header" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Search",
+      "request": {
+        "method": "POST",
+        "url": "https://{{base}}/search",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "q", "value": "leviathan" },
+            { "key": "limit", "value": "10", "disabled": true }
+          ]
+        }
+      }
+    }
+  ]
+}

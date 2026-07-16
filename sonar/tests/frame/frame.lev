@@ -1,0 +1,87 @@
+uses Sonar;
+
+// Full frame-pipeline test: App drives layout->paint->present over REAL drawing
+// components, so it runs on the semantic-reference engines (oracle + IR). The
+// LLVM lane is blocked here by bug.md #67 (Surface.fill/put miscompiles struct
+// fields when reached via interface-dispatched paint) — the AnsiRenderer's own
+// output is proven byte-identical on LLVM by tests/runloop over a directly-built
+// surface, so this test deliberately targets oracle/IR only.
+
+class RecordRenderer : IRenderer {
+    int w; int h;
+    Surface last = Surface(1, 1);
+    int presents = 0;
+    new RecordRenderer(int width, int height) { w = width; h = height; }
+    Size size() => Size(w, h);
+    void acquire(bool alt, bool mouse, bool paste) { }
+    void release() { }
+    void present(Surface s) { presents = presents + 1; last = s; }
+    void setCursor(Point? p) { }
+    void bell() { }
+    string snapshot() {
+        Surface s = last;
+        StringBuilder out = StringBuilder();
+        for (int y in 0..s.height - 1) {
+            for (int x in 0..s.width - 1) {
+                int off = s.cellOffset(x, y);
+                if ((s.cells().byteAt(off + 7) & 1) != 0) continue;
+                out.add(std::charFromCode(s.cells().int32At(off)).toString());
+            }
+            out.add("|");
+        }
+        return out.toString();
+    }
+}
+class ScriptedInput : IInputSource {
+    (string) => void sink;
+    bool has = false;
+    void start((string) => void onBytes) { sink = onBytes; has = true; }
+    void stop() { }
+}
+class Label : Component {
+    string text;
+    new Label(string t) { text = t; }
+    void setText(string t) { text = t; invalidate(); }
+    Size contentDesired(Size avail) => Size(text.length(), 1);
+    void paintContent(Surface s) {
+        Style st; string t = text;
+        s.writeText(box.x(), box.y(), t, st);
+    }
+}
+
+void main() {
+    RecordRenderer tr = RecordRenderer(8, 3);
+    ScriptedInput si = ScriptedInput();
+    App a = App();
+    a.__useRenderer(tr).__useInput(si).__useSignalResize(false);
+
+    Label top = Label("AA");
+    Label bot = Label("bb");
+    a.add(top);
+    a.add(bot);
+
+    a.pumpOnce();
+    console.writeln("frame1 presents=" + tr.presents.toString());
+    console.writeln(tr.snapshot());
+
+    // damage coalescing: several invalidations before one pump -> one present
+    top.setText("CC");
+    bot.setText("dd");
+    top.invalidate();
+    a.pumpOnce();
+    console.writeln("frame2 presents=" + tr.presents.toString());
+    console.writeln(tr.snapshot());
+
+    // idle: no damage -> pump still runs a frame here (explicit pump), but a real
+    // loop would arm no timer. We just assert content is stable.
+    a.pumpOnce();
+    console.writeln("frame3 stable");
+    console.writeln(tr.snapshot());
+
+    // frame stats populated
+    FrameStats fs = frameStats();
+    console.writeln("stats-frames>0=" + (fs.frames > 0).toString());
+
+    a.stopSession();
+    __sonarResetApp();
+}

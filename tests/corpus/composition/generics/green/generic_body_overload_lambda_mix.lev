@@ -1,0 +1,17 @@
+// bug #54 acceptance / request §4 (bug #34 regression guard): an overload set
+// that mixes a FUNCTION-typed overload with plain-value overloads, resolved
+// inside a specialized generic body. A type-parameter-typed value must pick
+// the matching value overload, while a lambda literal must pick the
+// function-typed overload — both re-resolved in each specialized copy, so the
+// bug-#34 lambda-scoring guard (function-typed declared first) is exercised
+// under specialization, not just at a single definition site.
+namespace P {
+    string use((string) => string f) => "F" + f("z");
+    string use(int v) => "I" + v.toString();
+    string use(string v) => "V" + v;
+
+    string call<T>(T item) => P::use(item) + P::use((x) => x + "!");
+}
+uses P;
+
+console.write(P::call(5) + "|" + P::call("m"));

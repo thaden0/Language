@@ -1,0 +1,43 @@
+// Churn corpus (ARC leak net) — EVENT-LOOP REGISTRY ownership (timers).
+//
+// Guards the 71ede9d fix that made the loop registries counted owners:
+// timer registration retains the tick-pusher closure, and cancel / one-shot
+// completion release it (before the fix, the loop dispatched freed closures
+// — the http.ext/sockets.ext failures). Each iteration registers a timer
+// whose subscription owns a fresh heap Payload, then cancels it in the same
+// iteration: the registry's release at cancel, plus the buffer-handler
+// release when the Timer drops at scope exit, are all that stand between
+// those captures and a leak. A missing release leaks N closures (+ their
+// Payloads); a release without the registration retain is the old
+// freed-closure dispatch (crash / oracle divergence). One 0ms one-shot after
+// the loop exercises the fire-then-self-release completion path with a
+// constant count, so the program terminates. Never more than one live
+// registration (capacity is 64). Only `sink` survives, so the root set is
+// CONSTANT in N.
+//
+// SHAPE MATTERS: the callback is bound BEFORE the Timer is declared. Lambdas
+// capture ALL visible locals by snapshot, so a callback written after the
+// Timer exists would capture it and close the cycle
+// Timer -> buf -> handler -> Timer — a true rc-cycle (§15's asterisk) that
+// neither engine reclaims and that would red-herring this guard.
+// @N@ is substituted by fuzz/churn_leak.py.
+class Payload { public int v = 0; }
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Payload p = Payload();
+        p.v = i;
+        var cb = (k) => console.writeln(p.v);   // captures p; Timer not visible yet
+        Timer t = std::every(0);
+        t.subscribe(cb);              // handler owns p through cb; no cycle
+        t.cancel();                    // registry must release its retain
+        sink = sink + p.v;
+    }                                  // t drops -> buf drops -> handler + p drop
+    console.writeln(sink);
+    Payload last = Payload();          // constant-count fire path
+    last.v = 424242;
+    var fireCb = (k) => console.writeln(last.v);
+    Timer once = std::after(0);
+    once.subscribe(fireCb);            // fires once, then self-releases
+}
+run(@N@);

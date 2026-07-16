@@ -1,0 +1,87 @@
+// Corpus test: URL parse table, resolveUrl, variable interpolation (incl. dynamic).
+namespace Recon {
+
+void showUrl(string raw) {
+    Url? u = parseUrl(raw);
+    if (u != None) {
+        Url p = u;
+        console.writeln(p.scheme + " | " + p.host + " | " + p.port.toString()
+            + " | " + p.path + " | " + p.query + " | " + p.fragment
+            + " | pwq=" + p.pathWithQuery() + " | https=" + p.isHttps().toString());
+    } else {
+        console.writeln("<none>");
+    }
+}
+
+void showResolve(string base, string loc) {
+    Url? b = parseUrl(base);
+    if (b != None) {
+        Url bu = b;
+        Url? r = resolveUrl(bu, loc);
+        if (r != None) {
+            Url ru = r;
+            console.writeln(ru.full());
+        } else { console.writeln("<none>"); }
+    }
+}
+
+void main() {
+    console.writeln("== parseUrl ==");
+    showUrl("https://api.example.com/users/1?active=true#frag");
+    showUrl("http://localhost:8080/a/b");
+    showUrl("example.com/path");                 // default scheme http, default port 80
+    showUrl("https://example.com");              // default path /
+    showUrl("http://[::1]:9000/x");              // IPv6 bracket
+    showUrl("https://user.example.com:443/");    // explicit default port
+    showUrl("");                                 // malformed -> none
+    showUrl("https://:80/nohost");               // no host -> none
+
+    console.writeln("== resolveUrl ==");
+    showResolve("https://a.com/x/y/z", "/abs/path");
+    showResolve("https://a.com/x/y/z", "sibling");
+    showResolve("https://a.com/x/y/z", "../up");
+    showResolve("https://a.com/x/y/z", "https://b.com/other");
+    showResolve("https://a.com/x/y/z", "//c.com/proto-rel");
+    showResolve("https://a.com/x/y/z", "next?q=1#h");
+
+    console.writeln("== dirOf / normalizePath ==");
+    console.writeln(dirOf("/a/b/c"));
+    console.writeln(dirOf("/x"));
+    console.writeln(dirOf("/a/b/c?q=1"));
+    console.writeln(normalizePath("/a/./b/../c"));
+
+    console.writeln("== VarResolver ==");
+    VarResolver r = VarResolver();
+    VarScope envs = VarScope::Named("environment");
+    envs.put("base", "api.example.com");
+    envs.put("ver", "v2");
+    VarScope glob = VarScope::Named("global");
+    glob.put("scheme", "https");
+    glob.put("base", "SHOULD-NOT-WIN");          // env is more specific
+    r.addScope(envs);
+    r.addScope(glob);
+    console.writeln(r.resolve("{{scheme}}://{{base}}/{{ver}}/users"));
+    console.writeln(r.resolve("unbound {{missing}} stays"));
+
+    // recursive resolution
+    VarScope loc = VarScope::Named("local");
+    loc.put("host", "{{base}}");                 // value contains another hole
+    loc.put("url", "https://{{host}}/x");
+    r.scopes = [loc, envs, glob];
+    console.writeln(r.resolve("{{url}}"));
+
+    // setInScope (extraction target)
+    r.setInScope("environment", "token", "T0K3N");
+    console.writeln(r.resolve("Bearer {{token}}"));
+
+    console.writeln("== dynamic vars (seeded) ==");
+    VarClock clk = VarClock::Fixed(1700000000000, 999);
+    VarResolver rd = VarResolver::WithClock(clk);
+    console.writeln(rd.resolve("ts={{$timestamp}}"));
+    console.writeln(rd.resolve("iso={{$isoTimestamp}}"));
+    console.writeln(rd.resolve("rand={{$randomInt}}"));
+    console.writeln(rd.resolve("guid={{$guid}}"));
+    console.writeln(rd.resolve("unknown={{$nope}}"));
+}
+
+}

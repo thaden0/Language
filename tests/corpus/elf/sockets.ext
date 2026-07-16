@@ -1,0 +1,24 @@
+// Sockets as streams: a loopback echo. One program is both server and client
+// (single-threaded, non-blocking, driven by the event loop). The listener is a
+// STREAM OF CONNECTIONS; each connection is a stream of bytes.
+void run() {
+    TcpListener server = TcpListener(8091);
+    server.connections((conn) => {
+        conn.onData((data) => {
+            console.writeln("server recv: " + data);
+            conn << "echo:" + data;
+            conn.close();
+        });
+    });
+
+    int cfd = std::sysTcpConnect("127.0.0.1", 8091);
+    std::sysSend(cfd, "ping");
+    TcpStream client = TcpStream(cfd);
+    client.onData((reply) => {
+        console.writeln("client recv: " + reply);
+        client.close();
+        server.stop();
+    });
+    console.writeln("listening");
+}
+run();

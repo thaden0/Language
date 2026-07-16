@@ -1,0 +1,32 @@
+== collection ==
+name=Sample API
+id=11112222-3333-4444-5555-666677778888
+schema=2.1.0
+colAuth=bearer token={{token}}
+vars:
+  base=api.example.com enabled=true
+  off=hidden enabled=false
+== tree ==
+[folder] Auth (1)
+  [req] Login POST https://{{base}}/auth/login?remember=true body=Raw auth=noauth
+    events=1 first-listen=test
+[req] Get user GET https://{{base}}/users/42 body=NoBody auth=apikey
+[req] Search POST https://{{base}}/search body=UrlEncoded
+== search body ==
+  field q=leviathan enabled=true
+  field limit=10 enabled=false
+== get-user auth ==
+kind=apikey key=X-Api-Key in=header
+== round-trip ==
+name eq: true
+tops eq: true
+login events preserved: 1
+== environment ==
+env=Production id=aaaa1111-bbbb-2222-cccc-3333dddd4444
+  base=api.example.com enabled=true secret=false
+  user=ada enabled=true secret=false
+  pass=s3cr3t enabled=true secret=true
+  apiKey=KEY-XYZ enabled=true secret=true
+  unused=nope enabled=false secret=false
+== v1 refusal ==
+refused=true reason=Postman v1 (legacy) collections are not supported; re-export as v2.1

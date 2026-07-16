@@ -1,0 +1,21 @@
+Array<int> literal = regex::compileProgram("abc", "");
+console.writeln(regex::programIsMatch(literal, "xxabcxx"));
+console.writeln(regex::programIsMatch(literal, "abx"));
+
+Array<int> syntax = regex::compileProgram("^(?:cat|dog)s?\\s+\\d{2,4}$", "i");
+console.writeln(regex::programIsMatch(syntax, "DOGS 123"));
+console.writeln(regex::programIsMatch(syntax, "cats 1"));
+
+Array<int> classes = regex::compileProgram("[^a-z]+\\b", "");
+console.writeln(regex::programIsMatch(classes, "abc 123!"));
+
+Array<int> multiline = regex::compileProgram("^err.*$", "m");
+console.writeln(regex::programIsMatch(multiline, "ok\nerror\nnext"));
+
+Array<int> dotall = regex::compileProgram("a.*z", "s");
+console.writeln(regex::programIsMatch(dotall, "a\n\nz"));
+
+// This family catastrophically backtracks in traditional engines.  Thompson
+// simulation visits each instruction at most once per byte position.
+Array<int> pathological = regex::compileProgram("(a+)+$", "");
+console.writeln(regex::programIsMatch(pathological, "aaaaaaaaaaaaaaaaaaaaX"));

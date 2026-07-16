@@ -1,0 +1,64 @@
+// Atlantis Track 02 — the fluent `Route` builder (design §0R.2). Per the R10
+// revision, the explicit fluent route table is the spine; `App.AddRoute`
+// (facade.lev) lowers a built `Route<C>` into the same `RouteRec` the escape
+// hatch (§7) and (eventually) the attribute rules (§2, blocked — see the
+// design's §13 log) all produce. `C` is the concrete controller type,
+// inferred from the `factory`/`invoke` arguments — this is what lets `invoke`
+// be spelled as either an inline lambda or an unbound method reference
+// (`AuthController::Login`, LA-25): both work through this generic-field
+// closure shape (a bare *free*-function reference does not — a narrower,
+// filed compiler bug, see the design's §13 log — so this track never spells
+// `invoke` that way).
+namespace Atlantis {
+    namespace Routing {
+
+        class Route<C> {
+            string path;
+            () => C factory;
+            (C, Http::Context) => HttpResponse invoke;
+            int verbs;
+            int authMode;
+            string authRole;
+            string routeName;
+            bool isFragment;
+
+            // The interim, always-buildable form (design §0R.2/§0R.3): an
+            // explicit per-request controller factory plus the handler. DI of
+            // the factory's own dependencies is the caller's lexical `bind`
+            // concern (reference.md §4.7), unchanged.
+            new Route(string path, () => C factory, (C, Http::Context) => HttpResponse invoke) {
+                this.path = path;
+                this.factory = factory;
+                this.invoke = invoke;
+                this.verbs = RequestType::GET;
+                this.authMode = 0;
+                this.authRole = "";
+                this.routeName = "";
+                this.isFragment = false;
+            }
+
+            Route<C> requestType(int t) { this.verbs = t; return this; }
+            Route<C> requireAuth() { this.authMode = 1; return this; }
+            Route<C> noAuth() { this.authMode = 2; return this; }
+            Route<C> auth(string role) { this.authMode = 1; this.authRole = role; return this; }
+            Route<C> name(string n) { this.routeName = n; return this; }
+            Route<C> fragment() { this.isFragment = true; return this; }
+
+            // RouteRec.key() = "controller.action" (§1.1); without attribute
+            // reflection there is no controller/method name to read, so the
+            // route's own path (plus its verb set — two `Route`s sharing a
+            // path but not a verb, e.g. `GET /users` list vs `POST /users`
+            // create, are different actions and must not collide on one
+            // key) is the action identity unless `.name(...)` overrides it
+            // (also the OpenAPI operationId per §0R.2's comment).
+            string actionKey() => this.routeName != "" ?
+                this.routeName : (this.path + " [" + requestTypeVerbs(this.verbs).joinToString(",") + "]");
+
+            (Http::Context) => HttpResponse toHandler() {
+                var f = this.factory;
+                var inv = this.invoke;
+                return (c) => inv(f(), c);
+            }
+        }
+    }
+}

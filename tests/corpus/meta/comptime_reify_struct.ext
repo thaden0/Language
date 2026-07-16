@@ -1,0 +1,23 @@
+// §16.5 Phase 3 §11 (stretch): a value-struct comptime result reifies as a
+// constructor call — the only source shape meaning "this value", since the
+// language has no object-literal syntax. Nested structs recurse.
+struct Point {
+    int x;
+    int y;
+    new Point(int x, int y) { this.x = x; this.y = y; }
+}
+struct Line {
+    Point a;
+    Point b;
+    new Line(Point a, Point b) { this.a = a; this.b = b; }
+}
+
+Point midpoint(Point p, Point q) => Point((p.x + q.x) / 2, (p.y + q.y) / 2);
+Line diagonal() => Line(Point(0, 0), Point(10, 20));
+
+comptime Point m = midpoint(Point(0, 0), Point(10, 20));
+comptime Line l = diagonal();
+
+console.writeln(m.x.toString() + "," + m.y.toString());
+console.writeln(l.a.x.toString() + "," + l.a.y.toString() + " -> " +
+                l.b.x.toString() + "," + l.b.y.toString());

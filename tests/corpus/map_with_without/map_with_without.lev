@@ -1,0 +1,34 @@
+// bug.md #19: Map.with()/without() were unimplemented as named-method
+// natives on the LLVM (and frozen ELF/X64Gen) backends — silently void
+// instead of the correct add/update/remove. Kept out of the shared
+// tests/corpus/ dir since the frozen ELF backend still lacks the fix (same
+// reasoning as corpus_set_map_keys_* above): runs on oracle/IR/emit-C++/LLVM.
+void run() {
+    Map<int, int> m = Map();
+    m = m.with(1, 100);              // pure add
+    console.writeln(m.length());
+    console.writeln(m.has(1));
+    console.writeln(m.at(1));
+    m = m.with(1, 200);              // pure update (same key)
+    console.writeln(m.at(1));
+    m = m.with(2, 300);
+    console.writeln(m.length());
+
+    // non-consuming use: `m` itself must not be mutated by either call.
+    console.writeln(m.with(3, 400).length());
+    console.writeln(m.length());
+    console.writeln(m.has(3));
+    console.writeln(m.without(1).length());
+    console.writeln(m.length());
+    console.writeln(m.has(1));
+
+    Map<int, int> n = m.without(1);  // pure remove
+    console.writeln(n.length());
+    console.writeln(n.has(1));
+    console.writeln(m.length());
+    console.writeln(m.has(1));
+
+    Map<int, int> empty = Map();
+    console.writeln(empty.without(999).length());   // remove of a missing key: no-op
+}
+run();

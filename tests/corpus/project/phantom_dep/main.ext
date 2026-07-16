@@ -1,0 +1,3 @@
+uses Mid;
+uses Base;                 // phantom: Base is a dependency of Mid, not of app
+void main() { console.writeln(Mid::doubled() + Base::val()); }

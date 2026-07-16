@@ -1,0 +1,25 @@
+// Columnar churn — VALUE-STRUCT ARRAY IN AN OBJECT, must be GREEN. The columnar
+// mirror of struct_array_field.ext: each iteration builds a Bag holding a
+// columnar Array<Point> of value structs, reads it, and drops it. Reclaiming the
+// Bag must free the ONE column buffer (scalars-only) but must NOT recurse into
+// the inline column bytes as if they were heap pointers (over-release / UAF) —
+// eligibility guarantees the buffer carries no refs. live-at-exit flat in N.
+struct Point { int x; int y; }
+class Bag { Array<Point> pts; }
+Bag makeBag(int seed) {
+    Bag b = Bag();
+    for (int i in 1..4) {
+        Point p; p.x = seed + i; p.y = seed - i;
+        b.pts = b.pts.add(p);       // columnar column buffer (eligible)
+    }
+    return b;
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Bag b = makeBag(i);
+        sink = sink + b.pts.length() + b.pts[0].x;   // ColGet on the field read
+    }                                                 // Bag dropped: free the columns
+    console.writeln(sink);
+}
+run(@N@);

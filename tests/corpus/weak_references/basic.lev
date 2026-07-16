@@ -1,0 +1,43 @@
+class Node {
+    string name = "";
+    weak Node? parent = None;
+    weak readonly Node? fixedParent = None;
+}
+
+class FixedParent {
+    weak readonly Node? parent;
+    new FixedParent(Node p) { parent = p; }
+}
+
+void attach(Node holder) {
+    Node owner = Node();
+    owner.name = "live";
+    holder.parent = owner;
+    console.writeln(holder.parent != None);
+    Node? snapshot = holder.parent;
+    if (snapshot != None) console.writeln(snapshot.name);
+}
+
+void main() {
+    Node holder = Node();
+    attach(holder);
+    console.writeln(holder.parent == None);
+
+// A fresh value stored only weakly is dead after the statement register drops.
+    holder.parent = Node();
+    console.writeln(holder.parent == None);
+
+// None stores are ordinary and idempotent.
+    holder.parent = None;
+    console.writeln(holder.parent == None);
+
+    Node owner = Node();
+    FixedParent fixed = FixedParent(owner);
+    console.writeln(fixed.parent != None);
+    holder.parent = owner;
+    Node? maybeHolder = holder;
+    console.writeln(maybeHolder?.parent != None);
+    Node copied = std::sysThreadTransfer(holder);
+    console.writeln(copied.parent == None);
+}
+main();

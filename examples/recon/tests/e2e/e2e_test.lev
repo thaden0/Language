@@ -1,0 +1,117 @@
+// Headless end-to-end: compose ReconApp with a test renderer, load a collection,
+// select a request, feed a mock response, and paint frames. Proves the whole UI
+// assembles and wires to AppState (no real network — the send path is covered by
+// the hermetic sender test).
+namespace Recon {
+uses Sonar;
+
+class TR : IRenderer {
+    int w; int h; Point? cursor = None; public int presents = 0;
+    new TR(int width, int height) { w = width; h = height; }
+    Size size() => Size(w, h);
+    void acquire(bool a, bool m, bool p) { }
+    void release() { }
+    void present(Surface s) { presents = presents + 1; }
+    void setCursor(Point? p) { cursor = p; }
+    void bell() { }
+}
+class SI : IInputSource {
+    (string) => void sink; bool has = false;
+    void start((string) => void onBytes) { sink = onBytes; has = true; }
+    void stop() { }
+}
+
+Collection buildCollection() {
+    Collection col = Collection();
+    col.name = "Demo";
+    CollectionItem auth = CollectionItem::Folder("Auth");
+    CollectionItem login = CollectionItem::Request("Login");
+    RequestSpec lr = login.request ?? RequestSpec();
+    lr.method = Method::POST;
+    lr.url = "https://api.example.com/auth/login";
+    lr.body.mode = BodyMode::Raw; lr.body.rawLanguage = "json"; lr.body.raw = "{\"u\":\"ada\"}";
+    lr.tests.assertions = [Assertion::Of("status", "", "equals", "200")];
+    login.request = lr;
+    auth.children = [login];
+    CollectionItem getUser = CollectionItem::Request("Get user");
+    RequestSpec gr = getUser.request ?? RequestSpec();
+    gr.method = Method::GET;
+    gr.url = "https://api.example.com/users/1";
+    getUser.request = gr;
+    col.root.children = [auth, getUser];
+    return col;
+}
+
+void main() {
+    ReconApp recon = ReconApp("", []);
+    TR tr = TR(120, 40);
+    recon.app.__useRenderer(tr);
+    recon.app.__useInput(SI());
+    recon.app.__useSignalResize(false);
+
+    console.writeln("== compose ==");
+    console.writeln("app children=" + recon.app.children().length().toString());
+
+    Collection col = buildCollection();
+    recon.state.collections = [col];
+    recon.sidebar.loadCollection(col);
+    ReconTreeSource src = recon.sidebar.source;
+    console.writeln("tree roots=" + src.rootCount().toString());
+    console.writeln("root0=" + src.labelAt(src.rootAt(0)));
+    TreeNodeId login = src.childAt(src.rootAt(0), 0);
+    console.writeln("login label=" + src.labelAt(login));
+
+    recon.pump();
+    console.writeln("presents=" + tr.presents.toString());
+
+    console.writeln("== select Login ==");
+    recon.sidebar.handleSelect(login);
+    console.writeln("active url=" + recon.state.active.url);
+    console.writeln("panel urlInput=" + recon.reqPanel.urlInput.value);
+    console.writeln("active method=" + methodName(recon.state.active.method));
+    console.writeln("body editor=" + recon.reqPanel.bodyEditor.text());
+
+    console.writeln("== mock response ==");
+    HttpResponse resp = HttpResponse(200, "{\"token\":\"T\",\"ok\":true}");
+    resp = resp.withHeader("Content-Type", "application/json");
+    RunOutcome o = RunOutcome();
+    o.ok = true; o.response = resp; o.elapsedMs = 7;
+    recon.state.onOutcome(o);
+    recon.refresh();
+    if (recon.state.lastResponse != None) {
+        HttpResponse r = recon.state.lastResponse ?? HttpResponse(0, "");
+        console.writeln("lastStatus=" + r.status.toString());
+    }
+    console.writeln("tests run=" + recon.state.lastTests.length().toString());
+    for (TestResult t in recon.state.lastTests) {
+        console.writeln("  " + (t.passed ? "PASS" : "FAIL") + " " + t.label);
+    }
+    console.writeln("history=" + recon.state.history.entries.length().toString());
+
+    console.writeln("== pretty body first line ==");
+    string pretty = prettyBody(resp.body);
+    console.writeln(pretty.split("\n").at(0));
+
+    recon.pump();
+    console.writeln("presents=" + tr.presents.toString());
+
+    console.writeln("== commands ==");
+    console.writeln("commands=" + recon.commands.names().joinToString(","));
+    console.writeln("toggle redirects ran=" + recon.commands.run("toggle-redirects").toString());
+    console.writeln("followRedirects=" + recon.state.settings.followRedirects.toString());
+
+    console.writeln("== export ==");
+    recon.state.configRoot = "build/recon_e2e_export";
+    ensureDirs(recon.state.configRoot);
+    console.writeln("export ran=" + recon.exportActive().toString());
+    string exported = readAll("build/recon_e2e_export/Demo.exported.json");
+    JsonValue? redoc = json::parse(exported);
+    console.writeln("export valid json=" + (redoc != None).toString());
+    console.writeln("history labels=" + recon.historyLabels().joinToString(" | "));
+
+    recon.teardown();
+    __sonarResetApp();
+    console.writeln("done");
+}
+
+}

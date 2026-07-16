@@ -1,0 +1,16 @@
+void run() {
+    int t = 0;
+    for (int i = 1; i <= 5; i += 1) t += i;
+    console.writeln(t);
+    int n = 4;
+    int s = 0;
+    while (n > 0) { n -= 1; s += 1; }
+    console.writeln(s);
+    for (int i in 1..3) console.writeln(i);
+    if (t == 15) console.writeln("fifteen");
+    else console.writeln("other");
+    int k = 0;
+    for (int i in 1..10) { if (i % 3 == 0) k += i; }
+    console.writeln(k);
+}
+run();

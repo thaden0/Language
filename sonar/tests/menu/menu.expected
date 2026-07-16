@@ -1,0 +1,11 @@
+start: overlays=0 focusTrigger=true
+open: overlays=1 focusItem0=true
+nav: focusItem3(Quit)=true
+activate: hits=quit overlays=0 focusRestored=true
+edit open: overlays=1
+esc: overlays=0 hits=quit focusRestored=true
+outside: overlays=0
+inside: hits=quit,new overlays=0
+[┌──────┐  ]
+[│ New  │  ]
+[│ Open │  ]

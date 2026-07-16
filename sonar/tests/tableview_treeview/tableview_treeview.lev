@@ -1,0 +1,621 @@
+uses Sonar;
+
+string readRow(Surface s, int y, int x0, int w) {
+    string result = "";
+    for (int x in x0..x0 + w - 1) {
+        int scalar = s.cells().int32At(s.cellOffset(x, y));
+        result = result + std::charFromCode(scalar).toString();
+    }
+    return result;
+}
+
+class CountingTableSource : ITableSource {
+    int rows;
+    int cols;
+    int hits = 0;
+    new CountingTableSource(int r, int c) { rows = r; cols = c; }
+    int rowCount() => rows;
+    int colCount() => cols;
+    string cellAt(int r, int c) {
+        hits = hits + 1;
+        return "r" + r.toString() + "c" + c.toString();
+    }
+}
+
+class LabelSource : ITableSource {
+    int rowCount() => 1;
+    int colCount() => 1;
+    string cellAt(int r, int c) => "A very long cell value that overflows";
+}
+
+// A small mutable synthetic ITreeSource: root1 (has children 2,3), leaf
+// child2, root1's other child3 (has grandchild4, a leaf), and a second
+// root5 (leaf) — 2-3 levels deep, at least one branch node and one leaf at
+// every level, matching the testing plan's requirement.
+class TestTreeSource : ITreeSource {
+    Array<int> rootIds = [];
+    Map<int, Array<int>> children_ = Map();
+    Map<int, string> labels_ = Map();
+
+    void addRoot(int id, string label) {
+        rootIds = rootIds.add(id);
+        labels_[id] = label;
+    }
+    void addChild(int parentId, int id, string label) {
+        Array<int>? found = children_.atOrNone(parentId);
+        Array<int> list = found == None ? [] : found;
+        children_[parentId] = list.add(id);
+        labels_[id] = label;
+    }
+
+    int rootCount() => rootIds.length();
+    TreeNodeId rootAt(int i) => TreeNodeId(rootIds[i]);
+    int childCount(TreeNodeId n) {
+        Array<int>? found = children_.atOrNone(n.id);
+        return found == None ? 0 : found.length();
+    }
+    TreeNodeId childAt(TreeNodeId n, int i) {
+        Array<int>? found = children_.atOrNone(n.id);
+        Array<int> list = found == None ? [] : found;
+        return TreeNodeId(list[i]);
+    }
+    string labelAt(TreeNodeId n) {
+        string? found = labels_.atOrNone(n.id);
+        return found == None ? "" : found;
+    }
+    bool hasChildren(TreeNodeId n) => this.childCount(n) > 0;
+}
+
+TestTreeSource buildTestTree() {
+    TestTreeSource src = TestTreeSource();
+    src.addRoot(1, "Root1");
+    src.addChild(1, 2, "Child1");
+    src.addChild(1, 3, "Child2");
+    src.addChild(3, 4, "Grandchild1");
+    src.addRoot(5, "Root2");
+    return src;
+}
+
+// A lazy source: `hasChildren` claims the root is expandable before it is
+// ever populated (the lazy-source convention §3.7's on:expand hook is
+// designed for); `populate` installs real children only when called, and
+// is wired to the view's own on:expand handler in the test below so it
+// runs BEFORE TreeView's rebuild queries childCount() again.
+class LazyTreeSource : ITreeSource {
+    Array<int> rootIds = [1];
+    Map<int, bool> populated_ = Map();
+    Map<int, Array<int>> children_ = Map();
+    Map<int, string> labels_ = Map();
+
+    new LazyTreeSource() { labels_[1] = "LazyRoot"; }
+
+    void populate(int id) {
+        bool? already = populated_.atOrNone(id);
+        if (already != None && already) return;
+        populated_[id] = true;
+        children_[id] = [100, 101];
+        labels_[100] = "LazyChildA";
+        labels_[101] = "LazyChildB";
+    }
+
+    int rootCount() => rootIds.length();
+    TreeNodeId rootAt(int i) => TreeNodeId(rootIds[i]);
+    int childCount(TreeNodeId n) {
+        Array<int>? found = children_.atOrNone(n.id);
+        return found == None ? 0 : found.length();
+    }
+    TreeNodeId childAt(TreeNodeId n, int i) {
+        Array<int>? found = children_.atOrNone(n.id);
+        Array<int> list = found == None ? [] : found;
+        return TreeNodeId(list[i]);
+    }
+    string labelAt(TreeNodeId n) {
+        string? found = labels_.atOrNone(n.id);
+        return found == None ? "" : found;
+    }
+    bool hasChildren(TreeNodeId n) => true;
+}
+
+// A wide, deep synthetic source for the deep-tree / iterative-stack proof:
+// a single linear chain `depth` nodes deep (id == depth, each with exactly
+// one child == depth+1), so a recursive rebuildFlat would blow the language
+// runtime's own call stack at a much shallower N than this; an iterative
+// one (the §3.7 REQUIREMENT this file's rebuildFlat honors) completes
+// cleanly regardless.
+class ChainTreeSource : ITreeSource {
+    int depth;
+    new ChainTreeSource(int d) { depth = d; }
+    int rootCount() => 1;
+    TreeNodeId rootAt(int i) => TreeNodeId(0);
+    int childCount(TreeNodeId n) => n.id < depth - 1 ? 1 : 0;
+    TreeNodeId childAt(TreeNodeId n, int i) => TreeNodeId(n.id + 1);
+    string labelAt(TreeNodeId n) => "node" + n.id.toString();
+    bool hasChildren(TreeNodeId n) => n.id < depth - 1;
+}
+
+class HitCounterInt {
+    int hits = 0;
+    Array<int> seen = [];
+    void bump(int v) { hits = hits + 1; seen = seen.add(v); }
+}
+class HitCounterSort {
+    int hits = 0;
+    Array<int> cols = [];
+    Array<bool> ascs = [];
+    void bump(int c, bool a) { hits = hits + 1; cols = cols.add(c); ascs = ascs.add(a); }
+}
+class HitCounterNode {
+    int hits = 0;
+    Array<int> seen = [];
+    void bump(TreeNodeId n) { hits = hits + 1; seen = seen.add(n.id); }
+}
+class HitCounterExpand {
+    int hits = 0;
+    Array<int> seen = [];
+    Array<bool> opened = [];
+    void bump(TreeNodeId n, bool expanded) { hits = hits + 1; seen = seen.add(n.id); opened = opened.add(expanded); }
+}
+
+void main() {
+    // ---- column sizing: mixed concrete + flex -----------------------------
+    TableView colsTv = TableView();
+    colsTv.columns([
+        TableColumn("Fixed", Constraint::Fixed(6), Align::Start),
+        TableColumn("Flex1", Constraint::Flex(1), Align::Start),
+        TableColumn("Flex2", Constraint::Flex(2), Align::Start)
+    ]);
+    Array<int> widths = colsTv.computeColumnWidths(30);
+    console.writeln(widths[0]);   // 6 (fixed)
+    console.writeln(widths[1]);   // (30-6)*1/3 = 8
+    console.writeln(widths[2]);   // (30-6)*2/3 = 16
+    console.writeln(widths[0] + widths[1] + widths[2]);  // 30 exactly
+
+    // fixed columns exceeding viewport -> overflow detected
+    TableView overflowTv = TableView();
+    overflowTv.columns([
+        TableColumn("A", Constraint::Fixed(20), Align::Start),
+        TableColumn("B", Constraint::Fixed(20), Align::Start)
+    ]);
+    console.writeln(overflowTv.totalColumnsWidth(10));  // 40, exceeds 10
+    console.writeln(overflowTv.totalColumnsWidth(50));  // 40, fits in 50
+
+    console.writeln("column sizing done");
+
+    // ---- virtualization: exactly viewport.h * visibleColumns cellAt calls -
+    CountingTableSource counting = CountingTableSource(10000, 3);
+    TableView bigTv = TableView();
+    bigTv.setSource(counting);
+    bigTv.columns([
+        TableColumn("A", Constraint::Fixed(5), Align::Start),
+        TableColumn("B", Constraint::Fixed(5), Align::Start),
+        TableColumn("C", Constraint::Fixed(5), Align::Start)
+    ]);
+    bigTv.box = Rect(Point(0, 0), Size(15, 5));   // header(1) + 4 data rows, 3 cols x 5 = 15 fits exactly
+    Surface bigSurface = Surface(15, 5);
+    Style plain;
+    bigSurface.clear(plain);
+    bigTv.paintContent(bigSurface);
+    console.writeln(counting.hits);   // expect exactly 4 * 3 = 12
+
+    counting.hits = 0;
+    bigTv.paintContent(bigSurface);
+    console.writeln(counting.hits);   // exactly 12 again
+
+    counting.hits = 0;
+    bigTv.scrollTo(0, 50000);
+    bigTv.paintContent(bigSurface);
+    console.writeln(counting.hits);   // still exactly 12
+    console.writeln(bigTv.scrollY);   // clamped to 10000 - 4 = 9996
+
+    console.writeln("virtualization done");
+
+    // ---- sort: header click fires on:sort, view never reorders anything --
+    TableView sortTv = TableView();
+    CountingTableSource sortSrc = CountingTableSource(5, 2);
+    sortTv.setSource(sortSrc);
+    Array<TableColumn> sortCols = [
+        TableColumn("Name", Constraint::Fixed(10), Align::Start),
+        TableColumn("Age", Constraint::Fixed(10), Align::Start)
+    ];
+    sortTv.columns(sortCols);
+    sortTv.setSortable(true);
+    sortTv.box = Rect(Point(0, 0), Size(20, 6));
+
+    HitCounterSort sortHits = HitCounterSort();
+    sortTv.onSort((c, a) => sortHits.bump(c, a));
+
+    MouseEvent headerClick1 = MouseEvent(MouseKind::Press, MouseButton::Left, 12, 0, 0);
+    sortTv.fireMouse(headerClick1);
+    console.writeln(sortHits.hits);      // 1
+    console.writeln(sortHits.cols[0]);   // 1 (Age column, x=12 is within [10,20))
+    console.writeln(sortHits.ascs[0]);   // true (first click on a new column -> ascending)
+    console.writeln(sortTv.sortCol);     // 1
+    console.writeln(sortTv.sortAsc);     // true
+
+    // clicking the SAME header again toggles asc -> desc
+    sortTv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 12, 0, 0));
+    console.writeln(sortHits.hits);      // 2
+    console.writeln(sortHits.ascs[1]);   // false
+    console.writeln(sortTv.sortAsc);     // false
+
+    // the view itself never reorders columns_/source_ — only sortCol/sortAsc/the event change
+    console.writeln(sortTv.columns_[0].title);   // still "Name" (unchanged order)
+    console.writeln(sortTv.columns_[1].title);   // still "Age"
+    console.writeln(sortTv.source_.rowCount());  // still 5 (same source instance, untouched)
+
+    console.writeln("sort done");
+
+    // ---- row selection: Up/Down/Home/End/PageUp/PageDown via RowScroller -
+    TableView navTv = TableView();
+    CountingTableSource navSrc = CountingTableSource(10, 1);
+    navTv.setSource(navSrc);
+    navTv.columns([TableColumn("Only", Constraint::Flex(1), Align::Start)]);
+    navTv.box = Rect(Point(0, 0), Size(10, 4));   // header(1) + 3 data rows visible
+
+    HitCounterInt navSelectHits = HitCounterInt();
+    navTv.onSelect((row) => navSelectHits.bump(row));
+
+    navTv.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(navTv.selectedRow);   // 0 (first press lands on 0)
+    navTv.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    navTv.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    navTv.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(navTv.selectedRow);   // 3
+    console.writeln(navTv.scrollY);       // viewport 3, row3 visible -> scrollY = 1
+
+    navTv.fireKey(KeyEvent(KeyCode::PageDown, std::charFromCode(0), 0));
+    console.writeln(navTv.selectedRow);   // 3 + 3 = 6
+
+    navTv.fireKey(KeyEvent(KeyCode::End, std::charFromCode(0), 0));
+    console.writeln(navTv.selectedRow);   // 9
+    console.writeln(navTv.scrollY);       // 10 - 3 = 7
+
+    navTv.fireKey(KeyEvent(KeyCode::Home, std::charFromCode(0), 0));
+    console.writeln(navTv.selectedRow);   // 0
+    console.writeln(navTv.scrollY);       // 0
+    console.writeln(navSelectHits.hits);
+
+    // Enter -> on:activate
+    HitCounterInt navActivateHits = HitCounterInt();
+    navTv.onActivate((row) => navActivateHits.bump(row));
+    navTv.setSelected(4);
+    navTv.fireKey(KeyEvent(KeyCode::Enter, std::charFromCode(0), 0));
+    console.writeln(navActivateHits.hits);
+    console.writeln(navActivateHits.seen[0]);   // 4
+
+    // mouse: press on a data row selects; second press (double) activates
+    HitCounterInt mouseActivate = HitCounterInt();
+    TableView mouseTv = TableView();
+    CountingTableSource mouseSrc = CountingTableSource(5, 1);
+    mouseTv.setSource(mouseSrc);
+    mouseTv.columns([TableColumn("Only", Constraint::Flex(1), Align::Start)]);
+    mouseTv.box = Rect(Point(0, 0), Size(10, 5));
+    mouseTv.onActivate((row) => mouseActivate.bump(row));
+    mouseTv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 2, 0));  // row 1 (y=2 -> header at y0, row0 at y1, row1 at y2)
+    console.writeln(mouseTv.selectedRow);      // 1
+    console.writeln(mouseActivate.hits);       // 0, single press
+    mouseTv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 2, 0));
+    console.writeln(mouseActivate.hits);       // 1, double press on same row
+    console.writeln(mouseActivate.seen[0]);    // 1
+
+    console.writeln("selection done");
+
+    // ---- horizontal scroll: Left/Right when total column width > viewport
+    TableView hTv = TableView();
+    CountingTableSource hSrc = CountingTableSource(3, 4);
+    hTv.setSource(hSrc);
+    hTv.columns([
+        TableColumn("A", Constraint::Fixed(10), Align::Start),
+        TableColumn("B", Constraint::Fixed(10), Align::Start),
+        TableColumn("C", Constraint::Fixed(10), Align::Start),
+        TableColumn("D", Constraint::Fixed(10), Align::Start)
+    ]);
+    hTv.box = Rect(Point(0, 0), Size(20, 4));   // total column width 40 > viewport 20 -> overflow
+    console.writeln(hTv.scrollX);   // 0
+    hTv.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(hTv.scrollX);   // 1
+    hTv.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    hTv.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(hTv.scrollX);   // 3
+    hTv.fireKey(KeyEvent(KeyCode::Left, std::charFromCode(0), 0));
+    console.writeln(hTv.scrollX);   // 2
+    hTv.scrollTo(9999, hTv.scrollY);
+    console.writeln(hTv.scrollX);   // clamp ceiling: totalColumnsWidth(20)=40, maxX=40-20=20
+    hTv.scrollTo(hTv.scrollX, 100000);
+    console.writeln(hTv.scrollY);   // rowCount(3) - viewportH(3) = 0 (all 3 rows fit at once vertically)
+
+    // no overflow -> Left/Right does nothing (columns fit within viewport)
+    TableView noOverflowTv = TableView();
+    CountingTableSource noOSrc = CountingTableSource(3, 1);
+    noOverflowTv.setSource(noOSrc);
+    noOverflowTv.columns([TableColumn("Only", Constraint::Fixed(5), Align::Start)]);
+    noOverflowTv.box = Rect(Point(0, 0), Size(20, 4));
+    noOverflowTv.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(noOverflowTv.scrollX);   // stays 0
+
+    console.writeln("horizontal scroll done");
+
+    // ---- cell truncation with ellipsis, header sort indicator glyph ------
+    TableView paintTv = TableView();
+    paintTv.setSource(LabelSource());
+    paintTv.columns([TableColumn("LongHeaderTitleHere", Constraint::Fixed(10), Align::Start)]);
+    paintTv.setSortable(true);
+    paintTv.setSelected(0);
+    paintTv.box = Rect(Point(0, 0), Size(10, 3));
+    Surface paintSurface = Surface(10, 3);
+    paintSurface.clear(plain);
+    paintTv.paintContent(paintSurface);
+    console.writeln(readRow(paintSurface, 0, 0, 10));   // header, truncated with ellipsis, no sort glyph yet
+    console.writeln(readRow(paintSurface, 1, 0, 10));   // data cell, truncated with ellipsis
+
+    // A short-titled, wide-column table proves the sort suffix actually
+    // renders (the truncation-only case above can't distinguish "suffix
+    // appended, then truncated to the same visible prefix" from "no
+    // suffix" — both look identical once ellipsis-truncated).
+    TableView sortGlyphTv = TableView();
+    sortGlyphTv.setSource(LabelSource());
+    sortGlyphTv.columns([TableColumn("Name", Constraint::Fixed(10), Align::Start)]);
+    sortGlyphTv.setSortable(true);
+    sortGlyphTv.box = Rect(Point(0, 0), Size(10, 3));
+    Surface sortGlyphSurface = Surface(10, 3);
+    sortGlyphSurface.clear(plain);
+    sortGlyphTv.paintContent(sortGlyphSurface);
+    console.writeln(readRow(sortGlyphSurface, 0, 0, 10));   // "Name      " — no sort glyph yet
+
+    sortGlyphTv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 0, 0));
+    Surface sortGlyphSurface2 = Surface(10, 3);
+    sortGlyphSurface2.clear(plain);
+    sortGlyphTv.paintContent(sortGlyphSurface2);
+    console.writeln(readRow(sortGlyphSurface2, 0, 0, 10));  // "Name ▲    " — ascending glyph appended
+
+    sortGlyphTv.fireMouse(MouseEvent(MouseKind::Press, MouseButton::Left, 2, 0, 0));
+    Surface sortGlyphSurface3 = Surface(10, 3);
+    sortGlyphSurface3.clear(plain);
+    sortGlyphTv.paintContent(sortGlyphSurface3);
+    console.writeln(readRow(sortGlyphSurface3, 0, 0, 10)); // "Name ▼    " — toggled to descending
+
+    console.writeln("cell truncation done");
+
+    // ---- TableColumn-as-class surviving unrelated heap churn (bug #41-shaped
+    // regression check: an Array<struct-with-enum-field> goes stale after
+    // unrelated allocations; TableColumn is a class specifically to avoid
+    // this, verified here against a real build, not just assumed) ---------
+    TableView churnTv = TableView();
+    churnTv.columns([
+        TableColumn("Alpha", Constraint::Fixed(7), Align::Start),
+        TableColumn("Beta", Constraint::Flex(1), Align::Center),
+        TableColumn("Gamma", Constraint::Bounded(3, 20, 1), Align::End)
+    ]);
+    // Unrelated heap churn: allocate a batch of Components/Arrays/Maps
+    // between populating columns_ and reading it back.
+    Array<Component> churn = [];
+    for (int i in 0..500) {
+        Component c = Component();
+        churn = churn.add(c);
+        Map<int, bool> m = Map();
+        m[i] = true;
+    }
+    console.writeln(churnTv.columns_.length());        // still 3
+    console.writeln(churnTv.columns_[0].title);         // "Alpha"
+    console.writeln(churnTv.columns_[1].title);         // "Beta"
+    console.writeln(churnTv.columns_[2].title);         // "Gamma"
+    console.writeln(churnTv.columns_[0].align == Align::Start);    // true
+    console.writeln(churnTv.columns_[1].align == Align::Center);   // true
+    console.writeln(churnTv.columns_[2].align == Align::End);      // true
+    console.writeln(churnTv.columns_[0].width.concrete);           // 7
+    console.writeln(churnTv.columns_[1].width.flex);                // 1
+    console.writeln(churnTv.columns_[2].width.min);                 // 3
+    console.writeln(churn.length());   // 501
+
+    console.writeln("table column churn check done");
+
+    // =========================================================================
+    // ---- TreeView ------------------------------------------------------------
+    // =========================================================================
+
+    // ---- rebuildFlat(): correct pre-order flatten respecting expanded_ ----
+    TreeView tree = TreeView();
+    tree.setSource(buildTestTree());
+    // fully collapsed: only the two roots are visible
+    console.writeln(tree.flat_.length());        // 2
+    console.writeln(tree.flat_[0].node.id);       // 1 (Root1)
+    console.writeln(tree.flat_[0].depth);         // 0
+    console.writeln(tree.flat_[0].expandable);    // true
+    console.writeln(tree.flat_[0].expanded);      // false
+    console.writeln(tree.flat_[1].node.id);       // 5 (Root2)
+    console.writeln(tree.flat_[1].expandable);    // false (leaf)
+
+    tree.setExpanded(TreeNodeId(1), true);
+    // Root1 expanded: Root1, Child1(leaf), Child2(branch, collapsed), Root2
+    console.writeln(tree.flat_.length());         // 4
+    console.writeln(tree.flat_[0].node.id);        // 1
+    console.writeln(tree.flat_[1].node.id);        // 2 (Child1)
+    console.writeln(tree.flat_[1].depth);          // 1
+    console.writeln(tree.flat_[1].expandable);     // false
+    console.writeln(tree.flat_[2].node.id);        // 3 (Child2)
+    console.writeln(tree.flat_[2].depth);          // 1
+    console.writeln(tree.flat_[2].expandable);     // true
+    console.writeln(tree.flat_[3].node.id);        // 5 (Root2)
+    console.writeln(tree.flat_[3].depth);          // 0
+
+    tree.setExpanded(TreeNodeId(3), true);
+    // Child2 expanded too: Root1, Child1, Child2, Grandchild1, Root2
+    console.writeln(tree.flat_.length());          // 5
+    console.writeln(tree.flat_[3].node.id);         // 4 (Grandchild1)
+    console.writeln(tree.flat_[3].depth);           // 2
+    console.writeln(tree.flat_[3].expandable);      // false
+    console.writeln(tree.flat_[4].node.id);         // 5 (Root2)
+
+    console.writeln("rebuildFlat pre-order done");
+
+    // ---- expand/collapse via Right/Left/Space, on:expand firing ----------
+    TreeView keysTree = TreeView();
+    keysTree.setSource(buildTestTree());
+    keysTree.box = Rect(Point(0, 0), Size(20, 10));
+
+    HitCounterExpand expandHits = HitCounterExpand();
+    keysTree.onExpand((n, exp) => expandHits.bump(n, exp));
+
+    keysTree.setSelected(0);   // Root1
+    keysTree.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(expandHits.hits);       // 1
+    console.writeln(expandHits.seen[0]);    // 1 (Root1's id)
+    console.writeln(expandHits.opened[0]);  // true
+    console.writeln(keysTree.flat_.length());   // 4 (Root1, Child1, Child2, Root2)
+
+    // Right again on an already-expanded node with a child moves selection
+    // to the first child rather than re-firing on:expand.
+    keysTree.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(expandHits.hits);       // still 1 (no new expand event)
+    console.writeln(keysTree.selected);     // 1 (Child1's flat index)
+
+    // Left on a leaf jumps to parent
+    keysTree.fireKey(KeyEvent(KeyCode::Left, std::charFromCode(0), 0));
+    console.writeln(keysTree.selected);     // 0 (back to Root1)
+
+    // Left on an expanded branch collapses it
+    keysTree.fireKey(KeyEvent(KeyCode::Left, std::charFromCode(0), 0));
+    console.writeln(expandHits.hits);       // 2
+    console.writeln(expandHits.opened[1]);  // false (collapsed)
+    console.writeln(keysTree.flat_.length());   // 2 (back to just the two roots)
+    console.writeln(keysTree.selected);     // 0 (Root1 still selected — same node, re-anchored by id)
+
+    // Space toggles expand directly
+    char spaceCh = ' ';
+    keysTree.fireKey(KeyEvent(KeyCode::Char, spaceCh, 0));
+    console.writeln(expandHits.hits);       // 3
+    console.writeln(expandHits.opened[2]);  // true
+    console.writeln(keysTree.flat_.length());   // 4
+
+    console.writeln("expand/collapse keys done");
+
+    // ---- lazy source: on:expand fires BEFORE rebuild, so a handler that
+    // populates children inside it sees them appear after the rebuild -----
+    TreeView lazyTree = TreeView();
+    LazyTreeSource lazySrc = LazyTreeSource();
+    lazyTree.setSource(lazySrc);
+    lazyTree.box = Rect(Point(0, 0), Size(20, 10));
+    console.writeln(lazyTree.flat_.length());     // 1 (just the unpopulated root)
+    console.writeln(lazyTree.flat_[0].expandable); // true (claims expandable before population)
+
+    lazyTree.onExpand((n, exp) => {
+        if (exp) lazySrc.populate(n.id);
+    });
+    lazyTree.setSelected(0);
+    lazyTree.fireKey(KeyEvent(KeyCode::Right, std::charFromCode(0), 0));
+    console.writeln(lazyTree.flat_.length());      // 3 (root + 2 lazily-populated children)
+    console.writeln(lazyTree.flat_[1].node.id);     // 100
+    console.writeln(lazyTree.flat_[2].node.id);     // 101
+
+    console.writeln("lazy expansion done");
+
+    // ---- Up/Down/Home/End/PageUp/PageDown over flat_ via RowScroller -----
+    TreeView navTree = TreeView();
+    navTree.setSource(buildTestTree());
+    navTree.setExpanded(TreeNodeId(1), true);
+    navTree.setExpanded(TreeNodeId(3), true);
+    // flat_ now: Root1(0), Child1(1), Child2(2), Grandchild1(3), Root2(4) -- 5 rows
+    navTree.box = Rect(Point(0, 0), Size(20, 3));   // viewport height 3
+
+    HitCounterNode navSelectHits = HitCounterNode();
+    navTree.onSelect((n) => navSelectHits.bump(n));
+
+    navTree.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(navTree.selected);       // 0
+    navTree.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    navTree.fireKey(KeyEvent(KeyCode::Down, std::charFromCode(0), 0));
+    console.writeln(navTree.selected);       // 2
+    console.writeln(navTree.scrollY);        // viewport 3, row2 visible -> scrollY = 0
+
+    navTree.fireKey(KeyEvent(KeyCode::End, std::charFromCode(0), 0));
+    console.writeln(navTree.selected);       // 4
+    console.writeln(navTree.scrollY);        // 5 - 3 = 2
+
+    navTree.fireKey(KeyEvent(KeyCode::Home, std::charFromCode(0), 0));
+    console.writeln(navTree.selected);       // 0
+    console.writeln(navTree.scrollY);        // 0
+
+    navTree.fireKey(KeyEvent(KeyCode::PageDown, std::charFromCode(0), 0));
+    console.writeln(navTree.selected);       // 0 + 3 = 3
+    console.writeln(navSelectHits.hits);
+    console.writeln(navSelectHits.seen[navSelectHits.seen.length() - 1]);   // node id 4 (Grandchild1, flat index 3)
+
+    console.writeln("tree navigation done");
+
+    // ---- on:select(TreeNodeId)/on:activate(TreeNodeId) fire with the
+    // correct NODE id, not the flat-list index -----------------------------
+    TreeView actTree = TreeView();
+    actTree.setSource(buildTestTree());
+    actTree.setExpanded(TreeNodeId(1), true);
+    actTree.box = Rect(Point(0, 0), Size(20, 10));
+    // flat_: Root1(idx0,id1), Child1(idx1,id2), Child2(idx2,id3), Root2(idx3,id5)
+    HitCounterNode actHits = HitCounterNode();
+    actTree.onActivate((n) => actHits.bump(n));
+    actTree.setSelected(2);   // Child2, node id 3 — index != id, proving node-id (not index) is fired
+    actTree.fireKey(KeyEvent(KeyCode::Enter, std::charFromCode(0), 0));
+    console.writeln(actHits.hits);       // 1
+    console.writeln(actHits.seen[0]);    // 3 (node id, not the flat index 2)
+
+    console.writeln("activate node-id done");
+
+    // ---- indentation / expander-glyph rendering read back from a Surface -
+    TreeView paintTree = TreeView();
+    paintTree.setSource(buildTestTree());
+    paintTree.setExpanded(TreeNodeId(1), true);
+    paintTree.box = Rect(Point(0, 0), Size(20, 4));
+    Surface treeSurface = Surface(20, 4);
+    treeSurface.clear(plain);
+    paintTree.paintContent(treeSurface);
+    // row0: Root1, depth0, expandable+expanded -> "▾ Root1"
+    console.writeln(readRow(treeSurface, 0, 0, 8));
+    // row1: Child1, depth1 (indent 2), leaf -> "  " + " " + "Child1" (indent then no-glyph space then label)
+    console.writeln(readRow(treeSurface, 1, 0, 10));
+    // row2: Child2, depth1, expandable+collapsed -> "  ▸ Child2"
+    console.writeln(readRow(treeSurface, 2, 0, 10));
+
+    console.writeln("tree paint done");
+
+    // ---- stale-heap-activity stress test for Array<TreeRow> (bug #41-
+    // adjacent caution: verified against a real build, not just assumed) --
+    TreeView churnTree = TreeView();
+    churnTree.setSource(buildTestTree());
+    churnTree.setExpanded(TreeNodeId(1), true);
+    churnTree.setExpanded(TreeNodeId(3), true);
+    Array<Component> treeChurn = [];
+    for (int i in 0..500) {
+        Component c = Component();
+        treeChurn = treeChurn.add(c);
+        Map<int, bool> m = Map();
+        m[i] = true;
+    }
+    console.writeln(churnTree.flat_.length());        // still 5
+    console.writeln(churnTree.flat_[0].node.id);        // 1
+    console.writeln(churnTree.flat_[1].node.id);        // 2
+    console.writeln(churnTree.flat_[2].node.id);        // 3
+    console.writeln(churnTree.flat_[3].node.id);        // 4
+    console.writeln(churnTree.flat_[3].depth);          // 2
+    console.writeln(churnTree.flat_[4].node.id);        // 5
+    console.writeln(treeChurn.length());   // 501
+
+    console.writeln("tree row churn check done");
+
+    // ---- deep tree: rebuildFlat() over a several-hundred-node linear
+    // chain actually completes (proves the iterative-stack requirement,
+    // not a recursive walk that would only fail much deeper) -------------
+    TreeView deepTree = TreeView();
+    ChainTreeSource chain = ChainTreeSource(500);
+    deepTree.setSource(chain);
+    // fully collapsed: only the single root node is visible
+    console.writeln(deepTree.flat_.length());   // 1
+    // expand every node along the chain so all 500 are flattened
+    for (int i in 0..499) {
+        int? idx = None;
+        for (int j in 0..deepTree.flat_.length() - 1) if (deepTree.flat_[j].node.id == i) idx = j;
+        if (idx != None) deepTree.setExpanded(TreeNodeId(i), true);
+    }
+    console.writeln(deepTree.flat_.length());   // 500 (the whole chain)
+    console.writeln(deepTree.flat_[499].node.id);   // 499
+    console.writeln(deepTree.flat_[499].depth);     // 499
+
+    console.writeln("deep tree done");
+}

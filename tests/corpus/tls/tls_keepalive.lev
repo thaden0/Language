@@ -1,0 +1,54 @@
+// LA-2: keep-alive over TLS — three requests served on ONE TLS connection. The
+// raw client sends request N+1 only after response N arrives (serial, no
+// pipelining). This exercises the §2.3 loop integration across a live session:
+// a big TLS record can buffer plaintext (pending-scan #2) and TLS 1.3 KeyUpdate
+// can invert the poll direction (want-augmentation #1), both across the
+// long-lived read-watch. Server via HttpServer(port, cert, key).
+class KAClient {
+    TcpStream stream;
+    HttpServer server;
+    string acc = "";
+    int got = 0;
+    new KAClient(TcpStream s, HttpServer srv) { stream = s; server = srv; }
+    void start() {
+        KAClient self = this;
+        stream.onData((chunk) => self.onData(chunk));
+        this.send("/one");
+    }
+    void send(string path) {
+        stream << ("GET " + path + " HTTP/1.1\r\nHost: x\r\n\r\n");
+    }
+    void onData(string chunk) {
+        if (chunk.isEmpty()) return;
+        acc = acc + chunk;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) return;
+        int firstNl = acc.indexOf("\r\n");
+        HeaderMap hm = std::parseHeaderLines(acc.subStr(firstNl + 2, he - (firstNl + 2)));
+        int cl = std::bodyLenOf(hm);
+        int need = cl > 0 ? cl : 0;
+        int total = he + 4 + need;
+        if (acc.length() < total) return;
+        string body = acc.subStr(he + 4, need);
+        acc = acc.subStr(total, acc.length() - total);
+        got = got + 1;
+        console.writeln("resp" + got + " body=" + body + " conn=" + hm.firstOr("Connection", "?"));
+        if (got == 1) { this.send("/two"); }
+        else if (got == 2) { this.send("/three"); }
+        else { stream.close(); server.stop(); }
+    }
+}
+void run() {
+    HttpServer server = HttpServer(8443, "tests/certs/server-chain.pem",
+                                         "tests/certs/server-key.pem");
+    server.handle((req) => HttpResponse(200, "got " + req.path));
+    std::connectTimeout("127.0.0.1", 8443, 5000, (fd) => {
+        if (fd < 0) { console.writeln("connect FAILED"); return; }
+        std::tlsConnect(fd, "127.0.0.1", "", "tests/certs/ca-cert.pem", 0, (cfd) => {
+            KAClient c = KAClient(TcpStream(cfd), server);
+            c.start();
+        });
+    });
+    console.writeln("up");
+}
+run();

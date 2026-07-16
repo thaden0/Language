@@ -1,0 +1,50 @@
+// Optionality: T? == T | None; narrowing via != None / is; ?. and ??.
+class LoginRequest {
+    int id;
+    string email;
+    string passwordHash;
+    string? host;                 // defaults to None: absent until provided
+}
+
+void loginController(LoginRequest req) {
+    if (req.host != None) {
+        console.writeln("custom host: " + req.host);      // narrowed: string
+    } else {
+        console.writeln("normal path");                   // narrowed: None
+    }
+}
+
+string label(int? n) {
+    if (n is int) return "n=" + n;
+    return "none";
+}
+
+void run() {
+    LoginRequest a = LoginRequest();
+    a.email = "len@example.com";
+    loginController(a);                                   // host never provided
+    console.writeln(a.host);                              // prints: None
+
+    a.host = "internal.example.com";
+    loginController(a);
+
+    // is-narrowing on locals
+    console.writeln(label(7));
+    console.writeln(label(None));
+
+    // && chains a narrowing fact into the rhs
+    string? s = "hey";
+    if (s != None && s.length() > 2) console.writeln("long: " + s);
+
+    // ?? and ?.
+    string? missing = None;
+    console.writeln(missing ?? "(default)");
+    console.writeln(missing?.length() ?? 0 - 1);
+    console.writeln(s?.length() ?? 0 - 1);
+
+    // three distinguishable states
+    string? empty = "";
+    console.writeln(empty == None);
+    console.writeln(empty == "");
+}
+run();

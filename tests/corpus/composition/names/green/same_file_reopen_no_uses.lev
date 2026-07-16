@@ -1,0 +1,14 @@
+// Same-file namespace reopening, fully-qualified access, no `uses` at all —
+// baseline showing reopening itself is fine; the bug needs `uses` in the
+// mix.
+namespace A {
+    class Base { int v = 10; }
+}
+namespace A {
+    class Derived : A::Base { int w = 20; }
+}
+void main() {
+    A::Derived d = A::Derived();
+    console.writeln((d.v + d.w).toString());
+}
+main();

@@ -1,0 +1,215 @@
+namespace Sonar {
+    // Free decode of a fg/bg carrier byte (C6 format: 255 = Default).
+    Color colorFromByte(int b) {
+        if (b == 255) return Color::Default;
+        Color? decoded = Color::fromCode(b);
+        return decoded == None ? Color::Default : decoded;
+    }
+
+    // R8 — the renderer owns the previous frame, the diff, and escape emission.
+    // present() minimizes I/O two ways: component-grain damage already gated
+    // which cells the Surface holds (R14), and here cell-grain diffing gates
+    // which cells reach the terminal. One SGR reset per frame keeps emitStyle_
+    // in lockstep with the real terminal SGR across runs and rows, so cell-to-
+    // cell transitions stay minimal without ever assuming a stale attr is off
+    // (§8.1). The whole frame is one `joinToString`-equivalent StringBuilder ->
+    // one sysWrite (§5.4, single syscall per frame).
+    class AnsiRenderer : IRenderer {
+        Block prev_ = Block(8);
+        int prevW_ = 0;
+        int prevH_ = 0;
+        bool prevValid_ = false;
+
+        Style emitStyle_ = Style(Color::Default, Color::Default, 0);
+
+        bool acquired_ = false;
+        bool useAlt_ = false;
+        bool useMouse_ = false;
+        bool usePaste_ = false;
+
+        bool dumb_ = false;      // SONAR_DUMB_RENDER: always full repaint (bisect aid)
+        bool noColor_ = false;   // NO_COLOR / TERM=dumb: strip colors, keep attrs
+
+        bool capture_ = false;   // test seam: buffer bytes instead of writing fd 1
+        StringBuilder captured_ = StringBuilder();
+
+        // SONAR_DUMB_RENDER / NO_COLOR / TERM=dumb (§5, §8.1, open question #1)
+        // are set programmatically via __setDumb/__setNoColor rather than read
+        // from the environment here: env::get (sysEnv) does not lower on LLVM
+        // when the package keeps it as a non-inlined call (bug.md #68), and this
+        // ctor is in the LLVM-reached path. An app author reads the env vars in
+        // their own main() (where env::get inlines and lowers) and forwards them.
+        new AnsiRenderer() { }
+
+        // ---- IRenderer -----------------------------------------------------
+
+        Size size() {
+            term::WinSize ws = term::size();
+            return Size(ws.cols, ws.rows);
+        }
+
+        void acquire(bool altScreen, bool mouse, bool paste) {
+            if (acquired_) return;
+            acquired_ = true;
+            useAlt_ = altScreen; useMouse_ = mouse; usePaste_ = paste;
+            term::enableRaw();
+            string s = "";
+            if (altScreen) s = s + escAltOn();
+            if (mouse) s = s + escMouseOn();
+            if (paste) s = s + escPasteOn();
+            s = s + escHideCursor();
+            flush(s);
+            prevValid_ = false;    // first present after acquire is a full repaint
+        }
+
+        void release() {
+            if (!acquired_) return;
+            acquired_ = false;
+            string s = escShowCursor() + escResetSgr();
+            if (usePaste_) s = s + escPasteOff();
+            if (useMouse_) s = s + escMouseOff();
+            if (useAlt_) s = s + escAltOff();
+            flush(s);
+            term::restore();
+            prevValid_ = false;
+        }
+
+        void present(Surface s) {
+            bool full = !prevValid_ || prevW_ != s.width || prevH_ != s.height || dumb_;
+            StringBuilder body = StringBuilder();
+            emitStyle_ = Style(Color::Default, Color::Default, 0);
+            int changed = 0;
+            if (full) {
+                if (!prevValid_ || prevW_ != s.width || prevH_ != s.height) {
+                    prev_ = Block(s.width * s.height * 8);
+                    prevW_ = s.width; prevH_ = s.height;
+                }
+                body.add(escHomeClear());
+                changed = presentFull(s, body);
+                prev_.blit(0, s.cells(), 0, s.width * s.height * 8);
+            } else {
+                changed = presentDiff(s, body);
+            }
+            prevValid_ = true;
+            recordCellsChanged(changed);
+            if (body.isEmpty()) return;
+            flush(escResetSgr() + body.toString());
+        }
+
+        void setCursor(Point? pos) {
+            if (pos != None) {
+                Point p = pos;
+                flush(escShowCursor() + escCup(p.y, p.x));
+            } else {
+                flush(escHideCursor());
+            }
+        }
+
+        void bell() { flush(escBell()); }
+
+        // ---- diffing -------------------------------------------------------
+
+        int presentFull(Surface s, StringBuilder out) {
+            Block cells = s.cells();
+            int changed = 0;
+            for (int y in 0..s.height - 1) {
+                out.add(escCup(y, 0));
+                int x = 0;
+                while (x < s.width) {
+                    int off = (y * s.width + x) * 8;
+                    int flags = cells.byteAt(off + 7);
+                    if ((flags & 1) != 0) {
+                        x = x + 1;                       // continuation: lead already drew it
+                    } else {
+                        emitCell(cells, off, out);
+                        changed = changed + 1;
+                        int scalar = cells.int32At(off);
+                        x = x + (glyphWidth(std::charFromCode(scalar)) == 2 ? 2 : 1);
+                    }
+                }
+            }
+            return changed;
+        }
+
+        int presentDiff(Surface s, StringBuilder out) {
+            Block cells = s.cells();
+            int rowBytes = s.width * 8;
+            int changed = 0;
+            for (int y in 0..s.height - 1) {
+                int rowStart = y * rowBytes;
+                int rowEnd = rowStart + rowBytes;
+                // Fast-skip identical spans (M5 mismatch): first differing byte
+                // at/after this row's start. -1 => nothing differs anywhere below.
+                int m = cells.mismatch(prev_, rowStart);
+                if (m < 0) return changed;
+                if (m >= rowEnd) continue;               // this row is identical
+
+                int col = (m - rowStart) / 8;
+                while (col < s.width) {
+                    int cellOff = rowStart + col * 8;
+                    if (cellEqual(cells, prev_, cellOff)) { col = col + 1; continue; }
+
+                    int runStart = leadColumn(cells, y, col, s.width);
+                    out.add(escCup(y, runStart));
+                    int c = runStart;
+                    int lastCol = runStart;
+                    while (c < s.width) {
+                        int off = rowStart + c * 8;
+                        bool cont = (cells.byteAt(off + 7) & 1) != 0;
+                        if (cellEqual(cells, prev_, off) && !cont) break;
+                        if (!cont) { emitCell(cells, off, out); changed = changed + 1; }
+                        lastCol = c;
+                        c = c + 1;
+                    }
+                    int fromOff = rowStart + runStart * 8;
+                    prev_.blit(fromOff, cells, fromOff, (lastCol - runStart + 1) * 8);
+                    col = lastCol + 1;
+                }
+            }
+            return changed;
+        }
+
+        // Emit one lead cell: the minimal SGR transition into its style, then its
+        // scalar UTF-8-encoded (char.toString() is the scalar's own encoding).
+        void emitCell(Block cells, int off, StringBuilder out) {
+            int scalar = cells.int32At(off);
+            Style st = Style(colorFromByte(cells.byteAt(off + 4)),
+                             colorFromByte(cells.byteAt(off + 5)),
+                             cells.byteAt(off + 6));
+            string trans = sgrTransition(emitStyle_, st, noColor_);
+            if (!trans.isEmpty()) { out.add(trans); emitStyle_ = st; }
+            out.add(std::charFromCode(scalar).toString());
+        }
+
+        // ---- helpers -------------------------------------------------------
+
+        bool cellEqual(Block a, Block b, int off) =>
+            a.int32At(off) == b.int32At(off) && a.int32At(off + 4) == b.int32At(off + 4);
+
+        // Back up onto the lead cell of a wide glyph (§5.3 boundary rule: a run
+        // starting on a continuation cell re-emits the lead to avoid a torn glyph).
+        int leadColumn(Block cells, int y, int col, int width) {
+            int c = col;
+            while (c > 0 && (cells.byteAt((y * width + c) * 8 + 7) & 1) != 0) c = c - 1;
+            return c;
+        }
+
+        void flush(string bytes) {
+            if (bytes.isEmpty()) return;
+            if (capture_) captured_.add(bytes);
+            else std::sysWrite(1, bytes);
+        }
+
+        // ---- test seams (T10-sanctioned) -----------------------------------
+
+        AnsiRenderer __capture(bool on) { capture_ = on; return this; }
+        string __drainCapture() {
+            string s = captured_.toString();
+            captured_ = StringBuilder();
+            return s;
+        }
+        void __setDumb(bool on) { dumb_ = on; }
+        void __setNoColor(bool on) { noColor_ = on; }
+        int lastCellsChanged() => cellsChanged();
+    }
+}

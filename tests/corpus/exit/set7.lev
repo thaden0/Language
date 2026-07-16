@@ -1,0 +1,6 @@
+// env.setExitCode records the code but lets execution finish (the loop drains,
+// cleanups run) — so BOTH lines print and the process then exits 7.
+// designs/exit-codes.md §2 (set-and-complete) / §7.
+console.writeln("before");
+env::setExitCode(7);
+console.writeln("after");

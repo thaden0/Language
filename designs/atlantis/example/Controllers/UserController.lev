@@ -1,0 +1,12 @@
+using Atlantis::Controllers;
+using App::Services::UserService;
+
+namespace App::Controllers {
+
+    class HomeController : Controller {    // Atlantis::Controllers::Controller
+
+        IActionResponse Index() => Atlantis::View('home'); // Atlantis::View(string template, IActionResponse model)
+        
+    }
+
+}

@@ -1,0 +1,6 @@
+// Terminal size (designs/techdesign-terminal-floor.md §2). On a pty the driver
+// sets a known window size and expects it back; on a pipe/non-tty sysWinSize
+// fails and term::size() falls back to the 24x80 default (raw mode is off, so
+// the cursor-report probe is skipped). Same source, every engine.
+term::WinSize s = term::size();
+console.writeln(s.rows.toString() + "x" + s.cols.toString());

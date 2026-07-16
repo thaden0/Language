@@ -1,0 +1,51 @@
+// Track 09 F3 (M3): digests — md5/sha1/sha256/hmacSha256, in-language over the
+// int64 mask idiom, returning raw bytes composed through encoding::hexEncode.
+// Vectors are RFC 1321 / RFC 3174 / FIPS 180-4 / RFC 4231 ground truth, and the
+// input lengths deliberately hit the 55/56/63/64/65 padding-boundary trap set
+// (§6 problem #6) plus two multi-block sizes (119/128).
+
+string h(string bytes) => encoding::hexEncode(bytes);
+string a(int n) => "a".repeat(n);
+
+void run() {
+    // --- md5 across the trap set ---
+    console.writeln(h(digest::md5("")));
+    console.writeln(h(digest::md5("abc")));
+    console.writeln(h(digest::md5(a(55))));
+    console.writeln(h(digest::md5(a(56))));
+    console.writeln(h(digest::md5(a(63))));
+    console.writeln(h(digest::md5(a(64))));
+    console.writeln(h(digest::md5(a(65))));
+    console.writeln(h(digest::md5(a(128))));
+
+    // --- sha1 across the trap set ---
+    console.writeln(h(digest::sha1("")));
+    console.writeln(h(digest::sha1("abc")));
+    console.writeln(h(digest::sha1(a(55))));
+    console.writeln(h(digest::sha1(a(56))));
+    console.writeln(h(digest::sha1(a(63))));
+    console.writeln(h(digest::sha1(a(64))));
+    console.writeln(h(digest::sha1(a(65))));
+    console.writeln(h(digest::sha1(a(119))));
+
+    // --- sha256 across the trap set ---
+    console.writeln(h(digest::sha256("")));
+    console.writeln(h(digest::sha256("abc")));
+    console.writeln(h(digest::sha256(a(55))));
+    console.writeln(h(digest::sha256(a(56))));
+    console.writeln(h(digest::sha256(a(63))));
+    console.writeln(h(digest::sha256(a(64))));
+    console.writeln(h(digest::sha256(a(65))));
+    console.writeln(h(digest::sha256(a(119))));
+    console.writeln(h(digest::sha256(a(128))));
+
+    // --- hmac-sha256 ---
+    console.writeln(h(digest::hmacSha256(std::byteToString(11).repeat(20), "Hi There")));  // RFC 4231 #1
+    console.writeln(h(digest::hmacSha256(std::byteToString(170).repeat(131),
+        "Test Using Larger Than Block-Size Key - Hash Key First")));                        // RFC 4231 #6
+    console.writeln(h(digest::hmacSha256("key", "abc")));
+
+    // --- composition: base64 of a digest (etag/cookie shape) ---
+    console.writeln(encoding::base64Encode(digest::sha256("abc")));
+}
+run();

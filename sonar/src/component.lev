@@ -1,0 +1,433 @@
+namespace Sonar {
+    class KeyEvent {
+        KeyCode code;
+        char ch;
+        int mods;
+        bool handled = false;
+        new KeyEvent(KeyCode c, char character, int m) { code = c; ch = character; mods = m; }
+
+        // T03 (events.lev owns dispatch; these three predicates live here
+        // instead because Leviathan classes cannot be reopened across files
+        // (info.md/reference.md: only namespaces reopen and merge) and
+        // KeyEvent was already declared here by T01.
+        bool isChar(char c) => code == KeyCode::Char && mods == 0 && ch == c;
+        bool isCtrl(char c) => code == KeyCode::Char && mods == Mod::Ctrl && ch == c;
+        bool matches(string chord) {
+            Chord c = parseChord(chord);
+            return c.mods == mods && c.code == code && (c.code != KeyCode::Char || c.ch == ch);
+        }
+    }
+
+    class MouseEvent {
+        MouseKind kind;
+        MouseButton button;
+        int x;
+        int y;
+        int mods;
+        bool handled = false;
+        new MouseEvent(MouseKind k, MouseButton b, int px, int py, int m) {
+            kind = k; button = b; x = px; y = py; mods = m;
+        }
+    }
+
+    class PasteEvent {
+        string text;
+        bool handled = false;
+        new PasteEvent(string t) { text = t; }
+    }
+
+    interface IComponent {
+        Rect box;
+        Dock dock;
+        int gridRow;
+        int gridCol;
+        int gridRowSpan;
+        int gridColSpan;
+        Constraint widthConstraint();
+        Constraint heightConstraint();
+        void measure(Size avail);
+        Size desired();
+        void arrange(Rect assigned);
+        void paint(Surface s);
+        void invalidate();
+        void invalidateLayout();
+        bool dirty();
+        bool subtreeDamaged();
+        IComponent? parent();
+        void setParent(IComponent? p);
+        bool visible();
+        void onAttach();
+        void onDetach();
+        void __sonarAttach();
+        void __sonarDetach();
+        bool __sonarLayoutDirty();
+        bool __sonarMarkChildDamage();
+        void __sonarClearDamage();
+        void __sonarClearChildDamage();
+        Array<IComponent> __sonarChildren();
+        Rect __sonarContentRect();
+    }
+
+    interface IContainer {
+        IContainer add(IComponent c);
+        IContainer remove(IComponent c);
+        IContainer clear();
+        Array<IComponent> children();
+        IContainer setLayout(ILayoutStrategy l);
+        ILayoutStrategy layout();
+    }
+
+    interface ILayoutStrategy {
+        Size measure(Array<IComponent> kids, Size avail);
+        void arrange(Array<IComponent> kids, Rect content);
+    }
+
+    interface ITheme {
+        Style style(string key);
+        bool has(string key);
+    }
+    ITheme? activeTheme_ = None;
+    void installTheme(ITheme theme) { activeTheme_ = theme; }
+
+    // Internal seam implemented by T09's App. It lets the core own the T07
+    // registration lifecycle without depending on the not-yet-defined App type.
+    interface ILifecycleHost {
+        int bindShortcut(string chord, () => void action);
+        void unbindShortcut(int token);
+        int registerTimer(int intervalMs, () => void action);
+        void cancelTimer(int token);
+        void scheduleFrame();
+    }
+
+    ILifecycleHost? lifecycleHost_ = None;
+    void installLifecycleHost(ILifecycleHost host) { lifecycleHost_ = host; }
+
+    // Explicit constructors, not bare positional auto-construction: bug.md
+    // #38 — a field-only struct's positional auto-construction silently
+    // leaves its fields (here, `action`) empty instead of populating them,
+    // and a closure-typed field of an auto-constructed struct then throws
+    // "cannot resolve call target" the first time anything actually calls
+    // it. T04 found this the hard way exercising the pending-timer seam
+    // (§T04 anchor log); an explicit constructor is bug #38's documented
+    // workaround.
+    struct ShortcutReg {
+        string chord;
+        () => void action;
+        new ShortcutReg(string c, () => void a) { chord = c; action = a; }
+    }
+    struct TimerReg {
+        int intervalMs;
+        () => void action;
+        new TimerReg(int ms, () => void a) { intervalMs = ms; action = a; }
+    }
+
+    class Component : IComponent {
+        Rect box = Rect(Point(0, 0), Size(0, 0));
+        Insets padding = Insets(0, 0, 0, 0);
+        Dock dock = Dock::Fill;
+        int gridRow = 0;
+        int gridCol = 0;
+        int gridRowSpan = 1;
+        int gridColSpan = 1;
+
+        bool contentDirty_ = true;
+        bool layoutDirty_ = true;
+        bool childDamage_ = false;
+        bool hidden_ = false;
+        bool attached_ = false;
+        bool frameRequested_ = false;
+        IComponent? parent_ = None;
+        Constraint width_ = Constraint();
+        Constraint height_ = Constraint();
+        Size desired_ = Size(0, 0);
+
+        int nextHandlerToken_ = 1;
+        Array<(KeyEvent) => void> keyHandlers_ = [];
+        Array<int> keyTokens_ = [];
+        Array<(KeyEvent) => void> keyCaptureHandlers_ = [];
+        Array<int> keyCaptureTokens_ = [];
+        Array<(MouseEvent) => void> mouseHandlers_ = [];
+        Array<int> mouseTokens_ = [];
+        Array<(MouseEvent) => void> mouseCaptureHandlers_ = [];
+        Array<int> mouseCaptureTokens_ = [];
+        Array<(PasteEvent) => void> pasteHandlers_ = [];
+        Array<int> pasteTokens_ = [];
+
+        Array<ShortcutReg> pendingShortcuts_ = [];
+        Array<TimerReg> pendingTimers_ = [];
+        Array<int> boundShortcutTokens_ = [];
+        Array<int> boundTimerTokens_ = [];
+
+        // T07 @Sonar::Validator registry (techdesign-07 §3.3). The
+        // bindValidators rule injects `this.__sonarAddValidator(...)` at the
+        // bottom of the constructor, so these register once at construction and
+        // live for the component's lifetime (no attach/detach flush — unlike
+        // shortcuts/timers, a validator closure holds no App-side resource).
+        // Two parallel arrays rather than a Map or Array<struct> keep well
+        // clear of the collection footguns (#40/#41/#47), matching theme.lev.
+        Array<() => bool> attrValidators_ = [];
+        Array<string> attrValidatorMessages_ = [];
+        string attrValidationMessage_ = "";
+
+        // T11 reactivity registry: field name -> updaters registered by the
+        // `sonar!` template (§2 Piece 2). Kept string-keyed for --expand
+        // legibility (§5 #5) even though v1 notify is GLOBAL fan-out — the
+        // rule-injected set-view cannot reify its field-name string, so it
+        // cannot key a per-field notify (R-1, sonar/PROBES.md;
+        // designs/complete/techdesign-11-reactivity.md §2/§8).
+        Map<string, Array<() => void>> bindings_ = Map();
+        bool reactiveNotifying_ = false;   // single-pass cycle-settle guard (§3)
+
+        Constraint widthConstraint() => width_;
+        Constraint heightConstraint() => height_;
+        void setWidth(Constraint c) { width_ = c; invalidateLayout(); }
+        void setHeight(Constraint c) { height_ = c; invalidateLayout(); }
+
+        void measure(Size avail) {
+            Size content = contentDesired(avail);
+            desired_ = Size(clampAxis(width_, content.w), clampAxis(height_, content.h));
+        }
+        Size contentDesired(Size avail) => Size(0, 0);
+        Size desired() => desired_;
+
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            layoutDirty_ = false;
+        }
+
+        void paint(Surface s) {
+            this.paintBackground(s);
+            this.paintContent(s);
+            this.paintChrome(s);
+        }
+        void paintBackground(Surface s) { }
+        void paintContent(Surface s) { }
+        void paintChrome(Surface s) { }
+        Insets chrome() => padding;
+
+        void invalidate() {
+            if (contentDirty_) return;
+            contentDirty_ = true;
+            bubble();
+        }
+
+        void invalidateLayout() {
+            if (layoutDirty_) return;
+            layoutDirty_ = true;
+            contentDirty_ = true;
+            bubble();
+        }
+
+        void bubble() {
+            if (bubbleParent(parent_)) return;
+            frameRequested_ = true;
+            if (attached_ && lifecycleHost_ != None) lifecycleHost_.scheduleFrame();
+        }
+
+        bool bubbleParent(IComponent? current) {
+            if (current != None) {
+                if (current.__sonarMarkChildDamage()) return true;
+                return bubbleParent(current.parent());
+            }
+            return false;
+        }
+
+        bool dirty() => contentDirty_;
+        bool subtreeDamaged() => childDamage_ || contentDirty_ || layoutDirty_;
+        IComponent? parent() => parent_;
+        void setParent(IComponent? p) { parent_ = p; }
+        bool visible() => !hidden_;
+        void setVisible(bool value) {
+            if (hidden_ == !value) return;
+            hidden_ = !value;
+            invalidateLayout();
+        }
+
+        bool takeFrameRequest() {
+            bool requested = frameRequested_;
+            frameRequested_ = false;
+            return requested;
+        }
+
+        void onAttach() { }
+        void onDetach() { }
+
+        void __sonarAttach() {
+            attached_ = true;
+            for (TimerReg reg in pendingTimers_) if (reg.intervalMs < 1)
+                throw SonarException("Timer interval must be positive");
+            if (lifecycleHost_ != None) {
+                for (ShortcutReg reg in pendingShortcuts_)
+                    boundShortcutTokens_ = boundShortcutTokens_.add(
+                        lifecycleHost_.bindShortcut(reg.chord, reg.action));
+                for (TimerReg reg in pendingTimers_)
+                    boundTimerTokens_ = boundTimerTokens_.add(
+                        lifecycleHost_.registerTimer(reg.intervalMs, reg.action));
+            }
+            onAttach();
+        }
+
+        void __sonarDetach() {
+            if (lifecycleHost_ != None) {
+                for (int token in boundShortcutTokens_) lifecycleHost_.unbindShortcut(token);
+                for (int token in boundTimerTokens_) lifecycleHost_.cancelTimer(token);
+            }
+            boundShortcutTokens_ = [];
+            boundTimerTokens_ = [];
+            Map<string, Array<() => void>> emptyBindings;
+            bindings_ = emptyBindings;
+            reactiveNotifying_ = false;
+            attached_ = false;
+            onDetach();
+        }
+
+        void __sonarBindShortcut(string chord, () => void action) {
+            pendingShortcuts_ = pendingShortcuts_.add(ShortcutReg(chord, action));
+        }
+        void __sonarRegisterTimer(int intervalMs, () => void action) {
+            pendingTimers_ = pendingTimers_.add(TimerReg(intervalMs, action));
+        }
+        // T07 @Sonar::Validator: register a bool-returning check + its failure
+        // message. Injected at construction by the bindValidators rule.
+        void __sonarAddValidator(() => bool check, string message) {
+            attrValidators_ = attrValidators_.add(check);
+            attrValidatorMessages_ = attrValidatorMessages_.add(message);
+        }
+        // Runs the attribute-registered validators in declaration order; the
+        // first failure records its message and returns false (§3.3 "first
+        // failure wins"), else clears the message and returns true.
+        bool __sonarRunAttrValidators() {
+            for (int i in 0..attrValidators_.length() - 1) {
+                // bug #52: calling an array-indexed callable directly fails to
+                // lower on IR; bind to a local first.
+                var check = attrValidators_[i];
+                if (!check()) { attrValidationMessage_ = attrValidatorMessages_[i]; return false; }
+            }
+            attrValidationMessage_ = "";
+            return true;
+        }
+        string __sonarAttrValidationMessage() => attrValidationMessage_;
+        Array<ShortcutReg> __sonarPendingShortcuts() => pendingShortcuts_;
+        Array<TimerReg> __sonarPendingTimers() => pendingTimers_;
+        void __sonarRecordShortcutToken(int token) {
+            boundShortcutTokens_ = boundShortcutTokens_.add(token);
+        }
+        void __sonarRecordTimerToken(int token) {
+            boundTimerTokens_ = boundTimerTokens_.add(token);
+        }
+        Array<int> __sonarBoundShortcutTokens() => boundShortcutTokens_;
+        Array<int> __sonarBoundTimerTokens() => boundTimerTokens_;
+        // T11 §2 Piece 2: register a template-emitted updater under its field
+        // name and RUN it once — the initial render IS the update path, one code
+        // path. Updater exceptions are contained (§5 #3: log + continue) so a
+        // broken binding never kills the write that triggered it.
+        void __sonarBind(string field, () => void updater) {
+            Array<() => void>? found = bindings_.atOrNone(field);
+            Array<() => void> list = found == None ? [] : found;
+            bindings_[field] = list.add(updater);
+            try { updater(); } catch (IException e) { log("reactive binding threw: " + e.message); }
+        }
+        // T11 §3: a reactive write (routed through a @Sonar::Reactive set-view)
+        // re-runs bindings. v1 is GLOBAL fan-out — the injected view cannot
+        // reify its field-name string to key a per-field notify (R-1,
+        // sonar/PROBES.md), so every reactive write re-runs every binding on
+        // this host. The single re-entrancy bool makes a chain A->B->A settle in
+        // ONE pass (last-writer-wins within the frame; paint is deferred per C9)
+        // — the design's cycle-settle guarantee, observationally identical to
+        // per-field notify for every golden. Restoring per-field precision is a
+        // one-line change once a field-name-string reifier lands (LA-15).
+        void __sonarNotify() {
+            if (reactiveNotifying_) return;
+            reactiveNotifying_ = true;
+            for (string field in bindings_.keys()) {
+                Array<() => void>? found = bindings_.atOrNone(field);
+                if (found != None) {
+                    Array<() => void> updaters = found;
+                    for (() => void updater in updaters)
+                        try { updater(); } catch (IException e) { log("reactive updater threw: " + e.message); }
+                }
+            }
+            reactiveNotifying_ = false;
+        }
+
+        int newHandlerToken() {
+            int token = nextHandlerToken_;
+            nextHandlerToken_ = nextHandlerToken_ + 1;
+            return token;
+        }
+
+        int onKey((KeyEvent) => void h) {
+            int token = newHandlerToken();
+            keyHandlers_ = keyHandlers_.add(h); keyTokens_ = keyTokens_.add(token); return token;
+        }
+        void offKey(int token) {
+            Array<(KeyEvent) => void> hs = []; Array<int> ts = [];
+            for (int i in 0..keyTokens_.length() - 1) if (keyTokens_[i] != token) {
+                hs = hs.add(keyHandlers_[i]); ts = ts.add(keyTokens_[i]);
+            }
+            keyHandlers_ = hs; keyTokens_ = ts;
+        }
+        int onKeyCapture((KeyEvent) => void h) {
+            int token = newHandlerToken();
+            keyCaptureHandlers_ = keyCaptureHandlers_.add(h); keyCaptureTokens_ = keyCaptureTokens_.add(token); return token;
+        }
+        void offKeyCapture(int token) {
+            Array<(KeyEvent) => void> hs = []; Array<int> ts = [];
+            for (int i in 0..keyCaptureTokens_.length() - 1) if (keyCaptureTokens_[i] != token) {
+                hs = hs.add(keyCaptureHandlers_[i]); ts = ts.add(keyCaptureTokens_[i]);
+            }
+            keyCaptureHandlers_ = hs; keyCaptureTokens_ = ts;
+        }
+        int onMouse((MouseEvent) => void h) {
+            int token = newHandlerToken();
+            mouseHandlers_ = mouseHandlers_.add(h); mouseTokens_ = mouseTokens_.add(token); return token;
+        }
+        void offMouse(int token) {
+            Array<(MouseEvent) => void> hs = []; Array<int> ts = [];
+            for (int i in 0..mouseTokens_.length() - 1) if (mouseTokens_[i] != token) {
+                hs = hs.add(mouseHandlers_[i]); ts = ts.add(mouseTokens_[i]);
+            }
+            mouseHandlers_ = hs; mouseTokens_ = ts;
+        }
+        int onMouseCapture((MouseEvent) => void h) {
+            int token = newHandlerToken();
+            mouseCaptureHandlers_ = mouseCaptureHandlers_.add(h); mouseCaptureTokens_ = mouseCaptureTokens_.add(token); return token;
+        }
+        void offMouseCapture(int token) {
+            Array<(MouseEvent) => void> hs = []; Array<int> ts = [];
+            for (int i in 0..mouseCaptureTokens_.length() - 1) if (mouseCaptureTokens_[i] != token) {
+                hs = hs.add(mouseCaptureHandlers_[i]); ts = ts.add(mouseCaptureTokens_[i]);
+            }
+            mouseCaptureHandlers_ = hs; mouseCaptureTokens_ = ts;
+        }
+        int onPaste((PasteEvent) => void h) {
+            int token = newHandlerToken();
+            pasteHandlers_ = pasteHandlers_.add(h); pasteTokens_ = pasteTokens_.add(token); return token;
+        }
+        void offPaste(int token) {
+            Array<(PasteEvent) => void> hs = []; Array<int> ts = [];
+            for (int i in 0..pasteTokens_.length() - 1) if (pasteTokens_[i] != token) {
+                hs = hs.add(pasteHandlers_[i]); ts = ts.add(pasteTokens_[i]);
+            }
+            pasteHandlers_ = hs; pasteTokens_ = ts;
+        }
+
+        void fireKey(KeyEvent e) { Array<(KeyEvent) => void> hs = keyHandlers_; for ((KeyEvent) => void h in hs) h(e); }
+        void fireKeyCapture(KeyEvent e) { Array<(KeyEvent) => void> hs = keyCaptureHandlers_; for ((KeyEvent) => void h in hs) h(e); }
+        void fireMouse(MouseEvent e) { Array<(MouseEvent) => void> hs = mouseHandlers_; for ((MouseEvent) => void h in hs) h(e); }
+        void fireMouseCapture(MouseEvent e) { Array<(MouseEvent) => void> hs = mouseCaptureHandlers_; for ((MouseEvent) => void h in hs) h(e); }
+        void firePaste(PasteEvent e) { Array<(PasteEvent) => void> hs = pasteHandlers_; for ((PasteEvent) => void h in hs) h(e); }
+
+        bool __sonarLayoutDirty() => layoutDirty_;
+        bool __sonarMarkChildDamage() {
+            if (childDamage_) return true;
+            childDamage_ = true;
+            return false;
+        }
+        void __sonarClearDamage() { contentDirty_ = false; childDamage_ = false; }
+        void __sonarClearChildDamage() { childDamage_ = false; }
+        Array<IComponent> __sonarChildren() => [];
+        Rect __sonarContentRect() => box;
+        void clearDamage() { __sonarClearDamage(); }
+    }
+}

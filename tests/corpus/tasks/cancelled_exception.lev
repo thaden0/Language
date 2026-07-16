@@ -1,0 +1,23 @@
+// LA-30 B2 (doc 06 §2) — CancelledException is an ordinary IException carrier:
+// catchable by its own type, by its interface (ICancelledException), and by the
+// root IException, and it carries a message like any Exception. This is the
+// language-floor half of B2 (the CancelledException class); delivery of the
+// exception at a task's park point is the separate substrate work (§5). A pure
+// prelude class with no task machinery, so byte-identical on oracle/IR/LLVM.
+try {
+    throw CancelledException("stop");
+} catch (CancelledException e) {
+    console.writeln("by-type: " + e.message);
+}
+
+try {
+    throw CancelledException("halt");
+} catch (ICancelledException e) {
+    console.writeln("by-iface: " + e.message);
+}
+
+try {
+    throw CancelledException("done");
+} catch (IException e) {
+    console.writeln("by-root: " + e.message);
+}

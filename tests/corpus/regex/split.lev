@@ -1,0 +1,24 @@
+// doc 2 §4 row 3: split includes captured-group text when the separator
+// captures; split(s, limit): at most `limit` pieces, remainder unsplit in
+// the last piece.
+void run() {
+    Regex commaRe = Regex(",");
+    Array<string> parts = commaRe.split("a,b,c");
+    console.writeln(parts.length());
+    for (string p in parts) { console.writeln(p); }
+
+    Array<string> limited = commaRe.split("a,b,c,d", 2);
+    console.writeln(limited.length());
+    for (string p in limited) { console.writeln(p); }
+
+    Regex sepRe = Regex("(-)");
+    Array<string> withCaps = sepRe.split("a-b-c");
+    console.writeln(withCaps.length());
+    for (string p in withCaps) { console.writeln(p); }
+
+    Regex noneRe = Regex("z");
+    Array<string> whole = noneRe.split("abc");
+    console.writeln(whole.length());
+    console.writeln(whole.at(0));
+}
+run();

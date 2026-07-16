@@ -1,0 +1,25 @@
+// LA-30 doc 5 §2 C2 (failure routing) — the design's canonical repro.
+// Nothing ever resolves `p`; a timer callback throws, uncaught.
+//
+// Pre-LA-30 pump (gone; LANG_PUMP=1 reproduces it until M6): the throw broke
+// the pump loop `await p` was running and unwound into this file's unrelated
+// `catch` — an exception teleported into a handler that had nothing to do
+// with the timer (doc 5 §2: "spooky"). Under the pump this file prints the
+// MISROUTED line and exits 0 — the recorded pre-flip divergence.
+//
+// Tasks (asserted): the callback is its own task, so its throw is
+// program-uncaught (standard banner, exit 1 — the exit-codes contract) and
+// is NEVER delivered to the unrelated `await p`. The catch prints only on a
+// misroute, deliberately: what the parked await itself observes during
+// shutdown is engine-incidental (the interpreters stash the uncaught throw
+// and drain task 0 first, so its await throws C3's drain error into this
+// catch; LLVM's doc-2 §8 throw gate exits with task 0 still parked, so the
+// catch never runs) — G13 says assert the contract, never the incidental
+// ordering. C3's drain-throw behavior is asserted by its own two files.
+// Byte-identical on oracle/IR/LLVM.
+Promise<int> p = Promise();                   // nothing ever resolves p
+std::sysTimerStart(5, 0, (n) => { throw RuntimeException("boom"); });
+try { int x = await p; } catch (IException e) {
+    // C2's whole point: the timer's boom must never land here.
+    if (e.message == "boom") console.writeln("MISROUTED: caught the timer's throw");
+}

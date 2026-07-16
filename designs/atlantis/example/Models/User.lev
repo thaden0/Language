@@ -1,0 +1,23 @@
+uses Atlantis::Models;
+
+namespace App::Models {
+
+    class User : Model {
+
+        @attr(PrimaryKey, AutoIncrement); // Atlantis::Models::PrimaryKey, Atlantis::Models::AutoIncrement
+        int id;
+
+        @attr(NotNull); // Atlantis::Models::NotNull
+        string name;
+
+        // self: marks both sides of the pipe as "match against the owning instance." Since a pipe only ever has two members, 
+        // and both are now marked as self-candidates, the return column falls out mechanically — whichever one isn't self — 
+        // without needing a separate symmetric: true toggle or a where-style clause to spell it out. The keyword carries the 
+        // semantic; the pipe stays doing only join-matching, not projection.
+
+        @hasManyBelongsToMany(App::Relationship, self: App::Relationship::user1 | App::Relationship::user2);
+        Array<User> friends;
+
+    }
+
+}

@@ -1,0 +1,19 @@
+// Track 01 F2: hex/binary literals + `_` digit separators (all three bases,
+// plus a float's fractional digits). A hex/binary literal right before `..`
+// is a range, not a malformed fractional part (the last case) — and full
+// 64-bit values (all-ones, the sign bit alone) reinterpret their bit pattern
+// exactly like the equivalent shift expression would (bitops.ext).
+console.writeln(0xFF);
+console.writeln(0Xff);
+console.writeln(0b1010);
+console.writeln(0B1010);
+console.writeln(1_000_000);
+console.writeln(0x1_FF);
+console.writeln(0b1010_1010);
+console.writeln(1_000.000_5);
+console.writeln(0x0);
+console.writeln(0b0);
+console.writeln(0xFFFFFFFFFFFFFFFF);
+console.writeln(0x8000000000000000);
+console.writeln(1..3);
+console.writeln(0xA..0xF);

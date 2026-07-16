@@ -1,0 +1,11 @@
+name    = "recon-eval-test"
+entry   = "Recon::main"
+sources = [
+    "eval_test.lev",
+    "../../src/eval/jsonpath.lev",
+    "../../src/eval/runner.lev",
+    "../../src/io/jsonio.lev",
+    "../../src/model/tests.lev",
+    "../../src/net/vars.lev",
+    "../../src/model/environment.lev",
+]

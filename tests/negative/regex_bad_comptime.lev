@@ -1,0 +1,2 @@
+comptime Array<int> BAD = regex::compileProgram("[", "");
+console.writeln(BAD.length());

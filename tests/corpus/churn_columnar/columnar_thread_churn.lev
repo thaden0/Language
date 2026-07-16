@@ -1,0 +1,23 @@
+// Columnar churn — REPEATED THREAD TRANSFER, must be GREEN. The source columnar
+// array is built ONCE (in a field, avoiding the pre-existing local-self-append
+// wart shared with row-major dense). Each iteration flatten/rebuilds it across a
+// (same-thread) transfer into a fresh local `c`, reads it, and drops it. The
+// columnar flatten/rebuild is a scalars-only blob copy (§6.4) and the rebuilt
+// local is reclaimed at its scope end, so live-at-exit stays flat in N.
+struct V3 { int x; int y; int z; }
+class Src { Array<V3> a; }
+Src build() {
+    Src s = Src();
+    for (int k in 0..3) { V3 v; v.x = k; v.y = k * 10; v.z = k * 100; s.a = s.a.add(v); }
+    return s;
+}
+void run(int n) {
+    Src src = build();
+    int sink = 0;
+    for (int i in 1..n) {
+        Array<V3> c = std::sysThreadTransfer(src.a);   // scalars-only blob copy
+        sink = sink + c[0].x + c[3].z;                 // ColGet reads on the copy
+    }                                                  // c reclaimed each iteration
+    console.writeln(sink);
+}
+run(@N@);

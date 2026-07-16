@@ -1,0 +1,95 @@
+// Small reused JsonValue read/build helpers (DESIGN §5.5) so no other file
+// hand-rolls JsonValue walking. Pure/headless.
+namespace Recon {
+
+// object[key].asStr() ?? dflt
+string jStr(JsonValue v, string key, string dflt) {
+    if (!v.isObject()) { return dflt; }
+    JsonValue? f = v.atOrNone(key);
+    if (f != None) {
+        JsonValue node = f;
+        string? s = node.asStr();
+        if (s != None) { return s; }
+    }
+    return dflt;
+}
+
+bool jBool(JsonValue v, string key, bool dflt) {
+    if (!v.isObject()) { return dflt; }
+    JsonValue? f = v.atOrNone(key);
+    if (f != None) {
+        JsonValue node = f;
+        bool? b = node.asBool();
+        if (b != None) { return b; }
+    }
+    return dflt;
+}
+
+// []  if absent / not an array
+Array<JsonValue> jArr(JsonValue v, string key) {
+    Array<JsonValue> empty = [];
+    if (!v.isObject()) { return empty; }
+    JsonValue? f = v.atOrNone(key);
+    if (f != None) {
+        JsonValue node = f;
+        Array<JsonValue>? a = node.asArray();
+        if (a != None) { return a; }
+    }
+    return empty;
+}
+
+// object field node or None
+JsonValue? jField(JsonValue v, string key) {
+    if (!v.isObject()) { return None; }
+    return v.atOrNone(key);
+}
+
+bool jHas(JsonValue v, string key) {
+    if (!v.isObject()) { return false; }
+    return v.atOrNone(key) != None;
+}
+
+// build an object node from ordered fields
+JsonValue jObj(Array<Pair<string,JsonValue>> fields) {
+    Map<string,JsonValue> m;
+    for (Pair<string,JsonValue> p in fields) {
+        m[p.first] = p.second;
+    }
+    return JsonValue::ofObject(m);
+}
+
+JsonValue jArrayOf(Array<JsonValue> items) => JsonValue::ofArray(items);
+JsonValue jStrNode(string s) => JsonValue::ofStr(s);
+JsonValue jBoolNode(bool b) => JsonValue::ofBool(b);
+
+// trim JSON's "42.000000" -> "42" for display (R §4.2)
+string numClean(float n) {
+    string s = n.toString();
+    int dot = s.indexOf(".");
+    if (dot < 0) { return s; }
+    // strip trailing zeros
+    int end = s.length();
+    while (end > dot + 1 && s.byteAt(end - 1) == 48) { end = end - 1; }   // '0'
+    if (end == dot + 1) { end = dot; }                                    // drop bare '.'
+    return s.subStr(0, end);
+}
+
+// Render a JsonValue number cleanly (kind 2 -> numClean, else asStr fallback).
+string jNumOrStr(JsonValue v) {
+    if (v.isNum()) {
+        float? n = v.asNum();
+        if (n != None) { return numClean(n); }
+    }
+    if (v.isStr()) {
+        string? s = v.asStr();
+        if (s != None) { return s; }
+    }
+    if (v.isBool()) {
+        bool? b = v.asBool();
+        if (b != None) { if (b) { return "true"; } return "false"; }
+    }
+    if (v.isNull()) { return ""; }
+    return v.render();
+}
+
+}

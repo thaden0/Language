@@ -1,0 +1,10 @@
+namespace Palette {
+    enum Color : int { Default = -1, Red = 1 }
+    Color first() => Color::Default;
+}
+
+Palette::Color c = Palette::first();
+console.writeln(c.code());
+console.writeln(Palette::Color::Red.toString());
+Palette::Color? decoded = Palette::Color::fromCode(1);
+console.writeln(decoded == None ? "none" : decoded.toString());

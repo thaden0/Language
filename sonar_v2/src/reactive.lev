@@ -1,0 +1,92 @@
+// ======================================================================
+// Sonar T11 — compile-time reactivity (design techdesign-11-reactivity.md).
+//
+// The feature: mark a component field `@Sonar::Reactive`, bind it in a
+// `sonar!` template (`<Text text={this.count}/>`), and a bare write
+// (`count = count + 1`) re-runs the binding — the widget updates. No runtime
+// observer graph, no dirty-checking VM: the update path is static code.
+//
+// Two cooperating pieces (design §2), NO new language capability beyond F4:
+//
+//   Piece 1 (here) — a Layer-B rule injects a `set`-VIEW over the field. The
+//     view's `$f = v` is raw-slot access (info.md §6: an accessor is a view
+//     over the slot, non-recursive by construction — the language's own
+//     accessor rule doing the heavy lifting), so every ordinary write
+//     `count = n` / `this.count = n` routes through it and pings the host.
+//   Piece 2 (component.lev + expander.lev) — the Component binding registry
+//     (`__sonarBind`/`__sonarNotify`) and the `sonar!` emitter's reactive-hole
+//     detection that registers updaters.
+//
+// FORCED DEVIATIONS from §2's literal setter template (both verified against
+// the landed rule engine — reference.md §rules — as absent capabilities, the
+// filed LA-15/LA-16 asks; neither is a compiler change, both are worked around
+// here and pinned by sonar/PROBES.md P12–P14):
+//
+//   (a) No field-TYPE hole. §2's `set $f(<T> v)` cannot spell the parameter
+//       type from the field — `<T>`/`$f.type` is not a reifier. Worked around
+//       with ONE rule per scalar type, gated `where f.type == "..."`. v1
+//       covers int/string/bool/float (every scalar a reactive widget field
+//       uses); other types get a loud compile error via __reactiveGuard below,
+//       and a new type is one more rule.
+//   (b) No field-NAME string. §2's `this.__sonarFieldChanged("$f")` cannot
+//       spell the field name as a string — for a match-bound field subject
+//       `"$f"` stays literal and `$f.name` reifies to `<field>.name` (only a
+//       $for-bound meta::Field VALUE stringizes). So the view calls the
+//       nullary `this.__sonarNotify()` and the registry does GLOBAL fan-out
+//       (component.lev). Observationally identical to per-field notify for
+//       every golden; per-field precision is a one-line change once a
+//       name-stringize reifier lands (LA-15).
+//
+// The encloser is constrained `: Component` — that is exactly the class that
+// declares `__sonarNotify`, so the injected `this.__sonarNotify()` always
+// resolves (every real widget extends Component).
+// ======================================================================
+namespace Sonar {
+
+    attribute Reactive { }
+
+    // One typed set-view per scalar field type (deviation (a)). Each fires once
+    // per matching @Reactive field; `$f` splices the field identifier in both
+    // the accessor selector and the raw-slot write (PROBES.md P12/P13).
+    rule reactiveInt {
+        match @Reactive on field f in class C : Component
+        where f.type == "int"
+        inject `set $f(int v) { $f = v; this.__sonarNotify(); }` at member of C
+    }
+    rule reactiveString {
+        match @Reactive on field f in class C : Component
+        where f.type == "string"
+        inject `set $f(string v) { $f = v; this.__sonarNotify(); }` at member of C
+    }
+    rule reactiveBool {
+        match @Reactive on field f in class C : Component
+        where f.type == "bool"
+        inject `set $f(bool v) { $f = v; this.__sonarNotify(); }` at member of C
+    }
+    rule reactiveFloat {
+        match @Reactive on field f in class C : Component
+        where f.type == "float"
+        inject `set $f(float v) { $f = v; this.__sonarNotify(); }` at member of C
+    }
+
+    // Loud guard for an unsupported @Reactive field type (the @Serializable /
+    // @Injectable sentinel idiom: a `where ... && false` clause never injects,
+    // it runs __reactiveGuard for its throw-with-a-named-message side effect).
+    // Without it, a `@Reactive Array<int>` would silently match no type rule
+    // and quietly not be reactive — exactly the class of silent no-op the
+    // design's §2 "no magic, no lies" stance rejects.
+    bool __reactiveGuard(meta::Field f) {
+        if (f.type == "int" || f.type == "string" || f.type == "bool" || f.type == "float") {
+            return true;
+        }
+        throw RuntimeException("@Sonar::Reactive field '" + f.name + "' has type '" +
+            f.type + "' — v1 reactivity supports scalar int/string/bool/float fields " +
+            "only (add a per-type rule in reactive.lev for another type); see " +
+            "techdesign-11-reactivity.md §2 deviation (a)");
+    }
+    rule reactiveGuard {
+        match @Reactive on field f in class C : Component
+        where Sonar::__reactiveGuard(f) && false
+        inject `0;` at bottom of C.constructor
+    }
+}

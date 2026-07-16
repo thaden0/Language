@@ -1,0 +1,33 @@
+// Bug 4 regression: a bare same-class method call (`show()`, no `this.`) that
+// the checker pre-resolves must still dispatch on the enclosing receiver.
+// Previously the tree-walker passed a null receiver, so field reads went blank.
+int helper() => 99;                       // free fn — must NOT capture `this`
+
+class Simple {
+    int a;
+    int b;
+    new Simple(int x, int y) { a = x; b = y; }
+    void begin() { show(); }               // bare call from a method
+    void show() { console.writeln("a=" + a + " b=" + b); }
+    int viaFree() => helper();             // bare free-fn call from a method
+}
+class Holder {
+    int a;
+    new Holder(int x) { a = x; show(); }   // bare call from a constructor
+    void show() { console.writeln("h=" + a); }
+}
+class Base {
+    int n = 7;
+    void report() { console.writeln("n=" + n); }   // inherited bare call
+}
+class Derived : Base {
+    void go() { report(); }                // bare call resolves to inherited method
+}
+void run() {
+    Simple s = Simple(3, 4);
+    s.begin();                             // a=3 b=4
+    console.writeln(s.viaFree());          // 99
+    Holder h = Holder(5);                  // h=5
+    Derived().go();                        // n=7
+}
+run();

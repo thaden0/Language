@@ -1,0 +1,4 @@
+// File entry: this file's top-level statements are the program; lib.ext is
+// declaration-only.
+console.writeln(Calc::add(40, 2));
+console.writeln("file-entry script");

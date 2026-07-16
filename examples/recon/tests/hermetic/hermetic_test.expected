@@ -1,0 +1,12 @@
+== 200 ok ==
+  status=200 body=[hello] hops=0
+== redirect follow ==
+  status=200 body=[arrived] hops=1
+== auth header echoed ==
+  status=200 body=[auth=[Bearer XYZ]] hops=0
+== set-cookie captured ==
+  status=200 body=[set] hops=0
+== cookie re-attached ==
+  status=200 body=[cookie=[sid=abc123]] hops=0
+== redirect cap ==
+  status=302 body=[] hops=3

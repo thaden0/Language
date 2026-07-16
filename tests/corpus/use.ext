@@ -1,0 +1,35 @@
+// imports.md: `use Path::name (as alias);` — selective import corpus (five-engine).
+// Covers every declaration kind (value, function, class, nested namespace),
+// `as` renaming, file-level shadowing (`use` beats a bulk `uses`), and a
+// block-scoped selective import (bug.md #8's substrate, reused for `use`).
+namespace Lib {
+    int VERSION = 3;
+    int bump(int x) => x + 100;
+    class Box { int n; new Box(int v) { n = v; } }
+    namespace Inner { int tag() => 42; }
+}
+
+// A same-named function in another namespace: proves `use` wins over a bulk
+// `uses` dump of the same name (imports.md §4 — "specific beats bulk").
+namespace Dup { int bump(int x) => x - 1; }
+
+uses Dup;
+use Lib::VERSION;
+use Lib::bump;
+use Lib::Box;
+use Lib::Box as Bx;           // a class, aliased: construction must still find `new Box`
+use Lib::Inner as In;         // nested namespace, aliased: In::tag() still works
+
+void useBlock() {
+    use Lib::VERSION as v2;   // block-scoped selective import (bug.md #8 substrate)
+    console.writeln(v2);
+}
+
+console.writeln(VERSION);        // 3
+console.writeln(bump(5));        // 105, not 4 — `use` beats the `Dup` bulk import
+Box b = Box(9);                  // construction through the imported class
+console.writeln(b.n);            // 9
+Bx c = Bx(11);                   // construction through the ALIASED class
+console.writeln(c.n);            // 11
+console.writeln(In::tag());      // 42 — qualified access through the alias
+useBlock();                      // 3 — the alias reads the SAME global (no copy)

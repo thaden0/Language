@@ -1,0 +1,27 @@
+// Track 10 M6 (techdesign-threads-3 §9.2): channel message churn. A producer
+// worker sends @N@ int messages through a Channel and closes; the main thread
+// consumes them all, draining to None. The harness asserts live-at-exit flat,
+// transfer-outstanding == 0 (every send buffer freed at receive), reaps ==
+// spawns, and (via a low RLIMIT_NOFILE run) fd flatness; it also times the run
+// to record msgs/sec. The producer captures the Channel handle — a portal (§6),
+// so both threads feed the same native ring.
+
+int drain(int n) {
+    Channel<int> ch = Channel(64, std::overflowBlock());
+    Worker<int> producer = std::spawn(() => {
+        int j = 0;
+        while (j < n) { ch.send(j + 1); j = j + 1; }   // 1..n (a 0 payload trips
+        ch.close();                                     // an LLVM int?/None bug, bug.md)
+        return 0;
+    });
+    int count = 0;
+    bool go = true;
+    while (go) {
+        int? v = await ch.receive();
+        if (v != None) { count = count + 1; }
+        else { go = false; }
+    }
+    return count + await producer;    // count + 0
+}
+
+console.writeln("result=" + drain(@N@).toString());   // == @N@

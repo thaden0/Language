@@ -1,0 +1,7 @@
+// LA-20 P1 cost-identity: by pass 2 a successful import() is an ordinary
+// string literal, indistinguishable from a hand-written one. This program
+// and import_twin_hand.lev (the literal pasted in by hand) must produce
+// byte-identical output on every engine.
+comptime string tpl = import("import_twin_fixture.txt");
+console.writeln(tpl);
+console.writeln(tpl.length());

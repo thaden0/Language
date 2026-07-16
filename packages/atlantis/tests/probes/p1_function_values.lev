@@ -1,0 +1,22 @@
+// Fold with lambda middleware (the design's real idiom), untyped lambda params, var locals.
+class Pipe {
+    Array<(string, (string) => string) => string> steps;
+    new Pipe() { this.steps = []; }
+    Pipe use((string, (string) => string) => string m) { this.steps = this.steps.add(m); return this; }
+    (string) => string build((string) => string terminal) => this.foldFrom(0, terminal);
+    (string) => string foldFrom(int i, (string) => string terminal) {
+        if (i >= this.steps.length()) { return terminal; }
+        var m = this.steps.at(i);
+        var next = this.foldFrom(i + 1, terminal);
+        return (s) => m(s, next);
+    }
+}
+void main() {
+    Pipe p = Pipe();
+    p.use((s, next) => "a(" + next(s) + ")");
+    p.use((s, next) => "b(" + next(s) + ")");
+    p.use((s, next) => "c(" + next(s) + ")");
+    var app = p.build((s) => s);
+    console.writeln(app("term"));
+}
+main();

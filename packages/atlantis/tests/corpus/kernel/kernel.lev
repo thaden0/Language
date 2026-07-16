@@ -1,0 +1,99 @@
+// Atlantis Track 01 kernel corpus — the M1–M3 acceptance shape, driven WITHOUT a
+// socket (synthetic requests through the built app), so output is deterministic
+// and identical on oracle + IR + LLVM.
+uses Atlantis::Http;
+uses Atlantis::Log;
+
+// A demo domain exception that is NOT an HttpException (maps to 500).
+class BoomException : Exception, IRuntimeException {
+    new BoomException() { Exception::Exception("kaboom internals"); }
+}
+
+// A readiness check we can flip.
+class FlagCheck : IReadyCheck {
+    string nm;
+    bool up;
+    new FlagCheck(string nm, bool up) { this.nm = nm; this.up = up; }
+    string name() => this.nm;
+    bool ready() => this.up;
+}
+
+HttpRequest mkReq(string method, string path, string body) {
+    HttpRequest r = HttpRequest();
+    int cl = body.length();
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\nContent-Length: " + cl.toString() + "\r\n\r\n" + body);
+    return r;
+}
+
+void hr(HttpResponse r) {
+    console.writeln("  status=" + r.status.toString() +
+        " ctype=" + r.headers.firstOr("Content-Type", "-"));
+    console.writeln("  body=" + r.body);
+}
+
+void main() {
+    CaptureSink sink = CaptureSink();
+    Logger log = Logger(sink, 0);
+    FlagCheck db = FlagCheck("db", true);
+    Array<IReadyCheck> checks = [];
+    checks = checks.add(db);
+
+    // The composition root: the exact fold shape from §1.2 (no AccessLog here so
+    // problem bodies are deterministic — requestId defaults to "-").
+    Pipeline p = Pipeline();
+    p.use(ErrorMapper(log).mw());
+    p.use(BodyLimit(16).mw());
+    p.use(Deadline(5000).mw());
+    p.use(Health(checks).mw());
+    var terminal = (c) => {
+        Context ctx = c;
+        if (ctx.path() == "/boom") { throw BoomException(); }
+        if (ctx.path() == "/notfound") { throw NotFoundException(ctx.path()); }
+        if (ctx.path() == "/bad") { throw BadRequestException("no good"); }
+        if (ctx.path() == "/invalid") {
+            throw ValidationException([FieldError("email", "required"),
+                                       FieldError("age", "must be >= 0")]);
+        }
+        return Respond::text(200, "hello " + ctx.path());
+    };
+    var app = p.build(terminal);
+
+    console.writeln("== ok ==");
+    hr(app(Context(mkReq("GET", "/hi", ""))));
+
+    console.writeln("== healthz ==");
+    hr(app(Context(mkReq("GET", "/healthz", ""))));
+    console.writeln("== readyz (up) ==");
+    hr(app(Context(mkReq("GET", "/readyz", ""))));
+    db.up = false;
+    console.writeln("== readyz (down) ==");
+    hr(app(Context(mkReq("GET", "/readyz", ""))));
+
+    console.writeln("== 404 mapped ==");
+    hr(app(Context(mkReq("GET", "/notfound", ""))));
+    console.writeln("== 400 mapped ==");
+    hr(app(Context(mkReq("GET", "/bad", ""))));
+    console.writeln("== 422 validation ==");
+    hr(app(Context(mkReq("POST", "/invalid", "x"))));
+    console.writeln("== 500 (internals hidden) ==");
+    hr(app(Context(mkReq("GET", "/boom", ""))));
+    console.writeln("== 413 body too large ==");
+    hr(app(Context(mkReq("POST", "/hi", "this body is definitely over sixteen bytes"))));
+
+    // The 500 arm logged the full internal detail server-side (never on the wire).
+    console.writeln("== log lines ==");
+    console.writeln("count=" + sink.count().toString());
+    int i = 0;
+    while (i < sink.count()) {
+        string ln = sink.at(i);
+        console.writeln("  hasKaboom=" + ln.contains("kaboom internals").toString() +
+                        " level=" + (ln.contains("\"level\":\"error\"") ? "error" : "other"));
+        i = i + 1;
+    }
+
+    // Deadline propagation stamped an items key.
+    Context dctx = Context(mkReq("GET", "/hi", ""));
+    HttpResponse dr = app(dctx);
+    console.writeln("== deadline stamped ==");
+    console.writeln("hasDeadline=" + dctx.items.has("deadlineMs").toString());
+}

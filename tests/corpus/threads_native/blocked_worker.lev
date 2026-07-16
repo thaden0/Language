@@ -1,0 +1,18 @@
+// Track 10 M3c acceptance #4 (techdesign-threads-3 §8): blocked-worker isolation
+// — a worker that never terminates does NOT block a SIBLING worker from
+// computing and returning. This is meaningful ONLY with true OS threads: on the
+// cooperative interpreters a spinning worker would monopolize the single loop
+// and the sibling would never run (so this program is LLVM-only, no serial
+// counterpart). The spinner is never awaited; the program exits via env::exit
+// with the sibling's result — the sanctioned way out with a live worker (its
+// reap is intentionally skipped, and only here).
+
+Worker<int> spinner = std::spawn(() => {
+    int i = 0;
+    while (true) { i = i + 1; }
+    return i;                        // unreachable
+});
+Worker<int> sibling = std::spawn(() => 6 * 7);
+int r = await sibling;              // 42 — computed on its own thread while the
+console.writeln(r);                //      spinner spins on another
+env::exit(0);

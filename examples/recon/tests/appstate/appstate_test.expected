@@ -1,0 +1,18 @@
+== buildPrepared ==
+method=POST
+scheme=https host=api.example.com port=443
+pathWithQuery=/v2/users?active=true
+Authorization=Bearer SECRET
+Accept=application/json
+Content-Type=application/json
+Accept-Encoding=identity
+body={"name":"api.example.com"}
+Cookie=sid=xyz
+== onOutcome (tests + extraction + history) ==
+inFlight=false
+PASS status equals 200
+PASS jsonpath $.id equals 7
+history=1
+hist0=200 POST https://{{base}}/{{ver}}/users?active=true
+env token=REFRESHED
+Authorization after extract=Bearer REFRESHED

@@ -1,0 +1,7 @@
+// A free function entry point — no class required (§6.6: a function is a
+// callable with no `this`; it may live at top level, in a namespace, or on a
+// class's static side).
+void main() {
+    console.writeln(Greet::hello());
+    console.writeln(21 + 21);
+}

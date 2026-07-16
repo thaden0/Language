@@ -1,0 +1,23 @@
+// Churn corpus (ARC leak net) — HEAP STRINGS.
+//
+// Strings are tag 4 and USED to be skipped wholesale by the retain/release
+// gate. The §15 strings tier fixed that: heap strings (concat/subStr/toString
+// results) are halloc-prefixed and refcounted like any other reference; the
+// gate discriminates literal-vs-heap by address range (the data segment and
+// the arena sit outside the heap mmap). Each iteration churns three heap
+// strings: a toString, a concat, and a subStr, all dropped. Only `sink`
+// survives, so the root set is CONSTANT in N and live-at-exit must stay flat.
+// @N@ is substituted by fuzz/churn_leak.py.
+string decorate(int seed) {
+    string s = "item-" + seed.toString();   // toString + concat: two heap strings
+    return s.subStr(0, 6);                  // a third; all three are dropped
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        string s = decorate(i);             // fresh heap strings each iteration...
+        sink = sink + s.length();
+    }                                       // ...dropped; the ARC reclaims every one
+    console.writeln(sink);
+}
+run(@N@);

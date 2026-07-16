@@ -1,0 +1,35 @@
+// The sanctioned workaround for bug #41: the element carrying an
+// enum-typed field is a `class`, not a `struct`, so it is individually
+// heap-allocated/refcounted and immune to the dense-array staleness.
+// Structurally identical to aggregates/red/array_struct_enum_stale.lev
+// except Rec is `class`.
+enum Kind { Alpha, Beta, Gamma }
+class Rec { int mods; Kind kind; char ch; new Rec(int m, Kind k, char c) { mods = m; kind = k; ch = c; } }
+
+class Holder {
+    Array<Rec> items = [];
+    void store(int m, Kind k, char c) { items = items.add(Rec(m, k, c)); }
+    bool matches(int m, Kind k) {
+        for (Rec r in items) { if (r.mods == m && r.kind == k) return true; }
+        return false;
+    }
+}
+
+struct FillPair { int a; int b; int c; int d; }
+class Filler {
+    Array<int> f1 = []; Array<int> f2 = []; Array<int> f3 = []; Array<int> f4 = [];
+    Array<int> f5 = []; Array<int> f6 = []; Array<int> f7 = []; Array<int> f8 = [];
+    Array<int> f9 = []; Array<int> f10 = []; Array<int> f11 = []; Array<int> f12 = [];
+    Array<int> f13 = []; Array<int> f14 = []; Array<int> f15 = [];
+    FillPair rect = FillPair(0, 0, 0, 0);
+    FillPair insets = FillPair(1, 1, 1, 1);
+    Kind kind = Kind::Beta;
+}
+
+void main() {
+    Holder h = Holder();
+    h.store(17, Kind::Alpha, 'Q');
+    Filler filler = Filler();
+    console.writeln(h.matches(17, Kind::Alpha));
+}
+main();

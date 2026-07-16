@@ -1,0 +1,3 @@
+// Falls off the end with no exit call — the conventional success status 0.
+// designs/exit-codes.md §7.
+console.writeln("done");

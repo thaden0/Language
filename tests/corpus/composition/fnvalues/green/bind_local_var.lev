@@ -1,0 +1,19 @@
+// Regression floor for bug #56 (a block-scope `bind IFace => localVar;`
+// bare local-variable reference used to inject a value whose interface
+// method dispatch failed). Fixed 2026-07-14 on master (inline the bind body
+// at the inject site); this repro is byte-identical to the original bug
+// report. See also the adjacent `=> Ctor()`/`=> globalVar` forms at
+// fnvalues/green/bind_ctor_factory.lev and
+// fnvalues/green/bind_global_singleton.lev.
+interface ICounter { int next(); }
+class Counter : ICounter {
+    int n = 0;
+    int next() { this.n = this.n + 1; return this.n; }
+}
+int useCounter(ICounter c) => c.next();
+void localVarForm() {
+    Counter local = Counter();
+    bind ICounter => local;
+    console.writeln(useCounter(inject ICounter).toString());
+}
+localVarForm();

@@ -1,0 +1,29 @@
+// Recon entry point (DESIGN §10.4). Top-level main() so `entry = "main"` resolves
+// it (the toolchain synthesizes a top-level `main();` call). Reads env at the top
+// level (bug #68), composes the DI root, and launches.
+uses Sonar;
+uses Recon;
+
+void main() {
+    // env reads at the TOP LEVEL (bug #68), then pass values down.
+    string home = env::get("HOME") ?? ".";
+    string cfg = home + "/.config/recon";
+    std::sysMkdir(home + "/.config");
+    ensureDirs(cfg);
+
+    Array<string> args = env::args();          // optional: a collection path to open on launch
+
+    // DI composition root (follow the shipped Sonar examples' setter/bind mix).
+    bind ITheme       => loadReconTheme(cfg);
+    bind IRenderer    => AnsiRenderer();
+    bind IInputSource => StdinSource();
+
+    ReconApp recon = ReconApp(cfg, args);
+    recon.run();                               // App.run() — blocks until quit(); teardown via using
+}
+
+// The shipped Recon theme (TOML), or a built-in fallback.
+Theme loadReconTheme(string cfg) {
+    // built-in default; a full impl would import() the packaged themes/recon.toml
+    return Theme::Dark();
+}

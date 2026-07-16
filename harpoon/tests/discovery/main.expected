@@ -1,0 +1,17 @@
+      (LifecycleTests torn down)
+      (LifecycleTests torn down)
+harpoon: 9 tests, 4 classes
+  BadTests::badSignature ................ ERROR
+      @Test requires 'void m()' (got a return value or parameters)
+  LifecycleTests::passes ................ ok
+  LifecycleTests::fails ................. FAIL
+      deliberate lifecycle failure
+  MathTests::addsNumbers ................ ok
+  MathTests::subtractsNumbers ........... ok
+  StringTests::concatenates ............. ok
+  StringTests::rejectsEmptyName ......... FAIL
+      assertEqual: expected "" but was "bob"
+  StringTests::explodes ................. ERROR
+      boom
+  StringTests::flaky .................... skip
+9 run: 4 ok, 2 FAIL, 2 ERROR, 1 skip

@@ -1,0 +1,20 @@
+// bug #54 acceptance §5.5 (no regression to unspecialized generics): a generic
+// body that calls NO overloaded free function on its type parameter (and has
+// no `T::member`) must NOT be specialized — it compiles exactly once with
+// ordinary erased/dynamic dispatch. `wrap<T>` only calls the single (non-
+// overloaded) `tagOf` and the type parameter's own dynamic `toString`, so the
+// widened trigger stays silent (verified separately via `--specializations`,
+// which prints nothing for this program).
+namespace P {
+    string tagOf(string s) => "[" + s + "]";
+
+    Array<string> wrap<T>(Array<T> v) {
+        Array<string> out = [];
+        for (T item in v) { out = out.add(P::tagOf(item.toString())); }
+        return out;
+    }
+}
+uses P;
+
+Array<int> xs = [1, 2];
+console.write(P::wrap(xs).joinToString(","));

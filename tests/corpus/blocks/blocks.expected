@@ -1,0 +1,21 @@
+8
+Block(len=8)
+72
+Hi
+305419896
+-1
+1099511627776
+2
+20
+99
+99
+5
+hello
+111
+ell
+throw: byteAt
+throw: setByte range
+throw: int32At OOB
+throw: slice OOB
+throw: toString OOB
+done

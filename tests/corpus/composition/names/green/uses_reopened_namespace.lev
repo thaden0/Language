@@ -1,0 +1,27 @@
+// Regression floor for bug #45 (`uses NS;` used to not resolve bare names
+// for code lexically nested inside this file's own reopening of the
+// SAME-ROOTED namespace, after the `uses` statement). Fixed 2026-07-14 on
+// master (re-parent top-level namespace scopes to the file import overlay).
+// See also names/green/qualified_reopened_namespace.lev and
+// names/green/uses_bare_no_reopen.lev.
+namespace A {
+    namespace B {
+        class Context { int x = 1; }
+        class Response { int status = 200; }
+    }
+}
+uses A::B;
+namespace A {
+    namespace C {
+        class Thing {
+            Context c;      // bare field, auto-constructs (§3)
+            Response mk() => Response();
+        }
+    }
+}
+void main() {
+    A::C::Thing t = A::C::Thing();
+    console.writeln(t.c.x.toString());
+    console.writeln(t.mk().status.toString());
+}
+main();

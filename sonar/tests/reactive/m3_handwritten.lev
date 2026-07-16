@@ -1,0 +1,80 @@
+uses Sonar;
+
+// T11 M3/M5 — the reactive substrate exercised through HAND-WRITTEN bindings
+// (the exact registrations the `sonar!` macro emits, but spelled out so the
+// runtime contract is pinned independently of the template layer). Covers:
+// basic binding, multi-hole, cycle-settle (global fan-out + one-pass guard),
+// detach-clears, and updater-exception containment.
+
+// ---- 1. basic + multi-hole: two Texts bound to the same @Reactive field ----
+class Dashboard : Container {
+    @Sonar::Reactive int count = 0;
+    Text a;
+    Text b;
+    new Dashboard() {
+        a = Text(); b = Text();
+        this.add(this.a); this.add(this.b);
+        this.__sonarBind("count", () => { this.a.text("A=" + this.count.toString()); });
+        this.__sonarBind("count", () => { this.b.text("B=" + this.count.toString()); });
+    }
+}
+
+// ---- 2. cycle-settle: two @Reactive fields whose bindings write each other.
+// Global fan-out re-runs BOTH bindings on ANY reactive write; the single
+// re-entrancy bool suppresses the nested notify so A->B->A settles in one pass
+// (no livelock, last-writer-wins).
+class Cyc : Container {
+    @Sonar::Reactive int a = 0;
+    @Sonar::Reactive int b = 0;
+    string trace = "";
+    new Cyc() {
+        this.__sonarBind("a", () => {
+            this.trace = this.trace + "a" + this.a.toString();
+            if (this.b < this.a) this.b = this.a;
+        });
+        this.__sonarBind("b", () => {
+            this.trace = this.trace + "b" + this.b.toString();
+            if (this.a < this.b) this.a = this.b;
+        });
+    }
+}
+
+// ---- 3. updater-exception containment: a throwing binding must not kill the
+// write path or the other bindings (§5 #3). ----
+class Broken : Container {
+    @Sonar::Reactive int n = 0;
+    int good = 0;
+    new Broken() {
+        this.__sonarBind("bad", () => { throw RuntimeException("boom"); });
+        this.__sonarBind("n", () => { this.good = this.good + 1; });
+    }
+}
+
+void main() {
+    // 1. basic + multi-hole
+    Dashboard d = Dashboard();
+    console.writeln("t0 " + d.a.text + " " + d.b.text);   // initial render at bind time
+    d.count = 5;
+    console.writeln("t1 " + d.a.text + " " + d.b.text);   // both holes update
+    d.count = d.count + 1;
+    console.writeln("t2 " + d.a.text + " " + d.b.text);
+
+    // 2. cycle-settle
+    Cyc c = Cyc();
+    console.writeln("cyc.init " + c.trace + " a=" + c.a.toString() + " b=" + c.b.toString());
+    c.a = 3;
+    console.writeln("cyc.a=3 " + c.trace + " a=" + c.a.toString() + " b=" + c.b.toString());
+    c.b = 1;
+    console.writeln("cyc.b=1 " + c.trace + " a=" + c.a.toString() + " b=" + c.b.toString());
+
+    // detach clears: a reactive write after detach fires no binding, no throw
+    d.__sonarDetach();
+    d.count = 99;
+    console.writeln("detached " + d.a.text + " (count=" + d.count.toString() + ")");  // text frozen at t2
+
+    // 3. exception containment
+    Broken br = Broken();
+    console.writeln("broken.init good=" + br.good.toString());  // 1 (bad threw+caught, n ran)
+    br.n = 7;
+    console.writeln("broken.n=7 good=" + br.good.toString());   // 2 (bad threw+caught, n ran again)
+}

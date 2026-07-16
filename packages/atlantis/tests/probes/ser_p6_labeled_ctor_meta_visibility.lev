@@ -1,0 +1,21 @@
+// P-6: labeled ctors' visibility + naming in meta::Class.methods.
+namespace Probe {
+    interface ISerializable { }
+    attribute Serializable { }
+    rule p6 {
+        match @Serializable on class C
+        where C.hasBase("ISerializable")
+        inject `string ctorNames() =>
+            [ $for m in C.methods.where((x) => x.name == "FromJson") : $m.name ].joinToString(",");`
+            at member of C
+    }
+}
+uses Probe;
+
+@Serializable
+class Widget : ISerializable {
+    int a;
+    new FromJson(int v) { a = v; }
+}
+Widget w = Widget::FromJson(1);
+console.write(w.ctorNames());

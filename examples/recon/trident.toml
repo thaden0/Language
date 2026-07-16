@@ -1,0 +1,16 @@
+# examples/recon/trident.toml  (DESIGN §3.2)
+name    = "recon"
+entry   = "main"                       # top-level main() in src/main.lev
+sources = [
+    "src/*.lev",
+    "src/model/*.lev",
+    "src/net/*.lev",
+    "src/io/*.lev",
+    "src/eval/*.lev",
+    "src/ui/*.lev",
+]
+
+[[dep]]
+path    = "../../sonar"
+as      = "Sonar"
+version = "0.1.0"

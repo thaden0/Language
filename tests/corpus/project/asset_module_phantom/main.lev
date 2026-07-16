@@ -1,0 +1,4 @@
+// LA-20 §5: assets do not cross module boundaries — the app cannot reach
+// into a dep's asset table by path, even though the dep declared it.
+comptime string t = import("views/lib.html");
+console.writeln(t);

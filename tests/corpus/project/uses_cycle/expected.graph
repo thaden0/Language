@@ -1,0 +1,15 @@
+[graph] uses include graph (file -> file dependencies via `uses`) + build order
+[graph] namespaces (declared-in / imported-by):
+[graph]   A
+[graph]     declared-in: a.ext
+[graph]     imported-by: b.ext, main.ext
+[graph]   B
+[graph]     declared-in: b.ext
+[graph]     imported-by: a.ext
+[graph] file dependencies (A -> B: A `uses` a namespace B declares):
+[graph]   a.ext -> b.ext
+[graph]   b.ext -> a.ext
+[graph]   main.ext -> a.ext
+[graph] cycles: 
+[graph]   { a.ext, b.ext }
+[graph] build order: a.ext, b.ext, main.ext

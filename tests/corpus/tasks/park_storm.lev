@@ -1,0 +1,81 @@
+// LA-30 doc 5 §4 "park_storm.lev" — 10k parked tasks settle in waves; stats
+// sanity. Reshaped to TaskGroup children (bug #35 reject route A). 10000 tasks
+// are started, each awaiting its own promise (stored in a shared top-level
+// Array<Promise<int>>, referenced by name); five staggered 0/2/4/6/8ms timers
+// each resolve one 2000-task wave. Verified on oracle/IR: completes well within
+// the harness budget (~2.5s) with all 10000 workers parked simultaneously
+// before any wave fires (LANG_TASK_STATS=1 shows peak_parked=10001), then
+// draining cleanly.
+//
+// The original started each awaiter with `std::spawn`, whose body awaited a
+// bare top-level Promise resolved on the spawner's thread — the A-1 violation
+// bug #35 now rejects loudly on EVERY engine (pin:
+// spawn_global_promise_container_rejected.lev covers the Array<Promise> leg),
+// so the file had to be reshaped even to stay green on the interpreters. The
+// sanctioned multi-awaiter shape is same-thread `TaskGroup` children (`g.run`);
+// the main task `await done` pumps the loop so every child resumes and
+// completes before the group's `using` close() (which would otherwise cancel
+// the still-parked children).
+//
+// INTERPRETERS-ONLY (a NEW, #35-independent reason — not the old bare-Promise
+// gap, which is now fixed): building 10000 promises via the copy-on-write
+// `proms = proms.add(np)` (unavoidable — it is the value-collection idiom, and
+// TaskGroup's own `live` id array does the same) leaks its intermediate array
+// buffers on the LLVM runtime's FIXED 256 MiB bump heap — O(N^2) total, so
+// N=10000 exhausts it (verified: `build(10000)` alone dies "lvrt: heap
+// exhausted"; N<=~4000 fits). The interpreters' unbounded C++ heap absorbs it.
+// This is a latent native COW-array reclamation defect, exposed only now that
+// #35's fix would otherwise let this file onto the native lane; it is a
+// distinct exclusion from #35, kin to recursion_depth.lev's interpreter-stack
+// sizing. See the corpus_tasks_llvm CMake comment.
+//
+// A per-task result aggregation is deliberately NOT added: the `[tasks]` stats
+// line (spawned/completed/peak_parked) is the contract-level proof, not program
+// stdout (G13). The top-level `console.writeln("done")` now prints AFTER the
+// group closes rather than before the tasks run — the only stdout line either
+// way, so the assertion is unchanged.
+Array<Promise<int>> proms;
+Promise<int> done = Promise();
+
+void build(int n) {
+    int i = 0;
+    while (i < n) {
+        Promise<int> np = Promise();
+        proms = proms.add(np);
+        i = i + 1;
+    }
+}
+
+void runAll(int n, int waves) {
+    using TaskGroup g = TaskGroup();
+    int j = 0;
+    while (j < n) {
+        int idx = j;
+        g.run(() => {
+            int v = await proms.at(idx);
+        });
+        j = j + 1;
+    }
+    int w = 0;
+    while (w < waves) {
+        int waveIdx = w;
+        std::sysTimerStart(waveIdx * 2, 0, (t) => {
+            int k = waveIdx * (n / waves);
+            int kEnd = k + (n / waves);
+            while (k < kEnd) {
+                proms.at(k).resolve(1);
+                k = k + 1;
+            }
+        });
+        w = w + 1;
+    }
+    // Pump the loop until every wave has fired and every child has resumed and
+    // completed, THEN close() (using-scope) finds nothing to cancel.
+    std::sysTimerStart(waves * 2 + 20, 0, (t) => { done.resolve(0); });
+    int x = await done;
+}
+
+int N = 10000;
+build(N);
+runAll(N, 5);
+console.writeln("done");

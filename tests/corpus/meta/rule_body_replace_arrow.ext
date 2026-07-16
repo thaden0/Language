@@ -1,0 +1,19 @@
+// Layer D (metaprog Phase 4 §2.2): the minimal body-replacing rule. `$body` in
+// EXPRESSION position captures an arrow method's value expression, so `replace`
+// composes with the original body instead of obliterating it — the original
+// `n + 1` is spliced back in where `$body` appears.
+namespace M {
+    attribute Doubled { }
+    rule dbl rewrites body of m {
+        match @Doubled on method m
+        replace `return ($body) * 2;`
+    }
+}
+uses M;
+
+class Calc {
+    @Doubled
+    int base(int n) => n + 1;
+}
+
+console.writeln(Calc().base(4));   // (4 + 1) * 2 = 10

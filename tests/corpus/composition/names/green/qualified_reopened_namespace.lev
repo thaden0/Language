@@ -1,0 +1,23 @@
+// Fully-qualified access (no `uses` at all) into a same-rooted namespace
+// reopened later in the file — the sanctioned workaround for bug #37/#45's
+// family, working sibling of names/green/uses_reopened_namespace.lev.
+namespace A {
+    namespace B {
+        class Context { int x = 1; }
+        class Response { int status = 200; }
+    }
+}
+namespace A {
+    namespace C {
+        class Thing {
+            B::Context c;      // bare field, auto-constructs (§3)
+            B::Response mk() => B::Response();
+        }
+    }
+}
+void main() {
+    A::C::Thing t = A::C::Thing();
+    console.writeln(t.c.x.toString());
+    console.writeln(t.mk().status.toString());
+}
+main();

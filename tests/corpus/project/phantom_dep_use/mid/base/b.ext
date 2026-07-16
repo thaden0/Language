@@ -1,0 +1,1 @@
+namespace Base { public int val() => 10; }

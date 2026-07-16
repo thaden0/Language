@@ -1,0 +1,242 @@
+// Persistence & config (DESIGN §8). All files JSON, built via JsonValue +
+// renderPretty(2). File I/O uses `using` for guaranteed close on every exit edge.
+namespace Recon {
+
+// App settings persisted to settings.json.
+class Settings {
+    public string themeName = "recon";
+    public int    defaultTimeoutMs = 30000;
+    public bool   followRedirects = true;
+    public string activeSession = "default";
+    public bool   clearSessionCookiesOnExit = false;
+    new Settings() { }
+}
+
+// --- low-level file helpers (§8) ---
+
+string readAll(string path) {
+    if (!std::fileExists(path)) { return ""; }
+    using File f = File(path, std::read);
+    return f.read(f.size());               // size() gives the byte length up front (R §4.8)
+}
+
+void writeAll(string path, string text) {
+    using File f = File(path, std::write);
+    f.write(text);
+}
+
+// --- config dir layout ---
+
+string sessionsDir(string root)     => root + "/sessions";
+string environmentsDir(string root) => root + "/environments";
+string sessionPath(string root, string name)     => sessionsDir(root) + "/" + name + ".json";
+string environmentPath(string root, string name) => environmentsDir(root) + "/" + name + ".json";
+string historyPath(string root)  => root + "/history.json";
+string settingsPath(string root) => root + "/settings.json";
+
+void ensureDirs(string root) {
+    std::sysMkdir(root);
+    std::sysMkdir(sessionsDir(root));
+    std::sysMkdir(environmentsDir(root));
+}
+
+// --- cookie jar (de)serialization ---
+
+JsonValue cookieToJson(Cookie c) {
+    return jObj([
+        Pair::Of("name", jStrNode(c.name)),
+        Pair::Of("value", jStrNode(c.value)),
+        Pair::Of("domain", jStrNode(c.domain)),
+        Pair::Of("path", jStrNode(c.path)),
+        Pair::Of("secure", jBoolNode(c.secure)),
+        Pair::Of("httpOnly", jBoolNode(c.httpOnly)),
+        Pair::Of("hostOnly", jBoolNode(c.hostOnly)),
+        Pair::Of("session", jBoolNode(c.session)),
+        Pair::Of("expiresEpochMs", JsonValue::ofNum(intToFloat(c.expiresEpochMs))),
+        Pair::Of("sameSite", jStrNode(c.sameSite))
+    ]);
+}
+
+Cookie cookieFromJson(JsonValue v) {
+    Cookie c = Cookie();
+    c.name = jStr(v, "name", "");
+    c.value = jStr(v, "value", "");
+    c.domain = jStr(v, "domain", "");
+    c.path = jStr(v, "path", "/");
+    c.secure = jBool(v, "secure", false);
+    c.httpOnly = jBool(v, "httpOnly", false);
+    c.hostOnly = jBool(v, "hostOnly", true);
+    c.session = jBool(v, "session", true);
+    c.expiresEpochMs = jIntField(v, "expiresEpochMs", 0);
+    c.sameSite = jStr(v, "sameSite", "");
+    return c;
+}
+
+JsonValue jarToJson(CookieJar jar) {
+    Array<JsonValue> arr = [];
+    for (Cookie c in jar.cookies) { arr = arr.add(cookieToJson(c)); }
+    return jArrayOf(arr);
+}
+
+CookieJar jarFromJson(JsonValue v) {
+    CookieJar jar = CookieJar();
+    Array<JsonValue>? a = v.asArray();
+    if (a != None) {
+        Array<JsonValue> arr = a ?? [];
+        for (JsonValue cn in arr) { jar.cookies = jar.cookies.add(cookieFromJson(cn)); }
+    }
+    return jar;
+}
+
+// --- sessions ---
+
+JsonValue sessionToJson(Session s) {
+    return jObj([
+        Pair::Of("name", jStrNode(s.name)),
+        Pair::Of("activeEnvName", jStrNode(s.activeEnvName)),
+        Pair::Of("cookies", jarToJson(s.jar))
+    ]);
+}
+
+Session sessionFromJson(JsonValue v) {
+    Session s = Session::Named(jStr(v, "name", "default"));
+    s.activeEnvName = jStr(v, "activeEnvName", "");
+    JsonValue? ck = jField(v, "cookies");
+    if (ck != None) { JsonValue cn = ck ?? JsonValue::ofNull(); s.jar = jarFromJson(cn); }
+    return s;
+}
+
+void saveSession(string root, Session s) {
+    ensureDirs(root);
+    writeAll(sessionPath(root, s.name), sessionToJson(s).renderPretty(2));
+}
+
+Session? loadSession(string root, string name) {
+    string text = readAll(sessionPath(root, name));
+    if (text.isEmpty()) { return None; }
+    JsonValue? doc = json::parse(text);
+    if (doc != None) { JsonValue d = doc ?? JsonValue::ofNull(); return sessionFromJson(d); }
+    return None;
+}
+
+// --- history ---
+
+JsonValue historyEntryToJson(HistoryEntry e) {
+    return jObj([
+        Pair::Of("method", jStrNode(e.method)),
+        Pair::Of("url", jStrNode(e.url)),
+        Pair::Of("status", JsonValue::ofNum(intToFloat(e.status))),
+        Pair::Of("elapsedMs", JsonValue::ofNum(intToFloat(e.elapsedMs))),
+        Pair::Of("bodySize", JsonValue::ofNum(intToFloat(e.bodySize))),
+        Pair::Of("timestamp", jStrNode(e.timestamp)),
+        Pair::Of("requestJson", jStrNode(e.requestJson)),
+        Pair::Of("responsePreview", jStrNode(e.responsePreview))
+    ]);
+}
+
+HistoryEntry historyEntryFromJson(JsonValue v) {
+    HistoryEntry e = HistoryEntry();
+    e.method = jStr(v, "method", "GET");
+    e.url = jStr(v, "url", "");
+    e.status = jIntField(v, "status", 0);
+    e.elapsedMs = jIntField(v, "elapsedMs", 0);
+    e.bodySize = jIntField(v, "bodySize", 0);
+    e.timestamp = jStr(v, "timestamp", "");
+    e.requestJson = jStr(v, "requestJson", "");
+    e.responsePreview = jStr(v, "responsePreview", "");
+    return e;
+}
+
+void saveHistory(string root, History h) {
+    ensureDirs(root);
+    Array<JsonValue> arr = [];
+    for (HistoryEntry e in h.entries) { arr = arr.add(historyEntryToJson(e)); }
+    writeAll(historyPath(root), jArrayOf(arr).renderPretty(2));
+}
+
+History loadHistory(string root) {
+    History h = History();
+    string text = readAll(historyPath(root));
+    if (text.isEmpty()) { return h; }
+    JsonValue? doc = json::parse(text);
+    if (doc != None) {
+        JsonValue d = doc ?? JsonValue::ofNull();
+        Array<JsonValue>? a = d.asArray();
+        if (a != None) {
+            Array<JsonValue> arr = a ?? [];
+            Array<HistoryEntry> entries = [];
+            for (JsonValue en in arr) { entries = entries.add(historyEntryFromJson(en)); }
+            h.entries = entries;
+        }
+    }
+    return h;
+}
+
+// --- settings ---
+
+JsonValue settingsToJson(Settings s) {
+    return jObj([
+        Pair::Of("themeName", jStrNode(s.themeName)),
+        Pair::Of("defaultTimeoutMs", JsonValue::ofNum(intToFloat(s.defaultTimeoutMs))),
+        Pair::Of("followRedirects", jBoolNode(s.followRedirects)),
+        Pair::Of("activeSession", jStrNode(s.activeSession)),
+        Pair::Of("clearSessionCookiesOnExit", jBoolNode(s.clearSessionCookiesOnExit))
+    ]);
+}
+
+Settings settingsFromJson(JsonValue v) {
+    Settings s = Settings();
+    s.themeName = jStr(v, "themeName", "recon");
+    s.defaultTimeoutMs = jIntField(v, "defaultTimeoutMs", 30000);
+    s.followRedirects = jBool(v, "followRedirects", true);
+    s.activeSession = jStr(v, "activeSession", "default");
+    s.clearSessionCookiesOnExit = jBool(v, "clearSessionCookiesOnExit", false);
+    return s;
+}
+
+void saveSettings(string root, Settings s) {
+    ensureDirs(root);
+    writeAll(settingsPath(root), settingsToJson(s).renderPretty(2));
+}
+
+Settings loadSettings(string root) {
+    string text = readAll(settingsPath(root));
+    if (text.isEmpty()) { return Settings(); }
+    JsonValue? doc = json::parse(text);
+    if (doc != None) { JsonValue d = doc ?? JsonValue::ofNull(); return settingsFromJson(d); }
+    return Settings();
+}
+
+// --- environments (reuse the Postman shape via importer/exporter) ---
+
+void saveEnvironment(string root, Environment e) {
+    ensureDirs(root);
+    writeAll(environmentPath(root, e.name), exportEnvironment(e).renderPretty(2));
+}
+
+Environment? loadEnvironment(string root, string name) {
+    string text = readAll(environmentPath(root, name));
+    if (text.isEmpty()) { return None; }
+    JsonValue? doc = json::parse(text);
+    if (doc != None) { JsonValue d = doc ?? JsonValue::ofNull(); return importEnvironment(d); }
+    return None;
+}
+
+// --- small numeric helpers (JSON numbers are floats) ---
+
+float intToFloat(int n) => n.toFloat();
+
+int jIntField(JsonValue v, string key, int dflt) {
+    if (!v.isObject()) { return dflt; }
+    JsonValue? f = v.atOrNone(key);
+    if (f != None) {
+        JsonValue node = f ?? JsonValue::ofNull();
+        float? n = node.asNum();
+        if (n != None) { float fn = n ?? 0.0; return fn.toInt(); }
+        string? s = node.asStr();
+        if (s != None) { string sv = s ?? ""; int? iv = sv.toInt(); return iv ?? dflt; }
+    }
+    return dflt;
+}
+
+}

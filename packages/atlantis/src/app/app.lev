@@ -1,0 +1,75 @@
+// Atlantis Track 04 — Atlantis::App, the app-hosted command dispatcher (design §6, R3).
+//
+// Trident scaffolds and builds; it never runs dependency code. The built app binary
+// hosts its own operations: `./myapp serve | migrate | routes | openapi | mcp | <own>`.
+// Builtins are just registrations (§6.2) — the owning tracks export Command factories;
+// main.lev registers them like any app command, so a JSON-only app that never imports
+// the ORM simply has no `migrate`, honestly.
+//
+// P-7 (fn-typed field in a class + Array<Command> + call-through) probed GREEN on
+// oracle/IR/LLVM (§13), so Command ships as the record shape — no ICommand fallback.
+//
+// argv/exit landed after the design was written (§12 coordinator note), so the
+// "serve-only until argv lands" fallback is retired: main() passes env::args() and the
+// dispatcher reaches every command from day one. `run` takes argv as a PARAMETER (never
+// reads the process directly), so the acceptance corpus drives it on every engine.
+namespace Atlantis {
+    namespace App {
+
+        // A registered operation. The handler receives the loaded Config and the
+        // post-subcommand argv tail, and returns a process exit code (§6.4).
+        class Command {
+            string name;
+            string description;
+            (Config::Config, Array<string>) => int handler;
+            new Command(string name, string description,
+                        (Config::Config, Array<string>) => int handler) {
+                this.name = name;
+                this.description = description;
+                this.handler = handler;
+            }
+        }
+
+        class Application {
+            string name = "app";
+            Config::Config config = Config::empty();            // replaced at boot with the real load
+            Array<Command> commands = [];                       // builtins + app-defined, uniform
+            void register(Command c) { this.commands = this.commands.add(c); }
+            Command? find(string cmd) => this.commands.find((c) => c.name == cmd);
+        }
+
+        // §6.1 usage/help: lists every registered command in registration order.
+        void printUsage(Application app) {
+            console.writeln("usage: " + app.name + " <command> [args]");
+            console.writeln("");
+            console.writeln("commands:");
+            for (Command c in app.commands) {
+                console.writeln("  " + c.name.padEnd(12, " ") + c.description);
+            }
+            console.writeln("  " + "help".padEnd(12, " ") + "Show this message");
+        }
+
+        // §6.1 the dispatcher. argv[0] is the program name (as from env::args()); no
+        // subcommand defaults to `serve` (§6). Unknown command → usage + exit 1.
+        int run(Application app, Array<string> argv) {
+            string cmd = "serve";                               // DEFAULT: bare invocation serves
+            Array<string> rest = [];
+            if (argv.length() >= 2) {
+                cmd = argv.at(1);
+                rest = argv.skip(2);
+            }
+            if (cmd == "help" || cmd == "--help" || cmd == "-h") {
+                printUsage(app);
+                return 0;
+            }
+            Command? found = app.find(cmd);
+            if (found == None) {
+                console.writeln("unknown command: " + cmd);
+                printUsage(app);
+                return 1;                                       // §6.4: 1 = unknown/failure
+            } else {
+                return found.handler(app.config, rest);         // else-arm narrows found
+            }
+        }
+    }
+}

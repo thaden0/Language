@@ -1,0 +1,23 @@
+// XFAIL: columnar IndexStore leaks its VALUE operand, exactly as the row-major
+// dense_index_set.ext does (this is its columnar mirror). `arr[i] = q` scatters
+// q's fields across the columns, but q's standalone heap copy is never freed
+// (~48B/iteration) — idxset cannot free it (the source local may still be read).
+// The fix is the SAME Lower-side liveness (a VFree at the consuming site) or
+// arena routing that dense needs; a shared stretch goal, not a v1 gate
+// (techdesign-columnar-arrays.md §6.1, plan §3.2). Inherited, not introduced.
+struct Pt { int x; int y; }
+void run(int n) {
+    Pt p;
+    Array<Pt> pts;
+    for (int i in 0..3) { pts = pts.add(p); }
+    int sink = 0;
+    for (int i in 1..n) {
+        Pt q;
+        q.x = i;
+        q.y = i;
+        pts[i - (i / 4) * 4] = q;   // columnar set: scatter in place, but q's copy leaks
+        sink = sink + pts[0].x;
+    }
+    console.writeln(sink);
+}
+run(@N@);

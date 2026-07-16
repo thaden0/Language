@@ -1,0 +1,26 @@
+// bug #54 acceptance §5.4: per-instantiation overload resolution in a generic
+// body works for BOTH a value `struct` (Money) AND a reference `class` (Tag)
+// as the type parameter, alongside a primitive (int) — each element type
+// selects its own concrete `enc` overload inside the specialized copy.
+namespace P {
+    struct Money { int cents; new Money(int c) { this.cents = c; } }
+    class Tag { string t; new Tag(string t) { this.t = t; } }
+
+    string enc(int v) => "N" + v.toString();
+    string enc(Money v) => "M" + v.cents.toString();
+    string enc(Tag v) => "T" + v.t;
+
+    Array<string> encAll<T>(Array<T> v) {
+        Array<string> out = [];
+        for (T item in v) { out = out.add(P::enc(item)); }
+        return out;
+    }
+}
+uses P;
+
+Array<int> ns = [1];
+Array<P::Money> ms = [P::Money(50), P::Money(75)];
+Array<P::Tag> ts = [P::Tag("x")];
+console.write(P::encAll(ns).joinToString(",") + "|" +
+              P::encAll(ms).joinToString(",") + "|" +
+              P::encAll(ts).joinToString(","));

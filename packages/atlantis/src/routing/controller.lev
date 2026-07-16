@@ -1,0 +1,101 @@
+// Atlantis Track 02 — Controller base: response + Era-A binding helpers (design
+// §3.1). Per the R10 revision (§0R.5) the base carries neither a `Router` field
+// nor base-ctor route registration — controllers are activated per-request from
+// an explicit factory (§0R.3); this is purely the helper/response surface. DI of
+// the controller's OWN dependencies (an `IUserService`, etc.) stays constructor-
+// based and is the caller's concern, unchanged.
+namespace Atlantis {
+    namespace Routing {
+
+        // The rules' match constraint target (§3.1) — cheap, stable, and still
+        // useful once the attribute-rule wiring (§2, blocked per the design's
+        // §13 log) lands; every `Controller` satisfies it today for free.
+        interface IController {}
+
+        HttpResponse respondJson(int status, JsonValue v) {
+            HttpResponse r = HttpResponse(status, v.render());
+            r.withHeader("Content-Type", "application/json");
+            return r;
+        }
+
+        // §1.3's own query-string parsing (reference.md §6.6.57 lists
+        // URL-string parsing as roadmap — no native exists yet).
+        Map<string, string> parseQuery(string rawPath) {
+            Map<string, string> result = Map();
+            int q = rawPath.indexOf("?");
+            if (q < 0) { return result; }
+            string qs = rawPath.subStr(q + 1, rawPath.length() - (q + 1));
+            if (qs == "") { return result; }
+            for (string pair in qs.split("&")) {
+                if (pair != "") {
+                    int eq = pair.indexOf("=");
+                    string k = eq >= 0 ? pair.subStr(0, eq) : pair;
+                    string v = eq >= 0 ? pair.subStr(eq + 1, pair.length() - (eq + 1)) : "";
+                    string? dk = encoding::percentDecode(k);
+                    string? dv = encoding::percentDecode(v);
+                    result[dk ?? k] = dv ?? v;
+                }
+            }
+            return result;
+        }
+
+        class Controller : IController {
+
+            // -- response helpers (§3.1; all RETURN — throwing is the C4
+            // channel and is equally fine, per the design's own note) --
+            HttpResponse ok(JsonValue v) => respondJson(200, v);
+            HttpResponse okText(string body) {
+                HttpResponse r = HttpResponse(200, body);
+                r.withHeader("Content-Type", "text/plain; charset=utf-8");
+                return r;
+            }
+            HttpResponse created(string location, JsonValue v) {
+                HttpResponse r = respondJson(201, v);
+                r.withHeader("Location", location);
+                return r;
+            }
+            HttpResponse noContent() => HttpResponse(204, "");
+            HttpResponse redirect(string to) {
+                HttpResponse r = HttpResponse(303, "");
+                r.withHeader("Location", to);
+                return r;
+            }
+            HttpResponse notFound(string message) {
+                HttpResponse r = HttpResponse(404, message);
+                r.withHeader("Content-Type", "text/plain; charset=utf-8");
+                return r;
+            }
+
+            // -- Era-A binding helpers (§4.2) — read Http::Context, fail loud --
+            int pathInt(Http::Context ctx, string name) {
+                string raw = ctx.routeParams.atOr(name, "");
+                int? v = raw.toInt();
+                if (v == None) {
+                    throw Http::BadRequestException("path parameter '" + name + "' is not an integer: '" + raw + "'");
+                }
+                return v ?? 0;
+            }
+            string pathStr(Http::Context ctx, string name) => ctx.routeParams.atOr(name, "");
+
+            string? queryStr(Http::Context ctx, string name) => parseQuery(ctx.request.path).atOrNone(name);
+            int? queryInt(Http::Context ctx, string name) {
+                string? s = this.queryStr(ctx, name);
+                if (s == None) { return None; }
+                string sv = s ?? "";
+                return sv.toInt();
+            }
+            string? header(Http::Context ctx, string name) => ctx.request.headers.first(name);
+
+            JsonValue jsonBody(Http::Context ctx) {
+                string? ct = ctx.request.headers.first("Content-Type");
+                string ctv = ct ?? "";
+                if (!ctv.startsWith("application/json")) {
+                    throw Http::HttpException(415, "expected Content-Type: application/json");
+                }
+                JsonValue? v = json::parse(ctx.request.body);
+                if (v == None) { throw Http::BadRequestException("malformed JSON body"); }
+                return v ?? JsonValue::ofNull();
+            }
+        }
+    }
+}

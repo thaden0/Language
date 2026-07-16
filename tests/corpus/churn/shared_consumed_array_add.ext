@@ -1,0 +1,19 @@
+// XFAIL-ELF: frozen X64Gen has the same consumed/shared leak; bug #31 scoped LLVM only.
+// Churn corpus (ARC leak net) — bug.md #31: a consumed but SHARED Array.add
+// receiver. The explicit `old` alias forces the second add down the shared-copy
+// path. The CallDyn receiver window transfers one counted reference to the
+// native; when the native copies instead of reusing the base, LLVM must release
+// that transferred reference. Only `sink` survives, so live-at-exit is constant
+// in N. @N@ is substituted by fuzz/churn_leak.py.
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Array<int> items = [];
+        items = items.add(i);
+        Array<int> old = items;         // base rc >= 2 at the consumed call
+        items = items.add(i + 1);       // shared copy; callee leaves old base live
+        sink = sink + old.length() + items.length();
+    }
+    console.writeln(sink);
+}
+run(@N@);

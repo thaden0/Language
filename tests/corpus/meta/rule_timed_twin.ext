@@ -1,0 +1,15 @@
+// Hand-written twin of rule_timed.ext — byte-identical output proves the
+// `replace`/`$body` expansion equals the code a human would write by hand.
+class Service {
+    int calls = 0;
+    int compute(int n) {
+        calls = calls + 1;
+        var __result = n * n;
+        return __result;
+    }
+}
+
+Service s = Service();
+console.writeln(s.compute(3));
+console.writeln(s.compute(4));
+console.writeln(s.calls);

@@ -1,0 +1,12 @@
+uses Sonar;
+// bug.md #57: an imported-package symbol fails to resolve inside an
+// immediately-invoked lambda `(() => {...})()`, though it resolves when the
+// same lambda is assigned to a var and then called, and same-file symbols
+// resolve in the IIFE either way.
+class Bare { int w = 9; }
+void main() {
+    console.writeln((() => { var b = Bare(); return b.w; })());   // 9   (same-file class, IIFE: OK)
+    var f = () => { var t = Text(); return 5; };
+    console.writeln(f());                                         // 5   (imported class, assign-call: OK)
+    console.writeln((() => { var t = Text(); return 5; })());     // "cannot resolve call target 'Text'"
+}

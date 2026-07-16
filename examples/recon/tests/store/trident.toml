@@ -1,0 +1,17 @@
+name    = "recon-store-test"
+entry   = "Recon::main"
+sources = [
+    "store_test.lev",
+    "../../src/io/store.lev",
+    "../../src/io/importer.lev",
+    "../../src/io/exporter.lev",
+    "../../src/io/jsonio.lev",
+    "../../src/net/url.lev",
+    "../../src/model/request.lev",
+    "../../src/model/tests.lev",
+    "../../src/model/collection.lev",
+    "../../src/model/environment.lev",
+    "../../src/model/cookie.lev",
+    "../../src/model/session.lev",
+    "../../src/model/history.lev",
+]

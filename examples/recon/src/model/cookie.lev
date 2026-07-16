@@ -1,0 +1,158 @@
+// Recon cookie model + jar (DESIGN §4.4, §6.5). Logic lives on CookieJar.
+namespace Recon {
+
+class Cookie {
+    public string name = "";
+    public string value = "";
+    public string domain = "";                  // no leading dot; hostOnly distinguishes
+    public string path = "/";
+    public bool   secure = false;
+    public bool   httpOnly = false;
+    public bool   hostOnly = true;              // true = exact host match only
+    public bool   session = true;               // no Expires/Max-Age -> session cookie
+    public int    expiresEpochMs = 0;           // absolute expiry when !session
+    public string sameSite = "";                // informational
+    new Cookie() { }
+}
+
+class CookieJar {
+    public Array<Cookie> cookies;
+    new CookieJar() { }
+
+    // -- capture Set-Cookie lines from a response (§6.5) --
+    void capture(Array<string> setCookieLines, string reqHost, string reqPath, int nowMs) {
+        for (string line in setCookieLines) {
+            Cookie? parsed = this.parseSetCookie(line, reqHost, reqPath, nowMs);
+            if (parsed != None) {
+                Cookie c = parsed;
+                // Max-Age=0 / past Expires => delete the (domain,path,name) triple.
+                if (!c.session && c.expiresEpochMs <= nowMs) {
+                    this.removeTriple(c.domain, c.path, c.name);
+                } else {
+                    this.store(c);
+                }
+            }
+        }
+    }
+
+    Cookie? parseSetCookie(string line, string reqHost, string reqPath, int nowMs) {
+        string trimmed = line.trim();
+        if (trimmed.isEmpty()) { return None; }
+        Array<string> parts = trimmed.split(";");
+        if (parts.length() == 0) { return None; }
+        string first = parts.at(0).trim();
+        int eq = first.indexOf("=");
+        if (eq < 0) { return None; }
+        Cookie c = Cookie();
+        c.name  = first.subStr(0, eq).trim();
+        c.value = first.subStr(eq + 1, first.length() - eq - 1).trim();
+        c.domain = reqHost;
+        c.hostOnly = true;
+        c.path = dirOf(reqPath);
+        bool hasMaxAge = false;
+        int maxAgeSecs = 0;
+        for (int i = 1; i < parts.length(); i = i + 1) {
+            string attr = parts.at(i).trim();
+            string lower = attr.toLower();
+            if (lower == "secure") { c.secure = true; }
+            else if (lower == "httponly") { c.httpOnly = true; }
+            else if (lower.startsWith("domain=")) {
+                string d = attr.subStr(7, attr.length() - 7).trim();
+                if (d.startsWith(".")) { d = d.subStr(1, d.length() - 1); }
+                if (!d.isEmpty()) { c.domain = d.toLower(); c.hostOnly = false; }
+            }
+            else if (lower.startsWith("path=")) {
+                string p = attr.subStr(5, attr.length() - 5).trim();
+                if (!p.isEmpty()) { c.path = p; }
+            }
+            else if (lower.startsWith("samesite=")) {
+                c.sameSite = attr.subStr(9, attr.length() - 9).trim();
+            }
+            else if (lower.startsWith("max-age=")) {
+                string mv = attr.subStr(8, attr.length() - 8).trim();
+                int? parsed = mv.toInt();
+                if (parsed != None) { hasMaxAge = true; maxAgeSecs = parsed; }
+            }
+            else if (lower.startsWith("expires=")) {
+                if (!hasMaxAge) {
+                    string ev = attr.subStr(8, attr.length() - 8).trim();
+                    DateTime? dt = datetime::parseHttpDate(ev);
+                    if (dt != None) {
+                        DateTime d = dt;
+                        c.session = false;
+                        c.expiresEpochMs = d.epochMs;
+                    }
+                }
+            }
+        }
+        // Max-Age wins over Expires (RFC 6265).
+        if (hasMaxAge) {
+            c.session = false;
+            c.expiresEpochMs = nowMs + maxAgeSecs * 1000;
+        }
+        return c;
+    }
+
+    void store(Cookie c) {
+        int idx = this.indexOfTriple(c.domain, c.path, c.name);
+        if (idx >= 0) { cookies[idx] = c; }
+        else { cookies = cookies.add(c); }
+    }
+
+    int indexOfTriple(string domain, string path, string name) {
+        for (int i = 0; i < cookies.length(); i = i + 1) {
+            Cookie c = cookies.at(i);
+            if (c.domain == domain && c.path == path && c.name == name) { return i; }
+        }
+        return -1;
+    }
+
+    void removeTriple(string domain, string path, string name) {
+        int idx = this.indexOfTriple(domain, path, name);
+        if (idx >= 0) { cookies = cookies.removeAt(idx); }
+    }
+
+    // -- build a single "Cookie: n1=v1; n2=v2" value for an outgoing request (§6.5) --
+    string headerFor(string host, string path, bool isHttps, int nowMs) {
+        string h = host.toLower();
+        Array<string> pairs = [];
+        for (Cookie c in cookies) {
+            if (!c.session && c.expiresEpochMs <= nowMs) { continue; }
+            if (c.secure && !isHttps) { continue; }
+            if (!domainMatches(h, c.domain, c.hostOnly)) { continue; }
+            if (!pathMatches(path, c.path)) { continue; }
+            pairs = pairs.add(c.name + "=" + c.value);
+        }
+        return pairs.joinToString("; ");
+    }
+
+    void prune(int nowMs) {                     // drop expired
+        Array<Cookie> kept = [];
+        for (Cookie c in cookies) {
+            if (c.session || c.expiresEpochMs > nowMs) { kept = kept.add(c); }
+        }
+        cookies = kept;
+    }
+}
+
+// -- free helpers (no statics, §12.5). dirOf lives in net/url.lev (path op). --
+
+bool domainMatches(string host, string domain, bool hostOnly) {
+    if (hostOnly) { return host == domain; }
+    if (host == domain) { return true; }
+    return host.endsWith("." + domain);
+}
+
+bool pathMatches(string reqPath, string cookiePath) {
+    if (cookiePath == "/") { return true; }
+    if (reqPath == cookiePath) { return true; }
+    if (reqPath.startsWith(cookiePath)) {
+        if (cookiePath.endsWith("/")) { return true; }
+        // boundary must be a '/'
+        int n = cookiePath.length();
+        if (reqPath.length() > n && reqPath.byteAt(n) == 47) { return true; }  // '/'
+    }
+    return false;
+}
+
+}

@@ -1,0 +1,233 @@
+namespace Sonar { namespace Dom {
+
+    // ======================================================================
+    // DomParser + DomTplNode (techdesign-02 §3.1, M1)
+    //
+    // Recursive-descent parser for the runtime markup tier: elements
+    // (`<tag a="v">…</tag>` / `<tag/>`), text runs with `{{expr}}` binding
+    // holes, and multi-root fragments. line:col + caret on every error (the
+    // T08 TOML taxonomy). Character tests via `.code()`/char constants — no
+    // char literals in call-argument position (#50). All state instance-local
+    // (one parser per parse; #73 discipline).
+    //
+    // The comptime `dom!` tier (`$for`/`$if`/`on:`/`{expr}` holes, Capitalized
+    // tags) is D02 M4; this runtime parser throws E-D7/E-D8/E-D9 when it meets
+    // those constructs.
+    // ======================================================================
+
+    // node kinds
+    const int DOM_ELEMENT = 0;
+    const int DOM_TEXT    = 1;
+    const int DOM_HOLE    = 2;
+
+    class DomTplNode {
+        int kind;
+        string tag = "";
+        Array<string>     attrNames  = [];
+        Array<string>     attrValues = [];
+        Array<DomTplNode> children   = [];
+        string text     = "";      // DOM_TEXT literal
+        string holeExpr = "";      // DOM_HOLE identifier/expression source
+        int    line = 0;
+        int    col  = 0;
+        new DomTplNode(int k) { kind = k; }
+    }
+
+    class DomParser {
+        string      src;
+        Array<char> cs;
+        int         n;
+        int         pos = 0;
+
+        char cLt; char cGt; char cSlash; char cEq; char cQuote; char cLBrace;
+        char cRBrace; char cColon; char cBang;
+
+        new DomParser(string source) {
+            src = source;
+            cs  = source.chars();
+            n   = cs.length();
+            cLt = '<'; cGt = '>'; cSlash = '/'; cEq = '='; cQuote = '"';
+            cLBrace = '{'; cRBrace = '}'; cColon = ':'; cBang = '!';
+        }
+
+        // ---- error reporting (line:col + caret) ----------------------------
+        void fail(int at, string msg) {
+            int line = 1; int col = 1; int lineStart = 0;
+            int i = 0;
+            while (i < at && i < n) {
+                if (cs[i].code() == 10) { line = line + 1; col = 1; lineStart = i + 1; }
+                else col = col + 1;
+                i = i + 1;
+            }
+            int lineEnd = lineStart;
+            while (lineEnd < n && cs[lineEnd].code() != 10) lineEnd = lineEnd + 1;
+            string lineText = src.subStr(lineStart, lineEnd - lineStart);
+            string caret = "";
+            int c = 1;
+            while (c < col) { caret = caret + " "; c = c + 1; }
+            caret = caret + "^";
+            throw SonarException("markup:" + line.toString() + ":" + col.toString()
+                + ": " + msg + "\n" + lineText + "\n" + caret);
+        }
+
+        bool eof() => pos >= n;
+        char cur() => cs[pos];
+        bool isWs(char ch) {
+            int k = ch.code();
+            return k == 32 || k == 9 || k == 10 || k == 13;
+        }
+        bool isNameCh(char ch) {
+            int k = ch.code();
+            bool digit = k >= 48 && k <= 57;
+            bool upper = k >= 65 && k <= 90;
+            bool lower = k >= 97 && k <= 122;
+            return digit || upper || lower || k == 45 || k == 95 || k == 58;   // - _ :
+        }
+        void skipWs() { while (pos < n && isWs(cs[pos])) pos = pos + 1; }
+
+        // ---- entry: a fragment (0+ roots) ----------------------------------
+        Array<DomTplNode> parseFragment() {
+            Array<DomTplNode> roots = this.parseNodes("");
+            this.skipWs();
+            if (!this.eof()) this.fail(pos, "unexpected trailing content");
+            return roots;
+        }
+
+        // parse nodes until EOF or a matching `</stop>` (stop="" = top level)
+        Array<DomTplNode> parseNodes(string stop) {
+            Array<DomTplNode> out = [];
+            while (!this.eof()) {
+                if (cs[pos] == cLt) {
+                    if (pos + 1 < n && cs[pos + 1] == cSlash) return out;   // close tag: caller handles
+                    out = out.concat(this.parseMaybeElement());
+                } else {
+                    out = out.concat(this.parseTextRun());
+                }
+            }
+            if (stop != "") this.fail(pos, "'<" + stop + ">' was never closed");
+            return out;
+        }
+
+        Array<DomTplNode> parseMaybeElement() {
+            // `<!-- ... -->` comments are skipped (best-effort)
+            if (pos + 3 < n && cs[pos + 1] == cBang) {
+                int close = src.indexOfFrom("-->", pos);
+                if (close < 0) this.fail(pos, "unterminated comment");
+                pos = close + 3;
+                return [];
+            }
+            DomTplNode el = this.parseElement();
+            return [el];
+        }
+
+        DomTplNode parseElement() {
+            int startPos = pos;
+            pos = pos + 1;                       // consume '<'
+            string tag = this.readName();
+            if (tag == "") this.fail(startPos, "expected a tag name after '<'");
+            DomTplNode node = DomTplNode(DOM_ELEMENT);
+            node.tag = tag;
+            node.line = startPos;
+            this.parseAttrs(node);
+            this.skipWs();
+            if (this.eof()) this.fail(startPos, "'<" + tag + ">' was never closed");
+            if (cs[pos] == cSlash) {             // self-closing
+                pos = pos + 1;
+                if (this.eof() || cs[pos] != cGt) this.fail(pos, "expected '>' to close '<" + tag + "/>'");
+                pos = pos + 1;
+                return node;
+            }
+            if (cs[pos] != cGt) this.fail(pos, "expected '>' in '<" + tag + ">'");
+            pos = pos + 1;                        // consume '>'
+            node.children = this.parseNodes(tag);
+            // expect `</tag>`
+            if (this.eof()) this.fail(startPos, "'<" + tag + ">' opened here was never closed");
+            pos = pos + 2;                        // consume '</'
+            string close = this.readName();
+            if (close != tag)
+                this.fail(startPos, "'<" + tag + ">' is closed by '</" + close + ">'");
+            this.skipWs();
+            if (this.eof() || cs[pos] != cGt) this.fail(pos, "expected '>' after '</" + tag + "'");
+            pos = pos + 1;
+            return node;
+        }
+
+        void parseAttrs(DomTplNode node) {
+            while (true) {
+                this.skipWs();
+                if (this.eof()) return;
+                char ch = cs[pos];
+                if (ch == cGt || ch == cSlash) return;
+                int namePos = pos;
+                string name = this.readName();
+                if (name == "") this.fail(pos, "expected an attribute name");
+                if (name.startsWith("on:"))
+                    this.fail(namePos, "handler '" + name + "' needs the dom! tier or node.on(event, fn) after build");
+                this.skipWs();
+                if (this.eof() || cs[pos] != cEq) this.fail(pos, "attribute '" + name + "' needs a =\"value\"");
+                pos = pos + 1;                    // consume '='
+                this.skipWs();
+                if (this.eof()) this.fail(pos, "attribute '" + name + "' has no value");
+                if (cs[pos] == cLBrace)
+                    this.fail(pos, "expression attribute '{...}' needs the dom! tier");
+                if (cs[pos] != cQuote) this.fail(pos, "attribute '" + name + "' value must be quoted");
+                pos = pos + 1;                    // consume opening quote
+                int valStart = pos;
+                while (pos < n && cs[pos] != cQuote) pos = pos + 1;
+                if (this.eof()) this.fail(valStart, "unterminated attribute value for '" + name + "'");
+                string value = src.subStr(valStart, pos - valStart);
+                pos = pos + 1;                    // consume closing quote
+                node.attrNames  = node.attrNames.add(name);
+                node.attrValues = node.attrValues.add(value);
+            }
+        }
+
+        string readName() {
+            int start = pos;
+            while (pos < n && isNameCh(cs[pos])) pos = pos + 1;
+            return src.subStr(start, pos - start);
+        }
+
+        // Text run up to the next '<': split into text literals + {{hole}}s.
+        // Whitespace rule (simplified from T06): the whole run is trimmed;
+        // pure-whitespace runs between elements are dropped.
+        Array<DomTplNode> parseTextRun() {
+            int start = pos;
+            while (pos < n && cs[pos] != cLt) pos = pos + 1;
+            string raw = src.subStr(start, pos - start);
+            return this.splitHoles(raw, start);
+        }
+
+        Array<DomTplNode> splitHoles(string raw, int base) {
+            Array<DomTplNode> out = [];
+            int i = 0;
+            int m = raw.length();
+            string lit = "";
+            while (i < m) {
+                if (i + 1 < m && raw.subStr(i, 2) == "{{") {
+                    string trimmed = lit.trim();
+                    if (trimmed != "") { DomTplNode t = DomTplNode(DOM_TEXT); t.text = trimmed; out = out.add(t); }
+                    lit = "";
+                    int close = raw.indexOfFrom("}}", i + 2);
+                    if (close < 0) this.fail(base + i, "unterminated '{{' binding hole");
+                    string expr = raw.subStr(i + 2, close - (i + 2)).trim();
+                    DomTplNode h = DomTplNode(DOM_HOLE); h.holeExpr = expr; out = out.add(h);
+                    i = close + 2;
+                } else {
+                    lit = lit + raw.subStr(i, 1);
+                    i = i + 1;
+                }
+            }
+            string tail = lit.trim();
+            if (tail != "") { DomTplNode t = DomTplNode(DOM_TEXT); t.text = tail; out = out.add(t); }
+            return out;
+        }
+    }
+
+    // convenience
+    Array<DomTplNode> parseMarkup(string src) {
+        DomParser p = DomParser(src);
+        return p.parseFragment();
+    }
+
+}}

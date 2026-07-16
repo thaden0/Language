@@ -1,0 +1,60 @@
+// Atlantis Track 04 — @Injectable (design §3, C5): the zero-magic DI floor.
+//
+// There is NO runtime container. Wiring is the language's compile-time bind/inject,
+// hand-written in config/ioc.lev (mechanism (c), the v1 primary — every ingredient is
+// GREEN). `@Injectable` v1 does exactly three honest things and claims no more:
+//   (i)   VALIDATES the framework's interface-naming convention — an @Injectable class
+//         must carry a base whose last ::-segment is I<Upper>… (an interface), so a
+//         service is always bound behind a contract, not a concrete type;
+//   (ii)  DISCOVERABILITY — `leviathan --rules` / `--expand` list every service class;
+//   (iii) FORWARD-COMPAT — the optional `iface` field lets `@Injectable("IUserService")`
+//         be written today and upgrade to the generated-bindings successor (§3R,
+//         `@InjectBindings();` splice, LA-22) with ZERO source edits.
+//
+// The validation runs through the SENTINEL-GUARD idiom proven by Track 03's
+// @Serializable guard (serializable.lev): a `where … && false` clause never actually
+// injects, it only runs __atlInjGuard for its throw-with-a-named-message side effect.
+// This supersedes the design §3.4 "inject a member with an unknown return type" sketch
+// (A16 found bare-member injection is not reliably diagnosed) with the landed,
+// probe-proven mechanism — same outcome (a legible compile error), sturdier path.
+//
+// Rule SUBJECT-kind matching is EXACT (Track 03 finding): `on class C` never fires on a
+// struct. That is correct here — a DI service is a reference type with identity, never a
+// value struct — so, unlike @Serializable, @Injectable needs NO class/struct rule pair.
+namespace Atlantis {
+
+    attribute Injectable { string iface = ""; }     // iface: forward-compat, mechanism (§3R)
+
+    // §3.3 v1 convention lint: at least one base whose last ::-segment is an interface
+    // name (I followed by an uppercase letter). This is a lint, not the wiring — a
+    // concrete class named `IcedTea` as a base would fool it (documented limit, §9 #5);
+    // the wiring truth stays in ioc.lev. Hermetic comptime over meta::Class (pure string
+    // checks, the P-probe discipline Track 03 established). Self-contained: a comptime
+    // rule where-clause cannot resolve a bare sibling-function call (§13 finding), so the
+    // interface-name test is inlined rather than factored out.
+    bool __atlInjGuard(meta::Class c) {
+        for (string b in c.bases) {
+            string seg = b;
+            int idx = b.lastIndexOf("::");
+            if (idx >= 0) { seg = b.subStr(idx + 2, b.length() - (idx + 2)); }
+            if (seg.length() >= 2 && seg.startsWith("I")) {
+                string second = seg.subStr(1, 1);
+                // uppercase ASCII letter: equal under toUpper, changed under toLower.
+                if (second.toUpper() == second && second.toLower() != second) {
+                    return true;
+                }
+            }
+        }
+        throw RuntimeException("@Injectable " + c.name +
+            ": needs an interface base (a base named I<Upper>…, e.g. `: IUserService`) so " +
+            "the service is bound behind a contract — see the Atlantis DI docs (design §3.3)");
+    }
+
+    // Fires on every @Injectable class; the guard is the whole point. `&& false`
+    // guarantees the `0;` is never actually spliced.
+    rule injectableRequiresInterface {
+        match @Injectable on class C
+        where Atlantis::__atlInjGuard(C) && false
+        inject `0;` at bottom of C.constructor
+    }
+}

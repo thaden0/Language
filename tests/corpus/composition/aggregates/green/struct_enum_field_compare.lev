@@ -1,0 +1,11 @@
+// A struct with an enum-typed field, compared directly (no container) —
+// baseline showing the enum field itself is fine; bug #41 needs the
+// Array-of-struct + intervening-allocation combination to trigger.
+enum Kind { XX, YY }
+struct Rec { int n; Kind k; }
+void main() {
+    Rec a = Rec(1, Kind::XX);
+    Rec b = Rec(1, Kind::XX);
+    console.writeln(a.n == b.n && a.k == b.k);
+}
+main();

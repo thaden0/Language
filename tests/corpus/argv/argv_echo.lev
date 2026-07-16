@@ -1,0 +1,13 @@
+// argv.md differential test: env::args() across every engine.
+// argv[0] (program name) is engine-dependent (real path for compiled binaries,
+// source basename for the interpreters — argv.md §9), so we print the *count*
+// and the REAL arguments (args().skip(1)), which agree across all engines.
+// (Wrapped in a function because top-level `for` loops aren't a thing here.)
+void dump() {
+    Array<string> a = env::args();
+    console.writeln("argc=" + a.length().toString());
+    for (string s in a.skip(1)) console.writeln("[" + s + "]");
+    // program name is non-empty on every engine (length >= 1, never empty)
+    console.writeln("hasName=" + (env::name().length() > 0 ? "yes" : "no"));
+}
+dump();

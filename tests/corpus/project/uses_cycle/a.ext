@@ -1,0 +1,8 @@
+uses B;
+namespace A {
+    public int ping(int n) {
+        if (n <= 0) { return 0; }
+        console.writeln("ping");
+        return B::pong(n - 1);
+    }
+}

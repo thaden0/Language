@@ -1,0 +1,49 @@
+// Command bar (DESIGN §9.5): a single-line Input overlay that runs named
+// commands against the registry. Keyboard-first; reuses the App overlay stack.
+namespace Recon {
+uses Sonar;
+
+class CommandBar {
+    public ContentBox root;      // bordered single-line container (framework leaf)
+    public Input input;
+    public CommandRegistry commands;
+    // No stored App field — a bare `App` field would auto-construct a second App
+    // (§3) and violate the single-app rule. Reach the running app via Sonar::app()
+    // (R3), which is valid by the time the bar is opened.
+
+    new CommandBar(CommandRegistry reg) {
+        commands = reg;
+        input = Input();
+        input.setPlaceholder("command (e.g. send, quit)…");
+        root = ContentBox();
+        root.setTitle("Command");
+        root.setBorder(BorderStyle::Rounded);
+        root.add(input);
+        // explicit this. in handlers (bug #53)
+        this.input.onSubmit((v) => this.execute(v));
+        this.input.onKeyCapture((e) => this.onKey(e));
+    }
+
+    void open() {
+        this.input.setValue("");
+        Sonar::app().pushOverlay(this.root);
+        Sonar::app().focus(this.input);
+    }
+
+    void close() { Sonar::app().popOverlay(); }
+
+    void execute(string raw) {
+        string name = raw.trim();
+        this.close();
+        if (!name.isEmpty()) {
+            bool ok = this.commands.run(name);
+            if (!ok) { Sonar::log("unknown command: " + name); }
+        }
+    }
+
+    void onKey(KeyEvent e) {
+        if (e.code == KeyCode::Escape) { this.close(); e.handled = true; }
+    }
+}
+
+}

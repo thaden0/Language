@@ -1,0 +1,12 @@
+using Atlantis::Routes;
+
+namespace App::Routes {
+
+    public void addRoutes(Atlantis::App app) {
+        @InjectRoutes();
+        app.AddRoute(Atlantis::Routing::Route('/', App::Controllers::HomeController::Index).requestType(RequestType::GET));
+        app.AddRoute(Atlantis::Routing::Route('/login', App::Controllers::AuthController::Login).requestType(RequestType::GET | RequestType::POST));
+        app.AddRoute(Atlantis::Routing::Route('/logout', App::Controllers::AuthController::Logout).requestType(RequestType::GET).requireAuth());
+    }
+
+}

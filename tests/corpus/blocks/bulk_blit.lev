@@ -1,0 +1,30 @@
+void main() {
+    Block cross = Block::fromString("........");
+    Block src = Block::fromString("abcdefgh");
+    cross.blit(1, src, 2, 5);
+    console.writeln(cross.toString(0, 8));
+
+    Block forward = Block::fromString("abcdef");
+    forward.blit(2, forward, 0, 4);
+    console.writeln(forward.toString(0, 6));
+    Block backward = Block::fromString("abcdef");
+    backward.blit(0, backward, 2, 4);
+    console.writeln(backward.toString(0, 6));
+
+    Block root = Block::fromString("0123456789");
+    Block dst = root.slice(2, 6);
+    Block aliasedSrc = root.slice(0, 6);
+    dst.blit(0, aliasedSrc, 0, 6);
+    console.writeln(root.toString(0, 10));
+
+    root.blit(10, root, 10, 0);
+    console.writeln(root.toString(0, 10));
+    Block empty = Block(0);
+    empty.blit(0, empty, 0, 0);
+    console.writeln(empty.length());
+
+    try { root.blit(11, root, 0, 0); } catch (RuntimeException e) { console.writeln("throw: blit dst"); }
+    try { root.blit(0, root, 11, 0); } catch (RuntimeException e) { console.writeln("throw: blit src"); }
+    try { root.blit(0, root, 0, -1); } catch (RuntimeException e) { console.writeln("throw: blit length"); }
+}
+main();

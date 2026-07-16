@@ -1,0 +1,5 @@
+uses Json;
+void main() {
+    console.writeln(Json::encode(42));
+    console.writeln(tag("hi"));
+}

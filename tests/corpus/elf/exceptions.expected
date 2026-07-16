@@ -1,0 +1,6 @@
+iface: bad input
+caught: division by zero
+5
+index 9 out of bounds (length 3)
+rethrown to outer: inner
+Uncaught LogicException: uncaught at top level

@@ -1,0 +1,29 @@
+[a, b, , c]
+[]
+[a, b, c]
+[]
+hell0 w0rld
+bbbbbb
+no match
+6
+3
+0
+-1
+005
+500
+already-long
+ababababab
+
+
+hi  |
+|   hi
+[line1, line2, line3, ]
+true
+false
+3
+0
+rest
+no-such-prefix
+rest
+true
+false

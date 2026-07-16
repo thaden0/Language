@@ -1,0 +1,106 @@
+uses Sonar;
+
+// Walk a subtree asserting every node's parent link is None (R7 detach proof).
+bool allDetached(IComponent node) {
+    if (node.parent() != None) return false;
+    for (IComponent child in node.__sonarChildren())
+        if (!allDetached(child)) return false;
+    return true;
+}
+
+string readRow(Surface s, int y, int x0, int w) {
+    string result = "";
+    for (int x in x0..x0 + w - 1) {
+        int scalar = s.cells().int32At(s.cellOffset(x, y));
+        result = result + std::charFromCode(scalar).toString();
+    }
+    return result;
+}
+
+// Fire the press of a Button reached as an IComponent.
+void pressButton(IComponent c) {
+    if (c is Button) { Button b = c; b.firePress(); }
+}
+
+// The confirm/alert Modal hosted by the current top overlay.
+Modal? topModal(Sonar::App app) {
+    IComponent? top = app.topOverlay();
+    if (top != None) {
+        IComponent host = top;
+        if (host is OverlayHost) {
+            OverlayHost h = host;
+            IComponent? hc = h.hostedChild();
+            if (hc != None) {
+                IComponent child = hc;
+                if (child is Modal) { Modal m = child; return m; }
+            }
+        }
+    }
+    return None;
+}
+
+void main() {
+    Sonar::App app = Sonar::App();
+
+    // ---- alert: open pushes an overlay; OK closes it -----------------------
+    Modal m = Sonar::alert("Notice", "hello");
+    console.writeln("after open: overlays=" + app.overlayCount().toString() + " open=" + m.isOpen().toString());
+
+    Array<IComponent> kids = m.children();
+    pressButton(kids[kids.length() - 1]);       // OK is the last child
+    console.writeln("after OK: overlays=" + app.overlayCount().toString() + " open=" + m.isOpen().toString());
+    console.writeln("detached=" + allDetached(m).toString());
+
+    // ---- Modal open/close 1000x: no overlay/link leak (§6 detach soak) -----
+    int leaks = 0;
+    for (int i in 0..999) {
+        Modal d = Modal();
+        d.title("dlg");
+        Button b = Button();
+        b.setLabel("x");
+        d.add(b);
+        d.open();
+        d.close();
+        if (app.overlayCount() != 0) leaks = leaks + 1;
+        if (!allDetached(d)) leaks = leaks + 1;
+    }
+    console.writeln("soak leaks=" + leaks.toString());
+
+    // ---- confirm: Promise resolves on button press -------------------------
+    Promise<bool> c1 = Sonar::confirm("Sure?", "proceed?");
+    console.writeln("confirm open overlays=" + app.overlayCount().toString() + " ready=" + c1.isReady().toString());
+    Modal? cm = topModal(app);
+    if (cm != None) {
+        Modal confirmModal = cm;
+        Array<IComponent> ck = confirmModal.children();
+        pressButton(ck[1]);                     // [msg, Yes, No] -> press Yes
+    }
+    console.writeln("after Yes: ready=" + c1.isReady().toString() + " value=" + c1.get().toString() + " overlays=" + app.overlayCount().toString());
+
+    // ---- confirm dismissed via Esc resolves false --------------------------
+    Promise<bool> c2 = Sonar::confirm("Sure?", "proceed?");
+    Modal? cm2 = topModal(app);
+    if (cm2 != None) {
+        Modal confirmModal2 = cm2;
+        KeyEvent esc = KeyEvent(KeyCode::Escape, std::charFromCode(0), 0);
+        confirmModal2.fireKeyCapture(esc);
+    }
+    console.writeln("after Esc: ready=" + c2.isReady().toString() + " value=" + c2.get().toString() + " overlays=" + app.overlayCount().toString());
+
+    // ---- direct paint of a modal (oracle/IR): border + centered content ----
+    Modal pm = Modal();
+    pm.title("Hi");
+    Text t = Text();
+    t.text("body");
+    pm.add(t);
+    pm.measure(Size(12, 5));
+    pm.arrange(Rect(Point(0, 0), Size(12, 5)));
+    Surface surf = Surface(12, 5);
+    Style plain;
+    surf.clear(plain);
+    pm.paint(surf);
+    console.writeln("[" + readRow(surf, 0, 0, 12) + "]");
+    console.writeln("[" + readRow(surf, 1, 0, 12) + "]");
+
+    Sonar::__sonarResetApp();
+}

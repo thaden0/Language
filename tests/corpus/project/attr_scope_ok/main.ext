@@ -1,0 +1,9 @@
+// `uses Web` opts this file into Web's attributes (and, in Phase 2, rules).
+uses Web;
+
+@Tag(1)
+void handler() { console.writeln("tagged handler ran"); }
+
+comptime int BUILD = 2 + 2;
+handler();
+console.writeln(BUILD);

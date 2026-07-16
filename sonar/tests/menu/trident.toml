@@ -1,0 +1,8 @@
+name = "sonar-menu"
+entry = "main"
+sources = ["menu.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.1.0"
+as = "Sonar"

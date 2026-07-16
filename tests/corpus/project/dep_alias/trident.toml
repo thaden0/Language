@@ -1,0 +1,7 @@
+name = "dep_alias"
+entry = "main"
+sources = ["main.ext"]
+
+[[dep]]
+path = "jsonlib"
+as = "Client"

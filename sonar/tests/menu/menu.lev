@@ -1,0 +1,112 @@
+uses Sonar;
+
+class Recorder {
+    Array<string> hits = [];
+    void hit(string s) { hits = hits.add(s); }
+    string dump() => hits.joinToString(",");
+}
+
+string readRow(Surface s, int y, int x0, int w) {
+    string r = "";
+    for (int x in x0..x0 + w - 1)
+        r = r + std::charFromCode(s.cells().int32At(s.cellOffset(x, y))).toString();
+    return r;
+}
+
+KeyEvent key(KeyCode c) => KeyEvent(c, std::charFromCode(0), 0);
+
+// Is the App's focus the i-th child of a menu?
+bool focusIsItem(Sonar::App app, Menu m, int i) {
+    Focusable? f = app.focused();
+    if (f != None) {
+        Focusable focused = f;
+        Array<IComponent> kids = m.children();
+        if (i < 0 || i >= kids.length()) return false;
+        IComponent target = kids[i];
+        if (target is Focusable) { Focusable tf = target; return tf == focused; }
+    }
+    return false;
+}
+
+void main() {
+    Sonar::App app = Sonar::App();
+
+    Button trigger = Button();
+    trigger.setLabel("main");
+    app.add(trigger);
+    app.focus(trigger);
+
+    Recorder rec = Recorder();
+    BarMenu bar = BarMenu();
+    Menu fileMenu = Menu();
+    fileMenu.label("File");
+    fileMenu.item("New", () => rec.hit("new"));
+    fileMenu.item("Open", () => rec.hit("open"));
+    fileMenu.separator();
+    fileMenu.item("Quit", () => rec.hit("quit"));
+    Menu editMenu = Menu();
+    editMenu.label("Edit");
+    editMenu.item("Copy", () => rec.hit("copy"));
+    bar.menu(fileMenu);
+    bar.menu(editMenu);
+    app.add(bar);
+    bar.arrange(Rect(Point(0, 0), Size(40, 1)));
+
+    console.writeln("start: overlays=" + app.overlayCount().toString() +
+        " focusTrigger=" + (app.focused() == trigger).toString());
+
+    // ---- open File menu: overlay pushed, focus moves to first item ---------
+    bar.openMenu(0);
+    console.writeln("open: overlays=" + app.overlayCount().toString() +
+        " focusItem0=" + focusIsItem(app, fileMenu, 0).toString());
+
+    // ---- navigate Down twice: skip the separator, land on Quit -------------
+    fileMenu.fireKeyCapture(key(KeyCode::Down));   // New -> Open
+    fileMenu.fireKeyCapture(key(KeyCode::Down));   // Open -> Quit (skips separator at idx 2)
+    console.writeln("nav: focusItem3(Quit)=" + focusIsItem(app, fileMenu, 3).toString());
+
+    // ---- activate: fires select, pops the group, restores focus ------------
+    fileMenu.fireKeyCapture(key(KeyCode::Enter));
+    console.writeln("activate: hits=" + rec.dump() +
+        " overlays=" + app.overlayCount().toString() +
+        " focusRestored=" + (app.focused() == trigger).toString());
+
+    // ---- Esc dismisses without selecting -----------------------------------
+    bar.openMenu(1);   // Edit menu
+    console.writeln("edit open: overlays=" + app.overlayCount().toString());
+    editMenu.fireKeyCapture(key(KeyCode::Escape));
+    console.writeln("esc: overlays=" + app.overlayCount().toString() +
+        " hits=" + rec.dump() +
+        " focusRestored=" + (app.focused() == trigger).toString());
+
+    // ---- click outside dismisses -------------------------------------------
+    bar.openMenu(0);
+    fileMenu.arrange(Rect(Point(0, 0), Size(40, 12)));   // give it a real box
+    app.onMouseEvent(MouseEvent(MouseKind::Press, MouseButton::Left, 39, 11, 0));
+    console.writeln("outside: overlays=" + app.overlayCount().toString());
+
+    // ---- click inside an item activates it ---------------------------------
+    bar.openMenu(0);
+    fileMenu.arrange(Rect(Point(0, 0), Size(40, 12)));
+    // item 0 (New) sits at content row 1 (border at row 0), inside the box
+    Rect item0 = fileMenu.children()[0].box;
+    app.onMouseEvent(MouseEvent(MouseKind::Press, MouseButton::Left, item0.x(), item0.y(), 0));
+    console.writeln("inside: hits=" + rec.dump() + " overlays=" + app.overlayCount().toString());
+
+    // ---- direct paint of a dropdown ----------------------------------------
+    Menu pm = Menu();
+    pm.label("File");
+    pm.item("New", () => rec.hit("x"));
+    pm.item("Open", () => rec.hit("x"));
+    pm.openAt(0, 0, app.newOverlayGroup());
+    pm.arrange(Rect(Point(0, 0), Size(40, 12)));
+    Surface surf = Surface(12, 5);
+    Style plain;
+    surf.clear(plain);
+    pm.paint(surf);
+    console.writeln("[" + readRow(surf, 0, 0, 10) + "]");
+    console.writeln("[" + readRow(surf, 1, 0, 10) + "]");
+    console.writeln("[" + readRow(surf, 2, 0, 10) + "]");
+
+    Sonar::__sonarResetApp();
+}

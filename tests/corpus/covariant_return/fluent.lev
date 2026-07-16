@@ -1,0 +1,36 @@
+interface IComponent {
+    string label();
+}
+
+class Component : IComponent {
+    string text;
+    new Component(string value) { text = value; }
+    string label() => text;
+}
+
+interface IContainer {
+    IContainer add(IComponent item);
+    int itemCount();
+}
+
+class Container : IContainer {
+    int count = 0;
+    Container add(IComponent item) {
+        count = count + 1;
+        console.writeln(item.label());
+        return this;
+    }
+    int itemCount() => count;
+}
+
+Container box = Container();
+Component a = Component("a");
+Component b = Component("b");
+Container chained = box.add(a).add(b);
+console.writeln(chained.itemCount());
+
+// The interface requirement contributes no runtime slot: dispatch by
+// name+arity reaches the concrete-return implementation.
+IContainer view = box;
+IContainer same = view.add(a);
+console.writeln(same.itemCount());

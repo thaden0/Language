@@ -1,0 +1,15 @@
+// P-3: T vs T? overload coexistence + ranking (witness-dispatch pattern).
+namespace Probe {
+    string tag(int w) => "int";
+    string tag(int? w) => "int?";
+    string tag(string w) => "string";
+    string tag(string? w) => "string?";
+}
+uses Probe;
+int a = 5;
+int? b = None;
+int? c = 9;
+string s = "x";
+string? n = None;
+console.write(Probe::tag(a) + "," + Probe::tag(b) + "," + Probe::tag(c) + "," +
+              Probe::tag(s) + "," + Probe::tag(n));

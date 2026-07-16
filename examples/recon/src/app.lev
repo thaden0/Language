@@ -1,0 +1,190 @@
+// Application state hub (DESIGN §10.1) + ReconApp composition root (§10.4).
+// AppState is a plain reference class: the single source of truth. Widgets read
+// from it and mutate it; a mutation is followed by invalidate() on the affected
+// pane so the next frame repaints (Sonar is retained-mode).
+namespace Recon {
+
+class AppState {
+    public Array<Collection>  collections;
+    public Array<Environment> environments;
+    public string activeEnvName = "";
+    public SessionSet sessions;
+    public History history;
+    public Settings settings;
+    public RequestSpec active;                 // the request currently being edited
+    public Collection? activeCollection = None;
+    public CollectionItem? activeNode = None;
+    public CollectionItem? activeFolder = None; // parent folder of the active request (for auth cascade)
+    public HttpResponse? lastResponse = None;
+    public RunOutcome? lastOutcome = None;
+    public Array<TestResult> lastTests;
+    public bool inFlight = false;
+    public string configRoot = "";             // resolved in main(), injected here (§8)
+    public string lastError = "";
+
+    new AppState() {
+        active = RequestSpec();
+        sessions = SessionSet();
+        history = History();
+        settings = Settings();
+    }
+
+    // build the scope chain: environment > active collection > global (§10.1)
+    VarResolver resolver() {
+        VarResolver r = VarResolver();
+        // most-specific first: environment
+        Environment? env = this.activeEnvironment();
+        if (env != None) {
+            Environment e = env ?? Environment();
+            r.addScope(scopeFromEnv(e, "environment"));
+        } else {
+            r.addScope(VarScope::Named("environment"));   // empty, so extractions can target it
+        }
+        // collection variables
+        if (this.activeCollection != None) {
+            Collection c = this.activeCollection ?? Collection();
+            r.addScope(scopeFromVars(c.variables, "collection"));
+        }
+        // a "globals" environment by convention (name "Globals")
+        Environment? glob = this.environmentNamed("Globals");
+        if (glob != None) {
+            Environment g = glob ?? Environment();
+            r.addScope(scopeFromEnv(g, "global"));
+        }
+        return r;
+    }
+
+    Environment? activeEnvironment() => this.environmentNamed(this.activeEnvName);
+
+    Environment? environmentNamed(string name) {
+        if (name.isEmpty()) { return None; }
+        for (Environment e in this.environments) {
+            if (e.name == name) { return e; }
+        }
+        return None;
+    }
+
+    // resolve vars/auth/body, attach cookies, choose scheme (§10.2)
+    PreparedRequest buildPrepared() {
+        this.lastError = "";
+        VarResolver vars = this.resolver();
+        RequestSpec req = this.active;
+
+        PreparedRequest pr = PreparedRequest();
+        pr.method = methodName(req.method);
+        pr.timeoutMs = this.settings.defaultTimeoutMs;
+        pr.redirects.follow = this.settings.followRedirects;
+
+        string resolvedUrl = vars.resolve(req.url);
+        Url? parsed = parseUrl(resolvedUrl);
+        if (parsed == None) {
+            this.lastError = "cannot parse URL: " + resolvedUrl;
+            return pr;
+        }
+        pr.url = parsed ?? Url();
+
+        // auth cascade
+        AuthSpec? folderAuth = None;
+        if (this.activeFolder != None) { CollectionItem f = this.activeFolder ?? CollectionItem(); folderAuth = f.auth; }
+        AuthSpec? colAuth = None;
+        if (this.activeCollection != None) { Collection c = this.activeCollection ?? Collection(); colAuth = c.auth; }
+        AuthSpec eff = effectiveAuth(req, folderAuth, colAuth);
+        applyAuth(eff, vars, pr.headers, pr.url);
+
+        // user headers (enabled only), resolved
+        for (HeaderEntry h in req.headers) {
+            if (h.enabled && !h.name.isEmpty()) {
+                pr.headers.add(h.name, vars.resolve(h.value));
+            }
+        }
+
+        // body + derived content-type (user's explicit content-type wins)
+        Pair<string, string?> built = buildBody(req.body, vars);
+        pr.body = built.first;
+        if (built.second != None) {
+            string ct = built.second ?? "";
+            if (!pr.headers.has("Content-Type")) { pr.headers.set("Content-Type", ct); }
+        }
+        if (!bodyNote.isEmpty()) { this.lastError = bodyNote; }
+
+        // no decompression (§1.2)
+        pr.headers.set("Accept-Encoding", "identity");
+
+        // cookies from the active session jar
+        Session sess = this.sessions.active();
+        string ck = sess.jar.headerFor(pr.url.host, pr.url.path, pr.url.isHttps(), std::sysNow());
+        if (!ck.isEmpty()) { pr.headers.set("Cookie", ck); }
+
+        return pr;
+    }
+
+    void beginInFlight() { inFlight = true; lastError = ""; }
+
+    // record response, run tests, capture cookies, append history (§10.2 step 4)
+    void onOutcome(RunOutcome o) {
+        this.inFlight = false;
+        this.lastOutcome = o;
+        if (o.timedOut)  { this.lastError = "request timed out"; }
+        if (o.cancelled) { this.lastError = "request cancelled"; }
+        if (!o.error.isEmpty()) { this.lastError = o.error; }
+
+        if (o.response != None) {
+            HttpResponse resp = o.response ?? HttpResponse(0, "");
+            this.lastResponse = resp;
+            // cookies were already captured by the sender (it holds the jar);
+            // run the native tests and write extractions back into the scopes
+            VarResolver vars = this.resolver();
+            this.lastTests = runTests(this.active.tests, resp, o.elapsedMs, vars);
+            // persist any extraction writes back onto the active environment
+            this.applyResolverWrites(vars);
+            // history entry
+            HistoryEntry entry = HistoryEntry();
+            entry.method = methodName(this.active.method);
+            entry.url = this.active.url;
+            entry.status = resp.status;
+            entry.elapsedMs = o.elapsedMs;
+            entry.bodySize = resp.body.length();
+            entry.timestamp = DateTime::now().iso8601();
+            entry.responsePreview = previewOf(resp.body, 200);
+            this.history.add(entry);
+        }
+    }
+
+    // Copy any values the runner wrote into the resolver's "environment" scope
+    // back onto the active Environment model (so they persist + show in the UI).
+    void applyResolverWrites(VarResolver vars) {
+        Environment? env = this.activeEnvironment();
+        if (env != None) {
+            Environment e = env ?? Environment();
+            for (VarScope sc in vars.scopes) {
+                if (sc.name == "environment") {
+                    for (string key in sc.values.keys()) {
+                        this.setEnvVar(e, key, sc.values.atOr(key, ""));
+                    }
+                }
+            }
+        }
+    }
+
+    void setEnvVar(Environment e, string key, string value) {
+        for (Variable v in e.values) {
+            if (v.key == key) { v.value = value; return; }
+        }
+        e.values = e.values.add(Variable::Of(key, value));
+    }
+
+    // Load a request node into the editing surface.
+    void loadRequest(CollectionItem node, Collection col, CollectionItem? parentFolder) {
+        this.activeCollection = col;
+        this.activeNode = node;
+        this.activeFolder = parentFolder;
+        if (node.request != None) { this.active = node.request ?? RequestSpec(); }
+    }
+}
+
+string previewOf(string body, int n) {
+    if (body.length() <= n) { return body; }
+    return body.subStr(0, n);
+}
+
+}

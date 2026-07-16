@@ -1,0 +1,50 @@
+namespace Sonar {
+    // Enterprise status bar: three independent segments, tight-width drop
+    // order center -> right -> truncate-left-with-ellipsis.
+    class ContentBar : Component, Styleable, ISingleLine {
+        string left_ = "";
+        string center_ = "";
+        string right_ = "";
+
+        void setLeft(string value) { left_ = value; invalidate(); }
+        void setCenter(string value) { center_ = value; invalidate(); }
+        void setRight(string value) { right_ = value; invalidate(); }
+        // Getters (additive) — the DOM value/text ladder (D01) reads segments.
+        string left() => left_;
+        string center() => center_;
+        string right() => right_;
+        // Legacy attribute alias (C11 attribute table: `text` => setLeft).
+        void setText(string value) { setLeft(value); }
+
+        Size contentDesired(Size avail) =>
+            Size(stringCellWidth(left_) + stringCellWidth(center_) + stringCellWidth(right_) + 2, 1);
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            int w = content.w();
+            Style st = resolveOrDefault(this, "contentbar");
+            int leftW = stringCellWidth(left_);
+            int centerW = stringCellWidth(center_);
+            int rightW = stringCellWidth(right_);
+
+            bool showRight = leftW + rightW + 1 <= w;
+            bool showCenter = showRight && leftW + centerW + rightW + 2 <= w;
+
+            if (showCenter) {
+                s.writeText(content.x(), content.y(), left_, st);
+                s.writeText(content.x() + (w - centerW) / 2, content.y(), center_, st);
+                s.writeText(content.x() + w - rightW, content.y(), right_, st);
+            } else if (showRight) {
+                s.writeText(content.x(), content.y(), left_, st);
+                s.writeText(content.x() + w - rightW, content.y(), right_, st);
+            } else if (leftW <= w) {
+                s.writeText(content.x(), content.y(), left_, st);
+            } else {
+                char ellipsis = '…';
+                string truncated = clipToWidth(left_, w - 1) + ellipsis.toString();
+                s.writeText(content.x(), content.y(), truncated, st);
+            }
+        }
+    }
+}

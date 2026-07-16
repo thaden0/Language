@@ -1,0 +1,11 @@
+// SIGTERM under raw mode (§3 raw-mode safety obligation): enter raw mode, then
+// block on a read. The driver sends an EXTERNAL SIGTERM; the safety handler
+// installed by enableRaw() restores the terminal (single tcsetattr) and
+// re-raises default, so the process dies with a sane terminal — verified by the
+// pty driver reading termios back (ICANON/ECHO restored). No signal::on here,
+// so SIGTERM is NOT blocked and the handler is what fires.
+term::enableRaw();
+console.writeln("RAWREADY");
+string x = std::sysRead(0, 1);      // blocks in raw mode (VMIN=1) until killed
+console.writeln("KEY=" + x);
+term::restore();

@@ -1,0 +1,47 @@
+// Recon session model (DESIGN §4.5).
+namespace Recon {
+
+class Session {
+    public string    name = "default";
+    public CookieJar jar;
+    public string    activeEnvName = "";
+    new Session()          { jar = CookieJar(); }
+    new Named(string n)    { jar = CookieJar(); name = n; }
+}
+
+class SessionSet {                              // all sessions + which is active
+    public Array<Session> sessions;
+    public string activeName = "default";
+    new SessionSet() { sessions = [Session()]; }
+
+    Session active() {
+        for (Session s in sessions) {
+            if (s.name == activeName) { return s; }
+        }
+        // fall back to first (always present)
+        if (sessions.length() > 0) { return sessions.at(0); }
+        Session d = Session();
+        sessions = sessions.add(d);
+        return d;
+    }
+
+    void switchTo(string name) {
+        if (this.find(name) == None) { sessions = sessions.add(Session::Named(name)); }
+        activeName = name;
+    }
+
+    Session? find(string name) {
+        for (Session s in sessions) {
+            if (s.name == name) { return s; }
+        }
+        return None;
+    }
+
+    Array<string> names() {
+        Array<string> out = [];
+        for (Session s in sessions) { out = out.add(s.name); }
+        return out;
+    }
+}
+
+}

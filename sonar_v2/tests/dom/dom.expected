@@ -1,0 +1,57 @@
+== selectors ==
+2
+2
+2
+2
+0
+2
+1
+1
+Open
+== domnode ==
+file-open
+Open
+Open File
+true
+true
+false
+open
+open-file
+false
+true
+true
+alice
+bob
+true
+false
+true
+false
+true
+true
+7
+true
+true
+1
+present
+child
+3
+== nodelist ==
+1
+2
+false
+true
+== id-index ==
+duplicate id 'file-save'
+present
+some
+true
+true
+== serializer ==
+<!-- unmapped -->
+<input id="name" placeholder="your name">bob</input>
+<menu id="menu2"><button id="b2" class="primary" action="b2">B2</button></menu>
+== errors ==
+selector 'a >> b': unexpected '>' at 3
+selector '#': expected id name at 1
+selector '[unterminated': unterminated '[' at 1
+selector '> x': unexpected '>' at 0

@@ -1,0 +1,162 @@
+namespace Sonar {
+    // Shared L-to-R remainder distribution + clamp fixpoint (§2.3/§2.4 of
+    // techdesign-02-layout.md). Reused by GridLayout track sizing (§3) so
+    // there is one implementation of the rule, not two.
+    Array<int> distributeFlexShares(Array<Constraint> flexConstraints, int remaining) {
+        int n = flexConstraints.length();
+        Array<int> shares = Array(n, 0);
+        Array<bool> pinned = Array(n, false);
+        int budget = remaining;
+        int iterations = 0;
+        while (true) {
+            iterations = iterations + 1;
+            if (iterations > n + 1) throw SonarException("Flex distribution fixpoint failed to converge");
+
+            int totalFlex = 0;
+            for (int i in 0..n - 1) if (!pinned[i]) totalFlex = totalFlex + flexConstraints[i].flex;
+            if (totalFlex == 0) break;
+
+            Array<int> raw = Array(n, 0);
+            int distributed = 0;
+            for (int i in 0..n - 1) if (!pinned[i]) {
+                int base = budget * flexConstraints[i].flex / totalFlex;
+                raw[i] = base;
+                distributed = distributed + base;
+            }
+            int leftover = budget - distributed;
+            int given = 0;
+            for (int i in 0..n - 1) if (!pinned[i] && given < leftover) {
+                raw[i] = raw[i] + 1;
+                given = given + 1;
+            }
+
+            bool pinnedAny = false;
+            for (int i in 0..n - 1) if (!pinned[i]) {
+                Constraint c = flexConstraints[i];
+                if (raw[i] < c.min || raw[i] > c.max) {
+                    int clampedValue = raw[i] < c.min ? c.min : c.max;
+                    shares[i] = clampedValue;
+                    pinned[i] = true;
+                    budget = budget - clampedValue;
+                    pinnedAny = true;
+                }
+            }
+            if (!pinnedAny) {
+                for (int i in 0..n - 1) if (!pinned[i]) shares[i] = raw[i];
+                break;
+            }
+        }
+        return shares;
+    }
+
+    class FlexLayout : ILayoutStrategy {
+        Axis axis;
+        int gap_ = 0;
+        Align align_ = Align::Stretch;
+
+        new FlexLayout(Axis a) { axis = a; }
+
+        FlexLayout gap(int g) { gap_ = g; return this; }
+        FlexLayout align(Align a) { align_ = a; return this; }
+
+        int mainOf(Size s) => axis == Axis::Horizontal ? s.w : s.h;
+        int crossOf(Size s) => axis == Axis::Horizontal ? s.h : s.w;
+        Size sizeFrom(int mainValue, int crossValue) =>
+            axis == Axis::Horizontal ? Size(mainValue, crossValue) : Size(crossValue, mainValue);
+        Constraint mainConstraintOf(IComponent c) =>
+            axis == Axis::Horizontal ? c.widthConstraint() : c.heightConstraint();
+        Constraint crossConstraintOf(IComponent c) =>
+            axis == Axis::Horizontal ? c.heightConstraint() : c.widthConstraint();
+
+        Size measure(Array<IComponent> kids, Size avail) {
+            int mainSum = 0;
+            int crossMax = 0;
+            int visibleCount = 0;
+            for (IComponent child in kids) if (child.visible()) {
+                // Concrete-main children already know their final size —
+                // measure them at it so wrap-sensitive content (§1 wrap
+                // protocol) sees the right width from the start.
+                Constraint mc = mainConstraintOf(child);
+                Size childAvail = mc.isConcrete() ? sizeFrom(mc.concrete, crossOf(avail)) : avail;
+                child.measure(childAvail);
+                Size d = child.desired();
+                mainSum = mainSum + mainOf(d);
+                int crossVal = crossOf(d);
+                if (crossVal > crossMax) crossMax = crossVal;
+                visibleCount = visibleCount + 1;
+            }
+            int gaps = visibleCount > 1 ? gap_ * (visibleCount - 1) : 0;
+            return sizeFrom(mainSum + gaps, crossMax);
+        }
+
+        void arrange(Array<IComponent> kids, Rect content) {
+            Array<IComponent> visible = [];
+            for (IComponent child in kids) if (child.visible()) visible = visible.add(child);
+            int n = visible.length();
+            Size contentSize = Size(content.w(), content.h());
+            int contentMain = mainOf(contentSize);
+            int contentCross = crossOf(contentSize);
+
+            Array<int> mainSize = Array(n, 0);
+            Array<int> pass1Main = Array(n, 0);
+            Array<Constraint> flexConstraints = [];
+            Array<int> flexIndices = [];
+            int fixed = 0;
+
+            for (int i in 0..n - 1) {
+                IComponent child = visible[i];
+                pass1Main[i] = mainOf(child.desired());
+                Constraint mc = mainConstraintOf(child);
+                if (mc.isConcrete()) {
+                    mainSize[i] = mc.concrete;
+                    fixed = fixed + mc.concrete;
+                } else if (mc.flex > 0) {
+                    flexConstraints = flexConstraints.add(mc);
+                    flexIndices = flexIndices.add(i);
+                } else {
+                    int clamped = clampAxis(mc, pass1Main[i]);
+                    mainSize[i] = clamped;
+                    fixed = fixed + clamped;
+                }
+            }
+
+            int gaps = n > 1 ? gap_ * (n - 1) : 0;
+            fixed = fixed + gaps;
+            int remaining = contentMain - fixed;
+            if (remaining < 0) remaining = 0;
+
+            Array<int> shares = distributeFlexShares(flexConstraints, remaining);
+            for (int i in 0..flexIndices.length() - 1) mainSize[flexIndices[i]] = shares[i];
+
+            // Wrap re-measure (§1, §8.2): only fires for children whose
+            // final main size actually changed from the pass-1 estimate,
+            // and only on the horizontal axis (width informs height, never
+            // the reverse) — bounds cost to <=2 measures/child/frame.
+            if (axis == Axis::Horizontal) {
+                for (int i in 0..n - 1) {
+                    if (mainSize[i] != pass1Main[i]) visible[i].measure(sizeFrom(mainSize[i], Unbounded));
+                }
+            }
+
+            int cursor = axis == Axis::Horizontal ? content.x() : content.y();
+            for (int i in 0..n - 1) {
+                IComponent child = visible[i];
+                int crossSize;
+                if (align_ == Align::Stretch) crossSize = clampAxis(crossConstraintOf(child), contentCross);
+                else crossSize = crossOf(child.desired());
+                if (crossSize < 0) crossSize = 0;
+
+                int crossPos = 0;
+                if (align_ == Align::Center) crossPos = (contentCross - crossSize) / 2;
+                else if (align_ == Align::End) crossPos = contentCross - crossSize;
+
+                int mSize = mainSize[i];
+                Rect box;
+                if (axis == Axis::Horizontal) box = Rect(Point(cursor, content.y() + crossPos), Size(mSize, crossSize));
+                else box = Rect(Point(content.x() + crossPos, cursor), Size(crossSize, mSize));
+                child.arrange(box);
+                cursor = cursor + mSize + gap_;
+            }
+        }
+    }
+}

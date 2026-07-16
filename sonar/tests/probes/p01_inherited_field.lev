@@ -1,0 +1,5 @@
+interface HasValue { int value; }
+class Base { int value = 7; }
+class Derived : Base, HasValue { }
+HasValue v = Derived();
+console.writeln(v.value);

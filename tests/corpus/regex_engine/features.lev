@@ -1,0 +1,45 @@
+void span(Array<int> m) {
+    if (m.length() == 0) console.writeln("none");
+    else console.writeln(m.at(0).toString() + ":" + m.at(1).toString());
+}
+
+Array<int> greedy = regex::compileProgram("a+", "");
+span(regex::programFind(greedy, "zaaa"));
+Array<int> lazy = regex::compileProgram("a+?", "");
+span(regex::programFind(lazy, "zaaa"));
+
+Array<int> captures = regex::compileProgram("(?<left>a|ab)(b)?", "");
+Array<int> cm = regex::programFind(captures, "zab");
+console.writeln(regex::programGroupCount(captures));
+console.writeln(regex::programGroupIndex(captures, "left"));
+console.writeln(cm.at(0).toString() + ":" + cm.at(1).toString());
+console.writeln(cm.at(2).toString() + ":" + cm.at(3).toString());
+console.writeln(cm.at(4).toString() + ":" + cm.at(5).toString());
+
+Array<int> absent = regex::compileProgram("(a)|(b)", "");
+Array<int> am = regex::programFind(absent, "b");
+console.writeln(am.at(2).toString() + ":" + am.at(3).toString());
+console.writeln(am.at(4).toString() + ":" + am.at(5).toString());
+
+Array<int> bounds = regex::compileProgram("ab{2,4}c?", "");
+console.writeln(regex::programMinLength(bounds));
+console.writeln(regex::programMaxLength(bounds));
+
+Array<int> boundary = regex::compileProgram("\\bcat\\B", "");
+console.writeln(regex::programIsMatch(boundary, "catx"));
+console.writeln(regex::programIsMatch(boundary, "scat"));
+Array<int> multi = regex::compileProgram("^x$", "m");
+span(regex::programFind(multi, "a\nx\nb"));
+Array<int> caseFold = regex::compileProgram("[a-z]+", "i");
+span(regex::programFind(caseFold, "--ABC--"));
+
+Array<int> dfa = regex::compileProgram("[ab]*abb", "");
+console.writeln(regex::programIsMatchPike(dfa, "zzabababbz"));
+console.writeln(regex::programIsMatchDfa(dfa, "zzabababbz"));
+console.writeln(regex::programIsMatchDfa(dfa, "zzababaaz"));
+
+console.writeln(regex::programCount(regex::compileProgram("a*?", ""), "aa"));
+Array<bool> hits = regex::programIsMatchAll(greedy, ["bbb", "a", "xxaa"]);
+console.writeln(hits.at(0)); console.writeln(hits.at(1)); console.writeln(hits.at(2));
+Array<int> counts = regex::programCountAll(regex::compileProgram("a", ""), ["", "aba", "aaa"]);
+console.writeln(counts.at(0)); console.writeln(counts.at(1)); console.writeln(counts.at(2));

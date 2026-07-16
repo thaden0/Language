@@ -1,0 +1,12 @@
+// SIGWINCH coalescing (§3, §5): the driver resizes the pty rapidly N times; the
+// fd read drains all pending, so a storm collapses to >=1 tick, and the last
+// tick's term::size() reflects the FINAL size. A USR1 ends the program (so the
+// buffered-output interpreters flush and the driver can read the result).
+InStream<int> w = signal::on(signal::WINCH);
+w.subscribe((n) => {
+    term::WinSize s = term::size();
+    console.writeln("winch=" + s.rows.toString() + "x" + s.cols.toString());
+});
+InStream<int> q = signal::on(signal::USR1);
+q.subscribe((n) => env::exit(0));
+console.writeln("READY");

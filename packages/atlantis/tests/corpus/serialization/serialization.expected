@@ -1,0 +1,43 @@
+-- struct DTO round-trip (ignore + optional present) --
+a@b.com,Ann,30,
+{"email":"a@b.com","fullName":"Ann","age":30.000000}
+-- struct DTO round-trip (optional absent) --
+c@d.com,Cal,none
+{"email":"c@d.com","fullName":"Cal","age":null}
+-- struct DTO round-trip (optional explicit null) --
+e@f.com,none
+-- entity class round-trip (nested + DateTime + array, work absent) --
+7,u@x.com,1994-11-06T08:49:37Z,Metropolis,00001,none,a|b|c
+{"id":7.000000,"email":"u@x.com","createdAt":"1994-11-06T08:49:37Z","home":{"city":"Metropolis","zip":"00001"},"work":null,"tags":["a","b","c"]}
+-- entity class round-trip (nested work present) --
+Star City
+-- policy: unknown keys ignored --
+z@z.com,Zed
+-- policy: missing required key throws ValidationException --
+caught:email:missing;
+-- policy: wrong type throws ValidationException --
+caught:email:expected string;
+-- policy: non-integral number into int throws --
+caught:id:expected integer;
+-- policy: null for a required field throws --
+caught:email:expected string;
+-- policy: wrong top-level kind (array where object expected) --
+caught:$:expected a JSON object;
+-- §7 negotiation: parseAccept fixtures --
+3
+1,*/*
+2
+1.000000
+-- §7 negotiation: negotiate --
+text/html
+application/json
+NONE
+NONE
+application/json
+-- §7 isJsonContent --
+true
+true
+true
+false
+false
+false

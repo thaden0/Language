@@ -1,0 +1,8 @@
+name = "atlantis-serialization-corpus"
+entry = "main"
+sources = ["serialization.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

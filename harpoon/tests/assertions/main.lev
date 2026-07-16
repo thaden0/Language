@@ -1,0 +1,134 @@
+// Harpoon M1 self-test: direct-call assertion vocabulary tests, no
+// discovery involved (discovery is blocked — known_bugs_1.md #76; see
+// harpoon/README.md). Exercises every function in assert.lev on its
+// PASS path (no throw) and FAIL path (throws AssertionException).
+uses harpoon;
+
+int passCount = 0;
+int failCount = 0;
+
+void ok(string label) {
+    passCount = passCount + 1;
+    console.writeln("ok   " + label);
+}
+
+void bad(string label, string detail) {
+    failCount = failCount + 1;
+    console.writeln("FAIL " + label + ": " + detail);
+}
+
+void expectPass(string label, (() => void) body) {
+    try {
+        body();
+        ok(label);
+    } catch (IException e) {
+        bad(label, "unexpected throw: " + e.message);
+    }
+}
+
+void expectFail(string label, (() => void) body) {
+    try {
+        body();
+        bad(label, "expected a throw, none happened");
+    } catch (IAssertionException e) {
+        ok(label);
+    } catch (IException e) {
+        bad(label, "threw the wrong kind: " + e.message);
+    }
+}
+
+// Explicit (==) required for value equality — known_bugs_2.md #77: a
+// struct with no defined (==) is NOT field-wise by default.
+struct Point {
+    int x; int y;
+    new Point(int px, int py) { x = px; y = py; }
+    bool (==)(Point other) => x == other.x && y == other.y;
+}
+
+enum Color { Red, Green, Blue }
+
+class Counter {
+    int n = 0;
+}
+
+// Entry point: the file's own `main` — bug #78 is fixed, so a file-local
+// top-level declaration outranks the bulk-imported `harpoon::main()`.
+void main() {
+    // assertEqual: scalar ladder
+    expectPass("assertEqual int pass", () => { harpoon::assertEqual(1, 1); });
+    expectFail("assertEqual int fail", () => { harpoon::assertEqual(1, 2); });
+    expectPass("assertEqual string pass", () => { harpoon::assertEqual("a", "a"); });
+    expectFail("assertEqual string fail", () => { harpoon::assertEqual("a", "b"); });
+    expectPass("assertEqual bool pass", () => { harpoon::assertEqual(true, true); });
+    expectFail("assertEqual bool fail", () => { harpoon::assertEqual(true, false); });
+    expectPass("assertEqual char pass", () => { harpoon::assertEqual('a', 'a'); });
+    expectFail("assertEqual char fail", () => { harpoon::assertEqual('a', 'b'); });
+    expectPass("assertEqual float pass (within eps)", () => { harpoon::assertEqual(1.0, 1.0000001); });
+    expectFail("assertEqual float fail", () => { harpoon::assertEqual(1.0, 2.0); });
+
+    // assertEqual: array ladder
+    expectPass("assertEqual array int pass", () => { harpoon::assertEqual([1, 2, 3], [1, 2, 3]); });
+    expectFail("assertEqual array int fail (value)", () => { harpoon::assertEqual([1, 2, 3], [1, 9, 3]); });
+    expectFail("assertEqual array int fail (length)", () => { harpoon::assertEqual([1, 2, 3], [1, 2]); });
+    expectPass("assertEqual array string pass", () => { harpoon::assertEqual(["a", "b"], ["a", "b"]); });
+    expectFail("assertEqual array string fail", () => { harpoon::assertEqual(["a", "b"], ["a", "c"]); });
+    expectPass("assertEqual array float pass", () => { harpoon::assertEqual([1.5, 2.5], [1.5, 2.5]); });
+    expectFail("assertEqual array float fail", () => { harpoon::assertEqual([1.5, 2.5], [1.5, 9.5]); });
+    expectPass("assertEqual array bool pass", () => { harpoon::assertEqual([true, false], [true, false]); });
+    expectFail("assertEqual array bool fail", () => { harpoon::assertEqual([true, false], [true, true]); });
+
+    // assertEqual: generic duck-typed fallback (struct / enum)
+    expectPass("assertEqual generic struct pass", () => { harpoon::assertEqual(Point(1, 2), Point(1, 2)); });
+    expectFail("assertEqual generic struct fail", () => { harpoon::assertEqual(Point(1, 2), Point(9, 9)); });
+    expectPass("assertEqual generic enum pass", () => { harpoon::assertEqual(Color::Red, Color::Red); });
+    expectFail("assertEqual generic enum fail", () => { harpoon::assertEqual(Color::Red, Color::Blue); });
+
+    // assertNotEqual
+    expectPass("assertNotEqual int pass", () => { harpoon::assertNotEqual(1, 2); });
+    expectFail("assertNotEqual int fail", () => { harpoon::assertNotEqual(1, 1); });
+
+    // assertSame / assertNotSame
+    Counter c1 = Counter();
+    Counter c2 = Counter();
+    expectPass("assertSame pass", () => { harpoon::assertSame(c1, c1); });
+    expectFail("assertSame fail", () => { harpoon::assertSame(c1, c2); });
+    expectPass("assertNotSame pass", () => { harpoon::assertNotSame(c1, c2); });
+    expectFail("assertNotSame fail", () => { harpoon::assertNotSame(c1, c1); });
+
+    // assertTrue / assertFalse
+    expectPass("assertTrue pass", () => { harpoon::assertTrue(1 == 1); });
+    expectFail("assertTrue fail", () => { harpoon::assertTrue(1 == 2, "custom message"); });
+    expectPass("assertFalse pass", () => { harpoon::assertFalse(1 == 2); });
+    expectFail("assertFalse fail", () => { harpoon::assertFalse(1 == 1); });
+
+    // assertNone / assertSome
+    int? none = None;
+    int? some = 5;
+    expectPass("assertNone pass", () => { harpoon::assertNone(none); });
+    expectFail("assertNone fail", () => { harpoon::assertNone(some); });
+    expectPass("assertSome pass", () => { harpoon::assertSome(some); });
+    expectFail("assertSome fail", () => { harpoon::assertSome(none); });
+
+    // assertThrows
+    expectPass("assertThrows pass", () => {
+        IException e = harpoon::assertThrows(() => { throw RuntimeException("boom"); });
+        harpoon::assertEqual("boom", e.message);
+    });
+    expectFail("assertThrows fail (nothing thrown)", () => {
+        harpoon::assertThrows(() => { });
+    });
+    expectPass("assertThrows mustContain pass", () => {
+        harpoon::assertThrows(() => { throw RuntimeException("big boom here"); }, "boom");
+    });
+    expectFail("assertThrows mustContain fail", () => {
+        harpoon::assertThrows(() => { throw RuntimeException("nope"); }, "boom");
+    });
+
+    // fail
+    expectFail("fail always throws", () => { harpoon::fail("deliberate"); });
+
+    console.writeln("---");
+    console.writeln("${passCount} passed, ${failCount} failed");
+    env::setExitCode(failCount > 0 ? 1 : 0);
+}
+main();

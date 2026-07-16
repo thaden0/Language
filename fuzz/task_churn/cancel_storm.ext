@@ -1,0 +1,46 @@
+// LA-30 B2 churn (doc 06 §10: "+0B under cancel storms (10k cancels) — G12's
+// unwind discipline is what the churn corpus is really testing here").
+//
+// Each iteration: a fresh TaskGroup owns one child that captures a freshly
+// allocated escaping object (`h`, an Array-backed Holder), spawns, then is
+// marked cancelled while still RUNNABLE (cancelAll, called immediately —
+// before the scheduler ever dispatches it). The group's close() then parks
+// the caller, which lets the scheduler run the child for the first time: the
+// child's body executes up to `await dead`, finds its own cancel mark at the
+// park's ENTRY check, and unwinds through its `catch (CancelledException)`
+// without ever truly suspending. This is the cheap, high-frequency cancel
+// shape (mark-before-dispatch) rather than the parked-then-cancelled shape
+// (exercised directly in runtime_selftest's B2 tests, C-level) — what it
+// proves at the language level is that the per-iteration id registry
+// add/remove, the closure's captured `h`, and the task's own stack all
+// return to the allocator/pool with NOTHING left live, N iterations running.
+// Only `sink` is a program-lifetime root, so live-at-exit must stay flat as
+// N grows (churn_leak.py's differential: escaping-tier meter vs the oracle's
+// N-independent root set). CI sweeps the harness's standard N (100/800, same
+// scale as every other churn/ template) for speed; manually verified once at
+// N=5000 (~88s under --mem-verify's full reachability trace, exceeding the
+// harness's 60s cap — not a leak or hang: correct oracle output, 1-object
+// constant root set) toward doc 06 §10's literal "10k cancels" figure.
+class Holder {
+    Array<int> data;
+}
+Promise<int> dead = Promise();
+void iterate(int seed) {
+    using TaskGroup g = TaskGroup();
+    Holder h = Holder();
+    h.data = h.data.add(seed);
+    g.run(() => {
+        try { int y = await dead; }
+        catch (CancelledException e) { }
+    });
+    // `using`'s fall-off close() (cancelAll + join) runs here.
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        iterate(i);
+        sink = sink + i;
+    }
+    console.writeln(sink);
+}
+run(@N@);

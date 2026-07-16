@@ -1,0 +1,14 @@
+// Track 01 F3: `\xNN` (exactly two hex digits -> that byte) plus the escape
+// decoder consolidation (Eval.cpp and Lower.cpp shared ONE decodeStringLiteral
+// instead of two hand-duplicated copies, which is how `\r` went undocumented
+// for so long). Malformed `\x` (not exactly two hex digits) and any other
+// unrecognized escape both pass the following character(s) through literally
+// — the existing compat rule, unchanged.
+console.writeln("\x41\x42\x43");     // ABC
+console.writeln("\x61BC");           // aBC (one escape, then literal chars)
+string s = "a\x00b";
+console.writeln(s.length());         // 3 — the NUL byte survives, not a terminator
+console.writeln("\r".length());      // 1
+console.writeln("bad\xZZhex");       // badxZZhex (malformed \x: 'x' passes through)
+console.writeln("\x4");              // x4 (only one hex digit available)
+console.writeln("unknown:\q");       // unknown:q (unrecognized escape passes through)

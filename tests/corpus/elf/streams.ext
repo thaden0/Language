@@ -1,0 +1,41 @@
+// Streams: the system boundary substrate — queue semantics, typed views,
+// the IOStream diamond, extract, and subscribe-as-standing-pull.
+void run() {
+    StreamBuffer<int> buffer = StreamBuffer();
+    OutStream<int> writer = OutStream(buffer);
+    InStream<int> reader = InStream(buffer);
+
+    writer << 42;
+    writer << 7 << 9;                       // chaining: (<<) returns the stream
+    console.writeln(buffer.count());        // 3
+    int pulled = reader >> ;                // extract == pull
+    console.writeln(pulled);                // 42
+    console.writeln(reader.pull());         // 7
+    console.writeln(reader.hasData());      // true
+
+    // IOStream: both ends over ONE collapsed conduit (the diamond).
+    StreamBuffer<int> shared = StreamBuffer();
+    IOStream<int> duplex = IOStream(shared);
+    duplex << 5;
+    int back = duplex >> ;
+    console.writeln(back);                  // 5
+
+    // subscribe = standing pull: drains what's queued, then gets pushes live.
+    StreamBuffer<string> sb = StreamBuffer();
+    OutStream<string> w2 = OutStream(sb);
+    InStream<string> r2 = InStream(sb);
+    w2 << "queued";
+    r2.subscribe((s) => console.writeln("got: " + s));
+    w2 << "live";
+
+    // the consumer end is claimed now — pull is a loud error.
+    try { string x = r2.pull(); }
+    catch (RuntimeException e) { console.writeln(e.message); }
+
+    // pull on empty is loud too.
+    StreamBuffer<int> eb = StreamBuffer();
+    InStream<int> empty = InStream(eb);
+    try { int x = empty.pull(); }
+    catch (RuntimeException e) { console.writeln(e.message); }
+}
+run();

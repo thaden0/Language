@@ -1,0 +1,10 @@
+void main() {
+    bool ok = term.enableRaw();
+    if (!ok) { console.writeln("NOTTY"); return; }
+    console.writeln("READY\r");
+    string key = std::sysRead(0, 1);      // one byte, no Enter, no echo
+    console.writeln("KEY=" + key + "\r");
+    term.restore();
+    console.writeln("RESTORED\r");
+}
+main();

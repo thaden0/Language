@@ -1,0 +1,23 @@
+== cookie capture/attach ==
+stored=3
+https /app/x: [sid=abc123; pref=dark; secure_tok=xyz]
+http  /app/x: [sid=abc123; pref=dark]
+https /other: [sid=abc123; secure_tok=xyz]
+https api.example.com /app: [pref=dark]
+== expiry ==
+before: [short=1]
+after:  []
+pruned=0
+== jar json round-trip ==
+roundtrip stored=3
+roundtrip attach: [sid=abc123; pref=dark; secure_tok=xyz]
+== session json round-trip ==
+name=admin env=Prod cookies=3
+== history json round-trip ==
+POST https://x/y 201 42 128
+== settings json round-trip ==
+dark 15000 false admin
+== disk save/load ==
+loaded session cookies=3 env=Prod
+loaded history entries=1
+loaded settings theme=dark timeout=15000

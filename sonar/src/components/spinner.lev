@@ -1,0 +1,42 @@
+namespace Sonar {
+    class Spinner : Component, Styleable, ISingleLine {
+        Array<string> frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        int intervalMs = 80;
+        int frameIndex_ = 0;
+
+        // Same pending-timer seam as ProgressBar's marquee: registered once,
+        // (re-)activated by Component's own attach/detach lifecycle once
+        // T09's App installs a real ILifecycleHost. NOTE: `intervalMs` is
+        // captured by value here, so setInterval() below only takes effect
+        // on the *next* attach cycle (a fresh registration would be needed
+        // to retime an already-bound timer) — documented, not hidden.
+        // bug.md #53: `invalidate()` is a bare (implicit-`this`) instance
+        // method call inside this lambda; an explicit `this.` receiver is
+        // the workaround.
+        new Spinner() {
+            __sonarRegisterTimer(intervalMs, () => {
+                if (!frames.isEmpty()) {
+                    frameIndex_ = (frameIndex_ + 1) % frames.length();
+                    this.invalidate();
+                }
+            });
+        }
+
+        void setFrames(Array<string> value) {
+            frames = value;
+            frameIndex_ = 0;
+            invalidateLayout();
+        }
+        void setInterval(int ms) { intervalMs = ms; }
+
+        Size contentDesired(Size avail) => Size(maxLineWidth(frames), 1);
+
+        void paintContent(Surface s) {
+            if (frames.isEmpty()) return;
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            Style st = resolveOrDefault(this, "spinner");
+            s.writeText(content.x(), content.y(), frames[frameIndex_ % frames.length()], st);
+        }
+    }
+}

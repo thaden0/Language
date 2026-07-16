@@ -1,0 +1,12 @@
+[graph] uses include graph (file -> file dependencies via `uses`) + build order
+[graph] namespaces (declared-in / imported-by):
+[graph]   Geo
+[graph]     declared-in: shapes.ext, area.ext
+[graph]     imported-by: main.ext
+[graph]   Util
+[graph]     declared-in: util.ext
+[graph]     imported-by: main.ext
+[graph] file dependencies (A -> B: A `uses` a namespace B declares):
+[graph]   main.ext -> shapes.ext, area.ext, util.ext
+[graph] cycles: (none)
+[graph] build order: shapes.ext, area.ext, util.ext, main.ext

@@ -1,0 +1,68 @@
+// Track 10 M1 (techdesign-threads-2 §3, §7, §10): spawn / Worker<T> / join on
+// the SERIAL reference engines (oracle + IR). Workers are cooperative loop
+// tasks here (a 0-delay task, run in spawn order — deterministic); the
+// true-thread lane (LLVM pthreads) lands with M3, so this corpus is
+// interpreters-only, the same treatment as div_by_zero's no-ELF lane. Output
+// stays deterministic: only the spawning thread writes, at join points (§8).
+
+class Box { public int n = 0; }
+
+// 1. a worker returns a value; `await` is the join (R-2).
+Worker<int> w0 = std::spawn(() => 6 * 7);
+console.writeln(await w0);                      // 42
+
+// 2. acceptance #1 — a mutation of a captured OBJECT after spawn is unobserved
+//    (the copy-always boundary snapshots captures at spawn time, §2 D1').
+int fromObject() {
+    Box b = Box();
+    b.n = 5;
+    Worker<int> w = std::spawn(() => b.n);
+    b.n = 99;                                   // mutate the original after spawn
+    return await w;
+}
+console.writeln(fromObject());                  // 5, not 99
+
+// 3. acceptance #1 for a captured primitive.
+int fromInt() {
+    int x = 7;
+    Worker<int> w = std::spawn(() => x + 1);
+    x = 100;
+    return await w;
+}
+console.writeln(fromInt());                     // 8, not 101
+
+// 4. A-1 (techdesign-threads-3 §1): a Worker/Promise handle may NOT cross a
+//    thread boundary. Promise.resolve invokes its stored continuation inline, so
+//    a worker resolving a spawner-owned promise would run a spawner-heap closure
+//    on the worker's thread against non-atomic refcounts — the exact D1' race.
+//    Capturing a sibling Worker in a spawn body is therefore a loud, catchable
+//    error naming the type ("pass a Channel"). The no-deadlock cooperative
+//    property this used to demonstrate is re-shown the sound way — through a
+//    Channel, the one sanctioned cross-worker conduit — in channel.lev.
+int capturedWorker() {
+    Worker<int> inner = std::spawn(() => 5);
+    Worker<int> w = std::spawn(() => await inner + 1);   // captures a Worker -> A-1
+    return await w;
+}
+try { console.writeln(capturedWorker()); }
+catch (IException e) { console.writeln(e.message); }
+
+// 5. a non-flattenable capture is a loud, catchable error (§6): a nested closure
+//    could reach arbitrarily far (loop registries, sockets), so it cannot cross.
+int badClosure() {
+    let inner = (z) => z + 1;
+    Worker<int> w = std::spawn(() => inner(4));
+    return await w;
+}
+try { console.writeln(badClosure()); }
+catch (RuntimeException e) { console.writeln(e.message); }
+
+// 6. ...and an fd-/loop-bound carrier (a Timer) is rejected too — each worker
+//    opens its own (the share-nothing shape, §6).
+int badTimer() {
+    Timer t = std::after(1);
+    Worker<int> w = std::spawn(() => { t.cancel(); return 2; });
+    return await w;
+}
+try { console.writeln(badTimer()); }
+catch (RuntimeException e) { console.writeln(e.message); }

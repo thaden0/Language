@@ -1,0 +1,59 @@
+== auth ==
+noauth:
+  Authorization=<none>
+  X-Api-Key=<none>
+  query=
+basic:
+  Authorization=Basic YWRhOnMzY3IzdA==
+  X-Api-Key=<none>
+  query=
+bearer:
+  Authorization=Bearer TOK
+  X-Api-Key=<none>
+  query=
+apikey:
+  Authorization=<none>
+  X-Api-Key=KEY-XYZ
+  query=
+apikey:
+  Authorization=<none>
+  X-Api-Key=<none>
+  query=api_key=KEY-XYZ
+digest:
+  Authorization=<none>
+  X-Api-Key=<none>
+  query=
+  note=digest auth is not supported in v1 (needs a 401 challenge round)
+oauth2:
+  Authorization=<none>
+  X-Api-Key=<none>
+  query=
+  note=auth type 'oauth2' is not supported
+== effectiveAuth cascade ==
+bearer
+noauth
+bearer
+== body ==
+nobody ct=<none>
+  body=[]
+raw-json ct=application/json
+  body=[{"u":"ada"}]
+urlencoded ct=application/x-www-form-urlencoded
+  body=[q=a%20b%26c&t=TOK]
+graphql ct=application/json
+  body=[{"query":"query { me }","variables":{"id":1.000000}}]
+formdata ct=multipart/form-data; boundary=----ReconBoundary017486d68dc61fe6
+  body=[------ReconBoundary017486d68dc61fe6
+Content-Disposition: form-data; name="name"
+
+Ada
+------ReconBoundary017486d68dc61fe6
+Content-Disposition: form-data; name="avatar"
+
+[binary part omitted]
+------ReconBoundary017486d68dc61fe6--
+]
+  note=multipart file part 'avatar' omitted (binary unsupported in v1)
+filebinary ct=<none>
+  body=[]
+  note=request body is a binary file upload, unsupported in v1

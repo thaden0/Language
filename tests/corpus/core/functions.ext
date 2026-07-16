@@ -1,0 +1,17 @@
+int add(int a, int b) => a + b;
+int fib(int n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+string describe(int n) => "int " + n;
+string describe(string s) => "str " + s;
+void run() {
+    console.writeln(add(2, 3));
+    console.writeln(fib(10));
+    console.writeln(describe(7));
+    console.writeln(describe("seven"));
+    console.write("a");
+    console.write("b");
+    console.writeln("c");
+}
+run();

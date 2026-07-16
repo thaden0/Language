@@ -1,0 +1,4 @@
+[namespaces] every namespace, the files that open it, and its members
+[namespaces] Shared
+[namespaces]   opened-in: one.ext, two.ext, three.ext
+[namespaces]   members:   one, three, two
