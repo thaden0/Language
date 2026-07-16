@@ -60,7 +60,8 @@ Do the milestones in the sequence below; each builds on the last.
 | **P2.1c** | Git fetch — the `GitProvider` implementing the seam. | `tools/trident/vcs.{hpp,cpp}` (new), `tools/trident/fetch.{hpp,cpp}` (new). |
 | **P2.1d** | Lockfile read/write + staleness check. | `tools/trident/lock.{hpp,cpp}` (new). |
 | **P2.1e** | Integration: wire the build list into the existing resolve→plan path; add the new CLI subcommands. | `tools/trident/resolve.{hpp,cpp}`, `tools/trident/main.cpp` (or a new `commands.{hpp,cpp}`). |
-| **P2.2–P2.4** | Integrity, publishing, provenance (GT4–GT6). | `tools/trident/checksum.{hpp,cpp}` (new) + later files, §6. |
+| **P2.2 (landed 2026-07-15)** | Integrity & hermeticity (GT4): checksum DB, `trident vendor`, `trident audit`. | `tools/trident/checksum.{hpp,cpp}` (new), `tools/trident/resolve.{hpp,cpp}` (`VendorProvider` + verification), `tools/trident/commands.{hpp,cpp}` (`cmdAudit`/`cmdVendor`), `tools/trident/main.cpp` (`--vendor`), §6. |
+| **P2.3–P2.4** | Publishing, provenance (GT5–GT6). | Later files, §6. |
 
 The existing local-path resolution in `resolve.cpp` (`loadDepsRec`, `gatherSources`,
 `scanExportedNamespaces`) is the **reference implementation** of the provider for local deps
@@ -190,7 +191,7 @@ ratifies GT2 as done and delivers GT3 onward.
 |---|---|---|---|
 | **P2.0** | Ratify GT2; extend the manifest dep schema for **VCS deps** (distinguish a VCS `path` + git-tag `version` from a local path); freeze the §3.3 `ModuleProvider` contract. Mechanical + contract. | **GT2 (ratified):** local-path corpus (`dep_alias`, `dep_app`, `phantom_dep`) green unchanged; manifest parses a `[[dep]]` with a `github.com/...` path + `version = "1.2.0"` without error; provider contract committed to `resolve.hpp`. | 2026-07-16 |
 | **P2.1** | **Git deps + MVS + lockfile + content store.** In order: SemVer+MVS (P2.1a) → SHA-256+store (P2.1b) → git fetch (P2.1c) → lockfile (P2.1d) → integration + CLI (P2.1e). | **GT3:** a project whose `[[dep]]` names a real VCS path + version resolves via MVS, fetches into `~/.trident/store/<sha256>/`, writes `trident.lock` (selected versions + content hashes), and builds — the fetched module's namespaces compile in. `trident add/lock/fetch/why` work. **`leviathan` unchanged** (GT1 grep still green). | **2026-10-15** |
-| **P2.2** | **Integrity & hermeticity:** checksum DB verify/record (tamper-evidence), `trident vendor` (hermetic/offline builds), `trident audit` (hash + policy check). | **GT4:** every fetch is verified against the committed `trident.lock` **and** the checksum DB; a moved tag / swapped content is a loud error; `trident vendor` produces a network-free build; `trident audit` passes on the corpus. | 2026-11-30 |
+| **P2.2 (landed 2026-07-15)** | **Integrity & hermeticity:** checksum DB verify/record (tamper-evidence), `trident vendor` (hermetic/offline builds), `trident audit` (hash + policy check). | **GT4 (met 2026-07-15):** every fetch is verified against the committed `trident.lock` **and** the checksum DB; a moved tag / swapped content is a loud error; `trident vendor` produces a network-free build; `trident audit` passes on the corpus. | ~~2026-11-30~~ 2026-07-15 |
 | **P2.3** | **Publishing & availability (optional services):** `trident publish` (validate + git tag + optional index register), `trident yank`, the optional caching proxy (`$TRIDENT_PROXY`), the optional thin name→path index. | **GT5:** `publish` tags a repo and records the version's hash in the checksum DB; `yank` blocks *new* MVS selection without breaking existing locks; a build succeeds against a proxy with upstream unreachable (left-pad immunity). **All three services stay optional** — a build from a complete `trident.lock` + git access needs none of them. | 2027-02-15 (post self-host; explicitly deferred, non-blocking) |
 | **P2.4** | **Provenance layers (opt-in):** Sigstore-style build attestations; cargo-vet-style shared audit records; `trident audit` policy requiring trusted audits. | **GT6:** a consumer can require and verify provenance/audit records for its dependency set. | As-needed (no fixed date; ecosystem-scale-gated) |
 
@@ -493,12 +494,15 @@ Wire the build list into the existing resolve→plan path (`resolve.cpp` glue) a
 Single-track, sequenced after GT3. Each is independently useful; each keeps the network/
 registry surface optional (proposal §8.6).
 
-- **P2.2 — integrity & hermeticity (GT4, 2026-11-30).** `checksum.{hpp,cpp}`: on first fetch,
-  record `module@version → sha256` in the checksum DB (baseline: a local append-only signed
-  file, growable to a Merkle transparency log at scale, proposal §4.5/§8.1); on every later
-  fetch, verify against the DB **and** `trident.lock`. `trident vendor` (network-free builds
-  from `./vendor`). `trident audit` (verify hashes vs DB; policy hook for P2.4). A moved tag
-  or swapped content is a loud, DB-logged error.
+- **P2.2 — integrity & hermeticity (GT4, landed 2026-07-15, ahead of the 2026-11-30 target —
+  see the §10 implementation log entry for the full account).** `checksum.{hpp,cpp}`: on first
+  fetch, record `module@version → sha256` in the checksum DB (baseline: a local append-only
+  hash-chained file — tamper-evident like the design's "signed" framing without needing an
+  asymmetric trust root, a logged simplification; growable to a Merkle transparency log at
+  scale, proposal §4.5/§8.1); on every later fetch, verify against the DB **and**
+  `trident.lock`. `trident vendor` (network-free builds from `./vendor`). `trident audit`
+  (verify hashes vs DB; policy hook left for P2.4). A moved tag or swapped content is a loud,
+  DB-logged error.
 - **P2.3 — publishing & availability (GT5, 2027-02-15, post-self-host, optional).**
   `trident publish [--tag vX.Y.Z]` (validate manifest + clean tree → git tag → record hash in
   the checksum DB → optional index register, first-wins immutable). `trident yank <path>@<v>`
@@ -925,3 +929,77 @@ per that file's own convention ("fixed bugs are not tracked there — see git hi
   P2.2 (checksum DB, `vendor`, `audit`, GT4, target 2026-11-30), P2.3 (`publish`/`yank`/proxy/
   index, GT5, deliberately post-self-host), P2.4 (provenance, GT6, as-needed) — are explicitly
   scheduled later per §2's roadmap and are out of scope for this pass.
+
+**2026-07-15 — P2.2 landed (GT4 met, ahead of the 2026-11-30 target).**
+
+- **`checksum.{hpp,cpp}` (the checksum DB, §4.5/§6).** A deliberate simplification from the
+  design's "signed append-only file" language, logged rather than silently substituted: real
+  signing (asymmetric keys, a trust root) is explicitly Sigstore/P2.4 territory (§6 P2.4),
+  and a purely local file needs tamper-evidence, not authentication of a remote signer. The
+  baseline here hash-chains each record to the previous one (Merkle-log style, using the
+  existing hand-rolled SHA-256 from P2.1b) — `$TRIDENT_HOME/checksum.db`, one line per
+  `module@version -> sha256`, each line's own chain hash covering the previous line's chain
+  hash. Editing, reordering, or truncating any past entry breaks the chain, caught on the next
+  load with a diagnostic naming the exact line. Growing this into a real Merkle transparency
+  log (P2.4) only needs a new backend behind `checksumDbVerifyOrRecord()`; callers never see
+  the difference — the seam §9 already called for is now real, not just planned.
+  `checksumDbVerifyOrRecord(dbPath, mod, version, contentHash, err)` is the one entry point:
+  no existing record records a new baseline (ok); a matching record verifies clean (ok, no
+  write); a **different** recorded hash for the same `module@version` is the tag-moved/
+  content-swapped attack from §4.6's table — a loud `err` naming both hashes, never a silent
+  accept.
+- **Wired into `resolveVcsDeps` (resolve.cpp), not a separate step.** Every materialized entry
+  — whether freshly fetched via MVS or read off a verbatim lock (§3.4) — is now checked twice
+  before it's trusted: against the checksum DB (`checksumDbVerifyOrRecord`, tamper-evident
+  across time/machines) and, when the lock was used verbatim, against the lock's own pinned
+  `hash` field (`LockedModule::hash`, populated since P2.1d but never actually compared until
+  now — `lock.cpp`'s own comment on `lockfileMatchesBuildList` had flagged this exact gap as
+  "the checksum DB's job, P2.2, not this structural check"). Either mismatch is a loud
+  `VcsResolution::err`, surfacing through every caller (`build`/`run`/`check`/`add`/`lock`/
+  `update`/`fetch`/`why`/the two new commands below) with no code path that silently accepts
+  drifted content — this is GT4's "every fetch is verified against trident.lock **and** the
+  checksum DB; a moved tag / swapped content is a loud error" in full.
+- **`trident audit` (commands.cpp).** Requires an existing `trident.lock` (a loud error naming
+  `trident lock` otherwise — there is nothing to audit against). Re-resolves against that lock,
+  which reuses the exact verification `resolveVcsDeps` now always does — no separate audit-only
+  logic to keep in sync. Prints one `OK  <path>@<version>  sha256:<hash>` line per module on
+  success, or the same tamper diagnostic `build` would have produced, on failure (exit 1). The
+  "policy hook for P2.4" the design names is deliberately left as just that — a hook, not a
+  policy engine — since trusted-audit-set enforcement is explicitly P2.4 scope (§6).
+- **`VendorProvider` + `trident vendor` + `--vendor` (the hermetic path, "GT4:
+  `trident vendor` produces a network-free build").** `VendorProvider` (resolve.cpp, file-local
+  — it needs no seam beyond `ModuleProvider`) reads a module's sources straight from
+  `<manifest-dir>/vendor/<serializeModuleId>/` and hashes them in place
+  (`store.hpp`'s existing `canonicalContentHash`, no copy into `$TRIDENT_HOME/store`) — its
+  `manifestOf()`/`versions()` are intentionally unimplemented (return a loud internal-error
+  `err`) because `resolveVcsDeps` now REQUIRES a valid, lock-satisfying resolution before ever
+  constructing one: a vendored build has nothing else to pin versions to, so a missing/stale
+  lock under `--vendor` is a loud error naming `trident lock` then `trident vendor`, not a
+  silent fall-through to MVS/network. `trident vendor` (a normal, possibly-networked,
+  fully-verified resolution) copies each selected module's store directory into
+  `vendor/<path>[@vN]/`; `--vendor` (new flag, `main.cpp`, threaded through `resolveProject` →
+  `resolveVcsDeps`) then builds from that directory with zero git invocations and zero
+  `$TRIDENT_HOME` dependency — deliberately skips the checksum DB (vendor mode's whole point is
+  no dependency on host state) but still cross-checks against the lock's pinned hash, which is
+  the correct and sufficient guard for "does the vendored content match what was pinned."
+- **New tests.** `checksumtests` (P2.2, mirrors `locktests`'s harness): first-fetch baseline
+  recording, repeat-fetch clean verification (no spurious append), a moved-tag/swapped-content
+  rejection, two `module@version`s coexisting independently, and two tamper modes — an edited
+  content-hash field and a truncated log — both caught on load. `tests/run_trident_vendor.sh`
+  (ctest `trident_vendor`, mirrors `run_trident_vcs_app.sh`'s offline-fixture convention):
+  `trident audit` passing on a clean lock and failing loudly after hand-tampering
+  `checksum.db`; `trident vendor` laying down `vendor/github.com/x/json/`; `trident build
+  --vendor` succeeding with a **fake `git` shadowing the real one at the front of `PATH`**
+  (`findOnPath()`, `vcs.cpp`, scans left-to-right) — proving `VendorProvider` never falls
+  through to `GitProvider` — followed by a sanity check that the identical build WITHOUT
+  `--vendor` fails with git blocked, so the network-free property is attributed to `--vendor`
+  itself, not to trident silently ignoring VCS deps.
+- **Acceptance (GT4):** `trident audit` on a clean project passes; hand-editing a recorded
+  content hash in `checksum.db` is caught by both `audit` and any subsequent `build`/fetch;
+  `trident vendor` + `trident build --vendor` complete with `git` unreachable and produce the
+  identical program output as the networked build. Full ctest suite: **190/190 green**
+  (188 prior + `checksumtests` + `trident_vendor`).
+- **Deferred to P2.3/P2.4, per §6/§9, not attempted here:** real asymmetric signing of the
+  checksum DB, a Merkle transparency log backend, `publish`/`yank`, the caching proxy, the thin
+  index, and audit *policy* (trusted-audit-set enforcement). None of today's work forecloses
+  any of them — §9's seam claims are now proven, not just asserted.

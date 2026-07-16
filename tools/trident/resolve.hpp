@@ -88,11 +88,13 @@ struct ResolvedProject {
 // source files written under `aliasDir`. `includeDevDeps` controls whether
 // dev-flagged VCS deps are resolved (production builds pass false; `check`
 // and `plan` pass true, §5.5 — local-kind dev deps are not filtered, matching
-// loadDepsRec's pre-P2 behavior; no fixture needs that yet). Prints
-// diagnostics to stderr. Returns a ResolvedProject with ok == false on any
-// error.
+// loadDepsRec's pre-P2 behavior; no fixture needs that yet). A non-empty
+// `vendorDir` switches every VCS dep to the hermetic, network-free path
+// (P2.2 GT4, `trident vendor`/`--vendor`, below) — see resolveVcsDeps for
+// what that requires. Prints diagnostics to stderr. Returns a ResolvedProject
+// with ok == false on any error.
 ResolvedProject resolveProject(const std::string& manifestPath, const std::string& aliasDir,
-                               bool includeDevDeps = true);
+                               bool includeDevDeps = true, const std::string& vendorDir = "");
 
 // The result of resolving just the root manifest's Vcs-kind deps: MVS
 // selection + materialization (contentHash/storeDir filled in on every
@@ -115,8 +117,25 @@ struct VcsResolution {
 // materialize() per selected entry. Pass "" to force a fresh MVS run
 // regardless of any existing lock (`add`/`lock`/`update`/`fetch`,
 // commands.cpp — recomputing the lock is their whole point).
+//
+// Every materialized entry is verified (P2.2 GT4): its freshly computed
+// content hash is checked against the checksum DB (recording it there if
+// this is the first time this module@version has ever been fetched) and,
+// when the lock was used verbatim, against the lock's own pinned hash too —
+// either mismatch is a loud `vr.err` (tag moved / content swapped), never a
+// silent acceptance.
+//
+// A non-empty `vendorDir` switches to the hermetic path (`trident vendor`/
+// `--vendor`, P2.2 GT4): every module is read straight from
+// `vendorDir/<serializeModuleId>/` (no git, no network, no $TRIDENT_HOME
+// store) instead of fetched. This REQUIRES a present, consistent `lockPath`
+// (a vendored build has nothing else to pin versions to — a stale/missing
+// lock is a loud error naming `trident lock` then `trident vendor`) and only
+// checks the vendored content against the lock's hash — the checksum DB is
+// deliberately not consulted, so a vendor directory copied to a machine with
+// no `$TRIDENT_HOME` history still builds.
 VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDeps,
-                             const std::string& lockPath);
+                             const std::string& lockPath, const std::string& vendorDir = "");
 
 // Infer each dep's `kind` (P2.0 §4: a `path` resolving to an existing
 // directory relative to `base` is Local, otherwise Vcs, which requires

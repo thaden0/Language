@@ -23,6 +23,11 @@ bool ensureDir(const std::string& dir) {
     return ::mkdir(dir.c_str(), 0755) == 0;
 }
 
+std::string dirOf(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
+}
+
 // Run leviathan and relay its exit code. Uses fork/execv (not system()) so
 // paths need no shell quoting.
 int runLeviathan(const std::string& bin, const std::vector<std::string>& args) {
@@ -52,6 +57,8 @@ struct Options {
     std::string planOverride;
     std::string leviathanOverride;
     int optLevel = 2;
+    bool useVendor = false;   // P2.2 GT4: --vendor, resolve VCS deps from
+                              // ./vendor instead of git (no network access).
 };
 
 int dispatch(const std::string& subcommand, const Options& o) {
@@ -89,7 +96,12 @@ int dispatch(const std::string& subcommand, const Options& o) {
     // tests/run_project.sh) include them (§5.5).
     bool includeDevDeps = (subcommand != "build" && subcommand != "run" &&
                           subcommand != "emit-llvm");
-    ResolvedProject rp = resolveProject(manifestPath, buildDir, includeDevDeps);
+    // P2.2 GT4: --vendor reads VCS deps from `<manifest-dir>/vendor/` (laid
+    // down earlier by `trident vendor`) instead of git — a hermetic,
+    // network-free build. resolveVcsDeps enforces that this only works off
+    // a valid, consistent trident.lock (resolve.cpp).
+    std::string vendorDir = o.useVendor ? dirOf(manifestPath) + "vendor" : "";
+    ResolvedProject rp = resolveProject(manifestPath, buildDir, includeDevDeps, vendorDir);
     if (!rp.ok) return 1;
 
     WritePlanOptions opts;
@@ -154,15 +166,17 @@ void printUsage(const char* argv0) {
     std::fprintf(stderr,
         "usage: %s <build|run|check|emit-llvm|plan> [manifest-or-dir] [--out <path>] "
         "[--target <triple>] [--opt-level <0|2>] [--plan <path>] "
-        "[--leviathan <path>]\n"
+        "[--leviathan <path>] [--vendor]\n"
         "       %s add <path>[@version] [--as <name>] [--dev] [manifest-or-dir]\n"
         "       %s remove <path> [manifest-or-dir]\n"
         "       %s update [<path>] [manifest-or-dir]\n"
         "       %s lock [manifest-or-dir]\n"
         "       %s fetch [manifest-or-dir]\n"
         "       %s why <path> [manifest-or-dir]\n"
+        "       %s audit [manifest-or-dir]\n"
+        "       %s vendor [manifest-or-dir]\n"
         "       %s --version\n",
-        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 }  // namespace
@@ -188,7 +202,7 @@ int main(int argc, char** argv) {
     // as their second; `lock`/`fetch` take only the (optional)
     // manifest-or-dir.
     if (sub == "add" || sub == "remove" || sub == "update" || sub == "lock" ||
-        sub == "fetch" || sub == "why") {
+        sub == "fetch" || sub == "why" || sub == "audit" || sub == "vendor") {
         std::string posArgs[2];
         int posCount = 0;
         std::string asName;
@@ -229,6 +243,8 @@ int main(int argc, char** argv) {
             }
             return cmdWhy(posArgs[1], posArgs[0]);
         }
+        if (sub == "audit") return cmdAudit(posArgs[0]);
+        if (sub == "vendor") return cmdVendor(posArgs[0]);
     }
 
     if (sub != "build" && sub != "run" && sub != "check" && sub != "emit-llvm" &&
@@ -246,6 +262,7 @@ int main(int argc, char** argv) {
         else if (a == "--plan" && i + 1 < argc) o.planOverride = argv[++i];
         else if (a == "--leviathan" && i + 1 < argc) o.leviathanOverride = argv[++i];
         else if (a == "--release") o.optLevel = 2;
+        else if (a == "--vendor") o.useVendor = true;
         else if (!a.empty() && a[0] != '-') o.manifestArg = a;
         else { std::fprintf(stderr, "error: unknown option '%s'\n", a.c_str()); return 2; }
     }
