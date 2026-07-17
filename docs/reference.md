@@ -1115,7 +1115,10 @@ fail at their source line. The lower-level `programIsMatch`, `programFind`, `pro
 batch hooks consume the compiled array. `programFind` returns capture slots as start/end integer
 pairs (`0/1` is the whole match, then each group; `-1/-1` means non-participating). Most users
 should use the public `Regex`/`Match` surface described by the companion library design rather
-than this flattened boundary.
+than this flattened boundary. `programPikeProbe(program, input) -> [matched(0/1), steps]` is a
+**diagnostics-only** internal (not part of the public surface): it runs the Pike leg and reports
+its deterministic work count, consumed by the `regex_pathological_linear` linearity gate
+(techdesign-regex-linear-gate.md).
 
 **Status:** landed in full, including the public surface — see §6.4.6. Most user code should
 reach the engine only through `Regex`/`Match`/`Group`/`namespace regex`, not this flattened

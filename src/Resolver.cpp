@@ -3441,6 +3441,10 @@ namespace regex {
         Map<string, int> dfaIds = Map();
         int scanOverflows = 0;
         int dfaBudget = 512;
+        // techdesign-regex-linear-gate.md D1: deterministic work counter for the
+        // Pike leg — one increment per (pc, position) examination. Ratio-checked
+        // by regex_pathological_linear to prove O(n) scaling without wall-clock.
+        int pikeSteps = 0;
         new RegexCoreVm(Array<int> program) {
             if (program.length() < 16 || program.at(0) != 1380271952 || program.at(15) != 2) throw RuntimeException("regex: invalid program");
             p = program; n = p.at(1); cc = p.at(2); flags = p.at(3); start = p.at(4);
@@ -3563,6 +3567,7 @@ namespace regex {
             while (si < seeds.length()) {
                 stackPc = []; stackCaps = []; stackTop = 0; stackPush(seeds.at(si), capAt(seedCaps, si));
                 while (stackTop > 0) {
+                    pikeSteps = pikeSteps + 1;   // D1: one closure pop examined
                     stackTop = stackTop - 1; int pc = stackPc.at(stackTop); Array<int> caps = capAt(stackCaps, stackTop);
                     if (pc < 0 || pc >= n || seen.at(pc) != 0) continue;
                     seen = seen.with(pc, 1); int op = p.at(opOff + pc);
@@ -3602,6 +3607,7 @@ namespace regex {
                 int c = s.byteAt(pos); int fc = ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c;
                 Array<int> next = []; Array<int> nextCaps = []; int ti = 0;
                 while (ti < state.length()) {
+                    pikeSteps = pikeSteps + 1;   // D1: one thread transition tested
                     int pc = state.at(ti); int op = p.at(opOff + pc); bool hit = false;
                     if (op == 1) hit = p.at(aOff + pc) == fc;
                     else if (op == 2) hit = p.at(clsOff + p.at(aOff + pc) * 256 + c) != 0;
@@ -3640,6 +3646,14 @@ namespace regex {
             return dfaIsMatch(s, from);
         }
         bool pikeIsMatch(string s, int from) => find(s, from).length() > 0;
+        // techdesign-regex-linear-gate.md D2: run the Pike leg from 0 and report
+        // work done — [matched(0/1), pikeSteps]. Diagnostics/testing only.
+        Array<int> pikeProbe(string s) {
+            pikeSteps = 0;
+            bool hit = pikeIsMatch(s, 0);
+            int h = hit ? 1 : 0;
+            return [h, pikeSteps];
+        }
         int count(string s) {
             int total = 0; int pos = 0;
             while (pos <= s.length()) {
@@ -3679,6 +3693,9 @@ namespace regex {
     Array<int> programFind(Array<int> program, string input) => regex::RegexCoreVm(program).find(input, 0);
     Array<int> programFindFrom(Array<int> program, string input, int from) => regex::RegexCoreVm(program).find(input, from);
     bool programIsMatchPike(Array<int> program, string input) => regex::RegexCoreVm(program).pikeIsMatch(input, 0);
+    // techdesign-regex-linear-gate.md: [matched(0/1), pikeSteps] — the Pike leg's
+    // deterministic work count, for the linearity gate. Diagnostics-only internal.
+    Array<int> programPikeProbe(Array<int> program, string input) => regex::RegexCoreVm(program).pikeProbe(input);
     bool programIsMatchDfa(Array<int> program, string input) => regex::RegexCoreVm(program).dfaIsMatch(input, 0);
     int programCount(Array<int> program, string input) => regex::RegexCoreVm(program).count(input);
     int programGroupCount(Array<int> program) => regex::RegexCoreVm(program).groupTotal();

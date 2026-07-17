@@ -710,7 +710,11 @@ add_test(NAME corpus_regex_cpp
 add_test(NAME regex_unnarrowed_find_error
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_regex_unnarrowed_find_error.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/negative/regex_unnarrowed_find.lev")
-set_tests_properties(regex_pathological_linear PROPERTIES TIMEOUT 10)
+# techdesign-regex-linear-gate.md D3: the gate asserts a DETERMINISTIC step-count
+# ratio, so this TIMEOUT is a pure hang-guard (catch a genuine superlinear/
+# exponential blow-up), not a throughput judge — generous margin over the linear
+# in-language run (~5s on --ir) so host speed / parallel load never false-fails it.
+set_tests_properties(regex_pathological_linear PROPERTIES TIMEOUT 30)
 add_test(NAME corpus_core_treewalk
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/core")
