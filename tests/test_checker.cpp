@@ -838,6 +838,34 @@ int main() {
     // POSITIVE: an all-comparable value struct still type-checks under ==.
     CLEAN("struct Point { int x; int y; } void f(Point a, Point b) { bool c = a == b; }");
 
+    // --- Struct-equality packet 06: the always-false `== float::NaN` error ---
+    // An OPERATOR compare against the NaN constant is statically always-false
+    // (`==`) / always-true (`!=`) under IEEE (§4), so it is a compile error
+    // with a fixit — never a silent constant result.
+    ERROR_HAS("void f(float x) { bool b = x == float::NaN; }", "use x.isNaN()");
+    // Mirror shape for `!=` (and operand order): the constant on either side.
+    ERROR_HAS("void f(float x) { bool b = float::NaN != x; }", "use x.isNaN()");
+    // The documented escape hatch: an aliased read through a variable is NOT
+    // the constant node (the match is on the resolved decl, not the spelling) —
+    // honestly IEEE-false at runtime, so it stays legal.
+    CLEAN("void f(float x) { float n = float::NaN; bool b = x == n; }");
+
+    // --- Struct-equality packet 07: narrow `float::NaN` match-arm diagnostics ---
+    // `float::NaN =>` is a REACHABLE match arm (canonical relation, §6), so its
+    // two failure modes are diagnosed — narrowly, per the constant, no general
+    // duplicate/unreachable framework (none exists for any other type). Two arms
+    // resolving to the NaN constant are a redundant duplicate.
+    ERROR_HAS("string g(float x) => match (x) { float::NaN => \"a\"; "
+              "float::NaN => \"b\"; else => \"c\"; };", "duplicate 'float::NaN' arm");
+    // A NaN arm AFTER an `else` (this language's catch-all) can never run.
+    ERROR_HAS("string g(float x) => match (x) { else => \"c\"; "
+              "float::NaN => \"a\"; };", "unreachable 'float::NaN' arm after 'else'");
+    // A normal float match — a single NaN arm beside ordinary value arms — is
+    // clean (value arms don't pass through the always-false `== float::NaN`
+    // operator diagnostic, they're typed via typeOf).
+    CLEAN("string g(float x) => match (x) { 0.0 => \"z\"; float::NaN => \"n\"; "
+          "else => \"o\"; };");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

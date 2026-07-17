@@ -147,6 +147,16 @@ bool Evaluator::matchesValue(const Value& subj, Expr* pat) {
         return subj.kind == VKind::Int && subj.i >= lo.i && subj.i <= hi.i;
     }
     Value pv = eval(pat);
+    // struct-equality §6 (packet 07): a float value arm classifies by the
+    // CANONICAL relation, not IEEE `==` — so `float::NaN =>` is a reachable arm
+    // (canon(NaN)==canon(NaN)) and ±0.0 collapse to one arm. Canonical ≡ IEEE
+    // except NaN, so no existing float match changes behavior. Route through the
+    // ONE canon symbol (lv_canon, RuntimeValue.hpp — hash-consistency law §3.3);
+    // the same symbol the `canonEq` native the other three engines lower to
+    // uses. Mixed int/float arms keep the `combine` promotion path below (an int
+    // pattern is never NaN, so canon vs IEEE agree there anyway).
+    if (subj.kind == VKind::Float && pv.kind == VKind::Float)
+        return lv_canon(subj.f) == lv_canon(pv.f);
     return combine(TokenKind::EqEq, subj, pv, nullptr).b;
 }
 
@@ -1070,14 +1080,12 @@ Value Evaluator::combine(TokenKind op, const Value& l, const Value& r,
                 std::vector<Value> args{r};
                 return vbool(!callFunction(eq, args, l.obj, l.obj->cls).b);
             }
-        if (op == TokenKind::EqEq || op == TokenKind::BangEq) {
-            // bug #77: a struct with no explicit (==) is field-wise by default
-            // (info.md §9 — "a struct IS its fields"); a class with no (==)
-            // compares by reference identity. Reuse the same field-wise recursion
-            // Map keys already use (keyEquals) so the two stay consistent.
-            bool same = l.obj->cls && l.obj->cls->isValue
-                          ? keyEquals(l, r)
-                          : (r.kind == VKind::Object && l.obj == r.obj);
+        if ((op == TokenKind::EqEq || op == TokenKind::BangEq) && !l.obj->cls->isValue) {
+            // a class with no (==) compares by reference identity (design §5.2).
+            // A value struct instead gets a synthesized field-wise (==) at
+            // resolve time (designs/struct-equality/, §5.5) and never lands
+            // here from checked code; falling through makes any hole loud.
+            bool same = r.kind == VKind::Object && l.obj == r.obj;
             return vbool(op == TokenKind::EqEq ? same : !same);
         }
         return throwRuntime(std::string("no operator '") + opSymbol(op) + "' on '" +

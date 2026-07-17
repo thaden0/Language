@@ -2,6 +2,7 @@
 #include "Symbols.hpp"
 #include "Token.hpp"
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -236,6 +237,24 @@ inline std::vector<std::string> unionMembersOf(const std::string& canonical) {
     return out;
 }
 
+// --- the canonical float relation (struct-equality design §3) ----------------
+//
+// THE one canon helper for the oracle + IR interp (they share this header).
+// Hash-consistency law (§3.3): there is exactly one canon symbol per engine and
+// every canonical float relation — keyEquals' float leg below, the float
+// `canonEq` native, and any future canon_hash — MUST normalize through THIS
+// function. Integer/branchless form only (§3.2): never an FPU compare, so it is
+// immune to -ffast-math folding by construction. NaN (any sign/payload) ->
+// 0x7FF8000000000000; ±0.0 -> 0; every other pattern -> its raw bits.
+inline uint64_t lv_canon(double x) {
+    uint64_t b;
+    std::memcpy(&b, &x, 8);                                    // bit reinterpret, no cast UB
+    uint64_t is_nan  = ((b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull)
+                     & ((b & 0x000FFFFFFFFFFFFFull) != 0);
+    uint64_t is_zero = (b << 1) == 0;
+    return is_nan ? 0x7FF8000000000000ull : (is_zero ? 0 : b);
+}
+
 // --- key equality for Map (Track 05 C3: primitives by value; structs
 // field-wise recursive (a struct IS its fields, §9); classes by identity) -----
 
@@ -246,7 +265,7 @@ inline bool keyEquals(const Value& a, const Value& b) {
         case VKind::Char:   return a.i == b.i;
         case VKind::String: return a.s == b.s;
         case VKind::Bool:   return a.b == b.b;
-        case VKind::Float:  return a.f == b.f;
+        case VKind::Float:  return lv_canon(a.f) == lv_canon(b.f);   // Map keys canonical (§4)
         case VKind::Object:
             if (a.obj && b.obj && a.obj->cls && a.obj->cls == b.obj->cls && a.obj->cls->isValue) {
                 if (a.obj->fields.size() != b.obj->fields.size()) return false;

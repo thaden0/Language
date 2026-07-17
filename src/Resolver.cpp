@@ -154,6 +154,13 @@ class float {
     int toInt();
     float sqrt();       // negative -> NaN (IEEE, not a throw — math convention)
     float pow(float e);
+    // struct-equality design §8: raw IEEE-754 bit access (serialization wants
+    // these regardless). `bits()` = bit_cast to int64; `float::fromBits(int)`
+    // is math::floatFromBits, routed by the checker. `canonEq` is the
+    // canonical-relation primitive (§3) the synthesized struct `(==)` compares
+    // float fields through — every engine implements it via its ONE canon.
+    int bits();
+    bool canonEq(float other);
     bool isNaN() => this != this;   // IEEE self-inequality — honest on all engines
     // Reformulated from the design's `this == 1.0/0.0` sentinel: bug.md #12
     // (LLVM's 0.0/0.0 silently yields 0.0, not NaN/inf — not this track's to
@@ -2778,6 +2785,12 @@ namespace math {
     float cos(float x);
     float tan(float x);
     float atan2(float y, float x);
+    // struct-equality design §8: the `float::fromBits(int)` factory. No
+    // `static` keyword exists in the language (Track 04 M3 problem #6), so —
+    // like std::charFromCode / std::byteToString — the static-on-primitive is
+    // homed as a free function; the checker routes `float::fromBits(x)` here
+    // (mirrors Enum::fromCode). `math::floatFromBits` is the same native.
+    float floatFromBits(int bits);
     int   min(int a, int b) => a < b ? a : b;
     int   max(int a, int b) => a > b ? a : b;
     float min(float a, float b) => a < b ? a : b;
@@ -6305,10 +6318,18 @@ void Resolver::synthesizeStructEquality(Program& program) {
                 if (!isDataField(m.get())) continue;
                 std::string f(m->selector.text);
                 if (!body.empty()) body += " && ";
-                // Float fields deliberately compare IEEE here — bit-for-bit
-                // what today's keyEquals fallback does. packet 05 flips this
-                // to canonEq.
-                body += "this." + f + " == other." + f;
+                // struct-equality design §5.2: float fields compare through the
+                // canonical relation (§3), so a struct holding NaN is equal to
+                // itself and ±0.0 agree — via float.canonEq (each engine's ONE
+                // canon). Every other field kind keeps the scalar `==`.
+                const TypeRef* t = m->type.get();
+                bool isFloat = t && t->kind == TypeKind::Named && t->path.empty() &&
+                               t->name == "float" &&
+                               (!t->resolvedSymbol || t->resolvedSymbol->isPrimitive);
+                if (isFloat)
+                    body += "this." + f + ".canonEq(other." + f + ")";
+                else
+                    body += "this." + f + " == other." + f;
             }
             if (body.empty()) body = "true";   // zero-field struct: reflexively equal
             std::string src = "struct __eq_" + N + " {\n"
@@ -6345,8 +6366,66 @@ void Resolver::synthesizeStructEquality(Program& program) {
     walk(walk, program.items, sema_.global);
 }
 
+// Struct-equality §6 (packet 06): the `float::NaN` language constant. One
+// definition, one place — synthesized through the same synth channel the enum
+// member globals use (desugarEnums above), so it flows through gather / type
+// resolution / check / global-init exactly like hand-written source and every
+// engine reads it with zero per-engine work. Decision 1 (ratified): the bit
+// pattern is a LANGUAGE constant — 0x7FF8000000000000, the canonical positive
+// quiet NaN (§3.1) — no per-target configuration, no `#ifdef`.
+void Resolver::synthesizeFloatNaN(Program& program) {
+    if (program.floatNaNGlobal) return;   // idempotent: the two-pass resolver
+                                          // re-runs on the SAME Program.
+    // Materialize the global ONLY when the program actually references
+    // `float::NaN` — exactly the enum precedent (enum globals appear only when
+    // an `enum` is written). Unconditional injection would push a
+    // `float::fromBits(...)` initializer into every program, including the
+    // churn/expand corpora whose FROZEN ELF lane cannot lower that native and
+    // whose expand-roundtrip re-parses the printed source. `file_.text` is the
+    // whole combined source buffer (every user file concatenated); a token scan
+    // for the `float :: NaN` sequence is spacing-robust and skips comments and
+    // string bodies (the lexer already did). The one language constant, but
+    // paid for only where used.
+    DiagnosticSink scanSink;
+    std::vector<Token> toks = Lexer(file_, scanSink).tokenize();
+    bool used = false;
+    for (size_t i = 0; i + 2 < toks.size(); ++i)
+        if (toks[i].text == "float" && toks[i + 1].kind == TokenKind::ColonColon &&
+            toks[i + 2].text == "NaN") { used = true; break; }
+    if (!used) return;
+
+    // The `$` in the final mangled name is unlexable in user identifiers, so
+    // parse a lexable placeholder first, then rename to `float$NaN` (backed by
+    // synthNames for string_view stability) — exactly the desugarEnums move.
+    // 9221120237041090560 == 0x7FF8000000000000 (fits a signed int64).
+    std::string src = "float __floatnan = float::fromBits(9221120237041090560);\n";
+    program.synthFiles.push_back(SourceFile{"<float::NaN>", std::move(src)});
+    SourceFile& sf = program.synthFiles.back();
+    DiagnosticSink dummy;
+    Lexer lexer(sf, dummy);
+    Parser parser(lexer.tokenize(), sf, dummy);
+    Program sub = parser.parseProgram();
+    if (dummy.hasErrors() || sub.items.size() != 1 ||
+        sub.items[0]->kind != StmtKind::Var) {
+        sink_.error(SourceSpan{}, "internal: float::NaN constant synthesis failed to parse");
+        return;
+    }
+    StmtPtr g = std::move(sub.items[0]);
+    program.synthNames.push_back("float$NaN");
+    g->name = program.synthNames.back();
+    g->isConst = true;                    // follows the enum member globals
+    program.floatNaNGlobal = g.get();
+    // Prepend, not append: top-level global initializers run in source order,
+    // so the constant must be initialized BEFORE any user top-level statement
+    // (e.g. `main();`) that reads `float::NaN`. Enum member globals sit at their
+    // enum's source position (ahead of the call site); this one has no natural
+    // site, so it leads.
+    program.items.insert(program.items.begin(), std::move(g));
+}
+
 void Resolver::run(Program& program) {
     desugarEnums(program);                    // Track 03 §2: enum -> struct + globals + fromCode
+    synthesizeFloatNaN(program);              // struct-equality §6: the float::NaN constant
     sema_.global = sema_.newScope(nullptr);
     // `void` is the only pure primitive with no method surface; int/string/bool/
     // float are declared as value-type classes in the prelude (the object mask).

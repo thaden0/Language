@@ -1,0 +1,16 @@
+// M2 pin (struct-equality design §6, Decision 1): `float::NaN` is the one
+// language constant — a const global (`float::fromBits(0x7FF8000000000000)`,
+// the canonical positive quiet NaN) that every engine reads with zero
+// per-engine work, exactly the enum-member-constant mechanism. `isNaN()` is
+// the blessed operator-world test; `bits()` shows the raw pattern survives.
+// The struct leg proves the constant flows through the canonical derived (==)
+// (a struct field set to float::NaN is equal to another so-set, reflexively).
+// Bools only.
+struct Box { float f; new Box(float ff) { f = ff; } }
+void main() {
+    console.writeln(float::NaN.isNaN());                        // true  — it IS NaN
+    console.writeln(float::NaN.bits() == 9221120237041090560); // true  — 0x7FF8000000000000
+    console.writeln(Box(float::NaN) == Box(float::NaN));       // true  — canonical aggregate
+    console.writeln(Box(float::NaN) != Box(0.0));              // true  — NaN vs 0.0 differ
+}
+main();

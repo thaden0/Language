@@ -958,6 +958,7 @@ Type Checker::typeOfInner(const Expr* e) {
             std::vector<std::string> covered;     // canonical types matched by arms
             std::vector<std::string_view> enumCovered;   // enum members matched (Track 03 §2)
             bool hasElse = false;
+            bool sawNaNArm = false;       // struct-equality §6 (packet 07): dup check
             Type result; bool haveResult = false, uniform = true;
             for (const MatchArm& arm : e->arms) {
                 std::unordered_map<std::string, Type> saved = narrow_;
@@ -979,6 +980,20 @@ Type Checker::typeOfInner(const Expr* e) {
                     if (arm.value->kind == ExprKind::Member && arm.value->colon &&
                         arm.value->resolved)
                         enumCovered.push_back(arm.value->text);
+                    // struct-equality §6 (packet 07): `float::NaN` is a reachable
+                    // match arm (canonical relation), so its two failure modes get
+                    // narrow, per-constant diagnostics — no general framework (no
+                    // duplicate/unreachable checks exist for any other type). An
+                    // `else` seen earlier makes a later NaN arm dead (its canonical
+                    // compare can never run); a second NaN arm is a redundant dup.
+                    if (isFloatNaNConst(arm.value.get())) {
+                        if (hasElse)
+                            return error(arm.value->span,
+                                         "unreachable 'float::NaN' arm after 'else'");
+                        if (sawNaNArm)
+                            return error(arm.value->span, "duplicate 'float::NaN' arm");
+                        sawNaNArm = true;
+                    }
                 }
                 Type bt = arm.bodyBlock
                     ? (check(const_cast<Stmt*>(arm.bodyBlock.get())), unknown())
@@ -1137,6 +1152,15 @@ Type Checker::typeOfMember(const Expr* e) {
                     }
                 break;
             }
+    // struct-equality §6 (packet 06): `float::NaN` — the one language constant.
+    // Mirrors the enum-member path above: resolve the read to the synthesized
+    // const global so ALL engines read the same global (zero per-engine work),
+    // and type it as `float`. Match on the primitive symbol, not spelling.
+    if (bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+        bt.sym->name == "float" && name == "NaN" && program_ && program_->floatNaNGlobal) {
+        const_cast<Expr*>(e)->resolved = program_->floatNaNGlobal;
+        return primType("float");
+    }
     // Static on a type value: keep referring to the class, but only for a name
     // the class actually declares. An unknown member after `::`/`.` on a
     // class-used-as-a-value used to pass through unconditionally as the class
@@ -1650,6 +1674,25 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                 }
     }
 
+    // --- struct-equality design §8: `float::fromBits(int)` -> float ---
+    // No `static` keyword exists, so the static-on-primitive factory is homed
+    // as the prelude free function math::floatFromBits and this `::` spelling
+    // routes to it (same mechanism as Enum::fromCode above).
+    if (callee->kind == ExprKind::Member && callee->colon && callee->text == "fromBits") {
+        Type bt = typeOf(callee->a.get());
+        if (bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+            bt.sym->name == "float") {
+            Symbol* mathNs = sema_.global ? sema_.global->lookup("math") : nullptr;
+            if (mathNs && mathNs->kind == SymbolKind::Namespace && mathNs->scope)
+                if (const std::vector<Symbol*>* v = mathNs->scope->localLookup("floatFromBits"))
+                    for (Symbol* s : *v)
+                        if (s->decl) {
+                            call->resolved = s->decl;
+                            return fromTypeRef(s->decl->type.get());   // float
+                        }
+        }
+    }
+
     // LA-18 missing-member check must run before the legacy construction path:
     // that path deliberately treats an absent concrete label as an implicit
     // construction fallback. A specialized `T::Label` is duck-typed instead,
@@ -1879,6 +1922,18 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
     return unknown();
 }
 
+// struct-equality §6 (packet 06/07): a read of the one `float::NaN` language
+// constant. typeOfMember resolves such a read to program_->floatNaNGlobal
+// (stamping Expr::resolved); we match on that decl pointer, never on spelling,
+// so an aliased read through a variable (`float n = float::NaN; ...`) is NOT
+// the constant. `program_->floatNaNGlobal` is only materialized when the
+// program references `float::NaN`, so it is null (and this is false) otherwise.
+bool Checker::isFloatNaNConst(const Expr* e) const {
+    return e && program_ && program_->floatNaNGlobal &&
+           e->kind == ExprKind::Member && e->colon &&
+           e->resolved == program_->floatNaNGlobal;
+}
+
 Type Checker::typeOfBinary(const Expr* e) {
     const bool assignment = e->op == TokenKind::Eq || isCompoundAssign(e->op);
     const bool savedMethodRefsAllowed = methodRefsAllowed_;
@@ -2028,6 +2083,24 @@ Type Checker::typeOfBinary(const Expr* e) {
             return error(e->span, "'??' default ('" + rt.canonical +
                          "') does not match '" + stripped.canonical + "'");
         return stripped;
+    }
+
+    // struct-equality §4 (packet 06): an OPERATOR compare against the
+    // `float::NaN` constant is statically always-false (`==`) / always-true
+    // (`!=`) under IEEE — a compile error with a fixit, never a silent
+    // constant result. Match on the resolved decl pointer (typeOfMember stamped
+    // it), not spelling: an aliased read through a variable (`float n =
+    // float::NaN; x == n`) is NOT the constant and stays legal — honestly
+    // IEEE-false at runtime, the documented escape hatch. `x != x` is a
+    // different node shape and is untouched.
+    if ((e->op == TokenKind::EqEq || e->op == TokenKind::BangEq) &&
+        program_ && program_->floatNaNGlobal) {
+        if (isFloatNaNConst(e->a.get()) || isFloatNaNConst(e->b.get())) {
+            const bool eq = e->op == TokenKind::EqEq;
+            return error(e->span, std::string("comparing against float::NaN with '") +
+                         (eq ? "==" : "!=") + "' is always " + (eq ? "false" : "true") +
+                         " (IEEE) — use x.isNaN() or a float::NaN match arm");
+        }
     }
 
     // Primitives keep built-in operators (their object mask exposes methods, not
@@ -2887,6 +2960,14 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
                 bt.kind == TKind::TypeValue && bt.sym && program_)
                 for (const EnumDesugar& ed : program_->enumDesugars)
                     if (ed.name == bt.sym->name) { enumFromCode = true; break; }
+            // struct-equality design §8: `float::fromBits(...)` is a free-
+            // function call (math::floatFromBits), NOT construction — same
+            // shape as Enum::fromCode above. Leave ctorClass null so it falls
+            // through to typeOf -> typeOfCallInner where the routing resolves it.
+            if (callee->colon && callee->text == "fromBits" &&
+                bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+                bt.sym->name == "float")
+                enumFromCode = true;
             if (!enumFromCode && bt.kind == TKind::TypeValue) {
                 ctorClass = bt.sym; label = callee->text;
             } else if (!enumFromCode && callee->a->kind == ExprKind::Name) {

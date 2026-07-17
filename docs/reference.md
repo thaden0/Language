@@ -919,7 +919,7 @@ Written in the language over a minimal native-intrinsic core; automatically avai
 | type | methods |
 |---|---|
 | `int` | `abs()`, `max(int)`, `min(int)`, `toString()`, `pow(int) -> int` (square-and-multiply; negative exponent → `0`; overflow wraps, two's-complement), `clamp(int lo, int hi)` (`lo > hi` → `RuntimeException`), `sign() -> int` (`-1`/`0`/`1`), `toHex() -> string` (lowercase, no `0x` prefix, `-` for negatives), `toString(int radix) -> string` (`2..36`, else throws), `toFloat() -> float` (native; exact for `\|x\| < 2^53`) |
-| `float` | `toString()`, `abs()`, `floor()`, `ceil()`, `round()` (native; half-away-from-zero, matches C `round`), `trunc()` (native), `sqrt()` (native; negative → NaN, IEEE, not a throw), `pow(float) -> float` (native), `toInt() -> int` (native; truncates; NaN/±inf/out-of-int64-range → `RuntimeException`, loud), `isNaN()`, `isInfinite()` |
+| `float` | `toString()`, `abs()`, `floor()`, `ceil()`, `round()` (native; half-away-from-zero, matches C `round`), `trunc()` (native), `sqrt()` (native; negative → NaN, IEEE, not a throw), `pow(float) -> float` (native), `toInt() -> int` (native; truncates; NaN/±inf/out-of-int64-range → `RuntimeException`, loud), `isNaN()`, `isInfinite()`, `bits() -> int` (native; raw IEEE-754 bit pattern), `canonEq(float) -> bool` (native; the canonical-relation primitive — `true` iff the two collapse to the same canonical form, so every NaN equals every NaN and `-0.0` equals `0.0`). Factory: **`float::fromBits(int) -> float`** (native free function; reinterprets the bit pattern). Constant: **`float::NaN`** (the one canonical NaN, a reachable value and `match` pattern) |
 | `bool` | `toString()` |
 | `char` | `code() -> int` (native; the Unicode scalar), `toString()` (native; UTF-8 encode), `isDigit()`, `isAlpha()`, `isUpper()`, `isLower()`, `isSpace()` (in-language over `code()`; ASCII ranges only — non-ASCII returns `false` in v1), `toUpper()`, `toLower()` (in-language, ASCII-only; a non-ASCII char returns itself unchanged). Factory: **`std::charFromCode(int) -> char`** (native free function — class static sides don't exist; out-of-range/surrogate → `RuntimeException`). |
 
@@ -930,6 +930,17 @@ it with a clean diagnostic (the zero-dep boundary; polynomial emission is a
 later project). Every other method in both tables above (including
 `floor`/`ceil`/`round`/`trunc`/`sqrt`/`toInt`/`toFloat`) is covered on all
 five engines, verified byte-identical (`tests/corpus/math.ext`).
+
+**Canonical float relation.** float scalars compare IEEE; derived equality,
+hashing, ordering, and match — like all value contexts — compare canonically;
+the two differ only on NaN. Concretely: a bare `x == y` on two floats is the
+IEEE operator (`NaN != NaN`, `-0.0 == 0.0`), but a synthesized struct `(==)`,
+a `Map` key comparison, and a `match` arm over a float all use `canonEq`, under
+which every NaN equals every NaN and `float::NaN` is a reachable pattern. The
+derived-vs-hand-written rule: **derived = canonical; hand-written = what you
+wrote** — a struct's synthesized `(==)` compares float fields canonically, but
+if you write your own `(==)` its float comparisons mean exactly the IEEE
+operators you typed.
 
 `string` relational operators (`<` `>` `<=` `>=`) are **lexicographic** —
 byte-wise comparison of the character data, not identity or length; `""`

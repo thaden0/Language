@@ -1,8 +1,12 @@
 # Tech design — struct equality synthesis & the canonical float relation
 
-**Status: DESIGN ONLY.** Implementation deferred by owner, 2026-07-15.
-Nothing below is implemented; no engine work has started. When implemented, this
-closes `known_bugs_2.md` #77 (ruled P1.1) and sweeps its `docs/footguns.md` row.
+**Status: IMPLEMENTED (M1-M3) — M4 dormant, 2026-07-17.** Shipped across work
+packets 01-08 (`00-README.md`): 01 corpus scaffold, 02 `(==)` synthesis pass,
+03 checker comparability gate, 04 fallback extermination, 05 canonical float
+natives, 06 `float::NaN` constant, 07 canonical `match`, 08 this docs sweep.
+M4 (`canon_hash`/`canon_cmp` for float keys and sorted containers) stays
+spec-only per §7 — no code. This closed `known_bugs_2.md` #77 (ruled P1.1) and
+swept its `docs/footguns.md` row.
 
 **Owner ruling (2026-07-15).** Struct `==` is **field-wise by default**
 (Option A), synthesized under a comparability gate; float fields compare via

@@ -188,6 +188,12 @@ private:
     Type typeOfCall(const Expr* e);
     Type typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked);
     Type typeOfBinary(const Expr* e);
+    // struct-equality §6 (packet 06/07): is `e` a read of the one `float::NaN`
+    // language constant? Matched on the resolved decl pointer (typeOfMember
+    // stamps it), not spelling — an aliased read through a variable is NOT the
+    // constant. Shared by the always-false `== float::NaN` diagnostic
+    // (typeOfBinary) and the duplicate/unreachable NaN match-arm diagnostics.
+    bool isFloatNaNConst(const Expr* e) const;
     Symbol* hygienicClass(const Expr* e) const;
     Symbol* visibleClass(std::string_view name) const;
 

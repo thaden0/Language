@@ -1,7 +1,8 @@
 // Regression floor for known_bugs_2.md #77 (FIXED 2026-07-15): a struct with
 // no explicit `(==)` is field-wise by default (info.md §9 "a struct IS its
 // fields"), recursively; a class with no `(==)` stays reference identity.
-// Reuses the same keyEquals recursion Map keys already use so the two agree.
+// Uses the synthesized field-wise `(==)` (designs/struct-equality/, §5.5);
+// Map keys keep their own keyEquals recursion.
 struct Point { int x; int y; new Point(int px, int py) { x = px; y = py; } }
 struct Nested { Point p; int z; new Nested(Point pp, int zz) { p = pp; z = zz; } }
 class Ref { int v; new Ref(int vv) { v = vv; } }

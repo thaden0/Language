@@ -1308,6 +1308,16 @@ add_test(NAME rt_platform_audit
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_rt_platform_audit.sh"
                  "${CMAKE_SOURCE_DIR}")
 
+# Track W (techdesign-02-backend-column.md §7): the wasm corpus lane.
+# gated_*.lev files are NEGATIVE pins for the hard-03 capability-gate
+# diagnostic (compile must fail with the pinned text — needs only the LLVM
+# wasm backend, no archive). Non-gated files run end-to-end under wasmtime
+# and are skipped inside the script until the §6 wasm runtime archive,
+# wasm-ld, and wasmtime are all present.
+add_test(NAME corpus_wasm
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_wasm.sh"
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm")
+
 # B-M4: aarch64-linux cross corpus lane under qemu-user (doc-2 §6 item 4).
 # Feature-detected: it materializes ONLY when the full cross chain is present
 # — qemu-aarch64 to run the binaries, and a cross C compiler (clang, which

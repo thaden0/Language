@@ -1,0 +1,17 @@
+// M2 pin (struct-equality design §4 table row): Map keys are CANONICAL. A NaN
+// key is retrievable (canon makes it equal to itself — reflexivity a raw IEEE
+// key compare would lose), and -0.0 / +0.0 are the SAME key. This locks the
+// lvrt_keyeq LV_FLOAT fix — the old runtime bit-compare treated ±0.0 as
+// distinct keys and every NaN payload as its own key (a pre-existing LLVM-vs-
+// interpreter divergence this packet sweeps). A genuinely absent key still
+// misses (the retrievals below are not vacuously "absent").
+void main() {
+    Map<float, string> m = Map();
+    float nan = float::fromBits(0x7FF8000000000000);
+    m[nan] = "n";
+    m[0.0] = "z";
+    console.writeln(m.atOrNone(nan) ?? "absent");    // n      — NaN key retrievable
+    console.writeln(m.atOrNone(-0.0) ?? "absent");   // z      — -0.0 finds the +0.0 key
+    console.writeln(m.atOrNone(1.0) ?? "absent");    // absent — a real miss
+}
+main();

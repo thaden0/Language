@@ -65,6 +65,13 @@ private:
     // before shapes (the spliced member becomes an ordinary "==" slot).
     void synthesizeStructEquality(Program& program);
 
+    // Struct-equality §6 (packet 06): synthesize the single `float::NaN`
+    // language constant as a const global through the synth channel, parking
+    // its decl on Program::floatNaNGlobal for the checker. Runs before gather
+    // (like desugarEnums) so the global resolves/checks/inits like hand-written
+    // code; idempotent across the two resolver passes.
+    void synthesizeFloatNaN(Program& program);
+
     // imports (`uses` / `use`) — lexically scoped (bug.md #8, imports.md).
     void processImports(std::vector<StmtPtr>& items, Scope* scope);  // top-level + namespace bodies
     void importOne(Stmt* usesStmt, Scope* into);   // resolve one `uses` into `into`

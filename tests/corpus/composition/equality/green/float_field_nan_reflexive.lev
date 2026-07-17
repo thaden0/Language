@@ -1,0 +1,14 @@
+// M2 pin (struct-equality design §3, §5.2): a struct holding NaN is equal to
+// ITSELF — the derived (==) compares float fields canonically (canon collapses
+// every NaN pattern), so aggregate equality is reflexive even though the bare
+// scalar operator stays IEEE (x != x). Both relations in one program — the
+// seam (§2). NaN is built with float::fromBits, never 0.0/0.0 (bug #12: LLVM's
+// 0.0/0.0 yields 0.0, not NaN). Bools only.
+struct Box { float f; new Box(float ff) { f = ff; } }
+void main() {
+    float nan = float::fromBits(0x7FF8000000000000);
+    console.writeln(nan != nan);              // true  — IEEE scalar (non-reflexive)
+    console.writeln(Box(nan) == Box(nan));    // true  — canonical aggregate (reflexive)
+    console.writeln(Box(nan) != Box(nan));    // false — != derives as the negation
+}
+main();
