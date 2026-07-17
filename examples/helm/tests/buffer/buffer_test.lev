@@ -1,0 +1,81 @@
+// H04a golden — the buffer/edit algebra (piece table + line index + undo/redo).
+// Pure model, no Sonar: exercises insert/remove splices, scalar<->byte
+// translation (incl. a wide glyph), line queries, slice, and the undo/redo
+// invariant that reconstructed bytes == expected. Oracle + IR.
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    // Reference-type accumulator: a closure that reassigns a captured *local*
+    // array doesn't write back to the outer variable (the local is captured by
+    // value), so change-event logging goes through a class field instead.
+    class Collector {
+        Array<string> items = [];
+        void add(string s) { items = items.add(s); }
+    }
+
+    // Render a buffer as "lineCount|v<version>|dirty|pieces" then each line quoted.
+    void dump(TextBuffer b, string label) {
+        console.writeln(label + ": lines=" + b.lineCount().toString()
+            + " v=" + b.version().toString() + " dirty=" + yn(b.isDirty())
+            + " pieces=" + b.pieceCount().toString());
+        for (int i in 0..b.lineCount() - 1) console.writeln("  [" + i.toString() + "] '" + b.line(i) + "'");
+    }
+
+    void main() {
+        section("empty + insert");
+        TextBuffer b = TextBuffer::Empty();
+        dump(b, "empty");
+        b.insert(Pos(0, 0), "hello world");
+        dump(b, "after hello world");
+        console.writeln("text: '" + b.text() + "'");
+
+        section("split insert (middle)");
+        b.insert(Pos(0, 5), ",");                 // "hello, world"
+        console.writeln("text: '" + b.text() + "'");
+        console.writeln("line0: '" + b.line(0) + "'");
+
+        section("newline insert");
+        b.insert(Pos(0, 12), "\nsecond line");    // two lines now
+        dump(b, "two lines");
+        console.writeln("full: '" + b.text() + "'");
+
+        section("remove range");
+        // remove "world" from line 0 (scalars 7..12)
+        b.remove(Range(Pos(0, 7), Pos(0, 12)));
+        console.writeln("line0: '" + b.line(0) + "'");
+        console.writeln("full: '" + b.text() + "'");
+
+        section("slice");
+        console.writeln("slice(0,0..1,6): '" + b.slice(Range(Pos(0, 0), Pos(1, 6))) + "'");
+
+        section("undo/redo");
+        console.writeln("canUndo: " + yn(b.canUndo()));
+        b.undo();                                 // undo the remove -> "world" back
+        console.writeln("after undo line0: '" + b.line(0) + "'");
+        b.undo();                                 // undo the newline insert
+        console.writeln("after undo2 lines: " + b.lineCount().toString() + " text: '" + b.text() + "'");
+        b.redo();                                 // redo the newline insert
+        console.writeln("after redo lines: " + b.lineCount().toString() + " text: '" + b.text() + "'");
+
+        section("wide glyph column math");
+        TextBuffer w = TextBuffer::FromString("a世b");   // a 世 b (世 is 3 UTF-8 bytes)
+        console.writeln("lineLenScalars: " + w.lineLenScalars(0).toString());   // 3 scalars
+        w.insert(Pos(0, 2), "X");                 // insert after 世 -> "a世Xb"
+        console.writeln("wide text: '" + w.text() + "'");
+        console.writeln("wide slice(0..2): '" + w.slice(Range(Pos(0, 0), Pos(0, 2))) + "'");  // "a世"
+
+        section("change events");
+        TextBuffer c = TextBuffer::FromString("one\ntwo\nthree");
+        Collector col = Collector();
+        int tok = c.onChange((e) => col.add("chg " + e.firstLine.toString() + ".." + e.lastLine.toString() + " v" + e.version.toString()));
+        c.insert(Pos(1, 3), "!");                 // line 1 only
+        c.insert(Pos(1, 0), "\nX");               // spans lines 1..2
+        c.offChange(tok);
+        c.insert(Pos(0, 0), "Z");                 // no handler now
+        for (string s in col.items) console.writeln(s);
+        console.writeln("final lines: " + c.lineCount().toString());
+    }
+
+}

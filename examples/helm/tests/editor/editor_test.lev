@@ -1,0 +1,97 @@
+// H04b golden — EditorView paint + input, headless via TestRenderer (§11
+// snapshot doctrine). Drives synthetic KeyEvents through the component, paints
+// to a Surface, and prints the two-channel snapshot (text grid + style letters
+// + @cursor). A reverse-video selection style makes selections visible in the
+// style channel. Oracle + IR (byte-identical differential).
+uses Sonar;
+
+namespace Helm {
+
+    // Minimal theme: reverse-video selection, everything else default. Installed
+    // so resolveOrDefault takes the real resolve() path (instance/theme layering)
+    // — without an installed theme it returns a bare default and selections would
+    // be invisible in the style channel.
+    class EditorTestTheme : ITheme {
+        Style style(string key) {
+            if (key == "editor.selection") {
+                return Style(Color::Default, Color::Default, Attr::Reverse);
+            }
+            Style s;
+            return s;
+        }
+        bool has(string key) => key == "editor.selection";
+    }
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    // Fresh surface each render (no retained damage to reason about in a test):
+    // arrange the editor, paint, present, place the caret, print the snapshot.
+    void render(EditorView ev, int w, int h, string label) {
+        ev.arrange(Rect(Point(0, 0), Size(w, h)));
+        Surface surf = Surface(w, h);
+        ev.paint(surf);
+        TestRenderer tr = TestRenderer(w, h);
+        tr.present(surf);
+        Point? cp = ev.cursorPos();
+        if (cp != None) {
+            Point p = cp;
+            tr.setCursor(Point(ev.box.x() + p.x, ev.box.y() + p.y));
+        }
+        console.writeln("-- " + label + " --");
+        console.writeln(tr.snapshot());
+    }
+
+    KeyEvent kc(KeyCode code, int mods) {
+        char dummy = ' ';
+        return KeyEvent(code, dummy, mods);
+    }
+    void type(EditorView ev, string text) {
+        for (char c in text.chars()) ev.fireKey(KeyEvent(KeyCode::Char, c, 0));
+    }
+
+    void main() {
+        int W = 20;
+        int H = 6;
+
+        installTheme(EditorTestTheme());
+
+        section("empty, type a line");
+        EditorView ev = EditorView(TextBuffer::Empty());
+        ev.setFocused(true);
+        type(ev, "hello");
+        render(ev, W, H, "typed hello");
+
+        section("enter + second line");
+        ev.fireKey(kc(KeyCode::Enter, 0));
+        type(ev, "world!");
+        render(ev, W, H, "two lines");
+
+        section("home, shift-end selects line 1");
+        ev.fireKey(kc(KeyCode::Home, 0));
+        ev.fireKey(kc(KeyCode::End, Mod::Shift));
+        render(ev, W, H, "selection on line 1");
+
+        section("backspace deletes selection");
+        ev.fireKey(kc(KeyCode::Backspace, 0));
+        render(ev, W, H, "after delete selection");
+
+        section("undo restores it");
+        ev.fireKey(KeyEvent(KeyCode::Char, 'Z', Mod::Ctrl));
+        render(ev, W, H, "after undo");
+
+        section("motion: up then left");
+        ev.fireKey(kc(KeyCode::Up, 0));
+        ev.fireKey(kc(KeyCode::Left, 0));
+        render(ev, W, H, "caret on line 0");
+
+        section("vertical scroll (10 lines, height 6)");
+        StringBuilder sb = StringBuilder();
+        for (int i in 0..9) { sb.add("line-" + i.toString()); if (i < 9) sb.add("\n"); }
+        EditorView big = EditorView(TextBuffer::FromString(sb.toString()));
+        big.setFocused(true);
+        render(big, W, H, "top of buffer");
+        big.fireKey(kc(KeyCode::End, Mod::Ctrl));   // jump to last line
+        render(big, W, H, "scrolled to bottom");
+    }
+
+}

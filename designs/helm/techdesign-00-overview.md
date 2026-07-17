@@ -627,3 +627,57 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   (`tests/corpus/sys_spawn/`, oracle=IR=LLVM). Helm's proc-bridge (H09) features are no
   longer interpreter-pinned — the golden lane can add LLVM for proc-bridge tests. The PTY
   floor (the terminal half of G-LANG-2, needed by H10) remains open.
+
+- 2026-07-17 — **G-H2 landed.** H04, the editor — the XL long pole. Five new `.lev` files under
+  `examples/helm/src/editor/` and two golden tests (`tests/{buffer,editor}`); 7 Helm tests total,
+  all green on **oracle + IR** (byte-identical). Split headless-model (H04a) / Sonar-view (H04b),
+  exactly per §4.
+  - **H04a — the buffer/edit algebra (headless, no Sonar).**
+    - `piece.lev` — `PieceTable` over two immutable **`Block`** byte stores (`original` +
+      append-only `added`, doubled on growth so repeated inserts amortise O(1)). Byte-offset
+      splice API: `insert` splits ≤1 piece (3 out), `remove` trims the two boundary pieces + drops
+      the middle, `textRange` materialises via `Block.toString`. `Piece`/`PieceLoc` are **class**
+      rows (footgun #5 / Sonar #66). Undo/redo = snapshots of the small persistent pieces array
+      (the shared `added` store only grows, so old offsets stay valid forever).
+    - `lineindex.lev` — `LineIndex`: line→byte-start, found by scanning **bytes** for 0x0A
+      (correct for UTF-8 — multibyte bytes are all ≥0x80 — and dodges the `string.at` mid-sequence
+      throw, Sonar #59). v1 rebuilds fully on edit (O(n) scan); incremental is a noted perf rider
+      (K1), slots behind the same interface. Big files still open read-only per §4.1.
+    - `cursor.lev` — `Pos`/`Range`/`Cursor` **class** carriers (col in **scalars**); Cursor holds
+      a selection anchor + sticky `goalCol` for vertical motion.
+    - `buffer.lev` — `TextBuffer`, the **frozen H-C1** contract, owning the scalar↔byte
+      translation (`utf8Len` off the codepoint, no allocation) so nothing above it touches a byte.
+      `FromFile`/`Empty`/`FromString`, version, dirty, undo/redo, `save`, `onChange` (R12 token,
+      version-keyed `ChangeEvent` with the dirtied line range). Golden covers split inserts,
+      newline inserts, remove, slice, a **wide-glyph** (世) column, undo/redo byte reconstruction,
+      and change-event fan-out. (Test-side footgun logged: a closure that reassigns a captured
+      *local* array doesn't write back — accumulate through a reference-type field instead.)
+  - **H04b — `EditorView`, the Sonar component (frozen H-C2).** Virtualized (paints only
+    `scrollY..scrollY+h` lines), gutter with right-aligned 1-based line numbers, wide-glyph-aware
+    caret + horizontal/vertical auto-scroll, selection painting (Shift+motion), full editing
+    (insert/enter/backspace/delete, selection-delete, Ctrl+Z/Y undo/redo, in-process
+    Ctrl+C/X/V clipboard, bracketed paste). `cursorPos()` returns the box-relative caret (Input
+    contract). Golden drives synthetic `KeyEvent`s → paint → `TestRenderer.snapshot()` (text +
+    style channels + `@cursor`); a reverse-video selection theme makes selections visible in the
+    style channel; scrolling verified with a 10-line buffer in a height-6 viewport.
+    - **H-C2 refinement (design vs language reality — the H-C4 precedent).** §4.3 froze the header
+      as `EditorView : Container, Scrollable, Focusable, Bordered` and made "redeclare inherited
+      Container/Scrollable methods" load-bearing against the open multi-mixin children-loop paint
+      bug. The direct Sonar precedent resolves this more cleanly: **TreeView** — an
+      identically-shaped virtualized/scrollable/focusable leaf that paints rows, not children — is
+      deliberately **NOT a Container**. An editor has no child components (it paints text spans), so
+      being a Container would only re-expose the children-loop bug for zero benefit. `EditorView`
+      therefore mirrors TreeView's header exactly (`Focusable, Scrollable, Bordered, Styleable`) and
+      redeclares the methods the multi-mixin dispatch family can drop (`scrollTo`, `paintChrome`)
+      plus its overrides (`contentDesired`, `paintContent`, `cursorPos`). H-C2's "Container" line is
+      amended to match; the redeclaration discipline it mandated is honoured against the
+      non-Container base the codebase's own precedent proves safe. No new escalation.
+  - **Floor / lane note.** Nothing in H04 is process-pinned (pure `Block` + Sonar `TestRenderer`,
+    both LLVM-supported), so the §11 three-lane oracle=IR=**LLVM** byte-identity is *expected*
+    green; wiring the native lane (`tests/run_native.sh` + the runtime `.S` context-switch objects)
+    is deferred to H13's harness rather than the Helm test runner (which stays oracle+IR because the
+    proc/spike tests remain there). No compiler bugs hit; no `src/**`/`runtime/**` touched.
+  - **Next gate G-H3** = H06 diagnostics (stderr parse) + H07 Problems/Output + H08 status bar; the
+    edit→diagnostics loop. The highlight seam is ready (paintContent reads one resolved text style
+    today; H06 swaps in the per-span highlight cache keyed by `buffer.version()`). `OpenDoc`
+    (§G-H1) is now ready to be superseded by `TextBuffer` in the Workspace open-set.

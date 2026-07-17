@@ -1,0 +1,216 @@
+// H04a — the piece table (designs/helm/techdesign-00-overview.md §4.1).
+//
+// The document's text is NOT stored as an Array<string> of lines: Leviathan
+// arrays are pure/persistent (arr.add(x) copies) and strings are immutable, so
+// rebuilding a line array per keystroke is O(n) copies per edit (footgun #4,
+// risk K1). Instead the text lives in two immutable byte stores and every edit
+// splices a *small* piece array:
+//
+//   original — the file's bytes at load (an immutable Block, never written).
+//   added    — an append-only Block of inserted text (grown in chunks; the
+//              native Block.blit does the copy).
+//   pieces   — an Array<Piece> spanning the logical document in order; each
+//              Piece points into one store. An insert splits at most one piece
+//              (3 pieces out), never the bytes.
+//
+// The piece table works in BYTE offsets (the store's own unit); scalar/line
+// coordinates are the TextBuffer's job (§4.2). `Block` ships on oracle + IR +
+// LLVM (reference §6.10), so this whole model is differential-testable.
+//
+// `Piece` is a **class**, not a struct: an Array<struct-with-int-fields> still
+// corrupts on LLVM after unrelated writes (footgun #5 / Sonar bug #66), and a
+// class row is individually heap-allocated + refcounted rather than packed
+// inline in the array, so it is immune. Same ruling as Sonar TreeRow/TableColumn.
+
+namespace Helm {
+
+    // One contiguous span of the document, pointing into a store.
+    class Piece {
+        int buf;   // 0 = original, 1 = added
+        int off;   // byte offset within that store
+        int len;   // byte length of the span
+        new Piece(int b, int o, int l) { buf = b; off = o; len = l; }
+    }
+
+    // The result of locating a logical byte offset within the piece list:
+    // `idx` = the piece it falls in (== pieces.length() means "at the very end"),
+    // `delta` = bytes into that piece (0 = exactly on the piece's left boundary).
+    class PieceLoc {
+        int idx;
+        int delta;
+        new PieceLoc(int i, int d) { idx = i; delta = d; }
+    }
+
+    const int BufOriginal = 0;
+    const int BufAdded    = 1;
+
+    class PieceTable {
+        Block         orig_;              // immutable original bytes
+        Block         add_    = Block(0); // append-only added-text store
+        int           addLen_ = 0;        // used bytes of add_ (capacity == add_.length())
+        Array<Piece>  pieces_ = [];       // ordered spans covering the document
+        int           length_ = 0;        // cached total logical byte length
+
+        // Load a document from a string (the file's decoded bytes).
+        new FromString(string s) {
+            orig_ = Block::fromString(s);
+            int n = orig_.length();
+            if (n > 0) pieces_ = pieces_.add(Piece(BufOriginal, 0, n));
+            length_ = n;
+        }
+
+        // An empty document.
+        new Empty() {
+            orig_ = Block::fromString("");
+            length_ = 0;
+        }
+
+        int  length() => length_;
+        bool isEmpty() => length_ == 0;
+
+        // ---- store access ---------------------------------------------------
+
+        Block store(int buf) => buf == BufOriginal ? orig_ : add_;
+
+        // Grow the added-text store to hold at least `need` bytes, doubling so
+        // repeated inserts amortise to O(1) each. Old bytes keep their offsets
+        // (blit preserves 0..addLen_), so every existing Piece stays valid.
+        void ensureAddCap(int need) {
+            int cap = add_.length();
+            if (need <= cap) return;
+            if (cap < 1) cap = 256;
+            while (cap < need) cap = cap * 2;
+            Block bigger = Block(cap);
+            if (addLen_ > 0) bigger.blit(0, add_, 0, addLen_);
+            add_ = bigger;
+        }
+
+        // Append `text`'s bytes to the added store; return the Piece that spans
+        // them. Added bytes are never freed or moved, so undo/redo snapshots
+        // that reference earlier offsets stay valid forever.
+        Piece appendAdded(string text) {
+            Block src = Block::fromString(text);
+            int n = src.length();
+            ensureAddCap(addLen_ + n);
+            if (n > 0) add_.blit(addLen_, src, 0, n);
+            Piece p = Piece(BufAdded, addLen_, n);
+            addLen_ = addLen_ + n;
+            return p;
+        }
+
+        // ---- locate ---------------------------------------------------------
+
+        // Find the piece (and byte offset within it) covering logical offset
+        // `off`. An offset landing exactly on a boundary reports the *earlier*
+        // piece's end as (idx, delta==piece.len) only when it is the last piece;
+        // otherwise a boundary is reported as the next piece's delta==0, so a
+        // split never produces a zero-length fragment.
+        PieceLoc locate(int off) {
+            if (off <= 0) return PieceLoc(0, 0);
+            int cur = 0;
+            int i = 0;
+            for (Piece p in pieces_) {
+                int nextCur = cur + p.len;
+                // Strictly inside this piece, or exactly at its right edge while
+                // more pieces follow -> hand off to the next piece as delta 0.
+                if (off < nextCur) return PieceLoc(i, off - cur);
+                cur = nextCur;
+                i = i + 1;
+            }
+            // off == length_ (or clamped past end): position at the very end.
+            return PieceLoc(pieces_.length(), 0);
+        }
+
+        // ---- read -----------------------------------------------------------
+
+        // Materialise the logical byte range [off, off+len) as a string.
+        string textRange(int off, int len) {
+            if (len <= 0) return "";
+            int start = off < 0 ? 0 : off;
+            int end = off + len;
+            if (end > length_) end = length_;
+            if (end <= start) return "";
+            StringBuilder sb = StringBuilder();
+            int cur = 0;
+            for (Piece p in pieces_) {
+                int ps = cur;
+                int pe = cur + p.len;
+                cur = pe;
+                if (pe <= start || ps >= end) continue;
+                int a = start > ps ? start : ps;
+                int b = end < pe ? end : pe;
+                sb.add(store(p.buf).toString(p.off + (a - ps), b - a));
+            }
+            return sb.toString();
+        }
+
+        // The whole document as one string (save / full re-index).
+        string text() => textRange(0, length_);
+
+        // ---- edit -----------------------------------------------------------
+
+        // Insert `text` at logical byte offset `off`. Splits at most one piece.
+        void insert(int off, string text) {
+            if (text.isEmpty()) return;
+            int at = off < 0 ? 0 : (off > length_ ? length_ : off);
+            Piece np = appendAdded(text);
+            PieceLoc loc = locate(at);
+            Array<Piece> out = [];
+            for (int i in 0..loc.idx - 1) out = out.add(pieces_[i]);
+            if (loc.delta == 0) {
+                out = out.add(np);
+                for (int i in loc.idx..pieces_.length() - 1) out = out.add(pieces_[i]);
+            } else {
+                Piece cur = pieces_[loc.idx];
+                out = out.add(Piece(cur.buf, cur.off, loc.delta));
+                out = out.add(np);
+                out = out.add(Piece(cur.buf, cur.off + loc.delta, cur.len - loc.delta));
+                for (int i in loc.idx + 1..pieces_.length() - 1) out = out.add(pieces_[i]);
+            }
+            pieces_ = out;
+            length_ = length_ + np.len;
+        }
+
+        // Remove the logical byte range [off, off+len). Trims the two boundary
+        // pieces and drops any pieces wholly inside the range.
+        void remove(int off, int len) {
+            if (len <= 0) return;
+            int start = off < 0 ? 0 : off;
+            if (start >= length_) return;
+            int end = start + len;
+            if (end > length_) end = length_;
+            int removed = end - start;
+            if (removed <= 0) return;
+            Array<Piece> out = [];
+            int cur = 0;
+            for (Piece p in pieces_) {
+                int ps = cur;
+                int pe = cur + p.len;
+                cur = pe;
+                if (pe <= start || ps >= end) { out = out.add(p); continue; }
+                if (ps < start) out = out.add(Piece(p.buf, p.off, start - ps));
+                if (pe > end)   out = out.add(Piece(p.buf, p.off + (end - ps), pe - end));
+            }
+            pieces_ = out;
+            length_ = length_ - removed;
+        }
+
+        // ---- undo/redo snapshots (§4.1) -------------------------------------
+        // A snapshot is just the pieces array (small + persistent-sharing, so
+        // O(pieces) to capture and free). The added store is shared across all
+        // snapshots — it only ever grows, and restoring an older piece array
+        // simply re-points at bytes that are still present.
+
+        Array<Piece> snapshot() => pieces_;
+
+        void restore(Array<Piece> snap) {
+            pieces_ = snap;
+            int total = 0;
+            for (Piece p in snap) total = total + p.len;
+            length_ = total;
+        }
+
+        int pieceCount() => pieces_.length();
+    }
+
+}

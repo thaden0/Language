@@ -1,0 +1,9 @@
+name    = "helm-buffer-test"
+entry   = "Helm::main"
+sources = [
+    "buffer_test.lev",
+    "../../src/editor/piece.lev",
+    "../../src/editor/lineindex.lev",
+    "../../src/editor/cursor.lev",
+    "../../src/editor/buffer.lev",
+]

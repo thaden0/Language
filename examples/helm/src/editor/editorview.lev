@@ -1,0 +1,489 @@
+// H04b — EditorView, the frozen H-C2 component (§4.3).
+//
+// The one new low-level Sonar component Helm adds: a rope/piece-table-backed,
+// gutter-bearing, virtualized code editor. It paints only the visible lines,
+// writes directly to the Surface (no per-frame allocation of a component tree),
+// and reports its caret through `cursorPos()` so the terminal hardware cursor
+// lands on the real character cell.
+//
+// ---- H-C2 refinement (design vs language reality, logged like H-C4) ----------
+// §4.3 froze the header as `EditorView : Container, Scrollable, Focusable,
+// Bordered` and made "redeclare every inherited Container/Scrollable method"
+// load-bearing because of the still-open multi-mixin children-loop paint bug.
+// The direct Sonar precedent — TreeView, an identically-shaped virtualized,
+// scrollable, focusable leaf that paints ROWS (not child components) — resolves
+// this more cleanly: it is deliberately **NOT a Container** (treeview.lev's own
+// note), because an editor has no child components to lay out; it paints text
+// spans itself. Being a Container would only re-expose the children-loop bug for
+// zero benefit. So EditorView mirrors TreeView's header exactly —
+// `Focusable, Scrollable, Bordered, Styleable` — and, like TreeView, redeclares
+// the methods the multi-mixin dispatch bug family can drop (`scrollTo`,
+// `paintChrome`) plus the ones it overrides (`contentDesired`, `paintContent`,
+// `cursorPos`). H-C2's "Container" line is amended to match; the redeclaration
+// discipline it mandated is honoured, just against the non-Container base that
+// the codebase's own precedent proves safe. No new escalation.
+//
+// v1 scope: a single primary cursor (the `Array<Cursor>` multi-cursor carrier
+// exists — §4.4 / open-question §13.5 — but only index 0 is driven; multi
+// ships behind a later flag). Syntax highlighting is H06/G-H3: paintContent
+// reads one resolved text style today, with the per-span seam ready. Save is a
+// command (H03/H11), not a view key, so a focused editor never swallows ^S.
+
+uses Sonar;
+
+namespace Helm {
+
+    // Per-line selection span (scalar columns), plus whether the selection runs
+    // past this line's end (so the trailing newline cell is highlighted too).
+    class LineSel {
+        int  a;       // first selected scalar (inclusive); -1 = nothing selected
+        int  b;       // one past last selected scalar
+        bool toEol;   // selection continues onto a later line
+        new LineSel(int aa, int bb, bool e) { a = aa; b = bb; toEol = e; }
+    }
+
+    class EditorView : Focusable, Scrollable, Bordered, Styleable {
+        TextBuffer     buf_;
+        Array<Cursor>  cursors_ = [];
+        bool           enabled  = true;
+        // In-process clipboard register (§4.4). Held one-element to keep well
+        // clear of any auto-construct hazard, mirroring ProcStreamer.sink_.
+        Array<string>  clip_ = [];
+
+        new EditorView(TextBuffer b) {
+            setTabStop(true);
+            this.setBuffer(b);
+            // Explicit `this.` receivers on every stored handler (bug #53).
+            this.onKey((e) => this.handleKey(e));
+            this.onPaste((e) => this.handlePaste(e));
+        }
+
+        // ---- buffer wiring --------------------------------------------------
+
+        void setBuffer(TextBuffer b) {
+            buf_ = b;
+            cursors_ = [Cursor(0, 0)];
+            scrollX = 0;
+            scrollY = 0;
+            b.onChange((e) => this.onBufferChange(e));
+            invalidate();
+        }
+        TextBuffer buffer() => buf_;
+        void onBufferChange(ChangeEvent e) { invalidate(); }
+
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        Cursor primary() => cursors_[0];
+
+        // ---- geometry helpers -----------------------------------------------
+
+        // Left inset: line-number digits + one padding space.
+        int gutterWidth() {
+            int digits = 1;
+            int n = buf_.lineCount();
+            while (n >= 10) { n = n / 10; digits = digits + 1; }
+            return digits + 1;
+        }
+
+        // Cell column of scalar `col` on line `lineNo` (wide glyphs count 2).
+        int cellColOf(int lineNo, int col) {
+            Array<char> cs = buf_.line(lineNo).chars();
+            int n = col < cs.length() ? col : cs.length();
+            int w = 0;
+            for (int i in 0..n - 1) w = w + glyphWidth(cs[i]);
+            return w;
+        }
+
+        void clampOne(Cursor c) {
+            int lc = buf_.lineCount();
+            if (c.line < 0) c.line = 0;
+            if (c.line > lc - 1) c.line = lc - 1;
+            int llen = buf_.lineLenScalars(c.line);
+            if (c.col < 0) c.col = 0;
+            if (c.col > llen) c.col = llen;
+            if (c.anchorLine < 0) c.anchorLine = 0;
+            if (c.anchorLine > lc - 1) c.anchorLine = lc - 1;
+            int alen = buf_.lineLenScalars(c.anchorLine);
+            if (c.anchorCol < 0) c.anchorCol = 0;
+            if (c.anchorCol > alen) c.anchorCol = alen;
+        }
+
+        // Re-clamp after an edit/undo shifts the line structure, keep the caret
+        // on screen, and repaint. The single post-mutation funnel.
+        void afterMutation() {
+            for (Cursor c in cursors_) this.clampOne(c);
+            this.ensureCursorVisible();
+            invalidate();
+        }
+
+        // ---- scrolling ------------------------------------------------------
+        // Redeclared (bug #61 family / §4.3): the Scrollable+Bordered mixin
+        // shape drops the inherited scrollTo; vertical clamp is line-count
+        // based, horizontal is a floor at 0 (content width is unbounded/ragged).
+        void scrollTo(int x, int y) {
+            Rect content = box.inset(this.chrome());
+            int vh = content.h();
+            int maxY = buf_.lineCount() - vh;
+            if (maxY < 0) maxY = 0;
+            int ny = y < 0 ? 0 : (y > maxY ? maxY : y);
+            int nx = x < 0 ? 0 : x;
+            if (nx == scrollX && ny == scrollY) return;
+            scrollX = nx;
+            scrollY = ny;
+            changed();
+            invalidate();
+        }
+
+        void ensureCursorVisible() {
+            Rect content = box.inset(this.chrome());
+            int vh = content.h();
+            if (vh <= 0) return;
+            int gw = this.gutterWidth();
+            int textW = content.w() - gw;
+            if (textW < 1) textW = 1;
+            Cursor c = this.primary();
+            int ny = scrollY;
+            if (c.line < scrollY) ny = c.line;
+            else if (c.line >= scrollY + vh) ny = c.line - vh + 1;
+            int cell = this.cellColOf(c.line, c.col);
+            int nx = scrollX;
+            if (cell < scrollX) nx = cell;
+            else if (cell >= scrollX + textW) nx = cell - textW + 1;
+            if (nx < 0) nx = 0;
+            if (ny < 0) ny = 0;
+            if (nx != scrollX || ny != scrollY) this.scrollTo(nx, ny);
+        }
+
+        // ---- motion ---------------------------------------------------------
+
+        void moveLeft(bool shift) {
+            Cursor c = this.primary();
+            if (c.col > 0) c.moveTo(c.line, c.col - 1, shift);
+            else if (c.line > 0) c.moveTo(c.line - 1, buf_.lineLenScalars(c.line - 1), shift);
+            c.goalCol = c.col;
+            this.afterMutation();
+        }
+        void moveRight(bool shift) {
+            Cursor c = this.primary();
+            int llen = buf_.lineLenScalars(c.line);
+            if (c.col < llen) c.moveTo(c.line, c.col + 1, shift);
+            else if (c.line < buf_.lineCount() - 1) c.moveTo(c.line + 1, 0, shift);
+            c.goalCol = c.col;
+            this.afterMutation();
+        }
+        void moveVert(int delta, bool shift) {
+            Cursor c = this.primary();
+            int nl = c.line + delta;
+            if (nl < 0) nl = 0;
+            if (nl > buf_.lineCount() - 1) nl = buf_.lineCount() - 1;
+            int llen = buf_.lineLenScalars(nl);
+            int col = c.goalCol < llen ? c.goalCol : llen;   // sticky goal column
+            c.moveTo(nl, col, shift);
+            this.afterMutation();
+        }
+        void moveHome(bool shift) {
+            Cursor c = this.primary();
+            c.moveTo(c.line, 0, shift);
+            c.goalCol = 0;
+            this.afterMutation();
+        }
+        void moveEnd(bool shift) {
+            Cursor c = this.primary();
+            c.moveTo(c.line, buf_.lineLenScalars(c.line), shift);
+            c.goalCol = c.col;
+            this.afterMutation();
+        }
+        void moveDocStart(bool shift) {
+            Cursor c = this.primary();
+            c.moveTo(0, 0, shift);
+            c.goalCol = 0;
+            this.afterMutation();
+        }
+        void moveDocEnd(bool shift) {
+            Cursor c = this.primary();
+            int last = buf_.lineCount() - 1;
+            c.moveTo(last, buf_.lineLenScalars(last), shift);
+            c.goalCol = c.col;
+            this.afterMutation();
+        }
+        int pageRows() {
+            int vh = box.inset(this.chrome()).h();
+            return vh > 1 ? vh - 1 : 1;
+        }
+
+        // ---- editing --------------------------------------------------------
+
+        void deleteSelection() {
+            Cursor c = this.primary();
+            if (!c.hasSelection()) return;
+            Range r = c.selection();
+            buf_.remove(r);
+            c.moveTo(r.start.line, r.start.col, false);
+            c.goalCol = c.col;
+        }
+
+        // Advance the caret past freshly-inserted text (handles embedded '\n').
+        void advanceAfterInsert(Cursor c, string t) {
+            Array<string> parts = t.split("\n");
+            if (parts.length() == 1) {
+                c.moveTo(c.line, c.col + t.chars().length(), false);
+            } else {
+                int nl = c.line + parts.length() - 1;
+                int col = parts[parts.length() - 1].chars().length();
+                c.moveTo(nl, col, false);
+            }
+            c.goalCol = c.col;
+        }
+
+        void insertText(string t) {
+            if (!enabled) return;
+            this.deleteSelection();
+            Cursor c = this.primary();
+            buf_.insert(c.caret(), t);
+            this.advanceAfterInsert(c, t);
+            this.afterMutation();
+        }
+
+        void backspace() {
+            if (!enabled) return;
+            Cursor c = this.primary();
+            if (c.hasSelection()) { this.deleteSelection(); this.afterMutation(); return; }
+            if (c.col > 0) {
+                buf_.remove(Range(Pos(c.line, c.col - 1), Pos(c.line, c.col)));
+                c.moveTo(c.line, c.col - 1, false);
+            } else if (c.line > 0) {
+                int prevLen = buf_.lineLenScalars(c.line - 1);
+                buf_.remove(Range(Pos(c.line - 1, prevLen), Pos(c.line, 0)));
+                c.moveTo(c.line - 1, prevLen, false);
+            }
+            c.goalCol = c.col;
+            this.afterMutation();
+        }
+
+        void deleteForward() {
+            if (!enabled) return;
+            Cursor c = this.primary();
+            if (c.hasSelection()) { this.deleteSelection(); this.afterMutation(); return; }
+            int llen = buf_.lineLenScalars(c.line);
+            if (c.col < llen) {
+                buf_.remove(Range(Pos(c.line, c.col), Pos(c.line, c.col + 1)));
+            } else if (c.line < buf_.lineCount() - 1) {
+                buf_.remove(Range(Pos(c.line, c.col), Pos(c.line + 1, 0)));
+            }
+            this.afterMutation();
+        }
+
+        // ---- clipboard (in-process register) --------------------------------
+
+        void copy() {
+            Cursor c = this.primary();
+            string text = c.hasSelection() ? buf_.slice(c.selection()) : (buf_.line(c.line) + "\n");
+            clip_ = [text];
+        }
+        void cut() {
+            Cursor c = this.primary();
+            if (!c.hasSelection()) return;   // line-cut without selection is a later nicety
+            this.copy();
+            this.deleteSelection();
+            this.afterMutation();
+        }
+        void paste() {
+            if (clip_.isEmpty()) return;
+            this.insertText(clip_[0]);
+        }
+
+        // ---- undo/redo ------------------------------------------------------
+
+        void doUndo() { if (buf_.undo()) this.afterMutation(); }
+        void doRedo() { if (buf_.redo()) this.afterMutation(); }
+
+        // ---- input ----------------------------------------------------------
+
+        void handleKey(KeyEvent e) {
+            if (!enabled) return;
+            bool shift = e.mods == Mod::Shift;
+            bool plainOrShift = e.mods == 0 || shift;
+
+            // Motion.
+            if (e.code == KeyCode::Left && plainOrShift)  { this.moveLeft(shift);  e.handled = true; return; }
+            if (e.code == KeyCode::Right && plainOrShift) { this.moveRight(shift); e.handled = true; return; }
+            if (e.code == KeyCode::Up && plainOrShift)    { this.moveVert(-1, shift); e.handled = true; return; }
+            if (e.code == KeyCode::Down && plainOrShift)  { this.moveVert(1, shift);  e.handled = true; return; }
+            if (e.code == KeyCode::PageUp && plainOrShift)   { this.moveVert(-this.pageRows(), shift); e.handled = true; return; }
+            if (e.code == KeyCode::PageDown && plainOrShift) { this.moveVert(this.pageRows(), shift);  e.handled = true; return; }
+            if (e.code == KeyCode::Home && e.mods == Mod::Ctrl) { this.moveDocStart(false); e.handled = true; return; }
+            if (e.code == KeyCode::End && e.mods == Mod::Ctrl)  { this.moveDocEnd(false);   e.handled = true; return; }
+            if (e.code == KeyCode::Home && plainOrShift) { this.moveHome(shift); e.handled = true; return; }
+            if (e.code == KeyCode::End && plainOrShift)  { this.moveEnd(shift);  e.handled = true; return; }
+
+            // Clipboard / undo (Ctrl chords). Char literals bound to locals
+            // first (bug #50/#62/#63 — a char literal mistypes in call/ternary
+            // position until it is a named local).
+            char cZ = 'Z';
+            char cY = 'Y';
+            char cC = 'C';
+            char cX = 'X';
+            char cV = 'V';
+            if (e.isCtrl(cZ)) { this.doUndo(); e.handled = true; return; }
+            if (e.isCtrl(cY)) { this.doRedo(); e.handled = true; return; }
+            if (e.isCtrl(cC)) { this.copy();   e.handled = true; return; }
+            if (e.isCtrl(cX)) { this.cut();    e.handled = true; return; }
+            if (e.isCtrl(cV)) { this.paste();  e.handled = true; return; }
+
+            // Editing.
+            if (e.code == KeyCode::Enter && e.mods == 0)     { this.insertText("\n"); e.handled = true; return; }
+            if (e.code == KeyCode::Backspace && e.mods == 0) { this.backspace();      e.handled = true; return; }
+            if (e.code == KeyCode::Delete && e.mods == 0)    { this.deleteForward();  e.handled = true; return; }
+            if (e.code == KeyCode::Char && plainOrShift) {
+                this.insertText(e.ch.toString());
+                e.handled = true;
+            }
+        }
+
+        void handlePaste(PasteEvent e) {
+            if (!enabled) return;
+            this.insertText(e.text);
+            e.handled = true;
+        }
+
+        // ---- caret ----------------------------------------------------------
+        // Box-relative (App.renderFrame adds box origin; content.x()/y() are
+        // absolute, so subtract box origin — the Input/TextArea contract).
+        Point? cursorPos() {
+            if (!focused || !visible()) return None;
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return None;
+            Cursor c = this.primary();
+            int row = c.line - scrollY;
+            if (row < 0 || row >= content.h()) return None;
+            int gw = this.gutterWidth();
+            int cell = this.cellColOf(c.line, c.col) - scrollX;
+            if (cell < 0) return None;
+            int x = gw + cell;
+            if (x >= content.w()) return None;
+            return Point((content.x() - box.x()) + x, (content.y() - box.y()) + row);
+        }
+
+        // ---- layout / paint -------------------------------------------------
+
+        Size contentDesired(Size avail) => Size(avail.w, buf_.lineCount());
+
+        // Per-line selection span for the primary cursor, in scalar columns.
+        LineSel selForLine(int lineNo, int lineLen) {
+            Cursor c = this.primary();
+            if (!c.hasSelection()) return LineSel(-1, 0, false);
+            Range r = c.selection();
+            if (lineNo < r.start.line || lineNo > r.end.line) return LineSel(-1, 0, false);
+            int a = lineNo == r.start.line ? r.start.col : 0;
+            int b = lineNo == r.end.line ? r.end.col : lineLen;
+            bool toEol = lineNo < r.end.line;   // selection spans this line's newline
+            return LineSel(a, b, toEol);
+        }
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            int total = buf_.lineCount();
+            int gw = this.gutterWidth();
+            int textW = content.w() - gw;
+            if (textW < 0) textW = 0;
+
+            Style textSt   = resolveOrDefault(this, "editor.text");
+            Style gutterSt = resolveOrDefault(this, "editor.gutter");
+            Style curSt    = resolveOrDefault(this, "editor.gutter.current");
+            Style selSt    = resolveOrDefault(this, "editor.selection");
+            Cursor cur = this.primary();
+
+            for (int row in 0..content.h() - 1) {
+                int lineNo = scrollY + row;
+                if (lineNo >= total) continue;   // past EOF: paintBackground already cleared it
+                int y = content.y() + row;
+
+                // Gutter: right-aligned 1-based line number + a space.
+                string num = (lineNo + 1).toString();
+                string label = num.padStart(gw - 1, " ") + " ";
+                Style g = lineNo == cur.line ? curSt : gutterSt;
+                s.writeText(content.x(), y, clipToWidth(label, gw), g);
+
+                if (textW > 0) this.paintTextLine(s, content, gw, textW, lineNo, y, textSt, selSt);
+            }
+        }
+
+        // Paint one line's text, scalar by scalar, applying horizontal scroll,
+        // wide-glyph advance, and the selection style — mirroring Input's
+        // partial-cell clipping discipline.
+        void paintTextLine(Surface s, Rect content, int gw, int textW, int lineNo, int y, Style textSt, Style selSt) {
+            Array<char> cs = buf_.line(lineNo).chars();
+            LineSel sel = this.selForLine(lineNo, cs.length());
+            int baseX = content.x() + gw;
+            int col = -scrollX;
+            char space = ' ';
+            for (int i in 0..cs.length() - 1) {
+                char c = cs[i];
+                int cw = glyphWidth(c);
+                int startCol = col;
+                int endCol = col + cw;
+                bool selected = sel.a >= 0 && i >= sel.a && i < sel.b;
+                Style st = selected ? selSt : textSt;
+                if (endCol > 0 && startCol < textW) {
+                    if (startCol >= 0 && endCol <= textW) {
+                        s.put(baseX + startCol, y, c, st);
+                    } else {
+                        for (int cc in startCol..endCol - 1)
+                            if (cc >= 0 && cc < textW) s.put(baseX + cc, y, space, st);
+                    }
+                }
+                col = endCol;
+            }
+            // A selection spanning this line's newline highlights one trailing
+            // cell so the line break reads as selected.
+            if (sel.toEol && col >= 0 && col < textW) s.put(baseX + col, y, space, selSt);
+        }
+
+        // Redeclared verbatim (bug #59 / §4.3): decode borderGlyphs() via
+        // .chars() and index by character, never by byte offset. Matches
+        // TreeView/ListView's own copies.
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+    }
+
+}
