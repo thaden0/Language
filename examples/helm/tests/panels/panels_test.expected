@@ -1,0 +1,25 @@
+== Problems: severity sort ==
+rows=4 cols=3
+  0: ● | a.lev:1:1 | parse error
+  1: ● | a.lev:3:1 | type mismatch
+  2: ▲ | b.lev:9:5 | shadowed name 'x'
+  3: ‣ | b.lev:9:5 | previous 'x' here
+version=7 errors=2 warnings=1
+jump row0 -> a.lev:1:1
+== Output: append + cap ==
+count=3
+text:
+line-2
+line-3
+line-4
+itemAt(0)=line-2 itemAt(2)=line-4
+== Test results ==
+rows=3 cols=4
+  0: ✓ | t_add | 2ms | 
+  1: ✗ | t_sub | 5ms | expected 1, got 2
+  2: ✓ | t_mul | 1ms | 
+pass=2 fail=1 allPassed=n
+== PanelHost: route + reveal ==
+active(start)=0
+active(after error)=1 problems=1
+active(after clean)=1 problems=0

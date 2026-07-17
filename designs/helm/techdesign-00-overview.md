@@ -681,3 +681,62 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     edit→diagnostics loop. The highlight seam is ready (paintContent reads one resolved text style
     today; H06 swaps in the per-span highlight cache keyed by `buffer.version()`). `OpenDoc`
     (§G-H1) is now ready to be superseded by `TextBuffer` in the Workspace open-set.
+- 2026-07-17 — **G-H3 landed.** H06 diagnostics + H07 Problems/Output/Test panels + H08 status bar
+  — the edit→diagnostics loop closes. Eight new `.lev` files under `examples/helm/src/{lang,panels,
+  status}/` and four golden tests (`tests/{diag,panels,status,langloop}`); **11 Helm tests total,
+  all green on oracle + IR** (byte-identical). No `src/**`/`runtime/**` touched; no compiler bugs
+  hit.
+  - **H06 — the language-service bridge (`src/lang/`).**
+    - `diagnostic.lev` — `Diagnostic` (path/line/col/severity/message) + `DiagnosticBatch`
+      (version + `Array<Diagnostic>`), both **class** rows (no `Array<struct>`). Severity int
+      consts + `sevGlyph` (`● ▲ ‣ ◦`); the batch is version-keyed (§6.2) with error/warning counts
+      and a `forPath` per-buffer view.
+    - `diagparse.lev` — `IDiagnosticSource` (the G-LANG-1 swap seam) + `StderrDiagnosticSource`,
+      which parses the **exact** `src/Diagnostic.cpp` fprintf forms verified against the live
+      compiler: spanned `path:line:col: sev: msg` and whole-file/prelude `path: sev: msg`, skipping
+      the source-snippet, caret, and `N error(s)` summary lines (tolerant by construction — K4).
+      A golden corpus (`tests/diag`) is the format-drift guard.
+    - `langservice.lev` — `BufferSnapshot`; the frozen **H-C3** `ILanguageService` (diagnostics
+      surface); a shared `DiagSubscribers` R12 token registry; `LeviathanService` (the live path);
+      `FakeLanguageService` (the test seam); and `DiagnosticsController`, which version-keys results
+      (drops a batch older than the newest request) and fans surviving batches to its sinks,
+      `bindBuffer`ing a `TextBuffer` so an edit requests diagnostics without the editor knowing the
+      service exists.
+    - **H-C3 scope refinement (design vs gate — the H-C4/H-C2 precedent).** §6.4 froze
+      `ILanguageService` with a synchronous in-process `highlight(...)` alongside the diagnostics
+      methods. Highlighting (§6.1) is a **separate concern** from the diagnostics loop G-H3 names,
+      and the `EditorView` highlight seam already exists (it reads one resolved text style, ready to
+      swap in a per-span cache). So this gate ships the **diagnostics surface** of H-C3; the
+      in-process lexer/`highlight()` lands as an H06 rider. No new escalation.
+    - **Live-path floor note (G-LANG-2).** `LeviathanService` drives H09's `Proc` with
+      `--emit-ir` over a shadow copy of the (possibly dirty) buffer — `Proc` runs on oracle+IR only,
+      so this path is exercised by the **isolated live integration test** (§11), not the hermetic
+      golden lane, which binds `FakeLanguageService`. The single-file shadow (vs a trident-driven
+      cross-`uses` compile) is the honest v1 limit the shadow-file open question (§13.1) tracks;
+      cross-file diagnostics are an H11 rider.
+  - **H07 — the panels (`src/panels/`).** `problems.lev` (`ProblemsModel : ITableSource`, sorted
+    errors→warnings→notes then path/line/col via a zero-padded composite `sortBy` key,
+    `diagnosticAt` for click-to-jump), `output.lev` (`OutputModel` — a capped append-only line
+    buffer + `IListSource`; `Proc`-free, H11 feeds it), `testresults.lev` (`TestResult` rows +
+    `TestResultsModel : ITableSource`; harpoon-output parsing deferred to H11), and `panelhost.lev`
+    (`PanelHost` owns the three models; `applyBatch` refreshes Problems and reveals its tab when a
+    batch carries errors, never stealing focus on a clean batch).
+  - **H08 — the status bar (`src/status/statusbar.lev`).** `StatusModel` composes mode / branch /
+    diagnostics counts (`● 2  ▲ 5`) / build-state on the left and cursor `Ln,Col` / encoding /
+    language on the right into `ContentBar`'s three regions (pure model — no Sonar dep; the golden
+    renders it through a **real** `Sonar::ContentBar` + `TestRenderer`). Build-state int consts
+    (idle/running/ok/failed); `applyBatch` folds a delivered batch into the counts — the status half
+    of the loop.
+  - **`langloop` golden** drives the whole loop with zero subprocesses: `FakeLanguageService` +
+    `DiagnosticsController` + a live `TextBuffer`, proving edit→request→deliver→fan-out **and** the
+    version-keyed drop (edit bumps to v2, a late v1 batch is discarded, Problems/counts unchanged),
+    then recovery through v2 (errors→warning) and v3 (clean).
+  - **Language facts (recorded so later tracks don't relearn).** A bare `version` field reference
+    inside a method reads as an "ambiguous function reference" against same-named `version()`
+    methods elsewhere in the program — qualify the field with `this.`. `sortBy((x) => keyString)`
+    sorts ascending lexically, so a zero-padded composite key string gives deterministic
+    multi-column ordering. `build/` is gitignored, so plan files stay out of the tree.
+  - **Next gate G-H4** = H11 build/run/test wired to commands + palette + menu, and H01 shell fully
+    assembled. The `IDiagnosticSource`/`ILanguageService` DI seams are ready for the trident-driven
+    diagnostics path; `PanelHost.appendOutput` and the status build-state consts are the seams H11
+    streams build output and ✓/✗ into.

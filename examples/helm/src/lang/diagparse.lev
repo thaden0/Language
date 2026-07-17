@@ -1,0 +1,105 @@
+// H06 — the diagnostic parser + its DI seam (§6.2, K4).
+//
+// v1 parses `leviathan`'s human stderr text. The exact format is
+// `src/Diagnostic.cpp`'s two `fprintf`s:
+//     path:line:col: severity: message      (spanned diagnostic)
+//     path: severity: message               (whole-file / prelude diagnostic)
+// each spanned one is followed by a source-snippet line and a caret line, and
+// the run ends with a `N error(s)` summary. Those extra lines carry no severity
+// keyword, so the parser simply skips anything it can't recognise — tolerant by
+// construction (K4: a golden corpus catches format drift as a failing test).
+//
+// `IDiagnosticSource` is the swap seam (§6.2): when G-LANG-1 lands a machine
+// format (`--diagnostics=…`), a second `IDiagnosticSource` binds in its place
+// and this brittle text path is deleted — one DI rebind, nothing above changes.
+
+namespace Helm {
+
+    // The pluggable parser. `defaultPath` names the file a location-less
+    // (`path: severity: msg`) diagnostic is attributed to when the compiler
+    // omitted a path entirely (rare; keeps every Diagnostic addressable).
+    interface IDiagnosticSource {
+        Array<Diagnostic> parse(string stderr, string defaultPath);
+    }
+
+    // Map a severity keyword to its tag; -1 for "not a severity".
+    int severityOf(string word) {
+        if (word == "error")   return SevError;
+        if (word == "warning") return SevWarning;
+        if (word == "note")    return SevNote;
+        if (word == "info")    return SevInfo;
+        return -1;
+    }
+
+    // Find the earliest severity keyword in ` <sev>:` infix form and return the
+    // byte index of its leading space, or -1. Searching for the space-prefixed
+    // colon-suffixed form (`" error:"`) pins it to the location→message seam and
+    // steps over an "error:" that merely appears inside a message.
+    class SevHit {
+        int index;   // index of the leading space, -1 if none
+        int sev;     // severity tag
+        int kwLen;   // length of the matched " <sev>:" token
+        new SevHit(int i, int s, int k) { index = i; sev = s; kwLen = k; }
+    }
+
+    SevHit firstSeverity(string line) {
+        int best = -1;
+        int bestSev = -1;
+        int bestLen = 0;
+        Array<string> words = ["error", "warning", "note", "info"];
+        for (string w in words) {
+            string tok = " " + w + ":";
+            int at = line.indexOf(tok);
+            if (at >= 0 && (best < 0 || at < best)) {
+                best = at; bestSev = severityOf(w); bestLen = tok.length();
+            }
+        }
+        return SevHit(best, bestSev, bestLen);
+    }
+
+    // Split the location prefix (already stripped of its trailing ':') into
+    // path/line/col. This compiler emits either `path:line:col` or a bare
+    // `path`; a prefix whose last two ':'-segments both parse as ints is the
+    // spanned form, otherwise the whole prefix is a path.
+    class ParsedLoc {
+        string path;
+        int    line;
+        int    col;
+        new ParsedLoc(string p, int l, int c) { path = p; line = l; col = c; }
+    }
+
+    ParsedLoc parseLoc(string prefix) {
+        Array<string> segs = prefix.split(":");
+        int n = segs.length();
+        if (n >= 3) {
+            int? c = segs[n - 1].toInt();
+            int? l = segs[n - 2].toInt();
+            if (c != None && l != None) {
+                int col = c;
+                int line = l;
+                Array<string> head = [];
+                for (int i in 0..n - 3) head = head.add(segs[i]);
+                return ParsedLoc(head.joinToString(":"), line, col);
+            }
+        }
+        return ParsedLoc(prefix.trim(), 0, 0);
+    }
+
+    class StderrDiagnosticSource : IDiagnosticSource {
+        Array<Diagnostic> parse(string stderr, string defaultPath) {
+            Array<Diagnostic> out = [];
+            for (string raw in stderr.split("\n")) {
+                SevHit hit = firstSeverity(raw);
+                if (hit.index < 0) continue;                 // snippet/caret/summary line
+                string prefix = raw.subStr(0, hit.index);    // "path:line:col:" or "path:"
+                if (prefix.endsWith(":")) prefix = prefix.subStr(0, prefix.length() - 1);
+                string msg = raw.subStr(hit.index + hit.kwLen, raw.length()).trim();
+                ParsedLoc loc = parseLoc(prefix);
+                string path = loc.path.isEmpty() ? defaultPath : loc.path;
+                out = out.add(Diagnostic(path, loc.line, loc.col, hit.sev, msg));
+            }
+            return out;
+        }
+    }
+
+}

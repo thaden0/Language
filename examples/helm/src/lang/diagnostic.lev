@@ -1,0 +1,101 @@
+// H06 — diagnostic value carriers (§6, H-C3). The immutable messages the
+// language-service bridge produces and the Problems table / status counts / (a
+// later gate's) editor gutter consume.
+//
+// `Diagnostic` is a **class** row (individually heap-allocated, never packed
+// inline in an `Array<struct>` — footgun #5) so `Array<Diagnostic>` is safe hot
+// state. `DiagnosticBatch` wraps a version + that array; it is version-keyed so
+// a result computed against a stale buffer version is dropped upstream (§6.2).
+
+namespace Helm {
+
+    // Severity tags. Plain int consts (never a user enum in a Map/Array — the
+    // Sonar corpus hit bug #40/#41 there); read through the Diagnostic
+    // accessors. Ordered most-severe-first so a sort by `severity` groups
+    // errors above warnings above notes.
+    const int SevError   = 0;
+    const int SevWarning = 1;
+    const int SevNote    = 2;
+    const int SevInfo    = 3;
+
+    string sevName(int sev) {
+        if (sev == SevError)   return "error";
+        if (sev == SevWarning) return "warning";
+        if (sev == SevNote)    return "note";
+        return "info";
+    }
+
+    // The status-bar / gutter glyphs (§3: "● 2  ▲ 5"). 16-colour-safe scalars.
+    string sevGlyph(int sev) {
+        if (sev == SevError)   return "●";
+        if (sev == SevWarning) return "▲";
+        if (sev == SevNote)    return "‣";
+        return "◦";
+    }
+
+    // One diagnostic. `line`/`col` are 1-based as the compiler reports them
+    // (0 = unknown, e.g. a prelude/whole-file diagnostic with no span).
+    class Diagnostic {
+        string path;
+        int    line;
+        int    col;
+        int    severity;
+        string message;
+
+        new Diagnostic(string p, int ln, int c, int sev, string msg) {
+            path = p; line = ln; col = c; severity = sev; message = msg;
+        }
+
+        bool isError()   => severity == SevError;
+        bool isWarning() => severity == SevWarning;
+        bool isNote()    => severity == SevNote;
+        string sevName()  => sevName(severity);
+        string sevGlyph() => sevGlyph(severity);
+
+        // "path:line:col" (a whole-file diagnostic with no span drops the
+        // numbers: "path").
+        string location() {
+            if (line <= 0) return path;
+            if (col <= 0)  return path + ":" + line.toString();
+            return path + ":" + line.toString() + ":" + col.toString();
+        }
+
+        // A one-line rendering ("path:1:5: error: message") — the round-trip
+        // the parser corpus checks and the Output panel can echo.
+        string render() => this.location() + ": " + this.sevName() + ": " + message;
+    }
+
+    // A version-keyed set of diagnostics. `version` is the `TextBuffer.version()`
+    // the batch was computed against; the controller drops a batch older than
+    // the newest requested version (§6.2). A `class` holding an `Array<class>` —
+    // no `Array<struct>` anywhere.
+    class DiagnosticBatch {
+        int               version;
+        Array<Diagnostic> items;
+
+        new DiagnosticBatch(int v, Array<Diagnostic> its) { version = v; items = its; }
+        new Empty(int v) { version = v; items = []; }
+
+        int count() => items.length();
+
+        int errorCount() {
+            int n = 0;
+            for (Diagnostic d in items) if (d.isError()) n = n + 1;
+            return n;
+        }
+        int warningCount() {
+            int n = 0;
+            for (Diagnostic d in items) if (d.isWarning()) n = n + 1;
+            return n;
+        }
+
+        // The subset for one file (the editor gutter is per-buffer). Keeps the
+        // batch version so a per-buffer view stays version-keyed too.
+        DiagnosticBatch forPath(string p) {
+            Array<Diagnostic> out = [];
+            for (Diagnostic d in items) if (d.path == p) out = out.add(d);
+            return DiagnosticBatch(this.version, out);
+        }
+    }
+
+}

@@ -1,0 +1,47 @@
+// H07 — the Output panel model (§3, §7.2).
+//
+// The streaming sink for build/run output. A capped append-only line buffer
+// (oldest lines drop past the cap so a long build can't grow unbounded); the
+// shell's `#output` contentbox paints `text()`, and the `IListSource` surface
+// lets a `listview` scroll it row-by-row instead. Kept free of any `Proc`
+// dependency — H11 translates `ProcEvent`s into `appendLine` calls; this model
+// only holds lines.
+
+uses Sonar;
+
+namespace Helm {
+
+    class OutputModel : IListSource {
+        Array<string> lines_ = [];
+        int cap_ = 5000;
+
+        new OutputModel() {}
+        new WithCap(int cap) { cap_ = cap > 1 ? cap : 1; }
+
+        // Append one already-framed line (no trailing newline). Drops the oldest
+        // line once over the cap — reassigns a trimmed array (arrays are pure).
+        void appendLine(string line) {
+            lines_ = lines_.add(line);
+            if (lines_.length() > cap_) lines_ = lines_.slice(lines_.length() - cap_, cap_);
+        }
+
+        // Append a chunk that may contain embedded newlines (splits into lines).
+        void append(string chunk) {
+            for (string ln in chunk.split("\n")) this.appendLine(ln);
+        }
+
+        void clear() { lines_ = []; }
+
+        int lineCount() => lines_.length();
+        bool isEmpty()  => lines_.isEmpty();
+        string text()   => lines_.joinToString("\n");
+
+        // ---- IListSource ----------------------------------------------------
+        int count() => lines_.length();
+        string itemAt(int i) {
+            if (i < 0 || i >= lines_.length()) return "";
+            return lines_[i];
+        }
+    }
+
+}

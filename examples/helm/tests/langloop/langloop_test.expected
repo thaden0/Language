@@ -1,0 +1,15 @@
+initial
+  requested=v-1 applied=v-1 problems=0 diag=[] panel=0
+== edit 1 -> request v1, deliver 2 errors ==
+service saw requests=1
+after v1 delivered
+  requested=v1 applied=v1 problems=2 diag=[● 2] panel=1
+== edit 2 -> request v2, then a STALE v1 batch arrives late ==
+stale v1 dropped
+  requested=v2 applied=v1 problems=2 diag=[● 2] panel=1
+== edit 2 completes -> deliver v2 (1 warning, no errors) ==
+after v2 delivered
+  requested=v2 applied=v2 problems=1 diag=[▲ 1] panel=1
+== edit 3 -> request v3, deliver clean ==
+after v3 clean
+  requested=v3 applied=v3 problems=0 diag=[] panel=1

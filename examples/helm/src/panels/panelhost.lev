@@ -1,0 +1,48 @@
+// H07 — the panel host (§3's `#panel-tabs`).
+//
+// Owns the bottom dock's four models (Terminal is H10's, not modelled here) and
+// tracks which tab is active plus whether the dock is visible (`^`\` toggles
+// it). It is the single wiring point for a delivered diagnostic batch: a
+// `DiagnosticsController` sink routes each batch here (`applyBatch`), which
+// updates the Problems model and — when a batch introduces errors — reveals the
+// Problems tab so a failed build surfaces itself.
+//
+// Pure model: the shell (H01) binds these to the real `tabs`/`tableview`/
+// `contentbox` widgets; here everything is headless and testable.
+
+namespace Helm {
+
+    const int PanelTerminal = 0;
+    const int PanelProblems = 1;
+    const int PanelOutput   = 2;
+    const int PanelTest     = 3;
+
+    class PanelHost {
+        ProblemsModel     problems = ProblemsModel();
+        OutputModel       output   = OutputModel();
+        TestResultsModel  tests    = TestResultsModel();
+
+        int  active_  = PanelTerminal;
+        bool visible_ = true;
+
+        int  active()  => active_;
+        bool visible() => visible_;
+
+        void show(int panel) { active_ = panel; visible_ = true; }
+        void toggle()        { visible_ = !visible_; }
+        void hide()          { visible_ = false; }
+
+        // Route a delivered diagnostic batch: refresh the Problems model, and if
+        // it carries any errors bring the Problems tab forward (a failed build
+        // shouldn't be silent). A clean batch never steals focus from whatever
+        // panel the developer is looking at.
+        void applyBatch(DiagnosticBatch b) {
+            problems.setBatch(b);
+            if (b.errorCount() > 0) this.show(PanelProblems);
+        }
+
+        // Stream a build/run line into the Output panel (H11 feeds this).
+        void appendOutput(string line) { output.appendLine(line); }
+    }
+
+}

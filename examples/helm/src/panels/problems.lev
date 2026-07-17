@@ -1,0 +1,87 @@
+// H07 — the Problems panel model (§3, §6.2).
+//
+// A `Sonar::ITableSource` over the current diagnostic set, so the shell's
+// `tableview` (§3's `#problems`) paints the viewport without the whole list
+// resident. Rows are the diagnostics of the latest applied batch, sorted
+// most-severe-first then by source order; `diagnosticAt(row)` gives the shell
+// the Diagnostic to jump to on activate (click-to-jump, §6.2).
+//
+// The three columns are severity glyph / location / message. The model keeps
+// the batch version so the status bar and gutter read a consistent set.
+
+uses Sonar;
+
+namespace Helm {
+
+    const int ProbColSeverity = 0;
+    const int ProbColLocation = 1;
+    const int ProbColMessage  = 2;
+
+    class ProblemsModel : ITableSource {
+        Array<Diagnostic> rows_ = [];
+        int version_ = -1;
+
+        // Replace the contents with a batch, sorted errors→warnings→notes and,
+        // within a severity, by file then line then column (stable, deterministic
+        // — the golden depends on it). Sorted into a fresh array; `rows_` is only
+        // ever reassigned, never mutated in place (arrays are pure).
+        void setBatch(DiagnosticBatch b) {
+            version_ = b.version;
+            rows_ = b.items.sortBy((d) => this.sortKey(d));
+        }
+
+        // A single ordering string: severity (already 0..3, most-severe lowest)
+        // then path then zero-padded line/col so lexical order matches numeric.
+        string sortKey(Diagnostic d) {
+            return d.severity.toString()
+                 + "|" + d.path
+                 + "|" + pad6(d.line)
+                 + "|" + pad6(d.col);
+        }
+
+        void clear() { rows_ = []; version_ = -1; }
+
+        int version() => version_;
+        int count()   => rows_.length();
+        bool isEmpty() => rows_.isEmpty();
+
+        int errorCount() {
+            int n = 0;
+            for (Diagnostic d in rows_) if (d.isError()) n = n + 1;
+            return n;
+        }
+        int warningCount() {
+            int n = 0;
+            for (Diagnostic d in rows_) if (d.isWarning()) n = n + 1;
+            return n;
+        }
+
+        // The Diagnostic a row maps to — the shell reads this on row-activate to
+        // open the file and place the caret (click-to-jump). None out of range.
+        Diagnostic? diagnosticAt(int row) {
+            if (row < 0 || row >= rows_.length()) return None;
+            return rows_[row];
+        }
+
+        // ---- ITableSource ---------------------------------------------------
+        int rowCount() => rows_.length();
+        int colCount() => 3;
+        string cellAt(int r, int c) {
+            if (r < 0 || r >= rows_.length()) return "";
+            Diagnostic d = rows_[r];
+            if (c == ProbColSeverity) return d.sevGlyph();
+            if (c == ProbColLocation) return d.location();
+            return d.message;
+        }
+    }
+
+    // Left-pad a non-negative int to width 6 with zeros so lexical order matches
+    // numeric order in a sort key (line/col never exceed 6 digits in practice;
+    // wider values still sort, just not perfectly — acceptable for row order).
+    string pad6(int n) {
+        string s = n.toString();
+        while (s.length() < 6) s = "0" + s;
+        return s;
+    }
+
+}

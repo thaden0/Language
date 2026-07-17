@@ -1,0 +1,7 @@
+name    = "helm-diag-test"
+entry   = "Helm::main"
+sources = [
+    "diag_test.lev",
+    "../../src/lang/diagnostic.lev",
+    "../../src/lang/diagparse.lev",
+]

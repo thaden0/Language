@@ -1,0 +1,28 @@
+== clean status ==
+L: [EDIT  ⌥ agent1]
+C: []
+R: [Ln 1, Col 1  UTF-8  Leviathan]
+== diagnostics + building ==
+L: [EDIT  ⌥ agent1  ● 2  ▲ 1  ⟳ building…]
+C: []
+R: [Ln 12, Col 5  UTF-8  Leviathan]
+== build ok replaces the spinner ==
+L: [EDIT  ⌥ agent1  ● 2  ▲ 1  ✓ build ok]
+C: []
+R: [Ln 12, Col 5  UTF-8  Leviathan]
+== rendered bar, width 80 (left + right both fit) ==
+# 80x1
+┌ channel 1: text ────────────────────────
+EDIT..⌥.agent1..●.2..▲.1..✓.build.ok..............Ln.12,.Col.5..UTF-8..Leviathan
+└─
+┌ channel 2: style ────────────────────────
+................................................................................
+└─
+== rendered bar, width 24 (tight: left + right, no room-center) ==
+# 24x1
+┌ channel 1: text ────────────────────────
+EDIT..⌥.agent1..●.2..▲.…
+└─
+┌ channel 2: style ────────────────────────
+........................
+└─

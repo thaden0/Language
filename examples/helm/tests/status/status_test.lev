@@ -1,0 +1,59 @@
+// H08 golden — the status bar model: segment composition (mode / branch /
+// diagnostics counts / build state on the left; cursor Ln,Col / encoding /
+// language on the right) and its render through a real `Sonar::ContentBar`.
+// `applyBatch` folds a delivered diagnostic batch into the counts (the status
+// half of the edit→diagnostics loop). Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    void showModel(StatusModel m) {
+        console.writeln("L: [" + m.left() + "]");
+        console.writeln("C: [" + m.center() + "]");
+        console.writeln("R: [" + m.right() + "]");
+    }
+
+    void renderBar(StatusModel m, int w) {
+        ContentBar bar = ContentBar();
+        bar.setLeft(m.left());
+        bar.setCenter(m.center());
+        bar.setRight(m.right());
+        bar.arrange(Rect(Point(0, 0), Size(w, 1)));
+        Surface surf = Surface(w, 1);
+        bar.paint(surf);
+        TestRenderer tr = TestRenderer(w, 1);
+        tr.present(surf);
+        console.writeln(tr.snapshot());
+    }
+
+    void main() {
+        section("clean status");
+        StatusModel m = StatusModel();
+        m.setCursor(0, 0);       // 0-based editor coords -> Ln 1, Col 1
+        m.setBranch("agent1");
+        showModel(m);
+
+        section("diagnostics + building");
+        m.setCursor(11, 4);      // -> Ln 12, Col 5
+        m.applyBatch(DiagnosticBatch(3, [
+            Diagnostic("a.lev", 1, 1, SevError,   "x"),
+            Diagnostic("a.lev", 2, 1, SevError,   "y"),
+            Diagnostic("a.lev", 3, 1, SevWarning, "z")
+        ]));
+        m.setBuild(BuildRunning);
+        showModel(m);
+
+        section("build ok replaces the spinner");
+        m.setBuild(BuildOk);
+        showModel(m);
+
+        section("rendered bar, width 80 (left + right both fit)");
+        renderBar(m, 80);
+
+        section("rendered bar, width 24 (tight: left + right, no room-center)");
+        renderBar(m, 24);
+    }
+
+}

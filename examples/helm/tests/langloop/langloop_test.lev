@@ -1,0 +1,68 @@
+// G-H3 golden — the edit→diagnostics loop, end to end with zero subprocesses.
+//
+// A `FakeLanguageService` (bound where `LeviathanService` would be) lets the
+// test drive the whole loop deterministically:
+//   TextBuffer edit → onChange(version) → DiagnosticsController.request
+//     → (test delivers a version-keyed batch) → controller version-checks
+//       → fans out to the status counts + the PanelHost (Problems + reveal).
+// It also proves the version-keyed drop (§6.2): a batch that completes for an
+// already-superseded buffer version is discarded before any sink sees it.
+// Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    void showState(string tag, DiagnosticsController ctl, StatusModel sm, PanelHost host) {
+        console.writeln(tag);
+        console.writeln("  requested=v" + ctl.latestRequestedVersion().toString()
+            + " applied=v" + ctl.lastAppliedVersion().toString()
+            + " problems=" + host.problems.count().toString()
+            + " diag=[" + sm.diagSegment() + "]"
+            + " panel=" + host.active().toString());
+    }
+
+    Diagnostic err(int l, int c, string m) => Diagnostic("buf.lev", l, c, SevError, m);
+    Diagnostic warn(int l, int c, string m) => Diagnostic("buf.lev", l, c, SevWarning, m);
+
+    void main() {
+        FakeLanguageService svc = FakeLanguageService();
+        DiagnosticsController ctl = DiagnosticsController(svc);
+        StatusModel sm = StatusModel();
+        PanelHost host = PanelHost();
+
+        // Fan-out: a delivered batch updates the status counts and the panels.
+        ctl.addSink((b) => sm.applyBatch(b));
+        ctl.addSink((b) => host.applyBatch(b));
+
+        // A live buffer: each edit requests diagnostics for its new version.
+        TextBuffer buf = TextBuffer::Empty();
+        ctl.bindBuffer(buf);
+        showState("initial", ctl, sm, host);
+
+        section("edit 1 -> request v1, deliver 2 errors");
+        buf.insert(Pos(0, 0), "let x =");
+        console.writeln("service saw requests=" + svc.requestCount().toString());
+        svc.deliver(DiagnosticBatch(1, [
+            err(1, 8, "expected expression"),
+            err(1, 4, "unknown name 'x'")
+        ]));
+        showState("after v1 delivered", ctl, sm, host);   // Problems revealed (panel=1)
+
+        section("edit 2 -> request v2, then a STALE v1 batch arrives late");
+        buf.insert(Pos(0, 7), " 42");                     // version -> 2
+        svc.deliver(DiagnosticBatch(1, []));              // stale (v1 < v2): dropped
+        showState("stale v1 dropped", ctl, sm, host);     // unchanged from v1
+
+        section("edit 2 completes -> deliver v2 (1 warning, no errors)");
+        svc.deliver(DiagnosticBatch(2, [warn(1, 4, "unused variable 'x'")]));
+        showState("after v2 delivered", ctl, sm, host);   // errors gone, panel stays Problems
+
+        section("edit 3 -> request v3, deliver clean");
+        buf.insert(Pos(0, 10), ";");                      // version -> 3
+        svc.deliver(DiagnosticBatch(3, []));
+        showState("after v3 clean", ctl, sm, host);       // problems 0, diag empty
+    }
+
+}
