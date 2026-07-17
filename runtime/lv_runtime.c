@@ -3075,6 +3075,29 @@ void lvrt_unsupported(const char* what) {
     lv_plat_exit(134);
 }
 
+/* Track W hard-05 (designs/wasm-frontend/hard-05-callclosure-seam.md): the
+ * C-callable closure seam — the contract lives on the lv_abi.h declaration.
+ * Mirrors generated CallValue code (LlvmGen.cpp case Op::CallValue): the
+ * closure value is the callee's args[0], fnIndex is the closure body's
+ * word0, argc counts the closure. Built for ALL targets (one archive
+ * source); only the wasm glue calls it in v1. */
+void lvrt_callclosure(LvValue* out, const LvValue* clo,
+                      const LvValue* args, int nargs) {
+    out->tag = LV_VOID; out->payload = 0;
+    if (!g_dispatch || clo->tag != LV_CLO || nargs < 0) return;
+    int64_t fnIndex = *(const int64_t*)(const void*)(intptr_t)clo->payload;
+    LvValue small[8];              /* fast path; heap only for wide calls */
+    LvValue* window = small;
+    if (nargs + 1 > (int)(sizeof small / sizeof small[0])) {
+        window = (LvValue*)malloc(((size_t)nargs + 1) * sizeof(LvValue));
+        if (!window) return;
+    }
+    window[0] = *clo;              /* borrowed bitwise copies, CallValue's */
+    for (int i = 0; i < nargs; ++i) window[i + 1] = args[i];
+    g_dispatch(fnIndex, out, window, (int64_t)nargs + 1);
+    if (window != small) free(window);
+}
+
 void lvrt_uncaught(void) {
     if (!lv_g_throwing) return;
     /* gap (b) (designs/exit-codes.md §5): an uncaught exception exits 1 — a

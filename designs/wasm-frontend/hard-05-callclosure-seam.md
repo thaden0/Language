@@ -1,8 +1,15 @@
-# Track W — HARD 05: `lvrt_callclosure` seam (CONTINGENT)
+# Track W — HARD 05: `lvrt_callclosure` seam (LANDED)
 
-**[HARD]** — would add one `lvrt_*` symbol to the emitted-against ABI surface in
-`runtime/lv_runtime.c`. **Status:** CONTINGENT — verify the trigger **before scheduling
-W-M3**. **Context:** `techdesign-05-dom-bridge.md` §4.
+**[HARD]** — adds one `lvrt_*` symbol to the emitted-against ABI surface in
+`runtime/lv_runtime.c`. **Status:** LANDED (owner-greenlit ahead of the W-M3 audit gate;
+2026-07-17). The 2026-07-16 audit below stands — the runtime's private dispatch pattern
+was reusable — but the owner elected to land the public C seam now so the W-M3 glue
+consumes a reviewed ABI symbol instead of a private accessor. Implemented per "The
+edit" below: `lvrt_callclosure` in `lv_runtime.c` (all targets, one source), contract
+documented on the `lv_abi.h` declaration next to `lvrt_unsupported`, closure layout
+per §2.4. The wasm-lane pin (JS → trampoline → closure) lands with the W-M3 glue that
+first calls it; native verification is the four-lane differential (no generated-code
+change). **Context:** `techdesign-05-dom-bridge.md` §4.
 
 > **Audit 2026-07-16 (with the W-M1 HARD packets): trigger does NOT fire — NOT NEEDED.**
 > The design bet holds: closure invocation is NOT LlvmGen-only. The runtime already

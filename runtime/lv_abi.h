@@ -747,6 +747,24 @@ void    lvrt_await(LvValue* dst, const LvValue* promise);
  * diagnostic instead). Never returns. */
 void    lvrt_unsupported(const char* what);
 
+/* Track W hard-05 (designs/wasm-frontend/hard-05-callclosure-seam.md): the
+ * C-callable closure-invocation seam. Invokes an LV_CLO value (§2.4 closure
+ * layout above: body word0 = fnIndex, word1 = captureHead) exactly the way
+ * generated CallValue code does — through the registered dispatch
+ * trampoline, with the closure passed as the callee's own args[0] so the
+ * body reads captures via lvrt_capture_get. A PARALLEL C entry, not a
+ * replacement: generated code keeps its own CallValue emission; only the
+ * wasm glue calls this in v1 (lv_loop.c/lv_thread.c keep their private
+ * inline copies of the same pattern). `args`/`nargs` are the real
+ * arguments only (the closure is added internally; args may be NULL when
+ * nargs is 0); inputs are borrowed. *out receives the callee's +1 result —
+ * the caller releases it. A throw inside the closure surfaces as the
+ * pending-throw flag (lvrt_throwing), checked by the caller; nothing
+ * unwinds across this boundary. *out is VOID (and nothing runs) when the
+ * value is not a closure or no dispatch is registered. */
+void    lvrt_callclosure(LvValue* out, const LvValue* clo,
+                         const LvValue* args, int nargs);
+
 /* LA-30 B2 (doc 06 §4) — the sysTask* floor (lv_loop.c). Ids, not handles,
  * cross this boundary; every result is a scalar int. run/joinAll/awaitAny2
  * raise under LANG_PUMP=1 (B2 requires the scheduler); joinAll and awaitAny2
