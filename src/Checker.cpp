@@ -2057,6 +2057,18 @@ Type Checker::typeOfBinary(const Expr* e) {
                 return genericReturn(lt.sym, m, lt, {rt});
             }
         }
+        // Design §5.1: value-struct ==/!= with no (==) — synthesized or explicit —
+        // is the comparability gate firing. Name the first bad field, loudly.
+        // (Name-match parity with enumDesugars above; see packet 03 warning.)
+        if (lt.sym && lt.sym->isValue && program_ &&
+            (e->op == TokenKind::EqEq || e->op == TokenKind::BangEq)) {
+            for (const StructEqSynth& s : program_->structEqSynths)
+                if (!s.synthesized && s.structName == lt.sym->name)
+                    return error(e->span, "struct '" + std::string(lt.sym->name) +
+                        "' has no '(==)': field '" + s.badField + "' (" +
+                        s.badKindNote + ") is not comparable — define an explicit "
+                        "'bool (==)(" + std::string(lt.sym->name) + " other)' to opt in");
+        }
         // Reference classes have built-in identity equality. A user-declared
         // (==) still wins above; otherwise ==/!= compare object identity.
         if (lt.sym && !lt.sym->isValue &&

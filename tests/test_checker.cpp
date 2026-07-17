@@ -818,6 +818,26 @@ int main() {
           "use App::IWidget; "
           "string f(IWidget w) => \"ok\"; void g() { f(); }");
 
+    // --- Struct-equality packet 03: the loud comparability gate at ==/!= ---
+    // A value struct with a non-comparable field has no synthesized (==); the
+    // gate fires at the USE site, naming the first bad field (§5.1). Operands
+    // are parameters so the story is purely about the (==) gate.
+    ERROR_HAS("struct Job { Array<int> xs; } void f(Job a, Job b) { bool c = a == b; }",
+              "field 'xs'");
+    // A function-value field is non-comparable ("a function value").
+    ERROR_HAS("struct Job { (int) => int fn; } void f(Job a, Job b) { bool c = a == b; }",
+              "not comparable");
+    // A Map field is non-comparable; the message points at the opt-in escape.
+    ERROR_HAS("struct Job { Map<int, int> m; } void f(Job a, Job b) { bool c = a == b; }",
+              "define an explicit");
+    // !=/gate parity: the derived (!=) path also hits the gate.
+    ERROR_HAS("struct Job { Array<int> xs; } void f(Job a, Job b) { bool c = a != b; }",
+              "has no '(==)'");
+    // The red-corpus equivalent lives here (compile errors don't run engines,
+    // so the composition red lane — for wrong-OUTPUT bugs — is not the home).
+    // POSITIVE: an all-comparable value struct still type-checks under ==.
+    CLEAN("struct Point { int x; int y; } void f(Point a, Point b) { bool c = a == b; }");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
