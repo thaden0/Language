@@ -1,8 +1,17 @@
-# Track W — HARD 04: Await routing through `lvrt_await` (CONTINGENT)
+# Track W — HARD 04: Await routing through `lvrt_await` (CLOSED — NOT NEEDED)
 
 **[HARD]** — would edit the `Await` emission path in `src/LlvmGen.cpp`. **Status:**
-CONTINGENT — W-M2's design goal is **zero LlvmGen edits**; this doc activates only if its
-trigger fires. **Context:** `techdesign-04-async-jspi.md` §4.
+CLOSED — NOT NEEDED (trigger does not fire; audits 2026-07-16 and 2026-07-17 below).
+W-M2's design goal is **zero LlvmGen edits**; this doc would have activated only if its
+trigger fired. **Context:** `techdesign-04-async-jspi.md` §4.
+
+> **Audit 2026-07-17 (owner-greenlit closure, at the hard-03 head):** re-confirmed.
+> `case Op::Await` is the ONE case site (`src/LlvmGen.cpp:3350`) and emits exactly one
+> call, `b.CreateCall(rtAwait, ...)` → `lvrt_await`, followed by the standard throw
+> check; the in-code HISTORY note forbids restoring the inline pump/park BB graph. No
+> bypassing path exists, so there is no edit for this packet to make — closed per this
+> doc's own rule ("If the audit shows clean routing, close this doc as NOT NEEDED").
+> Re-confirm cheaply if intervening changes touch the Await case before W-M2.
 
 > **Audit 2026-07-16 (with the W-M1 HARD packets): trigger does NOT fire — NOT NEEDED.**
 > `Op::Await` emits exactly ONE runtime call, `lvrt_await` (`LlvmGen.cpp`, `case

@@ -45,7 +45,7 @@ packet = one commit.
 | `hard-01-tls-pin.md` | TLS-model wasm branch | `LlvmGen.cpp:3343-3355` | scheduled (W-M1) |
 | `hard-02-link-lane.md` | wasm link lane | `main.cpp:600-673` | scheduled (W-M1) |
 | `hard-03-capability-gate.md` | capability gate + `lvrt_unsupported` | `LlvmGen.cpp:2457ff` (CallNativeFn), pattern of `:2542,2565`; one new `lvrt_*` symbol | scheduled (W-M1) |
-| `hard-04-await-routing.md` | Await → `lvrt_await` routing | `LlvmGen.cpp` Await path | CONTINGENT (W-M2 audit) |
+| `hard-04-await-routing.md` | Await → `lvrt_await` routing | `LlvmGen.cpp` Await path | CLOSED — NOT NEEDED (2026-07-17 audit) |
 | `hard-05-callclosure-seam.md` | `lvrt_callclosure` ABI addition | `lv_runtime.c` / `lv_abi.h` | CONTINGENT (pre-W-M3 audit) |
 
 Everything else in the track is not HARD: `lv_plat_wasm.c`, `lv_task_wasm.c`, JS glue,
