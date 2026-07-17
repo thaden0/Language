@@ -1137,6 +1137,15 @@ Type Checker::typeOfMember(const Expr* e) {
                     }
                 break;
             }
+    // struct-equality §6 (packet 06): `float::NaN` — the one language constant.
+    // Mirrors the enum-member path above: resolve the read to the synthesized
+    // const global so ALL engines read the same global (zero per-engine work),
+    // and type it as `float`. Match on the primitive symbol, not spelling.
+    if (bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+        bt.sym->name == "float" && name == "NaN" && program_ && program_->floatNaNGlobal) {
+        const_cast<Expr*>(e)->resolved = program_->floatNaNGlobal;
+        return primType("float");
+    }
     // Static on a type value: keep referring to the class, but only for a name
     // the class actually declares. An unknown member after `::`/`.` on a
     // class-used-as-a-value used to pass through unconditionally as the class
@@ -2047,6 +2056,28 @@ Type Checker::typeOfBinary(const Expr* e) {
             return error(e->span, "'??' default ('" + rt.canonical +
                          "') does not match '" + stripped.canonical + "'");
         return stripped;
+    }
+
+    // struct-equality §4 (packet 06): an OPERATOR compare against the
+    // `float::NaN` constant is statically always-false (`==`) / always-true
+    // (`!=`) under IEEE — a compile error with a fixit, never a silent
+    // constant result. Match on the resolved decl pointer (typeOfMember stamped
+    // it), not spelling: an aliased read through a variable (`float n =
+    // float::NaN; x == n`) is NOT the constant and stays legal — honestly
+    // IEEE-false at runtime, the documented escape hatch. `x != x` is a
+    // different node shape and is untouched.
+    if ((e->op == TokenKind::EqEq || e->op == TokenKind::BangEq) &&
+        program_ && program_->floatNaNGlobal) {
+        auto isNaNConst = [&](const Expr* x) {
+            return x && x->kind == ExprKind::Member && x->colon &&
+                   x->resolved == program_->floatNaNGlobal;
+        };
+        if (isNaNConst(e->a.get()) || isNaNConst(e->b.get())) {
+            const bool eq = e->op == TokenKind::EqEq;
+            return error(e->span, std::string("comparing against float::NaN with '") +
+                         (eq ? "==" : "!=") + "' is always " + (eq ? "false" : "true") +
+                         " (IEEE) — use x.isNaN() or a float::NaN match arm");
+        }
     }
 
     // Primitives keep built-in operators (their object mask exposes methods, not

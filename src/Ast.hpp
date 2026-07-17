@@ -528,4 +528,12 @@ struct Program {
     // Struct-equality §5.5 (packet 02): per-struct synthesis/gate records, see
     // StructEqSynth above. Same lifetime rationale as enumDesugars.
     std::vector<StructEqSynth> structEqSynths;
+
+    // Struct-equality §6 (packet 06): the one `float::NaN` language constant.
+    // The Resolver synthesizes a const global (`float float$NaN =
+    // float::fromBits(0x7FF8000000000000)`) through the synth channel and
+    // parks its decl here; the checker resolves `float::NaN` reads to it
+    // (stamping `Expr::resolved`) so every engine reads the same global with
+    // zero per-engine work — exactly the enum-member-constant mechanism.
+    Stmt* floatNaNGlobal = nullptr;
 };

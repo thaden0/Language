@@ -838,6 +838,18 @@ int main() {
     // POSITIVE: an all-comparable value struct still type-checks under ==.
     CLEAN("struct Point { int x; int y; } void f(Point a, Point b) { bool c = a == b; }");
 
+    // --- Struct-equality packet 06: the always-false `== float::NaN` error ---
+    // An OPERATOR compare against the NaN constant is statically always-false
+    // (`==`) / always-true (`!=`) under IEEE (§4), so it is a compile error
+    // with a fixit — never a silent constant result.
+    ERROR_HAS("void f(float x) { bool b = x == float::NaN; }", "use x.isNaN()");
+    // Mirror shape for `!=` (and operand order): the constant on either side.
+    ERROR_HAS("void f(float x) { bool b = float::NaN != x; }", "use x.isNaN()");
+    // The documented escape hatch: an aliased read through a variable is NOT
+    // the constant node (the match is on the resolved decl, not the spelling) —
+    // honestly IEEE-false at runtime, so it stays legal.
+    CLEAN("void f(float x) { float n = float::NaN; bool b = x == n; }");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

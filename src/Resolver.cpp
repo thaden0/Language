@@ -6270,8 +6270,66 @@ void Resolver::synthesizeStructEquality(Program& program) {
     walk(walk, program.items, sema_.global);
 }
 
+// Struct-equality §6 (packet 06): the `float::NaN` language constant. One
+// definition, one place — synthesized through the same synth channel the enum
+// member globals use (desugarEnums above), so it flows through gather / type
+// resolution / check / global-init exactly like hand-written source and every
+// engine reads it with zero per-engine work. Decision 1 (ratified): the bit
+// pattern is a LANGUAGE constant — 0x7FF8000000000000, the canonical positive
+// quiet NaN (§3.1) — no per-target configuration, no `#ifdef`.
+void Resolver::synthesizeFloatNaN(Program& program) {
+    if (program.floatNaNGlobal) return;   // idempotent: the two-pass resolver
+                                          // re-runs on the SAME Program.
+    // Materialize the global ONLY when the program actually references
+    // `float::NaN` — exactly the enum precedent (enum globals appear only when
+    // an `enum` is written). Unconditional injection would push a
+    // `float::fromBits(...)` initializer into every program, including the
+    // churn/expand corpora whose FROZEN ELF lane cannot lower that native and
+    // whose expand-roundtrip re-parses the printed source. `file_.text` is the
+    // whole combined source buffer (every user file concatenated); a token scan
+    // for the `float :: NaN` sequence is spacing-robust and skips comments and
+    // string bodies (the lexer already did). The one language constant, but
+    // paid for only where used.
+    DiagnosticSink scanSink;
+    std::vector<Token> toks = Lexer(file_, scanSink).tokenize();
+    bool used = false;
+    for (size_t i = 0; i + 2 < toks.size(); ++i)
+        if (toks[i].text == "float" && toks[i + 1].kind == TokenKind::ColonColon &&
+            toks[i + 2].text == "NaN") { used = true; break; }
+    if (!used) return;
+
+    // The `$` in the final mangled name is unlexable in user identifiers, so
+    // parse a lexable placeholder first, then rename to `float$NaN` (backed by
+    // synthNames for string_view stability) — exactly the desugarEnums move.
+    // 9221120237041090560 == 0x7FF8000000000000 (fits a signed int64).
+    std::string src = "float __floatnan = float::fromBits(9221120237041090560);\n";
+    program.synthFiles.push_back(SourceFile{"<float::NaN>", std::move(src)});
+    SourceFile& sf = program.synthFiles.back();
+    DiagnosticSink dummy;
+    Lexer lexer(sf, dummy);
+    Parser parser(lexer.tokenize(), sf, dummy);
+    Program sub = parser.parseProgram();
+    if (dummy.hasErrors() || sub.items.size() != 1 ||
+        sub.items[0]->kind != StmtKind::Var) {
+        sink_.error(SourceSpan{}, "internal: float::NaN constant synthesis failed to parse");
+        return;
+    }
+    StmtPtr g = std::move(sub.items[0]);
+    program.synthNames.push_back("float$NaN");
+    g->name = program.synthNames.back();
+    g->isConst = true;                    // follows the enum member globals
+    program.floatNaNGlobal = g.get();
+    // Prepend, not append: top-level global initializers run in source order,
+    // so the constant must be initialized BEFORE any user top-level statement
+    // (e.g. `main();`) that reads `float::NaN`. Enum member globals sit at their
+    // enum's source position (ahead of the call site); this one has no natural
+    // site, so it leads.
+    program.items.insert(program.items.begin(), std::move(g));
+}
+
 void Resolver::run(Program& program) {
     desugarEnums(program);                    // Track 03 §2: enum -> struct + globals + fromCode
+    synthesizeFloatNaN(program);              // struct-equality §6: the float::NaN constant
     sema_.global = sema_.newScope(nullptr);
     // `void` is the only pure primitive with no method surface; int/string/bool/
     // float are declared as value-type classes in the prelude (the object mask).
