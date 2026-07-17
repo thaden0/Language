@@ -2052,6 +2052,33 @@ int Lowerer::lowerExpr(Expr* e) {
                     emit(Op::Arith, le, subj, lowerExpr(arm.value->b.get()));
                     last().tk = TokenKind::Le; last().sname = "ii";
                     toNext.push_back(emit(Op::JumpIfFalse, le, 0));
+                } else if (arm.value && e->a->evalKind == 3 &&
+                           arm.value->evalKind == 3) {
+                    // struct-equality §6 (packet 07): a float scrutinee classifies
+                    // each value arm by the CANONICAL relation, not IEEE `==` — so
+                    // `float::NaN =>` is a reachable arm and ±0.0 collapse. Lower
+                    // the test as the `canonEq` native (packet 05) on the subject
+                    // with the pattern as argument, exactly the method-call shape
+                    // (CallDyn by name) the synthesized `(==)` body emits for float
+                    // fields — a decl-less CallDyn dispatches through each engine's
+                    // ONE canon (findMethodByName/callm/emitNativeRows), the same
+                    // symbol keyEq uses (hash-consistency law §3.3). A hand-rolled
+                    // bit compare would diverge from that symbol. Canonical ≡ IEEE
+                    // except NaN, so no existing float match changes behavior.
+                    // Mixed int/float arms fall to the scalar Arith path below (an
+                    // int pattern is never NaN, so the two relations agree; and
+                    // canonEq's float arg would misread an int payload).
+                    // optimization deferred: canon-once (design §6) — the simple
+                    // per-arm canonEq form is observably identical (canon is
+                    // idempotent) and keeps the integer canon inside the native.
+                    int pv = lowerExpr(arm.value.get());
+                    int base = F().nregs;
+                    { int r = newReg(); emit(Op::Move, r, subj); }
+                    { int r = newReg(); emit(Op::Move, r, pv); }
+                    int eq = newReg();
+                    emit(Op::CallDyn, eq, 0, base, 2);
+                    last().sname = "canonEq";
+                    toNext.push_back(emit(Op::JumpIfFalse, eq, 0));
                 } else if (arm.value) {
                     int eq = newReg();
                     emit(Op::Arith, eq, subj, lowerExpr(arm.value.get()));

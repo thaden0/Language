@@ -958,6 +958,7 @@ Type Checker::typeOfInner(const Expr* e) {
             std::vector<std::string> covered;     // canonical types matched by arms
             std::vector<std::string_view> enumCovered;   // enum members matched (Track 03 §2)
             bool hasElse = false;
+            bool sawNaNArm = false;       // struct-equality §6 (packet 07): dup check
             Type result; bool haveResult = false, uniform = true;
             for (const MatchArm& arm : e->arms) {
                 std::unordered_map<std::string, Type> saved = narrow_;
@@ -979,6 +980,20 @@ Type Checker::typeOfInner(const Expr* e) {
                     if (arm.value->kind == ExprKind::Member && arm.value->colon &&
                         arm.value->resolved)
                         enumCovered.push_back(arm.value->text);
+                    // struct-equality §6 (packet 07): `float::NaN` is a reachable
+                    // match arm (canonical relation), so its two failure modes get
+                    // narrow, per-constant diagnostics — no general framework (no
+                    // duplicate/unreachable checks exist for any other type). An
+                    // `else` seen earlier makes a later NaN arm dead (its canonical
+                    // compare can never run); a second NaN arm is a redundant dup.
+                    if (isFloatNaNConst(arm.value.get())) {
+                        if (hasElse)
+                            return error(arm.value->span,
+                                         "unreachable 'float::NaN' arm after 'else'");
+                        if (sawNaNArm)
+                            return error(arm.value->span, "duplicate 'float::NaN' arm");
+                        sawNaNArm = true;
+                    }
                 }
                 Type bt = arm.bodyBlock
                     ? (check(const_cast<Stmt*>(arm.bodyBlock.get())), unknown())
@@ -1907,6 +1922,18 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
     return unknown();
 }
 
+// struct-equality §6 (packet 06/07): a read of the one `float::NaN` language
+// constant. typeOfMember resolves such a read to program_->floatNaNGlobal
+// (stamping Expr::resolved); we match on that decl pointer, never on spelling,
+// so an aliased read through a variable (`float n = float::NaN; ...`) is NOT
+// the constant. `program_->floatNaNGlobal` is only materialized when the
+// program references `float::NaN`, so it is null (and this is false) otherwise.
+bool Checker::isFloatNaNConst(const Expr* e) const {
+    return e && program_ && program_->floatNaNGlobal &&
+           e->kind == ExprKind::Member && e->colon &&
+           e->resolved == program_->floatNaNGlobal;
+}
+
 Type Checker::typeOfBinary(const Expr* e) {
     const bool assignment = e->op == TokenKind::Eq || isCompoundAssign(e->op);
     const bool savedMethodRefsAllowed = methodRefsAllowed_;
@@ -2068,11 +2095,7 @@ Type Checker::typeOfBinary(const Expr* e) {
     // different node shape and is untouched.
     if ((e->op == TokenKind::EqEq || e->op == TokenKind::BangEq) &&
         program_ && program_->floatNaNGlobal) {
-        auto isNaNConst = [&](const Expr* x) {
-            return x && x->kind == ExprKind::Member && x->colon &&
-                   x->resolved == program_->floatNaNGlobal;
-        };
-        if (isNaNConst(e->a.get()) || isNaNConst(e->b.get())) {
+        if (isFloatNaNConst(e->a.get()) || isFloatNaNConst(e->b.get())) {
             const bool eq = e->op == TokenKind::EqEq;
             return error(e->span, std::string("comparing against float::NaN with '") +
                          (eq ? "==" : "!=") + "' is always " + (eq ? "false" : "true") +

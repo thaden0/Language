@@ -147,6 +147,16 @@ bool Evaluator::matchesValue(const Value& subj, Expr* pat) {
         return subj.kind == VKind::Int && subj.i >= lo.i && subj.i <= hi.i;
     }
     Value pv = eval(pat);
+    // struct-equality §6 (packet 07): a float value arm classifies by the
+    // CANONICAL relation, not IEEE `==` — so `float::NaN =>` is a reachable arm
+    // (canon(NaN)==canon(NaN)) and ±0.0 collapse to one arm. Canonical ≡ IEEE
+    // except NaN, so no existing float match changes behavior. Route through the
+    // ONE canon symbol (lv_canon, RuntimeValue.hpp — hash-consistency law §3.3);
+    // the same symbol the `canonEq` native the other three engines lower to
+    // uses. Mixed int/float arms keep the `combine` promotion path below (an int
+    // pattern is never NaN, so canon vs IEEE agree there anyway).
+    if (subj.kind == VKind::Float && pv.kind == VKind::Float)
+        return lv_canon(subj.f) == lv_canon(pv.f);
     return combine(TokenKind::EqEq, subj, pv, nullptr).b;
 }
 

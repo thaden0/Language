@@ -1,0 +1,19 @@
+// M3 pin (struct-equality design §6, §2): the seam — for any NON-NaN value the
+// canonical match relation and the IEEE scalar `==` operator AGREE. A `-0.0`
+// scrutinee hits the `0.0 =>` arm (the signed zeros collapse under canon)
+// exactly as `-0.0 == 0.0` is IEEE-true; a plain `3.5` matches its own arm
+// exactly as `==` would. So match changes NOTHING here — only the (untested-in-
+// this-file) NaN arm is new. Markers + bools.
+string bucket(float x) => match (x) {
+    0.0  => "zero";
+    3.5  => "threefive";
+    else => "other";
+};
+void main() {
+    console.writeln(bucket(-0.0));    // zero      — canon collapses -0.0 onto +0.0
+    console.writeln(-0.0 == 0.0);     // true      — IEEE agrees on the zeros (the seam)
+    console.writeln(bucket(3.5));     // threefive — a plain value arm
+    console.writeln(3.5 == 3.5);      // true      — the operator agrees
+    console.writeln(bucket(4.0));     // other
+}
+main();
