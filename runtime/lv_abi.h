@@ -514,6 +514,13 @@ void    lvrt_map_with(LvValue* out, const LvValue* base, const LvValue* idx, con
  * lvrt_idxget/lvrt_idxset's map branch and LlvmGen's native "has" row. */
 int32_t lvrt_keyeq(const LvValue* a, const LvValue* b);
 
+/* struct-equality design §3/§8: the canonical float relation. Args are the two
+ * floats' raw bit payloads (LV_FLOAT stores bits in `payload`, §2.3); returns
+ * 1 iff canonically equal. The synthesized struct `(==)` compares float fields
+ * through this (via float.canonEq), and lvrt_keyeq's LV_FLOAT leg reuses it —
+ * both routing through lv_runtime.c's single canon (hash-consistency law). */
+int32_t lvrt_canoneq(int64_t abits, int64_t bbits);
+
 /* ============================ §2.7 Natives ================================
  *
  * Enumerated at B-M1 from `grep -n '"' src/RuntimeNatives.cpp` (free/system

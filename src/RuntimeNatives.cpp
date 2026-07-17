@@ -894,6 +894,17 @@ bool nativeCall(std::string_view cls, const std::string& m, const Value& self,
         if (m == "trunc") { out = vfloat(std::trunc(self.f)); return true; }
         if (m == "sqrt")  { out = vfloat(std::sqrt(self.f)); return true; }    // negative -> NaN (IEEE)
         if (m == "pow")   { out = vfloat(std::pow(self.f, args.empty() ? 0.0 : args[0].f)); return true; }
+        // struct-equality design §8: bit reinterpret (never a cast through
+        // long — memcpy only, §3.2 warning); canonEq routes through the ONE
+        // canon (lv_canon, RuntimeValue.hpp) — hash-consistency law §3.3.
+        if (m == "bits") {
+            long long b; std::memcpy(&b, &self.f, 8);
+            out = vint(b); return true;
+        }
+        if (m == "canonEq") {
+            out = vbool(lv_canon(self.f) == lv_canon(args.empty() ? 0.0 : args[0].f));
+            return true;
+        }
         if (m == "toInt") {
             // Truncation; NaN/±inf/out-of-int64-range -> RuntimeException
             // (loud, not UB — §1.2 of the design). int64 range as doubles:
@@ -1275,6 +1286,16 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
             return true;
         }
         out = vstr(std::string(1, (char)(unsigned char)b));
+        return true;
+    }
+    if (name == "floatFromBits") {
+        // struct-equality design §8: int64 bits -> double, memcpy only (no
+        // cast-through-long UB). Surface spelling `float::fromBits(int)` routes
+        // here via the checker (mirrors Enum::fromCode); `math::floatFromBits`
+        // is the same native reachable directly.
+        long long b = args.empty() ? 0 : args[0].i;
+        double d; std::memcpy(&d, &b, 8);
+        out = vfloat(d);
         return true;
     }
     if (name == "charFromCode") {

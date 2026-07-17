@@ -154,6 +154,8 @@ struct Gen {
         rtGetm, rtSetm, rtRegister,
         rtValueHasPromise, rtRegisterSpawnCheck,   // bug #35 spawn-global guard
         rtArrNew, rtArrAppend, rtArrFill, rtArrConcatall, rtMapNew, rtMapWith, rtIdxGet, rtIdxSet, rtKeyEq,
+        rtCanonEq,   // struct-equality design §8: the canonical float relation
+
         rtStrEq, rtStrSubstr, rtStrIndexof, rtStrToint, rtStrTofloat, rtStrTrim, rtStrCase,
         rtStrByteat, rtStrFrombyte,
         // Track 03 §1/§3 (deferal-char-block-abi.md): char UTF-8 en/decode +
@@ -264,6 +266,9 @@ struct Gen {
         // structs field-wise, classes by identity) — shared with lvrt_idxget's
         // map branch, so "has" agrees with "at"/"[]" on the same key.
         rtKeyEq      = fn("lvrt_keyeq", i32Ty, {ptrTy, ptrTy});
+        // struct-equality design §8: canonEq(abits, bbits) -> i32; a runtime
+        // call (not hand-built IR) — the map-key path never forces inline here.
+        rtCanonEq    = fn("lvrt_canoneq", i32Ty, {i64Ty, i64Ty});
         rtStrEq      = fn("lvrt_str_eq", i32Ty, {ptrTy, ptrTy});
         rtStrSubstr  = fn("lvrt_str_substr", voidTy, {ptrTy, ptrTy, i64Ty, i64Ty});
         rtStrIndexof = fn("lvrt_str_indexof", i64Ty, {ptrTy, ptrTy});
@@ -1655,6 +1660,18 @@ struct Gen {
                     llvm::Value* y = b.CreateBitCast(loadPay(b, arg(0)), f64Ty);
                     floatIntrinsic(Intrinsic::pow, {x, y});
                 });
+            } else if (n == "bits") {
+                // struct-equality design §8: the float's payload IS its raw
+                // IEEE-754 bit pattern (§2.3) — bits() is a pure retag to
+                // LV_INT, no reinterpret needed.
+                row(2, [&] { storeTP(b, dst, i64C(1), loadPay(b, recv)); });
+            } else if (n == "canonEq") {
+                // struct-equality design §8: route both payloads (raw bits)
+                // through the runtime's ONE canon (lvrt_canoneq); result bool.
+                row(2, [&] {
+                    llvm::Value* eq = b.CreateCall(rtCanonEq, {loadPay(b, recv), loadPay(b, arg(0))});
+                    storeTP(b, dst, i64C(3), b.CreateZExt(eq, i64Ty));
+                });
             } else if (n == "byteAt") {
                 row(4, [&] { b.CreateCall(rtStrByteat, {dst, recv, loadPay(b, arg(0))}); });
                 row(11, [&] {   // Track 03 §3 Block.byteAt(i) -> int (bounds-checked)
@@ -1970,6 +1987,8 @@ struct Gen {
                 "sqrt", "pow", "byteAt", "trim", "toUpper", "toLower", "startsWith",
                 "endsWith", "at", "add", "concatAll", "has", "keys", "values",
                 "with", "without",
+                // struct-equality design §8: float bit access + canonical relation
+                "bits", "canonEq",
                 // Track 03 §1 char + §3 Block (deferal-char-block-abi.md)
                 "code", "chars", "setByte", "slice", "int32At", "setInt32",
                 "int64At", "setInt64", "fill", "blit", "equals", "mismatch",
@@ -2649,6 +2668,11 @@ struct Gen {
                             // Track 03 §1: scalar int -> char immediate (tag 10),
                             // no heap, no ARC — a pure retag.
                             storeTP(b, regs[in.a], i64C(10), loadPay(b, arg(0)));
+                        } else if (n == "floatFromBits") {
+                            // struct-equality design §8: int64 bits -> float. The
+                            // int payload IS the bit pattern (§2.3) — a pure
+                            // retag to LV_FLOAT (tag 2), no reinterpret.
+                            storeTP(b, regs[in.a], i64C(2), loadPay(b, arg(0)));
                         } else if (n == "byteToString") {
                             b.CreateCall(rtStrFrombyte, {regs[in.a], loadPay(b, arg(0))});
                             retainDst();               // fresh 1-byte string -> +1

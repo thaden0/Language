@@ -1492,6 +1492,27 @@ int Lowerer::lowerCall(Expr* e) {
                 emit(Op::Call, dst, it->second, base, (int)argRegs.size());
                 return dst;
             }
+            // struct-equality design §8: `float::fromBits(...)` resolves to a
+            // NATIVE free function (math::floatFromBits, empty body) — no
+            // lowered body in byDecl, so dispatch by native name. The native
+            // key is the resolved decl's own name ("floatFromBits"), NOT the
+            // `::` selector text ("fromBits"). MUST be gated on `::` (colon):
+            // an INSTANCE-method native reached via `.` (e.g. `arr.length()`,
+            // whose checker-resolved decl is also an empty-body prelude native)
+            // must fall through to the CallDyn method-dispatch path below —
+            // routing it as a free CallNativeFn misdispatches it (a `length`
+            // free-native does not exist).
+            if (callee->colon && e->resolved->memberBody &&
+                e->resolved->memberBody->kind == StmtKind::Empty) {
+                std::vector<int> argRegs;
+                for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
+                int base = F().nregs;
+                emitArgCopies(argRegs, e->list);
+                int dst = newReg();
+                emit(Op::CallNativeFn, dst, 0, base, (int)argRegs.size());
+                last().sname = std::string(e->resolved->name);
+                return dst;
+            }
         }
         // NS::fn — resolve through the namespace scope (prelude bodies are
         // unchecked, so fall back to by-name lookup like the oracle does).

@@ -1650,6 +1650,25 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                 }
     }
 
+    // --- struct-equality design §8: `float::fromBits(int)` -> float ---
+    // No `static` keyword exists, so the static-on-primitive factory is homed
+    // as the prelude free function math::floatFromBits and this `::` spelling
+    // routes to it (same mechanism as Enum::fromCode above).
+    if (callee->kind == ExprKind::Member && callee->colon && callee->text == "fromBits") {
+        Type bt = typeOf(callee->a.get());
+        if (bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+            bt.sym->name == "float") {
+            Symbol* mathNs = sema_.global ? sema_.global->lookup("math") : nullptr;
+            if (mathNs && mathNs->kind == SymbolKind::Namespace && mathNs->scope)
+                if (const std::vector<Symbol*>* v = mathNs->scope->localLookup("floatFromBits"))
+                    for (Symbol* s : *v)
+                        if (s->decl) {
+                            call->resolved = s->decl;
+                            return fromTypeRef(s->decl->type.get());   // float
+                        }
+        }
+    }
+
     // LA-18 missing-member check must run before the legacy construction path:
     // that path deliberately treats an absent concrete label as an implicit
     // construction fallback. A specialized `T::Label` is duck-typed instead,
@@ -2887,6 +2906,14 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
                 bt.kind == TKind::TypeValue && bt.sym && program_)
                 for (const EnumDesugar& ed : program_->enumDesugars)
                     if (ed.name == bt.sym->name) { enumFromCode = true; break; }
+            // struct-equality design §8: `float::fromBits(...)` is a free-
+            // function call (math::floatFromBits), NOT construction — same
+            // shape as Enum::fromCode above. Leave ctorClass null so it falls
+            // through to typeOf -> typeOfCallInner where the routing resolves it.
+            if (callee->colon && callee->text == "fromBits" &&
+                bt.kind == TKind::TypeValue && bt.sym && bt.sym->isPrimitive &&
+                bt.sym->name == "float")
+                enumFromCode = true;
             if (!enumFromCode && bt.kind == TKind::TypeValue) {
                 ctorClass = bt.sym; label = callee->text;
             } else if (!enumFromCode && callee->a->kind == ExprKind::Name) {

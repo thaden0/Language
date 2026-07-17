@@ -154,6 +154,13 @@ class float {
     int toInt();
     float sqrt();       // negative -> NaN (IEEE, not a throw — math convention)
     float pow(float e);
+    // struct-equality design §8: raw IEEE-754 bit access (serialization wants
+    // these regardless). `bits()` = bit_cast to int64; `float::fromBits(int)`
+    // is math::floatFromBits, routed by the checker. `canonEq` is the
+    // canonical-relation primitive (§3) the synthesized struct `(==)` compares
+    // float fields through — every engine implements it via its ONE canon.
+    int bits();
+    bool canonEq(float other);
     bool isNaN() => this != this;   // IEEE self-inequality — honest on all engines
     // Reformulated from the design's `this == 1.0/0.0` sentinel: bug.md #12
     // (LLVM's 0.0/0.0 silently yields 0.0, not NaN/inf — not this track's to
@@ -2699,6 +2706,12 @@ namespace math {
     float cos(float x);
     float tan(float x);
     float atan2(float y, float x);
+    // struct-equality design §8: the `float::fromBits(int)` factory. No
+    // `static` keyword exists in the language (Track 04 M3 problem #6), so —
+    // like std::charFromCode / std::byteToString — the static-on-primitive is
+    // homed as a free function; the checker routes `float::fromBits(x)` here
+    // (mirrors Enum::fromCode). `math::floatFromBits` is the same native.
+    float floatFromBits(int bits);
     int   min(int a, int b) => a < b ? a : b;
     int   max(int a, int b) => a > b ? a : b;
     float min(float a, float b) => a < b ? a : b;
@@ -6209,10 +6222,18 @@ void Resolver::synthesizeStructEquality(Program& program) {
                 if (!isDataField(m.get())) continue;
                 std::string f(m->selector.text);
                 if (!body.empty()) body += " && ";
-                // Float fields deliberately compare IEEE here — bit-for-bit
-                // what today's keyEquals fallback does. packet 05 flips this
-                // to canonEq.
-                body += "this." + f + " == other." + f;
+                // struct-equality design §5.2: float fields compare through the
+                // canonical relation (§3), so a struct holding NaN is equal to
+                // itself and ±0.0 agree — via float.canonEq (each engine's ONE
+                // canon). Every other field kind keeps the scalar `==`.
+                const TypeRef* t = m->type.get();
+                bool isFloat = t && t->kind == TypeKind::Named && t->path.empty() &&
+                               t->name == "float" &&
+                               (!t->resolvedSymbol || t->resolvedSymbol->isPrimitive);
+                if (isFloat)
+                    body += "this." + f + ".canonEq(other." + f + ")";
+                else
+                    body += "this." + f + " == other." + f;
             }
             if (body.empty()) body = "true";   // zero-field struct: reflexively equal
             std::string src = "struct __eq_" + N + " {\n"

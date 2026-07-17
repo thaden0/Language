@@ -2076,12 +2076,36 @@ void lvrt_arr_concatall(LvValue* out, const LvValue* arr) {
     out->tag = LV_STR; out->payload = payload;
 }
 
+/* struct-equality design §3: THE one canon for this engine (hash-consistency
+ * law §3.3 — lvrt_keyeq's LV_FLOAT leg below, lvrt_canoneq, and any future
+ * canon_hash all normalize through THIS symbol). Operates on the raw bit
+ * pattern (LV_FLOAT stores it in `payload`, §2.3) in pure integer/branchless
+ * form (§3.2): no FPU compare ever, no double materialized. NaN -> canonical
+ * qNaN; ±0.0 -> 0; else raw bits. */
+static uint64_t lv_canon_bits(uint64_t b) {
+    uint64_t is_nan  = ((b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull)
+                     & ((b & 0x000FFFFFFFFFFFFFull) != 0);
+    uint64_t is_zero = (b << 1) == 0;
+    return is_nan ? 0x7FF8000000000000ull : (is_zero ? 0 : b);
+}
+
+/* The canonical float relation the synthesized struct `(==)` compares float
+ * fields through (design §3, §8). Args are the two floats' raw bit payloads. */
+int32_t lvrt_canoneq(int64_t abits, int64_t bbits) {
+    return lv_canon_bits((uint64_t)abits) == lv_canon_bits((uint64_t)bbits) ? 1 : 0;
+}
+
 /* Track 05 C3: Map key equality — primitives by value; structs field-wise
  * recursive (a struct IS its fields, §9); classes by identity. Mirrors
  * keyEquals in RuntimeValue.hpp and CGen.cpp's keyEq. */
 int32_t lvrt_keyeq(const LvValue* a, const LvValue* b) {
     if (a->tag != b->tag) return 0;
     if (a->tag == LV_STR) return lvrt_str_eq(a, b);
+    /* struct-equality design §5 pin (float_map_key_nan): Map keys are canonical
+     * (§4). The old bit-compare below was already divergent from the
+     * interpreters on ±0.0 keys (and treated NaN payloads as distinct keys);
+     * routing LV_FLOAT through the canon fixes both. */
+    if (a->tag == LV_FLOAT) return lvrt_canoneq(a->payload, b->payload);
     if (a->tag == LV_OBJ) {
         int64_t clsA = lv_ld_i64(a->payload, 0);
         int64_t clsB = lv_ld_i64(b->payload, 0);
