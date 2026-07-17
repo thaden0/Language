@@ -1,0 +1,100 @@
+// G-LANG-2 terminal half (designs/pty/ doc 01 §4): the pty floor + Pty prelude
+// class, golden on oracle + IR. The LLVM lane arrives with doc 02 (S2) — until
+// then this dir stays out of corpus_llvm_full via the own-directory split (the
+// sys_natives/ convention).
+//
+// All children use Pty::Deterministic (D-P3: frozen termios, echo family off);
+// all asserts are on ACCUMULATED streams (R§D.3); each step chains off the
+// previous exitCode() resolution so the transcript is deterministic:
+//   1. /bin/echo — spawn/stream/drain/reap; regression-pins the EIO collapse
+//      (without D-P4 this step never terminates)
+//   2. /bin/cat — write path + the frozen VEOF protocol (write "\x04")
+//   3. /bin/stty size — the pre-exec TIOCSWINSZ seed (no query race)
+//   4. resize on a live child — TIOCSWINSZ + kernel SIGWINCH delivery
+//   5. test -t 0 — controlling-tty proof (setsid/TIOCSCTTY prologue)
+//   6. kill -> 143 — sysKill on a session-leader child (128+SIGTERM)
+//   7. bad path -> 127 — the exec-failure convention survives the pty prologue
+//   8. spawn refusals — empty path / rows<=0 -> []; the Pty wrapper resolves 127
+string acc = "";
+
+void step8() {
+    Array<int> r1 = std::sysPtySpawn("", [], 24, 80, 0);
+    Array<int> r2 = std::sysPtySpawn("/bin/echo", [], 0, 80, 0);
+    console.writeln("refuse: " + r1.length().toString() + " " + r2.length().toString());
+    Pty p = Pty::Deterministic("", [], 24, 80);
+    p.exitCode().then((code) => {
+        console.writeln("refuse exit: " + code.toString());
+    });
+}
+void step7() {
+    Pty p = Pty::Deterministic("/no/such/binary", [], 24, 80);
+    p.onData((s) => {});
+    p.exitCode().then((code) => {
+        console.writeln("bad: " + code.toString());
+        step8();
+    });
+}
+void step6() {
+    Pty p = Pty::Deterministic("/bin/cat", [], 24, 80);
+    p.onData((s) => {});
+    p.exitCode().then((code) => {
+        console.writeln("kill: " + code.toString());
+        step7();
+    });
+    p.kill();
+}
+void step5() {
+    Pty p = Pty::Deterministic("/bin/sh", ["-c", "test -t 0 && echo tty"], 24, 80);
+    p.onData((s) => { acc = acc + s; });
+    p.exitCode().then((code) => {
+        console.write("tty: " + acc);
+        console.writeln("tty exit: " + code.toString());
+        acc = "";
+        step6();
+    });
+}
+void step4() {
+    Pty p = Pty::Deterministic("/bin/sh", ["-c", "read x; stty size"], 24, 80);
+    p.onData((s) => { acc = acc + s; });
+    int rc = p.resize(30, 100);
+    console.writeln("resize rc: " + rc.toString());
+    // the child's `read` blocks until this write, so the resize above is
+    // ordered-before the child's stty deterministically.
+    p.write("go\n");
+    p.exitCode().then((code) => {
+        console.write("resize: " + acc);
+        console.writeln("resize exit: " + code.toString());
+        acc = "";
+        step5();
+    });
+}
+void step3() {
+    Pty p = Pty::Deterministic("/bin/stty", ["size"], 24, 80);
+    p.onData((s) => { acc = acc + s; });
+    p.exitCode().then((code) => {
+        console.write("winsize: " + acc);
+        console.writeln("winsize exit: " + code.toString());
+        acc = "";
+        step4();
+    });
+}
+void step2() {
+    Pty p = Pty::Deterministic("/bin/cat", [], 24, 80);
+    p.onData((s) => { acc = acc + s; });
+    p.write("ping\n");
+    p.write("\x04");                     // VEOF: the pty EOF protocol (D-P1)
+    p.exitCode().then((code) => {
+        console.write("cat: " + acc);
+        console.writeln("cat exit: " + code.toString());
+        acc = "";
+        step3();
+    });
+}
+Pty p = Pty::Deterministic("/bin/echo", ["hi"], 24, 80);
+p.onData((s) => { acc = acc + s; });
+p.exitCode().then((code) => {
+    console.write("echo: " + acc);
+    console.writeln("echo exit: " + code.toString());
+    acc = "";
+    step2();
+});

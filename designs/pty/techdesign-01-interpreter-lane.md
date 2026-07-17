@@ -332,3 +332,12 @@ stage — removed in S2).
 ## 7. Implementation log (append-only)
 
 - 2026-07-16 — doc created (S1 of designs/pty/). Awaiting implementation.
+- 2026-07-16 — **LANDED (G-PTY1 green).** `sysPtySpawn`/`sysPtyResize` natives +
+  the EIO collapse (both sysRecv forms) in `RuntimeNatives.cpp`; `sysPty*`
+  signatures + the `Pty` class in `Resolver.cpp` (labeled ctor `Pty::Deterministic`
+  landed as a bare-label `new Deterministic` per house style). `tests/corpus/sys_pty/`
+  (8-step golden) + the `corpus_sys_pty_{treewalk,ir}` CMake lanes; the fd-churn
+  probe in `run_sysnatives.sh` extended with 8 pty rounds (K8). Sweep green:
+  full ctest 195/195 (incl. the two new pty lanes), `run_sysnatives.sh`, Helm
+  `run-tests.sh` (5/5), sonar differential subset (core/reactive, all four lanes).
+  Oracle = IR byte-identical on `sys_pty.expected`. No design deviations.

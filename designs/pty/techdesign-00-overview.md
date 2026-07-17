@@ -253,3 +253,7 @@ stop and escalate, not improvise.
   kill sentinel + registry = doc 03 D-W3/D-W4; bridge ownership = per-pty, doc 03 §3;
   winpty = out; backpressure = TcpStream policy). Staged S1 (interpreters) → S2 (LLVM, HARD)
   → S3 (Windows ConPTY, HARD gating). Consumer: Helm H10 / gate G-H6.
+- 2026-07-16 — **S1 LANDED, gate G-PTY1 green** (doc 01). Oracle `sysPty*` natives +
+  the D-P4 EIO collapse, the `Pty` prelude class, and `tests/corpus/sys_pty/` all in;
+  oracle = IR byte-identical, full regression sweep green. G-PTY2 (LLVM floor, HARD)
+  is next and unblocks Helm H10 on POSIX. See doc 01 §7 for the landing detail.

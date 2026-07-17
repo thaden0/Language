@@ -387,6 +387,16 @@ add_test(NAME corpus_sys_spawn_treewalk
 add_test(NAME corpus_sys_spawn_ir
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
+# G-PTY1 (designs/pty/ doc 01): the pty floor golden — oracle + IR byte-
+# identical against one .expected. Own directory (the sys_natives/ split), so
+# corpus_llvm_full's top-level scan never compiles it; the LLVM lane arrives
+# with doc 02 (S2) and joins the LLVM_FOUND block then.
+add_test(NAME corpus_sys_pty_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty")
+add_test(NAME corpus_sys_pty_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty")
 # Track 10 native floor. Kept outside the frozen ELF lane: sysCpuCount and the
 # SO_REUSEPORT overload are interpreter/LLVM worker primitives.
 add_test(NAME corpus_threads_treewalk

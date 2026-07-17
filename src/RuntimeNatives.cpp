@@ -1629,7 +1629,14 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
                 return true;
             }
             ssize_t bn = ::recv(fd, p, (size_t)bmax, 0);
-            if (bn < 0 && errno == ENOTSOCK) bn = ::read(fd, p, (size_t)bmax);
+            if (bn < 0 && errno == ENOTSOCK) {
+                bn = ::read(fd, p, (size_t)bmax);
+                // pty master, child gone: Linux says -1/EIO where macOS/BSD say
+                // 0 — both ARE the orderly close (CPython bpo-26228; designs/
+                // pty/ D-P4). Without this arm the read-watch busy-spins
+                // forever on a dead pty.
+                if (bn < 0 && errno == EIO) bn = 0;
+            }
             if (bn == 0) { out = vnone(); return true; }         // orderly close -> None
             if (bn < 0) { out = vint(0); return true; }          // would-block -> 0
             out = vint((long long)bn); return true;
@@ -1644,8 +1651,13 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
             return true;
         }
         ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
-        if (n < 0 && errno == ENOTSOCK)
+        if (n < 0 && errno == ENOTSOCK) {
             n = ::read(fd, buf.data(), buf.size());
+            // pty master, child gone: Linux says -1/EIO where macOS/BSD say 0 — both
+            // ARE the orderly close (CPython bpo-26228; designs/pty/ D-P4). Without
+            // this arm the read-watch busy-spins forever on a dead pty.
+            if (n < 0 && errno == EIO) n = 0;
+        }
         if (n == 0) { out = vnone(); return true; }             // orderly close
         if (n < 0) { out = vstr(""); return true; }             // would-block
         buf.resize((size_t)n);
@@ -1958,6 +1970,93 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
         long long sig = args.size() > 1 ? args[1].i : SIGTERM;
         if (pid <= 0 || sig < 0) { out = vint(-1); return true; }
         out = vint(::kill((pid_t)pid, (int)sig) == 0 ? 0 : -1);
+        return true;
+    }
+
+    // --- G-LANG-2 terminal half: pty floor (designs/pty/) ---------------------
+    // sysPtySpawn(path, args, rows, cols, flags) -> [pid, masterFd] | [] on
+    // failure. ONE master fd, read+write (a pty fuses stdout/stderr). flags bit0
+    // = deterministic termios profile (D-P3). Child discipline is D-P2: ALL
+    // non-async-signal-safe work (openpt/grant/unlock/ptsname/open/tcsetattr/
+    // TIOCSWINSZ) happens here in the parent BEFORE fork; the child body is
+    // setsid/TIOCSCTTY/dup2/close/execve/_exit only.
+    if (name == "sysPtySpawn") {
+        const std::string& path = args.size() > 0 ? args[0].s : std::string();
+        long long rows = args.size() > 2 ? args[2].i : 0;
+        long long cols = args.size() > 3 ? args[3].i : 0;
+        long long flags = args.size() > 4 ? args[4].i : 0;
+        std::vector<Value> fail;
+        if (path.empty() || rows <= 0 || cols <= 0) { out = varr(std::move(fail)); return true; }
+        static bool sigpipeIgnored2 = false;   // disposition, not a handler (F7 note)
+        if (!sigpipeIgnored2) { ::signal(SIGPIPE, SIG_IGN); sigpipeIgnored2 = true; }
+
+        std::vector<std::string> argvStore;              // argv BEFORE fork (D7/D-P2)
+        argvStore.push_back(path);
+        if (args.size() > 1 && args[1].arr)
+            for (const Value& a : *args[1].arr) argvStore.push_back(a.s);
+        std::vector<char*> argv;
+        argv.reserve(argvStore.size() + 1);
+        for (std::string& s : argvStore) argv.push_back(s.data());
+        argv.push_back(nullptr);
+
+        int mfd = ::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);   // atomic cloexec (R§A.6)
+        if (mfd < 0) { out = varr(std::move(fail)); return true; }
+        char sname[64];
+        if (::grantpt(mfd) != 0 || ::unlockpt(mfd) != 0 ||
+            ::ptsname_r(mfd, sname, sizeof sname) != 0) {
+            ::close(mfd); out = varr(std::move(fail)); return true;
+        }
+        int sfd = ::open(sname, O_RDWR | O_NOCTTY);      // NOT cloexec: child keeps it past exec
+        if (sfd < 0) { ::close(mfd); out = varr(std::move(fail)); return true; }
+
+        // D-P3: stamp the frozen profile on the SLAVE, parent-side, pre-fork.
+        struct termios tio;
+        std::memset(&tio, 0, sizeof tio);
+        tio.c_iflag = ICRNL | IXON;
+        tio.c_oflag = OPOST | ONLCR;
+        tio.c_cflag = CS8 | CREAD;
+        tio.c_lflag = ISIG | ICANON | ECHOE | ECHOK | IEXTEN;
+        if ((flags & 1) == 0) tio.c_lflag |= ECHO | ECHOE | ECHOK;  // DEFAULT profile
+        else tio.c_lflag &= ~(tcflag_t)(ECHOE | ECHOK);             // DETERMINISTIC: echo family off
+        tio.c_cc[VMIN] = 1; tio.c_cc[VTIME] = 0;
+        // control chars: explicit seeds so the lanes never drift with libc
+        // defaults; VEOF=4 freezes the documented write("\x04") EOF protocol.
+        tio.c_cc[VEOF] = 4; tio.c_cc[VINTR] = 3; tio.c_cc[VSUSP] = 26;
+        tio.c_cc[VERASE] = 0x7f; tio.c_cc[VKILL] = 21; tio.c_cc[VQUIT] = 28;
+        ::cfsetispeed(&tio, B38400); ::cfsetospeed(&tio, B38400);
+        struct winsize ws; std::memset(&ws, 0, sizeof ws);
+        ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+        if (::tcsetattr(sfd, TCSANOW, &tio) != 0 || ::ioctl(sfd, TIOCSWINSZ, &ws) != 0) {
+            ::close(sfd); ::close(mfd); out = varr(std::move(fail)); return true;
+        }
+
+        pid_t pid = ::fork();
+        if (pid < 0) { ::close(sfd); ::close(mfd); out = varr(std::move(fail)); return true; }
+        if (pid == 0) {                                  // async-signal-safe ONLY (D-P2)
+            ::setsid();                                  // session leader FIRST (R pitfall #8)
+            ::ioctl(sfd, TIOCSCTTY, 0);                  // slave = controlling tty
+            ::dup2(sfd, 0); ::dup2(sfd, 1); ::dup2(sfd, 2);
+            if (sfd > 2) ::close(sfd);
+            ::execve(path.c_str(), argv.data(), environ);
+            ::_exit(127);
+        }
+        ::close(sfd);                    // parent keeps ONLY the master (R pitfall #7)
+        int fl = ::fcntl(mfd, F_GETFL, 0);
+        ::fcntl(mfd, F_SETFL, fl | O_NONBLOCK);          // rides the loop like every fd
+        std::vector<Value> r{vint(pid), vint(mfd)};
+        out = varr(std::move(r));
+        return true;
+    }
+    // sysPtyResize(masterFd, rows, cols) -> 0/-1. TIOCSWINSZ on the master; the
+    // KERNEL SIGWINCHes the child's foreground group — never signal by hand (R§A.4).
+    if (name == "sysPtyResize") {
+        int fd = (int)(args.size() > 0 ? args[0].i : -1);
+        long long rows = args.size() > 1 ? args[1].i : 0;
+        long long cols = args.size() > 2 ? args[2].i : 0;
+        if (fd < 0 || rows <= 0 || cols <= 0) { out = vint(-1); return true; }
+        struct winsize ws; std::memset(&ws, 0, sizeof ws);
+        ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+        out = vint(::ioctl(fd, TIOCSWINSZ, &ws) == 0 ? 0 : -1);
         return true;
     }
     return false;

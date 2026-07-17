@@ -1480,6 +1480,12 @@ namespace std {
     int sysPidfdOpen(int pid);                   // pollable fd, ready when pid exits
     int sysReap(int pid);                        // -1 running; else code (128+sig if signaled)
     int sysKill(int pid, int sig);               // 0/-1; pid <= 0 refused
+    // G-LANG-2 terminal half (designs/pty/): [pid, masterFd] | [] on failure.
+    // One fd, read+write — a pty fuses stdout/stderr. rows/cols <= 0 refused.
+    // flags bit0 = deterministic termios (goldens). Resize: kernel SIGWINCHes
+    // the child; 0/-1.
+    Array<int> sysPtySpawn(string path, Array<string> args, int rows, int cols, int flags);
+    int sysPtyResize(int masterFd, int rows, int cols);
 
     // A connected socket, wearing the stream surface. Reads are event-driven:
     // onData subscribes a read-watch that recvs and delivers chunks; None from
@@ -1875,6 +1881,79 @@ namespace std {
             stderrS.pumpAll();
             stdoutS.close();
             stderrS.close();
+            exitP.resolve(code);
+        }
+    }
+
+    // A child on a pseudo-terminal (designs/pty/ D-P1): ONE merged byte stream —
+    // there is no separate stderr on a pty. The master fd rides TcpStream (send
+    // queue-and-drain, read-watch delivery, D-P9); exit rides the pidfd-watch/
+    // poll-reap pair exactly like Process. EOF protocol: a pty has no closable
+    // write half — canonical mode's VEOF does it: write("\x04").
+    // Retirement (D-P5): reap success -> pumpAll -> close -> resolve; a master
+    // close alone (child side gone) fires onClose but never resolves exitCode.
+    class Pty {
+        int pid = 0 - 1;
+        int pidfd = 0 - 1;
+        int reapWatchId = 0 - 1;
+        int reapTimerId = 0 - 1;
+        bool reaping = false;
+        bool exited = false;
+        TcpStream io = TcpStream(0 - 1);
+        Promise<int> exitP = Promise();
+
+        new Pty(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 0);
+            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+        }
+        // The frozen deterministic termios profile (echo family off) — goldens.
+        new Deterministic(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 1);
+            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+        }
+        bool ok() => pid > 0;
+
+        void write(string s) { io.send(s); }
+        void onData((string) => void cb) { io.onData(cb); }
+        void onClose(() => void cb) { io.onClose(cb); }
+        int resize(int rows, int cols) {
+            if (io.rawFd() < 0) return 0 - 1;            // stale-fd guard (TcpStream discipline)
+            return std::sysPtyResize(io.rawFd(), rows, cols);
+        }
+        void kill() {
+            if (pid > 0 && !exited) { std::sysKill(pid, 15); }
+            // do NOT close io here: D-P5 — the dying child's last output is still
+            // in the line discipline; tryReap drains it.
+        }
+
+        Promise<int> exitCode() {
+            if (exited || reaping) return exitP;
+            if (pid <= 0) {                              // spawn failure: 127 (F7 convention)
+                exited = true;
+                exitP.resolve(127);
+                return exitP;
+            }
+            reaping = true;
+            pidfd = std::sysPidfdOpen(pid);
+            Pty self = this;
+            if (pidfd >= 0) {
+                reapWatchId = std::sysWatch(pidfd, (ready) => self.tryReap());
+            } else {
+                // pidfd unavailable (exotic kernel; Windows, doc 03): poll-reap.
+                reapTimerId = std::sysTimerStart(20, 20, (n) => self.tryReap());
+            }
+            return exitP;
+        }
+        void tryReap() {
+            if (exited) return;
+            int code = std::sysReap(pid);
+            if (code < 0) return;                        // spurious wake
+            exited = true;
+            if (reapWatchId >= 0) { std::sysUnwatch(reapWatchId); reapWatchId = 0 - 1; }
+            if (reapTimerId >= 0) { std::sysTimerCancel(reapTimerId); reapTimerId = 0 - 1; }
+            if (pidfd >= 0) { std::sysClose(pidfd); pidfd = 0 - 1; }
+            io.pumpAll();                                // drain BEFORE close (D-P5, pitfall #11)
+            io.close();
             exitP.resolve(code);
         }
     }

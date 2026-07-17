@@ -233,7 +233,8 @@ check "kill --ir"  "$K_EXPECT" "$("$bin" --ir  "$work/kill.lev" 2>&1)"
 
 cat > "$work/churn.lev" <<'EOF'
 // problem #4's acceptance: sequential spawn churn leaves the fd table
-// exactly where it started (pipes x3 + pidfd all closed on reap).
+// exactly where it started (pipes x3 + pidfd all closed on reap). Extended
+// with pty rounds (designs/pty/ doc 01 §5, K8): master + pidfd never leak.
 int fdCount() {
     Array<string>? es = std::sysListDir("/proc/self/fd");
     int n = 0 - 1;
@@ -242,9 +243,19 @@ int fdCount() {
 }
 int before = 0 - 1;
 int rounds = 0;
+void spinPty() {
+    if (rounds >= 16) {
+        console.writeln("churn: " + (fdCount() == before).toString());
+        return;
+    }
+    rounds = rounds + 1;
+    Pty p = Pty::Deterministic("/bin/echo", ["r" + rounds.toString()], 24, 80);
+    p.onData((s) => {});
+    p.exitCode().then((code) => spinPty());
+}
 void spin() {
     if (rounds >= 8) {
-        console.writeln("churn: " + (fdCount() == before).toString());
+        spinPty();
         return;
     }
     rounds = rounds + 1;
