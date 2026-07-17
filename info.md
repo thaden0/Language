@@ -824,8 +824,11 @@ A `struct` differs from a reference `class` on exactly the axes that make it a *
   struct field copies too; a reference-class field is shared). Two variables never observe each
   other's mutations. A `class` keeps reference identity.
 - **No identity.** A struct is its fields; there is no object to be `==` by reference. Equality
-  is **field-wise by default** (each field compared recursively — a struct field field-wise, a
-  reference-class field by identity), and a defined `(==)` overrides that. This is the same
+  is **field-wise by default via a synthesized `(==)` method** (each field compared recursively —
+  a struct field field-wise, a reference-class field by identity, a float field *canonically*),
+  and a hand-written `(==)` overrides that. The synthesis is real, visible source: `--expand`
+  prints the generated `bool (==)(T other) => ...`. A struct with a field that has no comparison
+  is a **compile error** at the comparison site — never a silent `false`. This is the same
   comparison a struct uses as a `Map` key (§keys). A `class` with no `(==)`, by contrast, is
   reference identity.
 - **`mutating` methods.** Because the receiver is a value, a method that writes `this` must be
