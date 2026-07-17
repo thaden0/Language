@@ -108,11 +108,67 @@ void collectMembersLG(Symbol* cls, std::vector<const Stmt*>& out) {
     for (const TypeRefPtr& b : cls->decl->bases) collectMembersLG(b->resolvedSymbol, out);
 }
 
+// Track W hard-03 (techdesign-02-backend-column.md §5): the wasm column's
+// declared "Lost" subset (techdesign-00-overview.md §3) — the ONE table the
+// CallNativeFn dispatch gates against. filesystem/dirs, raw TCP/UDP, TLS
+// (rides raw TCP), argv/env, tty/termios, signals, raw threads/channels,
+// blocking sync reads. NOT here (Kept row): console writes (sysWrite),
+// timers, fd watches/event loop (the floor retargets them, doc 03), time,
+// randomness, sysExit/sysSetExitCode, sysCpuCount, the sysTask* engine floor
+// (async is doc 04's, not gated). Process spawn and sysResolve never reach
+// this dispatch (no LLVM lowering exists — the generic "native floor
+// function" fail already rejects them).
+struct WasmGatedNative { const char* native; const char* wrapper; const char* why; };
+static const WasmGatedNative* wasmGatedNative(const std::string& n) {
+    static const WasmGatedNative kGated[] = {
+        {"sysOpen",         "File",      "no filesystem in a browser"},
+        {"sysStat",         "File",      "no filesystem in a browser"},
+        {"sysMkdir",        "File",      "no filesystem in a browser"},
+        {"sysRead",         "read",      "no blocking reads in a browser"},
+        {"sysReadLine",     "readLine",  "no blocking reads in a browser"},
+        {"sysTcpConnect",   "TcpClient", "no raw sockets in a browser"},
+        {"sysTcpConnectNb", "TcpClient", "no raw sockets in a browser"},
+        {"sysConnectResult","TcpClient", "no raw sockets in a browser"},
+        {"sysTcpListen",    "TcpListener", "no raw sockets in a browser"},
+        {"sysAccept",       "TcpListener", "no raw sockets in a browser"},
+        {"sysSend",         "TcpStream", "no raw sockets in a browser"},
+        {"sysRecv",         "TcpStream", "no raw sockets in a browser"},
+        {"sysSocketBuffer", "TcpStream", "no raw sockets in a browser"},
+        {"sysTlsConnect",   "Tls",       "no raw sockets in a browser"},
+        {"sysTlsAccept",    "Tls",       "no raw sockets in a browser"},
+        {"sysTlsHandshake", "Tls",       "no raw sockets in a browser"},
+        {"sysTlsError",     "Tls",       "no raw sockets in a browser"},
+        {"sysTlsAlpn",      "Tls",       "no raw sockets in a browser"},
+        {"sysTlsVersion",   "Tls",       "no raw sockets in a browser"},
+        {"sysRsaEncrypt",   "Rsa",       "no native crypto in a browser"},
+        {"sysArgs",         "args",      "no argv in a browser"},
+        {"sysEnv",          "env",       "no environment variables in a browser"},
+        {"sysTermRaw",      "Terminal",  "no tty in a browser"},
+        {"sysTermRestore",  "Terminal",  "no tty in a browser"},
+        {"sysTermIsRaw",    "Terminal",  "no tty in a browser"},
+        {"sysWinSize",      "Terminal",  "no tty in a browser"},
+        {"sysSignalOpen",   "signals",   "no OS signals in a browser"},
+        {"sysSignalNext",   "signals",   "no OS signals in a browser"},
+        {"sysSignalClose",  "signals",   "no OS signals in a browser"},
+        {"sysThreadTransfer","spawn",    "no shared-memory threads on wasm (v1)"},
+        {"sysThreadStart",  "spawn",     "no shared-memory threads on wasm (v1)"},
+        {"sysThreadResult", "spawn",     "no shared-memory threads on wasm (v1)"},
+        {"sysChannelNew",   "Channel",   "no shared-memory threads on wasm (v1)"},
+        {"sysChannelSend",  "Channel",   "no shared-memory threads on wasm (v1)"},
+        {"sysChannelReceive","Channel",  "no shared-memory threads on wasm (v1)"},
+        {"sysChannelClose", "Channel",   "no shared-memory threads on wasm (v1)"},
+    };
+    for (const WasmGatedNative& g : kGated)
+        if (n == g.native) return &g;
+    return nullptr;
+}
+
 struct Gen {
     const IrModule& mod;
     DiagnosticSink& sink;
     bool ok = true;
     bool targetWindows = false;   // Track 10 §7: reject sysThread*/sysChannel* here
+    bool targetWasm = false;      // Track W hard-03: the two-tier capability gate
 
     LLVMContext ctx;
     std::unique_ptr<Module> module;
@@ -126,6 +182,7 @@ struct Gen {
     StructType* classInfoTy = nullptr;           // the FULL LvClassInfo (lv_abi.h)
     std::vector<Function*> fns;                  // per IR function (or null)
     std::vector<bool> reachable;
+    std::vector<bool> userReach;                 // Track W hard-03 tier 1 (⊆ reachable)
     std::unordered_map<std::string, GlobalVariable*> strLiterals;
     std::unordered_map<Symbol*, int> clsIds;     // class symbol -> runtime classId (>=1)
     GlobalVariable* globalsArray = nullptr;      // [nglobals x LV] for Load/StoreGlobal
@@ -187,6 +244,8 @@ struct Gen {
         // LA-30 B2 (doc 06 §4): the sysTask* floor
         rtSysTaskRun, rtSysTaskCancel, rtSysTaskShield, rtSysTaskJoinAll, rtSysAwaitAny2,
         rtLoopHasWork, rtLoopStep, rtAwait, rtPeakBytes, rtLiveBytes, rtThreadStats, rtToString,
+        // Track W hard-03 (doc 02 §5 tier 2): the wasm capability-gate trap stub
+        rtUnsupported,
         // §9 A-M6 arena tier: the raw allocator + tier-blind helpers already in
         // lv_abi.h (§2.5/§2.6), reused (not extended) to build the two arena-
         // tier constructors below without touching the frozen ABI.
@@ -386,6 +445,9 @@ struct Gen {
         // LA-30 (doc 2 §2/§4): Op::Await is ONE runtime call — park (LANG_TASKS=1)
         // or pump (=0) lives inside lvrt_await, where it can switch stacks.
         rtAwait        = fn("lvrt_await", voidTy, {ptrTy, ptrTy});
+        // Track W hard-03 (doc 02 §5 tier 2): trap stub for gated natives in
+        // emitted-but-not-user-reachable prelude bodies. Never returns.
+        rtUnsupported  = fn("lvrt_unsupported", voidTy, {ptrTy});
         // LA-30 B2 (doc 06 §4): the sysTask* floor — ids across the boundary,
         // scalar results; joinAll/awaitAny2 park and may raise (throw check
         // rides CallNativeFn's blanket emitThrowCheck).
@@ -641,6 +703,55 @@ struct Gen {
             if (!seen) uniq.push_back(c);
         }
         callmClasses = uniq;
+
+        // Track W hard-03 tier 1: user-reachability — the SAME edges as the
+        // walk above, but rooted at @main only. @ginit (prelude + namespace
+        // global initializers) is deliberately NOT a root: a gated native
+        // reached only through prelude initialization is tier 2's runtime
+        // trap, never a compile-time brick (the whole prelude lowers into
+        // every module — Resolver.cpp's parsePrelude concatenation — so a
+        // blanket compile-time fail would brick every wasm build). The coll
+        // seeding is skipped: Array/Map/Range bodies hold no gated natives.
+        userReach.assign(mod.functions.size(), false);
+        {
+            std::vector<int> uwork;
+            std::vector<Symbol*> uinst;
+            auto umark = [&](int fi) {
+                if (fi >= 0 && fi < (int)mod.functions.size() && !userReach[fi]) {
+                    userReach[fi] = true;
+                    uwork.push_back(fi);
+                }
+            };
+            umark(mod.entry);
+            while (!uwork.empty()) {
+                int fi = uwork.back(); uwork.pop_back();
+                for (const Inst& in : mod.functions[fi].code) {
+                    if (in.op == Op::Call) umark(in.b);
+                    else if (in.op == Op::NewObject) {
+                        if (in.b >= 0) umark(in.b);
+                        if (in.sym) {
+                            bool seen = false;
+                            for (Symbol* c : uinst) if (c == in.sym) seen = true;
+                            if (!seen) {
+                                uinst.push_back(in.sym);
+                                std::vector<const Stmt*> mem;
+                                collectMembersLG(in.sym, mem);
+                                for (const Stmt* m : mem)
+                                    if (mod.byDecl.count(m)) umark(mod.byDecl.at(m));
+                            }
+                        }
+                    } else if (in.op == Op::CallDyn) {
+                        if (in.decl && mod.byDecl.count(in.decl))
+                            umark(mod.byDecl.at(in.decl));
+                        else {
+                            auto it = methodFns.find(in.sname);
+                            if (it != methodFns.end())
+                                for (auto& [fnIdx, cls] : it->second) umark(fnIdx);
+                        }
+                    } else if (in.op == Op::MakeClosure) umark(in.b);
+                }
+            }
+        }
     }
 
     bool run() {
@@ -2487,6 +2598,30 @@ struct Gen {
                         const std::string& n = in.sname;
                         auto arg = [&](int k) { return regs[in.c + k]; };
                         auto retainDst = [&] { b.CreateCall(rtRetain, {regs[in.a]}); };
+                        // Track W hard-03 (doc 02 §5): the two-tier wasm
+                        // capability gate, against the wasmGatedNative table
+                        // above. Tier 1: a gated native in a user-reachable
+                        // function (userReach, computeReachable) is a compile-
+                        // time diagnostic — the Windows precedents' shape
+                        // below. Tier 2: in a prelude body emitted only via
+                        // @ginit/instantiation over-approximation, it compiles
+                        // to the lvrt_unsupported trap (never returns; the
+                        // int-0 store keeps the IR well-formed, the sysExit
+                        // precedent). Non-wasm targets: byte-identical.
+                        if (targetWasm) {
+                            if (const WasmGatedNative* gw = wasmGatedNative(n)) {
+                                if (userReach[index]) {
+                                    fail(std::string("wasm-browser: '") + gw->wrapper +
+                                         "' is not available on this target (" +
+                                         gw->why + ")");
+                                } else {
+                                    b.CreateCall(rtUnsupported, {cstr(gw->wrapper)});
+                                    storeTP(b, regs[in.a], i64C(1), i64C(0));
+                                }
+                                emitThrowCheck((int)pc);
+                                break;
+                            }
+                        }
                         if (n == "sysWrite") {
                             if (in.d == 4)   // Track 03 M4: (fd, Block, off, len) -> int
                                 b.CreateCall(rtSysWriteBlock, {regs[in.a], arg(0), arg(1), arg(2), arg(3)});
@@ -3327,6 +3462,7 @@ bool LlvmGen::emitObject(const std::string& path, const std::string& tripleArg, 
     if (!tripleArg.empty()) {
         std::string t = Triple::normalize(tripleArg);
         g.targetWindows = Triple(t).isOSWindows();
+        g.targetWasm = Triple(t).isWasm();   // Track W hard-03: two-tier gate
     }
     if (!g.run()) return false;
 

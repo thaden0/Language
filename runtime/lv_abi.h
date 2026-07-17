@@ -739,6 +739,14 @@ void    lvrt_loop_step(void);
  * SENSITIVE-GATE (S2) section awaiting model escalation; not yet defined. */
 void    lvrt_await(LvValue* dst, const LvValue* promise);
 
+/* Track W hard-03 (doc 02 §5, tier 2): the wasm capability-gate trap stub.
+ * Prints "<what>: not on the wasm-browser target" to fd 2 and exits 134.
+ * Present on every target (one archive source); only wasm codegen emits
+ * calls to it — for gated natives in prelude bodies that are emitted but
+ * not reachable from user code (reachable ones are a compile-time
+ * diagnostic instead). Never returns. */
+void    lvrt_unsupported(const char* what);
+
 /* LA-30 B2 (doc 06 §4) — the sysTask* floor (lv_loop.c). Ids, not handles,
  * cross this boundary; every result is a scalar int. run/joinAll/awaitAny2
  * raise under LANG_PUMP=1 (B2 requires the scheduler); joinAll and awaitAny2

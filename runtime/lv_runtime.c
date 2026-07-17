@@ -3062,6 +3062,19 @@ void lvrt_await(LvValue* dst, const LvValue* p) {
                                         the +0B churn corpus is the proof */
 }
 
+/* Track W hard-03 (designs/wasm-frontend/hard-03-capability-gate.md, tier 2):
+ * the wasm capability-gate trap. A gated native inside a prelude body that is
+ * emitted anyway (the whole prelude lowers into every module) but is NOT
+ * reachable from user code compiles to a call here instead of the native.
+ * Built for ALL targets so the archive stays one source — a no-op until
+ * called, and only wasm codegen ever emits the call. Never returns. */
+void lvrt_unsupported(const char* what) {
+    static const char kSuffix[] = ": not on the wasm-browser target\n";
+    lv_plat_write(2, what, (int64_t)strlen(what));
+    lv_plat_write(2, kSuffix, (int64_t)sizeof kSuffix - 1);
+    lv_plat_exit(134);
+}
+
 void lvrt_uncaught(void) {
     if (!lv_g_throwing) return;
     /* gap (b) (designs/exit-codes.md §5): an uncaught exception exits 1 — a
