@@ -309,6 +309,20 @@ int main() {
     // Top-level (un-namespaced) user globals stay legitimately reassignable.
     CLEAN("string t = \"a\"; void f() { t = \"b\"; }");
 
+    // --- OQ2 (deferal-const-system-extensions.md §3): sectional `const:` ---
+    // A `const:` section makes each following member const — reassigning one is
+    // the same write-window error a per-member `const` produces.
+    ERRORS("class C { const: int p = 1; new C() {} void f() { p = 2; } }");
+    // The section is sticky across a later access label (orthogonal axes): a
+    // plain member under `public:` that follows `const:` is still const.
+    ERRORS("class C { const: int a = 1; public: int b = 2; new C() {} void f() { b = 3; } }");
+    // A per-member `var` overrides the section, restoring mutability.
+    CLEAN("class C { const: int p = 1; var int hits = 0; new C() {} void f() { hits = hits + 1; } }");
+    // `var` outside any const section is just an explicit-mutable field (no-op).
+    CLEAN("class C { var int hits = 0; new C() {} void f() { hits = 5; } }");
+    // A per-member `const` inside a normal (non-const) class still freezes it.
+    ERRORS("class C { const int p = 1; new C() {} void f() { p = 2; } }");
+
     // --- Bug 8: `uses` is lexically scoped (block-level works, and is confined) ---
     // A block-level `uses` imports for exactly that block (was silently inert).
     CLEAN("namespace M { int helper(int x) => x + 100; } "

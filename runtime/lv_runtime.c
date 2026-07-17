@@ -1324,7 +1324,13 @@ void lvrt_opm(LvValue* out, int64_t opcode, const LvValue* l, const LvValue* r) 
             return;
         }
         if (opcode == LV_OP_EQ || opcode == LV_OP_NE) {
-            int same = r->tag == LV_OBJ && l->payload == r->payload;
+            /* bug #77: a struct with no explicit (==) is field-wise by default
+             * (info.md §9 "a struct IS its fields"); a class with no (==)
+             * compares by reference identity. lvrt_keyeq already does the
+             * field-wise recursion for Map keys — reuse it so the two agree. */
+            int same = lvrt_isvalueclass(classId)
+                         ? lvrt_keyeq(l, r)
+                         : (r->tag == LV_OBJ && l->payload == r->payload);
             out->tag = LV_BOOL;
             out->payload = opcode == LV_OP_EQ ? same : !same;
             return;

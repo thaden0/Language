@@ -83,8 +83,8 @@ private:
     StmtPtr parseNamespace();
     StmtPtr parseClass(Access access, bool isInterface, bool isValue = false);
     StmtPtr parseEnum(Access access);              // `enum Name : carrier { M, M = v }` (Track 03 §2)
-    StmtPtr parseClassMember(Access sectionAccess);
-    StmtPtr parseClassMemberInner(Access sectionAccess);
+    StmtPtr parseClassMember(Access sectionAccess, bool sectionConst = false);
+    StmtPtr parseClassMemberInner(Access sectionAccess, bool sectionConst = false);
     StmtPtr parseBind();
     void parsePath(std::vector<std::string_view>& out);   // '::'-separated identifiers
     StmtPtr parseUses();

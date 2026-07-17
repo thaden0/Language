@@ -95,6 +95,7 @@ add_executable(trident
   tools/trident/vcs.cpp
   tools/trident/fetch.cpp
   tools/trident/lock.cpp
+  tools/trident/checksum.cpp
   tools/trident/commands.cpp)
 target_link_libraries(trident PRIVATE levsyntax)
 
@@ -162,6 +163,15 @@ add_executable(locktests tests/test_trident_lock.cpp
   tools/trident/semver.cpp
   tools/trident/lock.cpp)
 add_test(NAME locktests COMMAND locktests)
+
+# P2.2 (techdesign-package-manager.md §6, GT4): the checksum DB — record/
+# verify round-trip, tamper detection (edited entry, edited chain link,
+# truncated log), first-fetch baseline recording.
+add_executable(checksumtests tests/test_trident_checksum.cpp
+  tools/trident/hash.cpp
+  tools/trident/semver.cpp
+  tools/trident/checksum.cpp)
+add_test(NAME checksumtests COMMAND checksumtests)
 
 # Conformance: lexer, parser, and resolver must accept the whole demo, no errors.
 # (Full type-check is not asserted here: the demo is a loose "tour" with known
@@ -662,7 +672,7 @@ add_test(NAME corpus_covariant_return_cpp
 # semantics — see that script's header. This track owns
 # tests/corpus/composition/**, tests/run_red_corpus.sh, and this delimited
 # block; it does not touch src/, packages/, or any other track's corpus.
-set(LANG_COMPOSITION_CLUSTERS fnvalues aggregates names generics)
+set(LANG_COMPOSITION_CLUSTERS fnvalues aggregates names generics equality)
 list(JOIN LANG_COMPOSITION_CLUSTERS " " LANG_COMPOSITION_CLUSTERS_SP)
 add_test(NAME composition_treewalk
          COMMAND bash -c "for d in ${LANG_COMPOSITION_CLUSTERS_SP}; do bash '${CMAKE_SOURCE_DIR}/tests/run_corpus.sh' '$<TARGET_FILE:leviathan>' --run '${CMAKE_SOURCE_DIR}/tests/corpus/composition/'$d/green || exit 1; done")
@@ -803,6 +813,15 @@ add_test(NAME trident_manifest_errors
 # own header for the git url.insteadOf redirect this relies on.
 add_test(NAME trident_vcs_app
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_trident_vcs_app.sh"
+                 $<TARGET_FILE:leviathan> $<TARGET_FILE:trident>
+                 "${CMAKE_SOURCE_DIR}/tests/trident/vcs_app"
+                 "${CMAKE_SOURCE_DIR}/tests/trident/store/fixture_json.git")
+# P2.2 (techdesign-package-manager.md §6, GT4): `trident audit` (clean pass +
+# tamper detection) and `trident vendor` + `--vendor` (a genuinely
+# network-free build, git shadowed out) — see tests/run_trident_vendor.sh's
+# own header. Reuses the vcs_app fixture (same offline VCS dep).
+add_test(NAME trident_vendor
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_trident_vendor.sh"
                  $<TARGET_FILE:leviathan> $<TARGET_FILE:trident>
                  "${CMAKE_SOURCE_DIR}/tests/trident/vcs_app"
                  "${CMAKE_SOURCE_DIR}/tests/trident/store/fixture_json.git")

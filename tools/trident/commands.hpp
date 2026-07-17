@@ -42,3 +42,20 @@ int cmdFetch(const std::string& manifestArg);
 // `path` and which module(s) required it (root, and/or another selected
 // module's own `requires`).
 int cmdWhy(const std::string& manifestArg, const std::string& path);
+
+// `trident audit [manifest-or-dir]` (techdesign-package-manager.md §6 P2.2,
+// GT4). Requires an existing trident.lock (loud error naming `trident lock`
+// otherwise — nothing to audit against). Re-resolves against that lock,
+// which re-verifies every module's freshly fetched content against both the
+// checksum DB and the lock's own pinned hash (resolveVcsDeps, resolve.cpp) —
+// a mismatch is reported as a failed audit (exit 1) naming the module and
+// both hashes; a clean run prints one "OK" line per module and exits 0.
+int cmdAudit(const std::string& manifestArg);
+
+// `trident vendor [manifest-or-dir]` (techdesign-package-manager.md §6 P2.2,
+// GT4). Requires an existing, consistent trident.lock. Resolves it (a normal,
+// possibly-networked fetch into $TRIDENT_HOME/store, verified exactly like
+// any other resolution) and copies each selected module's store directory
+// into `<manifest-dir>/vendor/<path>[@vN]/` — the layout `--vendor`
+// (VendorProvider, resolve.cpp) reads back with zero network access.
+int cmdVendor(const std::string& manifestArg);

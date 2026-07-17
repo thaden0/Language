@@ -7,7 +7,6 @@
 uses Sonar;
 
 class FileManager {
-    App app;
     ListView files;
     Text preview;
     ContentBar status;
@@ -15,7 +14,6 @@ class FileManager {
     Array<string> bodies = ["# Project readme", "void main() { }", "name = \"demo\"", "todo: ship it"];
 
     new FileManager(App a) {
-        app = a;
         files = ListView();
         files.items(names);
         files.onSelect((i) => this.showFile(i));
@@ -43,20 +41,10 @@ class FileManager {
         showFile(0);
     }
 
-    // Fixed-width fields so each in-place update fully overwrites the previous
-    // (longer) content. This dodges sonar-bugs.md #4 (a leaf repaint under the
-    // default/empty theme does not clear stale glyphs when its content shrinks)
-    // and matches how real status/field UIs are laid out anyway.
     void showFile(int idx) {
         if (idx < 0 || idx >= names.length()) return;
-        preview.text(padRight(bodies[idx], 18));
-        status.setLeft("file: " + padRight(names[idx], 12));
-    }
-
-    string padRight(string s, int n) {
-        string r = s;
-        while (r.length() < n) r = r + " ";
-        return r;
+        preview.text(bodies[idx]);
+        status.setLeft("file: " + names[idx]);
     }
 }
 

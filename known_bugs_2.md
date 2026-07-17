@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | — |
 | P1       | — |
-| P2       | #77 |
+| P2       | — |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
 once the composition corpus lands, a red-lane repro under `tests/corpus/composition/`
@@ -95,54 +95,4 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
-
----
-
-## #77 [P2] A `struct` with no explicit `(==)` compares unequal to a field-identical instance — bare `==` is not field-wise by default
-
-**Priority justification:** semantics-ruling cap (override 2) — `info.md`
-§9's own wording ("No identity. A struct is its fields... Equality is
-field-wise / by a defined `(==)`.") is genuinely ambiguous between "field-wise
-by default, definable `(==)` overrides it" and "field-wise IS what a defined
-`(==)` gives you — nothing is automatic." Behavior is **consistent** across
-oracle and IR (not an engine divergence, so no P0/P1 marker applies on its
-own), so this caps at P2 pending an owner reading of which the sentence
-means.
-
-**Symptom.**
-
-```lev
-struct Point { int x; int y; new Point(int px, int py) { x = px; y = py; } }
-void main() {
-    Point a = Point(1, 2);
-    Point b = Point(1, 2);
-    console.writeln(a == b);   // false on BOTH oracle and IR
-}
-main();
-```
-
-Two `Point` instances with identical field values compare `false`. Adding
-an explicit `bool (==)(Point other) => x == other.x && y == other.y;`
-method makes the same comparison correctly report `true` — so struct
-equality works fully once defined, it just isn't field-wise **by default**.
-
-**Root cause (pointer).** Not traced — plausibly intentional (structs may
-simply not synthesize a default `(==)`, the same way C#/Rust require
-`#[derive(PartialEq)]`/explicit `Equals` opt-in), in which case this is a
-documentation clarification, not a code fix. Flagged here rather than
-assumed either way, per the semantics-ruling cap.
-
-**Workaround (verified, adopted by `harpoon/src/assert.lev`'s
-`assertEqual<T>`).** The generic duck-typed overload is kept (it works
-correctly for classes — reference identity — and enums — carrier compare,
-both confirmed on all engines), but a struct passed to it without its own
-`(==)` will almost always report "not equal" even when the caller expects
-equal. Documented in `assert.lev`: give the struct an explicit `(==)`, or
-compare with `assertTrue(a == b, msg)` once that operator exists, or field
--by-field with the scalar ladder — never rely on bare `assertEqual(struct,
-struct)` for a struct that hasn't defined `(==)`.
-
-**Found:** M1 self-test for `designs/techdesign-unit-test-library.md`
-(`harpoon/tests/main.lev`), 2026-07-15 — `assertEqual(Point(1,2),
-Point(1,2))` failed unexpectedly, tracing back to this.
 

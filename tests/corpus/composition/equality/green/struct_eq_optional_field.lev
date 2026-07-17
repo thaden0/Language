@@ -1,0 +1,11 @@
+// M1 pin (design §5.2): an int? field compares None==None true, None vs a
+// present value false, and two present values by their carried value.
+struct Cell { int? v; new Cell(int? vv) { v = vv; } }
+void main() {
+    console.writeln(Cell(None) == Cell(None));   // true
+    console.writeln(Cell(None) == Cell(5));      // false
+    console.writeln(Cell(5) == Cell(None));      // false
+    console.writeln(Cell(5) == Cell(5));         // true
+    console.writeln(Cell(5) != Cell(6));         // true
+}
+main();

@@ -1,4 +1,5 @@
 #include "commands.hpp"
+#include "checksum.hpp"
 #include "discover.hpp"
 #include "fetch.hpp"
 #include "lock.hpp"
@@ -6,9 +7,12 @@
 #include "resolve.hpp"
 #include "semver.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 
 namespace {
 
@@ -76,6 +80,48 @@ bool highestVersion(const std::string& path, int major, Version& out, std::strin
     for (const Version& v : versions)
         if (compareSemVer(v, out) > 0) out = v;
     return true;
+}
+
+bool ensureDir(const std::string& dir) {
+    struct stat st;
+    if (::stat(dir.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
+    size_t slash = dir.find_last_of('/');
+    if (slash != std::string::npos && !ensureDir(dir.substr(0, slash))) return false;
+    return ::mkdir(dir.c_str(), 0755) == 0 || errno == EEXIST;
+}
+
+bool copyFile(const std::string& src, const std::string& dst, std::string& err) {
+    std::ifstream in(src, std::ios::binary);
+    if (!in) { err = "cannot read '" + src + "'"; return false; }
+    size_t slash = dst.find_last_of('/');
+    if (slash != std::string::npos && !ensureDir(dst.substr(0, slash))) {
+        err = "cannot create directory for '" + dst + "'";
+        return false;
+    }
+    std::ofstream out(dst, std::ios::binary);
+    if (!out) { err = "cannot write '" + dst + "'"; return false; }
+    out << in.rdbuf();
+    return out.good();
+}
+
+// Recursive directory copy for `trident vendor` — the store dir it reads
+// from (store.cpp's `materializeToStore`) holds exactly a module's declared
+// sources, so this needs no filtering.
+bool copyTree(const std::string& srcDir, const std::string& dstDir, std::string& err) {
+    DIR* d = ::opendir(srcDir.c_str());
+    if (!d) { err = "cannot open '" + srcDir + "'"; return false; }
+    dirent* ent;
+    bool ok = true;
+    while (ok && (ent = ::readdir(d)) != nullptr) {
+        std::string name = ent->d_name;
+        if (name == "." || name == "..") continue;
+        std::string sp = srcDir + "/" + name, dp = dstDir + "/" + name;
+        struct stat st;
+        if (::stat(sp.c_str(), &st) != 0) { err = "cannot stat '" + sp + "'"; ok = false; break; }
+        ok = S_ISDIR(st.st_mode) ? copyTree(sp, dp, err) : copyFile(sp, dp, err);
+    }
+    ::closedir(d);
+    return ok;
 }
 
 }  // namespace
@@ -297,5 +343,76 @@ int cmdWhy(const std::string& manifestArg, const std::string& path) {
     if (!any)
         std::printf("  (not directly required by name — pulled in transitively; "
                     "see the other selected modules' own requires)\n");
+    return 0;
+}
+
+int cmdAudit(const std::string& manifestArg) {
+    std::string manifestPath, err;
+    ProjectManifest pm;
+    if (!loadManifestForCommand(manifestArg, manifestPath, pm, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+
+    std::string lockPath = lockfilePathFor(manifestPath);
+    std::string lockText;
+    if (!readWholeFile(lockPath, lockText)) {
+        std::fprintf(stderr, "error: no lock found at '%s' — run `trident lock` first\n",
+                    lockPath.c_str());
+        return 1;
+    }
+
+    // Re-resolving with the lock path re-verifies every module's freshly
+    // fetched content against BOTH the checksum DB and the lock's own
+    // pinned hash (resolve.cpp's resolveVcsDeps, P2.2 GT4) — a mismatch
+    // comes back as a loud vr.err naming the module and both hashes.
+    VcsResolution vr = resolveVcsDeps(pm, /*includeDevDeps=*/true, lockPath);
+    if (!vr.ok) {
+        std::fprintf(stderr, "audit FAILED: %s\n", vr.err.c_str());
+        return 1;
+    }
+
+    for (const BuildListEntry& e : vr.buildList) {
+        std::printf("OK   %s@%s  sha256:%s\n", e.mod.path.c_str(),
+                    formatSemVer(e.selected).c_str(), e.contentHash.c_str());
+    }
+    std::printf("audit passed: %zu module(s) verified\n", vr.buildList.size());
+    return 0;
+}
+
+int cmdVendor(const std::string& manifestArg) {
+    std::string manifestPath, err;
+    ProjectManifest pm;
+    if (!loadManifestForCommand(manifestArg, manifestPath, pm, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+
+    std::string lockPath = lockfilePathFor(manifestPath);
+    std::string lockText;
+    if (!readWholeFile(lockPath, lockText)) {
+        std::fprintf(stderr, "error: no lock found at '%s' — run `trident lock` first\n",
+                    lockPath.c_str());
+        return 1;
+    }
+
+    // A normal (possibly-networked) resolution, verified exactly like any
+    // other (checksum DB + lock-hash cross-check) — vendoring never trusts
+    // content it hasn't already verified once.
+    VcsResolution vr = resolveVcsDeps(pm, /*includeDevDeps=*/true, lockPath);
+    if (!vr.ok) {
+        std::fprintf(stderr, "error: %s\n", vr.err.c_str());
+        return 1;
+    }
+
+    std::string vendorDir = dirOf(manifestPath) + "vendor";
+    for (const BuildListEntry& e : vr.buildList) {
+        std::string dest = vendorDir + "/" + serializeModuleId(e.mod);
+        if (!copyTree(e.storeDir, dest, err)) {
+            std::fprintf(stderr, "error: vendoring %s: %s\n", e.mod.path.c_str(), err.c_str());
+            return 1;
+        }
+    }
+    std::printf("vendored %zu module(s) into %s\n", vr.buildList.size(), vendorDir.c_str());
     return 0;
 }

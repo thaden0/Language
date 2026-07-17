@@ -1,0 +1,19 @@
+// Regression floor for known_bugs_1.md #78 (FIXED 2026-07-15): a bulk
+// `uses NS;` import's function used to silently win over a same-named
+// top-level function declared in THIS file (no diagnostic). The file's own
+// declaration is the stronger claim (info.md §1) and must win ties, while
+// still merging as an overload set for other arities. Fix: functionOverloads
+// collects the file's own (global-scope) candidates ahead of file-overlay
+// imports, so pickOverload's first-declared tie-break favors the local one.
+namespace NS {
+    void greet() { console.writeln("from NS"); }
+    void greet(int n) { console.writeln("from NS int ${n}"); }
+}
+uses NS;
+void greet() { console.writeln("from local"); }
+void main() {
+    greet();          // local wins the tie
+    greet(7);         // no local overload: imported one still applies
+    NS::greet();      // qualified still reaches the import
+}
+main();

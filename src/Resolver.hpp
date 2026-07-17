@@ -57,6 +57,14 @@ private:
     // before gather so the synthesized decls resolve/check like hand-written code.
     void desugarEnums(Program& program);
 
+    // Struct-equality §5.5 (packet 02): for every user value struct with no
+    // explicit `(==)`, either splice a derived field-wise `(==)` member into
+    // its body (all fields comparable per the §5.2 ladder) or record why not
+    // on Program::structEqSynths for the checker's use-site gate (packet 03).
+    // Runs after type resolution (classification reads resolvedSymbol) and
+    // before shapes (the spliced member becomes an ordinary "==" slot).
+    void synthesizeStructEquality(Program& program);
+
     // imports (`uses` / `use`) — lexically scoped (bug.md #8, imports.md).
     void processImports(std::vector<StmtPtr>& items, Scope* scope);  // top-level + namespace bodies
     void importOne(Stmt* usesStmt, Scope* into);   // resolve one `uses` into `into`

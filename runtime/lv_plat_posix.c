@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -307,22 +308,46 @@ void lv_plat_set_nonblock(int fd) {
 
 /* IPv6 when the bare literal contains ':' (Track 08 F5.5 — mirrors
  * RuntimeNatives.cpp's fillSockAddr; brackets stay in URL code). */
-static int lv_fill_sockaddr(const char* ip, int port,
+static int lv_fill_sockaddr(const char* host, int port,
                             struct sockaddr_storage* ss, socklen_t* len) {
-    if (strchr(ip, ':')) {
+    /* Numeric-literal fast path (no resolver call): IPv6 when it contains ':'. */
+    if (strchr(host, ':')) {
         struct sockaddr_in6* a6 = (struct sockaddr_in6*)ss;
         a6->sin6_family = AF_INET6;
         a6->sin6_port = htons((uint16_t)port);
-        if (inet_pton(AF_INET6, ip, &a6->sin6_addr) != 1) return 0;
-        *len = sizeof *a6;
-        return 1;
+        if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) { *len = sizeof *a6; return 1; }
+    } else {
+        struct sockaddr_in* a4 = (struct sockaddr_in*)ss;
+        a4->sin_family = AF_INET;
+        a4->sin_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET, host, &a4->sin_addr) == 1) { *len = sizeof *a4; return 1; }
     }
-    struct sockaddr_in* a4 = (struct sockaddr_in*)ss;
-    a4->sin_family = AF_INET;
-    a4->sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, ip, &a4->sin_addr) != 1) return 0;
-    *len = sizeof *a4;
-    return 1;
+    /* Not a numeric literal — resolve the hostname (bug.md #72). The connect
+     * floor previously accepted ONLY numeric IPs, so an HTTP(S) request to a
+     * bare host like "www.google.com" failed with -1 even though the resolver
+     * was available. Mirrors RuntimeNatives.cpp's fillSockAddr so the native
+     * binary resolves identically to the interpreters. */
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0) return 0;
+    int ok = 0;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_addr && (size_t)ai->ai_addrlen <= sizeof *ss) {
+            memcpy(ss, ai->ai_addr, ai->ai_addrlen);
+            *len = (socklen_t)ai->ai_addrlen;
+            if (ai->ai_family == AF_INET)
+                ((struct sockaddr_in*)ss)->sin_port = htons((uint16_t)port);
+            else if (ai->ai_family == AF_INET6)
+                ((struct sockaddr_in6*)ss)->sin6_port = htons((uint16_t)port);
+            ok = 1;
+            break;
+        }
+    }
+    freeaddrinfo(res);
+    return ok;
 }
 
 int lv_plat_tcp_connect(const char* ip, int port) {

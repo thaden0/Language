@@ -1,0 +1,26 @@
+// OQ2 (deferal-const-system-extensions.md §3): sectional `const:`.
+// A `const:` label declares a run of members const, mirroring `public:`/`private:`.
+// The const axis and the access axis are orthogonal sticky flags: `public:` does
+// not clear `const:`, a per-member `var` overrides the section. This is pure
+// parser sugar — the lowered output is identical to writing `const` per member.
+class Config {
+  const:
+    string host = "localhost";
+    int    port = 8080;
+  public:                 // sets access; the const section is still in effect
+    string name = "svc";  // ...so this is const too
+    var int hits = 0;     // ...unless the member opts out with `var`
+  new Config() {}
+  void hit() { hits = hits + 1; }
+}
+
+void main() {
+  Config c = Config();
+  c.hit();
+  c.hit();
+  console.writeln(c.host);
+  console.writeln(c.port.toString());
+  console.writeln(c.name);
+  console.writeln(c.hits.toString());
+}
+main();

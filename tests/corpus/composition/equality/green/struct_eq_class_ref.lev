@@ -1,0 +1,12 @@
+// M1 pin (design §5.2): a struct field that holds a class reference compares
+// by reference identity, not field content — same ref -> true, distinct but
+// field-identical refs -> false.
+class Box { int v; new Box(int vv) { v = vv; } }
+struct Holder { Box b; int tag; new Holder(Box bb, int tt) { b = bb; tag = tt; } }
+void main() {
+    Box shared = Box(5);
+    console.writeln(Holder(shared, 1) == Holder(shared, 1));   // true (same ref)
+    console.writeln(Holder(Box(5), 1) == Holder(Box(5), 1));   // false (distinct refs, field-identical)
+    console.writeln(Holder(shared, 1) != Holder(shared, 2));   // true (tag differs)
+}
+main();

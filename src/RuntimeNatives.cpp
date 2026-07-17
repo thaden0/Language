@@ -210,20 +210,49 @@ bool strictParseFloat(const std::string& s, double& out) {
 // [::1]:port stay in URL code). Returns false on an unparseable literal.
 bool fillSockAddr(const std::string& host, long long port,
                   sockaddr_storage& ss, socklen_t& len) {
+    // Numeric-literal fast path (no resolver call): IPv6 when it contains ':'.
     if (host.find(':') != std::string::npos) {
         auto* a6 = (sockaddr_in6*)&ss;
         a6->sin6_family = AF_INET6;
         a6->sin6_port = htons((uint16_t)port);
-        if (::inet_pton(AF_INET6, host.c_str(), &a6->sin6_addr) != 1) return false;
-        len = sizeof(sockaddr_in6);
-        return true;
+        if (::inet_pton(AF_INET6, host.c_str(), &a6->sin6_addr) == 1) {
+            len = sizeof(sockaddr_in6);
+            return true;
+        }
+    } else {
+        auto* a4 = (sockaddr_in*)&ss;
+        a4->sin_family = AF_INET;
+        a4->sin_port = htons((uint16_t)port);
+        if (::inet_pton(AF_INET, host.c_str(), &a4->sin_addr) == 1) {
+            len = sizeof(sockaddr_in);
+            return true;
+        }
     }
-    auto* a4 = (sockaddr_in*)&ss;
-    a4->sin_family = AF_INET;
-    a4->sin_port = htons((uint16_t)port);
-    if (::inet_pton(AF_INET, host.c_str(), &a4->sin_addr) != 1) return false;
-    len = sizeof(sockaddr_in);
-    return true;
+    // Not a numeric literal — resolve the hostname (bug.md #72). The connect
+    // floor previously accepted ONLY numeric IPs, so an HTTP(S) request to a
+    // bare host like "www.google.com" failed with -1 even though the resolver
+    // (getaddrinfo, already used by sysResolve) was available. Resolve here so
+    // every caller — and every engine — connects to hostnames identically.
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (::getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0) return false;
+    bool ok = false;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_addr && (size_t)ai->ai_addrlen <= sizeof ss) {
+            std::memcpy(&ss, ai->ai_addr, ai->ai_addrlen);
+            len = (socklen_t)ai->ai_addrlen;
+            if (ai->ai_family == AF_INET)
+                ((sockaddr_in*)&ss)->sin_port = htons((uint16_t)port);
+            else if (ai->ai_family == AF_INET6)
+                ((sockaddr_in6*)&ss)->sin6_port = htons((uint16_t)port);
+            ok = true;
+            break;
+        }
+    }
+    ::freeaddrinfo(res);
+    return ok;
 }
 }  // namespace
 

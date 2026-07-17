@@ -1082,9 +1082,9 @@ StmtPtr Parser::parseStatement() {
 // ---------------------------------------------------------------------------
 
 // Attribute wrapper for members: `@Column public int id;` etc.
-StmtPtr Parser::parseClassMember(Access sectionAccess) {
+StmtPtr Parser::parseClassMember(Access sectionAccess, bool sectionConst) {
     std::vector<AttrUse> attrs = parseAttrUses();
-    StmtPtr m = parseClassMemberInner(sectionAccess);
+    StmtPtr m = parseClassMemberInner(sectionAccess, sectionConst);
     if (!attrs.empty()) {
         if (m && m->kind == StmtKind::Member) m->attrs = std::move(attrs);
         else sink_.error(attrs.front().span,
@@ -1093,17 +1093,23 @@ StmtPtr Parser::parseClassMember(Access sectionAccess) {
     return m;
 }
 
-StmtPtr Parser::parseClassMemberInner(Access sectionAccess) {
+StmtPtr Parser::parseClassMemberInner(Access sectionAccess, bool sectionConst) {
     Access acc = sectionAccess;
     if (accept(TokenKind::KwPublic)) acc = Access::Public;
     else if (accept(TokenKind::KwPrivate)) acc = Access::Private;
 
-    bool mut = false, dist = false, isConst = false, isReadonly = false, isWeak = false;
+    // A `const:` section (OQ2, deferal-const-system-extensions.md §3.2) seeds
+    // `isConst` for members that follow it — the same `isConst` bit a per-member
+    // `const` sets ([Ast.hpp] isConst). The const section and the access section
+    // are orthogonal sticky axes; a per-member modifier overrides its section
+    // (problem #5): `const` forces const on, `var` forces it off.
+    bool mut = false, dist = false, isConst = sectionConst, isReadonly = false, isWeak = false;
     // Slot modifiers are orthogonal and may be written in any order.
     for (;;) {
         if (accept(TokenKind::KwMutating)) { mut = true; continue; }
         if (accept(TokenKind::KwDistinct)) { dist = true; continue; }
         if (accept(TokenKind::KwConst)) { isConst = true; continue; }
+        if (accept(TokenKind::KwVar)) { isConst = false; continue; }   // per-member override of a `const:` section
         if (accept(TokenKind::KwReadonly)) { isReadonly = true; continue; }
         if (accept(TokenKind::KwWeak)) { isWeak = true; continue; }
         break;
@@ -1208,15 +1214,21 @@ StmtPtr Parser::parseClass(Access access, bool isInterface, bool isValue) {
 
     expect(TokenKind::LBrace, "'{'");
     Access section = Access::Default;
+    bool constSection = false;                    // OQ2: orthogonal `const:` section axis
     while (!at(TokenKind::RBrace) && !atEnd()) {
         if ((at(TokenKind::KwPublic) || at(TokenKind::KwPrivate)) &&
             peek(1).kind == TokenKind::Colon) {
             section = at(TokenKind::KwPublic) ? Access::Public : Access::Private;
+            advance(); advance();                 // access label leaves the const section untouched (orthogonal axes)
+            continue;
+        }
+        if (at(TokenKind::KwConst) && peek(1).kind == TokenKind::Colon) {
+            constSection = true;                  // `const:` — sticky until class end; leaves access untouched
             advance(); advance();
             continue;
         }
         size_t before = pos_;
-        StmtPtr m = parseClassMember(section);
+        StmtPtr m = parseClassMember(section, constSection);
         if (m) c->body.push_back(std::move(m));
         if (pos_ == before) { error("member"); advance(); synchronize(); }
     }

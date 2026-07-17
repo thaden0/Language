@@ -27,18 +27,21 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
 
+## Aggregates & narrowing (cluster B)
+
+| construct that breaks | bug | sanctioned workaround | debt sites |
+|---|---|---|---|
+
 ## Multi-mixin composition & Surface painting (cluster E, Sonar T05)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
-| A leaf's in-place content update to a SHORTER string leaves stale glyphs under the default/empty theme (repaint doesn't clear the box; `paintBackground` fills only for a themed non-default bg) | sonar-bugs.md #4 | pad mutable fields to a fixed width so each repaint fully overwrites | `sonar/examples/file-manager` (`showFile` pad) |
 
 ## Names, generics, overloads (clusters C & D)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
-| A `struct` with no explicit `(==)` compares unequal to a field-identical instance (not field-wise by default) | #77 | define an explicit `(==)` on the struct, or compare field-by-field | `harpoon/src/assert.lev`'s `assertEqual<T>` doc comment |
-| A bulk `uses NS;` import's function silently wins over a same-named top-level function declared in the importing file itself (no ambiguity error) | #78 | never give a file's own top-level function the same bare name as anything reachable via its `uses` imports; call the imported form qualified when in doubt | `harpoon/tests/assertions/main.lev` (self-test entry renamed `runSelfTest`, never `main`, since `harpoon::main()` exists) |
+| _(cluster clear — #77 struct default `==` field-wise and #78 uses-import local shadow both FIXED 2026-07-15)_ | | | |
 
 ## By design — permanent semantics that read like bugs
 

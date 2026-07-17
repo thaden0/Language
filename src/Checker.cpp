@@ -2134,14 +2134,26 @@ std::vector<const Stmt*> Checker::ctorOverloads(Symbol* cls, std::string_view la
 }
 
 std::vector<const Stmt*> Checker::functionOverloads(std::string_view name) {
-    std::vector<const Stmt*> out;
+    std::vector<const Stmt*> own;        // genuine declarations in the scope chain
+    std::vector<const Stmt*> imported;   // names dumped in by a file-level `uses`/`use`
     for (const Scope* sc = scope_; sc; sc = sc->parent) {
+        bool overlay = sema_.isFileOverlay(sc);
         if (const std::vector<Symbol*>* v = sc->localLookup(name))
             for (Symbol* s : *v)
-                if (s->kind == SymbolKind::Function && s->decl) out.push_back(s->decl);
+                if (s->kind == SymbolKind::Function && s->decl)
+                    (overlay ? imported : own).push_back(s->decl);
         // don't stop at first scope: a name can have overloads across enclosing scopes
     }
-    return out;
+    // bug.md #78: a file's OWN declaration outranks a same-signature function
+    // merely pulled in by a bulk `uses NS;`. The per-file import overlay sits
+    // NEARER than `global` in the scope chain, so an imported name would
+    // otherwise precede — and, since pickOverload breaks score ties by
+    // first-in-list, silently shadow — the file's own top-level declaration.
+    // Ranking own declarations first fixes that; genuinely different-signature
+    // imports still participate as overloads (they win on arity/type score
+    // regardless of position).
+    own.insert(own.end(), imported.begin(), imported.end());
+    return own;
 }
 
 // ---------------------------------------------------------------------------

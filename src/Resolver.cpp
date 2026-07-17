@@ -6062,6 +6062,210 @@ void Resolver::desugarEnums(Program& program) {
     lower(lower, program.items);
 }
 
+// ---------------------------------------------------------------------------
+//  derived struct (==) synthesis (struct-equality §5.5, packet 02)
+// ---------------------------------------------------------------------------
+
+// An explicit symbolic `(==)` member — the author's, a rule-injected one, or
+// the one desugarEnums generates. Synthesized members never count (they are
+// stripped and regenerated each pass).
+static bool hasExplicitEq(const Stmt* cls) {
+    for (const StmtPtr& m : cls->body)
+        if (m->kind == StmtKind::Member && m->callable && !m->isSynthEq &&
+            m->selector.symbolic && m->selector.text == "==")
+            return true;
+    return false;
+}
+
+// A struct data field: a non-callable member. Ctors/accessors are callable,
+// so the extra guards are belt-and-braces.
+static bool isDataField(const Stmt* m) {
+    return m->kind == StmtKind::Member && !m->callable && !m->isCtor &&
+           !m->isGet && !m->isSet;
+}
+
+namespace {
+// The §5.2 comparability ladder over resolved field TypeRefs. classify()
+// returns "" for comparable, else the parenthetical for the checker's §5.1
+// message ("a function value", "an Array", ...). Struct verdicts memoize per
+// symbol; the in-progress state fails closed on re-entry (value structs
+// cannot cycle by value — infinite size is already rejected — so this only
+// guards error-recovery states).
+struct EqLadder {
+    const std::unordered_map<const Symbol*, const char*>& banned;
+    enum V { kInProgress = 1, kYes, kNo };
+    std::unordered_map<const Symbol*, int> verdicts;
+
+    std::string classify(const TypeRef* t) {
+        if (!t) return "an untyped field";
+        switch (t->kind) {
+            case TypeKind::Inferred: return "an inferred type";
+            case TypeKind::Function: return "a function value";
+            case TypeKind::Union:
+                // Comparable iff every non-None member is; the None leg is a
+                // tag compare that already works end-to-end.
+                for (const TypeRefPtr& m : t->members) {
+                    if (m->kind == TypeKind::Named && m->path.empty() && m->name == "None")
+                        continue;
+                    if (std::string bad = classify(m.get()); !bad.empty()) return bad;
+                }
+                return "";
+            case TypeKind::Named: {
+                if (t->path.empty() && t->name == "None") return "";
+                const Symbol* sym = t->resolvedSymbol;
+                if (!sym) return "an unresolvable type";   // fail closed, never silently
+                if (sym->kind == SymbolKind::TypeParam) return "a type parameter";
+                if (sym->kind != SymbolKind::Class) return "a non-comparable type";
+                if (auto b = banned.find(sym); b != banned.end()) return b->second;
+                if (sym->isPrimitive) return "";           // int/bool/char/string/float
+                if (sym->isValue)
+                    return structComparable(sym)
+                               ? ""
+                               : "a non-comparable struct ('" + std::string(sym->name) + "')";
+                return "";   // reference class / interface: identity compare
+            }
+        }
+        return "an unresolvable type";
+    }
+
+    bool structComparable(const Symbol* sym) {
+        if (auto it = verdicts.find(sym); it != verdicts.end()) return it->second == kYes;
+        if (!sym->decl) return false;
+        if (hasExplicitEq(sym->decl)) { verdicts[sym] = kYes; return true; }
+        if (!sym->decl->generics.empty()) { verdicts[sym] = kNo; return false; }  // v1 restriction
+        verdicts[sym] = kInProgress;
+        bool ok = true;
+        for (const StmtPtr& m : sym->decl->body)
+            if (isDataField(m.get()) && !classify(m->type.get()).empty()) { ok = false; break; }
+        verdicts[sym] = ok ? kYes : kNo;
+        return ok;
+    }
+};
+}  // namespace
+
+void Resolver::synthesizeStructEquality(Program& program) {
+    // Erase-then-regenerate (idempotency & the two-pass resolver): rules can
+    // inject fields or an explicit (==) between the passes, so every prior
+    // synthesized member is dropped FIRST — everywhere, before any
+    // classification reads a struct body — then the truth is rebuilt from the
+    // current field lists.
+    program.structEqSynths.clear();
+    auto strip = [](auto&& self, std::vector<StmtPtr>& items) -> void {
+        for (StmtPtr& it : items) {
+            if (!it) continue;
+            if (it->kind == StmtKind::Namespace) { self(self, it->body); continue; }
+            if (it->kind == StmtKind::Class)
+                it->body.erase(std::remove_if(it->body.begin(), it->body.end(),
+                                              [](const StmtPtr& m) { return m->isSynthEq; }),
+                               it->body.end());
+        }
+    };
+    strip(strip, program.items);
+
+    // §5.2's named exclusions, resolved to their prelude symbols — a user's
+    // own namespaced `Array` is an ordinary reference class and stays
+    // identity-comparable. Function types are TypeKind::Function, not a name.
+    const std::pair<const char*, const char*> kBanned[] = {
+        {"Array", "an Array"},     {"Map", "a Map"},         {"Block", "a Block"},
+        {"Ast", "an Ast"},         {"Promise", "a Promise"}, {"Channel", "a Channel"}};
+    std::unordered_map<const Symbol*, const char*> banned;
+    for (const auto& [n, note] : kBanned)
+        if (Symbol* s = findLocal(sema_.global, n, SymbolKind::Class)) banned[s] = note;
+
+    EqLadder ladder{banned};
+
+    auto walk = [&](auto&& self, std::vector<StmtPtr>& items, Scope* scope) -> void {
+        for (StmtPtr& it : items) {
+            if (!it) continue;
+            if (it->kind == StmtKind::Namespace) {
+                if (Symbol* ns = findLocal(scope, it->name, SymbolKind::Namespace);
+                    ns && ns->scope)
+                    self(self, it->body, ns->scope);
+                continue;
+            }
+            if (it->kind != StmtKind::Class || !it->isValue || it->isAttribute) continue;
+            Stmt* cls = it.get();
+            if (hasExplicitEq(cls)) continue;   // §5.4: the author's relation wins
+                                                // (covers desugared enums too)
+
+            program.synthNames.push_back(std::string(cls->name));
+            StructEqSynth rec;
+            rec.structName = program.synthNames.back();
+
+            // v1: no derived (==) for generic structs (the self-type spelling
+            // with type params is deferred; no existing corpus exercises it).
+            if (!cls->generics.empty()) {
+                rec.badKindNote = "a generic struct (derived '(==)' is not synthesized in v1)";
+                program.structEqSynths.push_back(std::move(rec));
+                continue;
+            }
+
+            // Classify every field; the first non-comparable one gates the
+            // struct. No diagnostic here — the gate fires at a use site
+            // (packet 03), not at the declaration.
+            std::string note;
+            const Stmt* bad = nullptr;
+            for (const StmtPtr& m : cls->body) {
+                if (!isDataField(m.get())) continue;
+                note = ladder.classify(m->type.get());
+                if (!note.empty()) { bad = m.get(); break; }
+            }
+            if (bad) {
+                rec.badField = std::string(bad->selector.text);
+                rec.badKindNote = std::move(note);
+                program.structEqSynths.push_back(std::move(rec));
+                continue;
+            }
+
+            // Generate + parse through the desugarEnums channel (the wrapper
+            // struct gives the parser a member context), then lift the member
+            // out and splice it into the real struct.
+            std::string N(cls->name);
+            std::string body;
+            for (const StmtPtr& m : cls->body) {
+                if (!isDataField(m.get())) continue;
+                std::string f(m->selector.text);
+                if (!body.empty()) body += " && ";
+                // Float fields deliberately compare IEEE here — bit-for-bit
+                // what today's keyEquals fallback does. packet 05 flips this
+                // to canonEq.
+                body += "this." + f + " == other." + f;
+            }
+            if (body.empty()) body = "true";   // zero-field struct: reflexively equal
+            std::string src = "struct __eq_" + N + " {\n"
+                              "    bool (==)(" + N + " other) => " + body + ";\n"
+                              "}\n";
+
+            program.synthFiles.push_back(SourceFile{"<eq " + N + ">", std::move(src)});
+            SourceFile& sf = program.synthFiles.back();
+            DiagnosticSink dummy;
+            Lexer lexer(sf, dummy);
+            Parser parser(lexer.tokenize(), sf, dummy);
+            Program sub = parser.parseProgram();
+            Stmt* wrapper = (sub.items.size() == 1 && sub.items[0]->kind == StmtKind::Class)
+                                ? sub.items[0].get() : nullptr;
+            if (dummy.hasErrors() || !wrapper || wrapper->body.size() != 1) {
+                sink_.error(cls->span,
+                            "internal: struct '" + N + "' (==) synthesis failed to parse");
+                rec.badKindNote = "an internal synthesis failure";
+                program.structEqSynths.push_back(std::move(rec));
+                continue;
+            }
+            StmtPtr method = std::move(wrapper->body[0]);
+            method->isSynthEq = true;
+            // This pass runs after resolveTypesIn, so resolve the new member's
+            // types by hand against the real class scope (param `N`, ret bool).
+            if (Symbol* sym = findLocal(scope, cls->name, SymbolKind::Class);
+                sym && sym->scope)
+                resolveMember(method.get(), sym->scope);
+            cls->body.push_back(std::move(method));
+            rec.synthesized = true;
+            program.structEqSynths.push_back(std::move(rec));
+        }
+    };
+    walk(walk, program.items, sema_.global);
+}
+
 void Resolver::run(Program& program) {
     desugarEnums(program);                    // Track 03 §2: enum -> struct + globals + fromCode
     sema_.global = sema_.newScope(nullptr);
@@ -6154,6 +6358,11 @@ void Resolver::run(Program& program) {
 
     resolveTypesIn(preludeProgram_.items, sema_.global);
     resolveTypesIn(program.items, sema_.global);
+
+    // Struct equality §5.5 (packet 02): after types resolve (field
+    // classification reads resolvedSymbol), before shapes (the spliced member
+    // becomes an ordinary "==" slot).
+    synthesizeStructEquality(program);
 
     for (Symbol* cls : classSymbols_) buildShape(cls);
 }
