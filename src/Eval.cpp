@@ -343,6 +343,13 @@ void Evaluator::initFields(Object* obj, Symbol* cls) {
             thisObj_ = savedThis; thisClass_ = savedCls;
             // §15: a value-struct field owns its own copy — never alias the init
             if (valueField) v = copyValue(v);
+        } else if (bareFieldSuppliedByCtor(cls, s)) {
+            // A constructor definite-first-assigns this bare reference field, so
+            // §3's throwaway default would only run a discarded ctor (whose side
+            // effects can throw — Sonar's single-App rule). Leave the plain void
+            // default; the ctor supplies the real value, exactly as a
+            // construction-cycle field already relies on it to.
+            v = defaultForCanonical(s.canonical);
         } else if (bareFieldAutoConstructs(fcls)) {
             // §3: a bare constructable-class field auto-constructs — there is no
             // null/unbound state. Value structs always do (a finite DAG — they

@@ -270,6 +270,15 @@ int Lowerer::synthesizeInit(Symbol* cls) {
             if (valueField) {
                 int c = newReg(); emit(Op::CopyVal, c, v); last().c = 1; v = c;
             }
+        } else if (bareFieldSuppliedByCtor(cls, s)) {
+            // A constructor definite-first-assigns this bare reference field, so
+            // §3's throwaway default (a NewObject + discarded nullary ctor, whose
+            // side effects can throw — Sonar's single-App rule) is elided: the
+            // slot takes Op::Default (null/None) and the ctor's own store binds
+            // the real value, the same slot state onConstructionCycle fields ride.
+            v = newReg();
+            emit(Op::Default, v);
+            last().sname = s.canonical;
         } else if (bareFieldAutoConstructs(fcls)) {
             // §3: a bare constructable-class field auto-constructs — there is no
             // null/unbound state. A VALUE STRUCT co-allocates in `this`'s tier

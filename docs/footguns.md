@@ -32,11 +32,6 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
 
-## Multi-mixin composition & Surface painting (cluster E, Sonar T05)
-
-| construct that breaks | bug | sanctioned workaround | debt sites |
-|---|---|---|---|
-
 ## Names, generics, overloads (clusters C & D)
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
@@ -54,4 +49,5 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 | Prelude-only: no `T?` flow-narrowing (LLVM misreads), no checker annotations, eager-global-instance on emit-C++, interp buffers stdout | the checker never runs on the prelude | `-1`-sentinel int helpers; data-holder global + free fns; fixed delays in test drivers |
 | `match @Attr on class C` does not match `struct` declarations (subject-kind is exact) | filed as ergonomics ask, §4 of `designs/requests/request-metaprog-splices.md` | ship explicit `…Class`/`…Struct` rule pairs |
 | A `namespace`-scoped global's initializer sees other globals at their AUTO-CONSTRUCTED default, not their top-level explicit value | namespace-scoped initializers run at startup (before the top-level statement sequence); a top-level global's explicit `= …` is a body statement that runs after — every global is default-constructed first, so the init sees `[]`/`0`/`""`, never an absent slot (mutating one works: the append persists) | to seed a namespace global FROM a value, use another namespace-scoped global/`const` as the source, or compute it in the initializer itself |
-| A bare class-typed field (`App host_;`) auto-constructs (§3) before the ctor body — a guarded ctor (App's single-app rule) throws, and a type with no nullary ctor (`Document(App)`) won't compile | bare declaration = auto-construct; the field default runs the nullary path | make it `T? = None`, set it in the ctor, narrow on read (Sonar DOM `Document.host_`/`SonarApp.doc_`) |
+| A bare class-typed field (`App host_;`) that NO constructor assigns auto-constructs (§3) before any ctor body — a guarded nullary ctor (App's single-app rule) throws, and a type with no nullary ctor (`Document(App)`) has nothing to run | bare + never-ctor-assigned = auto-construct via the nullary path | give it an initializer, or assign it in every ctor (see next row), or `T? = None` + narrow on read |
+| ~~A bare class field a ctor DOES assign (`App app; new W(App a){ app = a; }`) still auto-constructs a throwaway first~~ FIXED | a bare field that every ctor definite-first-assigns (a plain top-level `f = rhs;` before any read) now skips §3 auto-construction and takes the plain default; the ctor supplies the value | just write `App app; new W(App a){ app = a; }` — no `T? = None` dance needed for the ctor-supplied case |
