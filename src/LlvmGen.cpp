@@ -3369,6 +3369,13 @@ bool LlvmGen::emitObject(const std::string& path, const std::string& tripleArg, 
         if (tt.isOSWindows()) {
             g.gThrowing->setThreadLocal(false);
             g.gArenaCursor->setThreadLocal(false);
+        } else if (tt.isWasm()) {
+            // Track W hard-01: single-threaded v1 — wasm TLS without shared
+            // memory lowers to plain globals, and LocalExec is the honest
+            // single-instance model. Revisited only when the Workers leg
+            // opens (techdesign-04-async-jspi.md §7).
+            g.gThrowing->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
+            g.gArenaCursor->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
         } else {
             auto model = tt.isOSBinFormatELF()
                              ? GlobalVariable::InitialExecTLSModel
