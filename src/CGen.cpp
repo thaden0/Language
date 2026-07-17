@@ -1557,13 +1557,17 @@ std::string CGen::genDispatchers(const std::vector<Symbol*>& instClasses) {
     }
     getm += "  }\n  return objget(o, key);\n}\n";
     setm += "  }\n  objset(o, key, val);\n}\n";
-    // bug #77: a struct with no explicit (==) is field-wise by default
-    // (info.md §9); a class with no (==) is reference identity. keyEq already
-    // does the field-wise recursion for Map keys — reuse it here.
+    // a class with no (==) is reference identity (design §5.2). A value struct
+    // gets a synthesized field-wise (==) at resolve time
+    // (designs/struct-equality/, §5.5) and so never reaches this tail from
+    // checked code; raise rather than answer silently if it ever does.
     opm += "  }\n"
-           "  if (op == 1 || op == 2) { bool same = (l.o && isValueClass(l.o->cls)) "
-           "? keyEq(l, r) : (r.k == 5 && l.o == r.o); "
+           "  if (op == 1 || op == 2) {\n"
+           "    if (l.o && !isValueClass(l.o->cls)) { bool same = (r.k == 5 && l.o == r.o); "
            "return vb(op == 1 ? same : !same); }\n"
+           "    raise(std::string(\"no operator '\") + (op == 1 ? \"==\" : \"!=\") + \"' on '\" + "
+           "clsname(l.o->cls) + \"'\"); return V{};\n"
+           "  }\n"
            "  return V{};\n}\n";
 
     // idxget/idxset: ([]) accessor on objects; native index on arrays/maps.

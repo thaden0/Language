@@ -725,12 +725,12 @@ Value IrInterp::objectArith(TokenKind op, const Inst& in, const Value& l, const 
             Value res = callDecl(eq, cls, {l, r});
             return vbool(!res.b);
         }
-    if (op == TokenKind::EqEq || op == TokenKind::BangEq) {
-        // bug #77: struct with no explicit (==) is field-wise (info.md §9);
-        // class with no (==) is reference identity. Shared keyEquals recursion.
-        bool same = cls && cls->isValue
-                      ? keyEquals(l, r)
-                      : (r.kind == VKind::Object && l.obj == r.obj);
+    if ((op == TokenKind::EqEq || op == TokenKind::BangEq) && cls && !cls->isValue) {
+        // a class with no (==) is reference identity (design §5.2). A value
+        // struct gets a synthesized field-wise (==) at resolve time
+        // (designs/struct-equality/, §5.5), so it never reaches here from
+        // checked code — fall through and be loud if it ever does.
+        bool same = r.kind == VKind::Object && l.obj == r.obj;
         return vbool(op == TokenKind::EqEq ? same : !same);
     }
     raise(std::string("no operator '") + sym + "' on '" + std::string(cls->name) + "'");
