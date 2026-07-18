@@ -641,11 +641,11 @@ void Lowerer::lowerStmt(Stmt* s) {
     switch (s->kind) {
         case StmtKind::Block: {
             scopes_.emplace_back();
-            if (s->importScope) blockImportScopes_.push_back(s->importScope);
+            if (s->blockScope) lexical_.pushScope(s->blockScope);
             size_t usingWatermark = usings_.size();
             for (StmtPtr& c : s->body) lowerStmt(c.get());
             if (usings_.size() > usingWatermark) lowerUsingCleanupGroups(usingWatermark);
-            if (s->importScope) blockImportScopes_.pop_back();
+            if (s->blockScope) lexical_.pop();
             scopes_.pop_back();
             break;
         }
@@ -1062,17 +1062,14 @@ void Lowerer::maybeVFree(int reg) {
 
 // The namespace symbol `name` resolves to at `offset` (bug.md #1): nearest
 // block import overlay first (a block-scoped `uses NS;` / `use NS::Sub as X;`
-// binds the namespace in Stmt::importScope, which sema_.global and the file
+// binds the namespace in Stmt::blockScope, which sema_.global and the file
 // overlay never see), then the call site's file overlay chain, then global.
 // A nearer NON-namespace binding shadows (same break-on-first-hit rule the
 // file-overlay scan always had). Null = not a namespace here.
 Symbol* Lowerer::namespaceSym(std::string_view name, uint32_t offset) {
-    for (auto it = blockImportScopes_.rbegin(); it != blockImportScopes_.rend(); ++it)
-        if (const std::vector<Symbol*>* v = (*it)->localLookup(name)) {
-            for (Symbol* s : *v)
-                if (s->kind == SymbolKind::Namespace) return s;
-            return nullptr;                        // shadowed by a non-namespace
-        }
+    Symbol* fromBlocks = nullptr;
+    if (lexical_.namespaceInFrames(name, fromBlocks))
+        return fromBlocks;                          // block binding wins (null = shadowed)
     for (const Scope* sc = sema_.fileScopeFor(offset); sc; sc = sc->parent)
         if (const std::vector<Symbol*>* v = sc->localLookup(name)) {
             for (Symbol* s : *v)

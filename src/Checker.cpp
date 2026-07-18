@@ -255,7 +255,7 @@ struct SpecializationCloner {
         if (!s) return nullptr;
         auto out = std::make_unique<Stmt>(s->kind);
         out->span = s->span; out->access = s->access; out->name = s->name;
-        out->importScope = s->importScope; out->enclosingNs = s->enclosingNs;
+        out->blockScope = s->blockScope; out->enclosingNs = s->enclosingNs;
         out->isInterface = s->isInterface; out->isValue = s->isValue;
         out->isAttribute = s->isAttribute;
         out->isCtor = s->isCtor; out->isGet = s->isGet; out->isSet = s->isSet;
@@ -315,6 +315,48 @@ const Stmt* findAccessorDecl(Symbol* cls, std::string_view name, bool wantGet) {
 Type Checker::error(SourceSpan span, std::string msg) {
     sink_.error(span, std::move(msg));
     return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+}
+
+void Checker::noteBlockScopedImport(std::string_view name) {
+    // DFS a statement subtree for a Block whose blockScope imports `name`, and
+    // cite the import that brought it in. Returns true once a note is emitted.
+    auto scan = [&](const Stmt* root) -> bool {
+        std::vector<const Stmt*> stack{root};
+        while (!stack.empty()) {
+            const Stmt* s = stack.back();
+            stack.pop_back();
+            if (!s) continue;
+            if (s->kind == StmtKind::Block && s->blockScope &&
+                s->blockScope->localLookup(name)) {
+                // Prefer a selective `use` naming exactly this name; else the
+                // first bulk `uses`/`use` that could have supplied it.
+                const Stmt* cite = nullptr;
+                for (const StmtPtr& c : s->body) {
+                    if (!c) continue;
+                    if (c->kind == StmtKind::Use && c->name == name) { cite = c.get(); break; }
+                    if (!cite && (c->kind == StmtKind::UsesImport || c->kind == StmtKind::Use))
+                        cite = c.get();
+                }
+                if (cite) {
+                    const char* kw = cite->kind == StmtKind::Use ? "use" : "uses";
+                    sink_.note(cite->span, "'" + std::string(name) + "' is imported by a '" +
+                               kw + "' here, but that import is scoped to its enclosing block "
+                               "(imports are lexical — imports.md §2)");
+                    return true;
+                }
+            }
+            for (const StmtPtr& c : s->body) stack.push_back(c.get());
+            stack.push_back(s->thenBranch.get());
+            stack.push_back(s->elseBranch.get());
+            stack.push_back(s->forInit.get());
+            for (const CatchClause& cc : s->catches) stack.push_back(cc.body.get());
+        }
+        return false;
+    };
+    if (curMember_ && curMember_->memberBody && scan(curMember_->memberBody.get())) return;
+    if (program_)
+        for (const StmtPtr& top : program_->items)
+            if (top && top->kind == StmtKind::Block && scan(top.get())) return;
 }
 
 Type Checker::primType(const char* name) const {
@@ -818,7 +860,11 @@ Type Checker::typeOfInner(const Expr* e) {
             if (e->text == "System")
                 return unknown();   // builtin global not yet modeled
                                     // (console IS modeled: prelude Console class)
-            return error(e->span, "unknown name '" + std::string(e->text) + "'");
+            {
+                Type err = error(e->span, "unknown name '" + std::string(e->text) + "'");
+                noteBlockScopedImport(e->text);   // S5: block-confined import hint
+                return err;
+            }
         }
 
         case ExprKind::Member:   return typeOfMember(e);
@@ -1832,8 +1878,11 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
             }
             return unknown();
         }
-        if (callee->text != "System")
-            return error(e->span, "unknown function '" + std::string(callee->text) + "'");
+        if (callee->text != "System") {
+            Type err = error(e->span, "unknown function '" + std::string(callee->text) + "'");
+            noteBlockScopedImport(callee->text);   // S5: block-confined import hint
+            return err;
+        }
         return unknown();
     }
 
@@ -2261,8 +2310,8 @@ std::vector<const Stmt*> Checker::functionOverloads(std::string_view name) {
 // Enter a lexical scope: pre-scan its direct-child factory `bind`s so a bind is
 // visible block-wide (not only after its textual position), with duplicate-in-
 // scope detection. Object-install binds (`bind expr;`) are staged separately.
-void Checker::pushBindScope(const std::vector<StmtPtr>& items) {
-    bindScopes_.emplace_back();
+void Checker::pushLexicalScope(Scope* scope, const std::vector<StmtPtr>& items) {
+    lexical_.pushScope(scope);
     for (const StmtPtr& s : items) {
         if (!s || s->kind != StmtKind::Bind || !s->type) continue;   // factory form only
         // bug.md #23: reject a `bind` on a VALUE type (struct/primitive). Injection
@@ -2270,44 +2319,36 @@ void Checker::pushBindScope(const std::vector<StmtPtr>& items) {
         // value type through — a struct bind silently arrives default-constructed
         // (even an inline `bind Cfg => Cfg(...)`), breaking the loudness rule (§16).
         // Value binds stay unsupported until a by-value-copy mechanism is designed;
-        // such values must be passed as explicit arguments.
+        // such values must be passed as explicit arguments. (Registration itself —
+        // into `scope->binds`, with duplicate-in-scope detection — is the Resolver's
+        // job now, block-scoped-use §3.2; only this rule needs Checker type info.)
         Type bt = fromTypeRef(s->type.get());
         if (bt.sym && bt.sym->isValueType())
             error(s->span, "cannot 'bind' the value type '" + bt.canonical +
                   "' (a struct/primitive): dependency injection cannot carry a value "
                   "through — pass it as an explicit argument instead");
-        // Register even on the error above so dependent injection sites resolve and
-        // the diagnostic stays a single, precise one (the bind) instead of cascading.
-        std::string key = s->type->canonical.empty()
-            ? std::string(s->type->name) : s->type->canonical;
-        auto& cur = bindScopes_.back();
-        if (cur.count(key))
-            error(s->span, "duplicate binding for '" + key + "' in this scope");
-        else
-            cur[key] = s.get();
     }
-    // system-binds.md §5.3 (Channel 1): a second pass activates each `use`
-    // the Resolver stamped as resolving to a class/interface — installing its
-    // namespace's exported bind for that type into THIS scope, exactly as if
-    // a `bind T => <that factory>;` were textually present here. Rule 4:
-    // textual beats activated, silently (a textual bind above already claimed
-    // the key) — not the duplicate-bind hard error, which is reserved for two
-    // textual claims. Rule 5 (activated-vs-activated can't collide) falls out
-    // for free: a second `use` of the same (NS, T) finds the key already
-    // filled by the first and skips.
-    // Two distinct keys: `namespaceBinds_` is looked up by the type's OWN
-    // name (how the bind is declared inside NS, §5.2's index key), but the
-    // activated entry is registered under `s->name` — the LOCAL name this
-    // `use` bound (the alias under `as`, else the same name) — because
-    // that's the spelling an injection site in THIS scope's param types will
-    // canonicalize to. An alias changes the name only (§5.1 rule 2): keying
-    // by anything else would make `use std::IEnv as E;` fail to fill an
-    // `E`-typed parameter even though it's the identical bind.
-    auto& activated = bindScopes_.back();
+    // system-binds.md §5.3 (Channel 1): activate each `use` the Resolver stamped
+    // as resolving to a class/interface — installing its namespace's exported
+    // bind for that type into THIS frame, exactly as if a `bind T => <that
+    // factory>;` were textually present here. Rule 4: textual beats activated,
+    // silently (a textual bind in `scope->binds` already claimed the key) — not
+    // the duplicate-bind hard error, which is reserved for two textual claims.
+    // Rule 5 (activated-vs-activated can't collide) falls out: a second `use` of
+    // the same (NS, T) finds the key already filled by the first and skips.
+    // Two distinct keys: `namespaceBinds_` is looked up by the type's OWN name
+    // (how the bind is declared inside NS, §5.2's index key), but the activated
+    // entry is registered under `s->name` — the LOCAL name this `use` bound (the
+    // alias under `as`, else the same name) — because that's the spelling an
+    // injection site in THIS scope's param types will canonicalize to. An alias
+    // changes the name only (§5.1 rule 2): keying by anything else would make
+    // `use std::IEnv as E;` fail to fill an `E`-typed parameter even though it's
+    // the identical bind.
+    auto& activated = lexical_.frames.back().activated;
     for (const StmtPtr& s : items) {
         if (!s || s->kind != StmtKind::Use || !s->useResolvedNs) continue;
         std::string localKey(s->name);
-        if (activated.count(localKey)) continue;
+        if ((scope && scope->localBind(localKey)) || activated.count(localKey)) continue;
         auto nsIt = namespaceBinds_.find(s->useResolvedNs);
         if (nsIt == namespaceBinds_.end()) continue;
         auto bindIt = nsIt->second.find(std::string(s->useResolvedTypeKey));
@@ -2345,17 +2386,13 @@ void Checker::buildNamespaceBindIndex(const Program* prelude, const Program& pro
     indexNamespaceBinds(program.items, sema_.global);
 }
 
-void Checker::popBindScope() {
-    if (!bindScopes_.empty()) bindScopes_.pop_back();
+void Checker::popLexicalScope() {
+    lexical_.pop();
 }
 
-// Nearest-wins: search innermost scope outward.
+// Nearest-wins: search innermost frame outward (block-scoped-use §3.3).
 const Stmt* Checker::lookupBind(const std::string& canonical) {
-    for (auto it = bindScopes_.rbegin(); it != bindScopes_.rend(); ++it) {
-        auto f = it->find(canonical);
-        if (f != it->end()) return f->second;
-    }
-    return nullptr;
+    return lexical_.lookupBind(canonical);
 }
 
 static ExprPtr cloneDefaultExpr(const Expr* e) {
@@ -3068,17 +3105,13 @@ void Checker::check(Stmt* s) {
     usingOkHere_ = false;
     switch (s->kind) {
         case StmtKind::Block: {
-            // bug.md #8: a block-level `uses` is visible for exactly this block.
-            // The Resolver put its imports in `s->importScope` (a child of the
-            // enclosing scope); resolve names through it while inside the block.
-            Scope* savedScope = scope_;
-            if (s->importScope) scope_ = s->importScope;
-            env_.emplace_back();
-            pushBindScope(s->body);              // §12.5: block-scoped binds, nearest-wins
+            // bug.md #8 / block-scoped-use §3.2: a block-level `use`/`uses`/`bind`
+            // is visible for exactly this block. The Resolver put its imports and
+            // binds in `s->blockScope`; one RAII guard swaps `scope_` to it for
+            // names, pushes the locals frame, and pushes the bind frame — the four
+            // hand-paired ops this replaces stay in lockstep by construction.
+            BlockScopeGuard guard(*this, s);
             for (StmtPtr& c : s->body) { usingOkHere_ = true; check(c.get()); }
-            popBindScope();
-            env_.pop_back();
-            scope_ = savedScope;
             break;
         }
         case StmtKind::Var: {
@@ -3242,7 +3275,7 @@ void Checker::check(Stmt* s) {
         case StmtKind::Bind: {
             // §12.5: a factory body is checked against the BOUND type, not the
             // enclosing function's return type (fixing the "cannot return X as
-            // void" misfire). Registration happened in pushBindScope.
+            // void" misfire). Registration happened in the Resolver's fillBinds.
             // techdesign-02 F1: a factory body is its own loop-nesting scope,
             // same as any other function body.
             int savedLoopDepth = loopDepth_;
@@ -3631,13 +3664,13 @@ void Checker::materializeSpecializations(Program& program) {
 
         Stmt* saved = activeSpecialization_;
         int savedDepth = activeSpecializationDepth_;
-        auto savedBinds = bindScopes_;
+        auto savedBinds = lexical_.frames;
         auto bit = callableBindScopes_.find(d.generic);
-        if (bit != callableBindScopes_.end()) bindScopes_ = bit->second;
+        if (bit != callableBindScopes_.end()) lexical_.frames = bit->second;
         activeSpecialization_ = spec; activeSpecializationDepth_ = d.depth;
         checkFunction(spec, d.scope ? d.scope : sema_.global, d.cls);
         activeSpecialization_ = saved; activeSpecializationDepth_ = savedDepth;
-        bindScopes_ = std::move(savedBinds);
+        lexical_.frames = std::move(savedBinds);
     }
 }
 
@@ -3697,7 +3730,7 @@ bool Checker::isCompileTimeConstant(const Expr* e) {
 void Checker::checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass) {
     callableScopes_[fn] = scope;
     callableClasses_[fn] = thisClass;
-    callableBindScopes_[fn] = bindScopes_;
+    callableBindScopes_[fn] = lexical_.frames;
     if (fn->specializationRequired && !fn->isSpecialization && thisClass) {
         buildOverrideIndex();
         bool participates = isOverriddenBelow(thisClass, fn);
@@ -3766,14 +3799,14 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
             case StmtKind::Namespace: {
                 Symbol* ns = scope->lookup(s->name);
                 if (ns && ns->scope) {
-                    pushBindScope(s->body);     // §12.5: binds scoped to this namespace body
+                    pushLexicalScope(ns->scope, s->body);  // §12.5: binds scoped to this namespace body
                     walk(s->body, ns->scope);
-                    popBindScope();
+                    popLexicalScope();
                 }
                 break;
             }
             case StmtKind::Bind:                 // check the factory body (registration
-                if (s->memberBody && s->type) {  // already happened in pushBindScope)
+                if (s->memberBody && s->type) {  // already happened in the Resolver)
                     scope_ = lex;
                     returnType_ = fromTypeRef(s->type.get());
                     returnTypeRef_ = s->type.get();
@@ -3956,9 +3989,9 @@ void Checker::run(Program& program, const Program* prelude) {
     program_ = &program;            // Track 03 §2: enum metadata for `::` typing
     markSpecializationSites(program);
     buildNamespaceBindIndex(prelude, program);   // system-binds.md §5.2
-    pushBindScope(program.items);   // §12.5: file/top-level binds propagate to the body
+    pushLexicalScope(sema_.global, program.items);   // §12.5: file/top-level binds propagate to the body
     walk(program.items, sema_.global);
-    popBindScope();
+    popLexicalScope();
     materializeSpecializations(program);
 }
 

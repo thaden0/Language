@@ -5440,6 +5440,43 @@ bool Resolver::hasImports(const std::vector<StmtPtr>& items) const {
     return false;
 }
 
+// A direct-child factory `bind T => …;` (the `s->type`-present form — the same
+// filter the Checker's bind stack applied). An object-install `bind expr;` (no
+// type) is not a factory bind and stays on its Checker-discovered path.
+bool Resolver::hasFactoryBinds(const std::vector<StmtPtr>& items) const {
+    for (const StmtPtr& s : items)
+        if (s && s->kind == StmtKind::Bind && s->type) return true;
+    return false;
+}
+
+void Resolver::fillBinds(const std::vector<StmtPtr>& items, Scope* scope) {
+    if (!scope) return;
+    for (const StmtPtr& s : items) {
+        if (!s || s->kind != StmtKind::Bind || !s->type) continue;   // factory form only
+        // Key exactly as indexNamespaceBinds does: the resolved canonical type
+        // string, or the bare name if unresolved.
+        std::string key = s->type->canonical.empty()
+            ? std::string(s->type->name) : s->type->canonical;
+        // block-scoped-use §3.2: duplicate-in-scope detection lives here now (the
+        // substrate owns registration). First-declared wins; the message text is
+        // the Checker's verbatim so diagnostics stay byte-identical.
+        auto [it, inserted] = scope->binds.emplace(key, s.get());
+        (void)it;
+        if (!inserted)
+            sink_.error(s->span, "duplicate binding for '" + key + "' in this scope");
+    }
+}
+
+void Resolver::fillDeclBinds(std::vector<StmtPtr>& items, Scope* scope) {
+    if (!scope) return;
+    fillBinds(items, scope);   // this scope's own direct factory binds
+    for (StmtPtr& s : items) {
+        if (!s || s->kind != StmtKind::Namespace) continue;
+        if (Symbol* ns = findLocal(scope, s->name, SymbolKind::Namespace))
+            fillDeclBinds(s->body, ns->scope);
+    }
+}
+
 // Top-level and namespace-body `uses`/`use` (bug.md #8, imports.md — lexical
 // import scoping):
 //   - a TOP-LEVEL import (called with the global scope) resolves into its own
@@ -5598,21 +5635,32 @@ void Resolver::resolveStmtTypes(Stmt* s, Scope* scope) {
     if (!s) return;
     switch (s->kind) {
         case StmtKind::Block: {
-            // bug.md #8 / imports.md: a block-level `uses`/`use` is scoped to
-            // exactly this block — an overlay scope holding the block's
-            // imports, consulted here (for type refs) and by the Checker (for
-            // names) via `s->importScope`.
+            // designs/complete/techdesign-block-scoped-use.md §3.2: a block's own lexical
+            // scope carries both its imports (`use`/`uses`) and its type-keyed
+            // bind table. Materialized lazily — only when the block directly
+            // contains an import or a factory `bind` — and consulted here (for
+            // type refs), by the Checker (for names + binds), and the Lowerer
+            // (for namespace re-derivation) via `s->blockScope`.
+            //
+            // (a) Unconditional reset: pass 2 (post-fold re-resolution) must
+            // never inherit a pass-1 scope chain holding pass-1 symbols. Owned
+            // by the substrate, not by luck (§1.2.3 / §5 P3a).
+            s->blockScope = nullptr;
             Scope* inner = scope;
-            if (hasImports(s->body)) {
+            if (hasImports(s->body) || hasFactoryBinds(s->body)) {
                 inner = sema_.newScope(scope);
                 // `use` before `uses` — same shadowing order as processImports.
                 for (StmtPtr& c : s->body)
                     if (c->kind == StmtKind::Use) useOne(c.get(), inner);
                 for (StmtPtr& c : s->body)
                     if (c->kind == StmtKind::UsesImport) importOne(c.get(), inner);
-                s->importScope = inner;
+                s->blockScope = inner;
             }
             for (StmtPtr& c : s->body) resolveStmtTypes(c.get(), inner);
+            // (b) Bind table fills AFTER the child walk: a bind's key is its
+            // bound type's canonical string, which resolveStmtTypes' Bind case
+            // (below) is what resolves.
+            if (s->blockScope) fillBinds(s->body, s->blockScope);
             break;
         }
         case StmtKind::Var:
@@ -6516,6 +6564,13 @@ void Resolver::run(Program& program) {
 
     resolveTypesIn(preludeProgram_.items, sema_.global);
     resolveTypesIn(program.items, sema_.global);
+
+    // block-scoped-use §3.2(b): register top-level (program-wide) and
+    // namespace-body factory binds into their scopes' bind tables, now that
+    // their bound types are resolved (canonical keys). Program only — prelude
+    // binds reach the checker via the Channel-1 index (namespaceBinds_), never
+    // the top-level frame, exactly as before. Block binds were filled per-block.
+    fillDeclBinds(program.items, sema_.global);
 
     // Struct equality §5.5 (packet 02): after types resolve (field
     // classification reads resolvedSymbol), before shapes (the spliced member

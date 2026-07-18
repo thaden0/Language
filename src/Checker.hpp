@@ -1,6 +1,7 @@
 #pragma once
 #include "Ast.hpp"
 #include "Diagnostic.hpp"
+#include "LexicalStack.hpp"
 #include "Symbols.hpp"
 #include <memory>
 #include <string>
@@ -107,18 +108,21 @@ private:
     // Flow-narrowing overlay: path ("x", "req.host") -> narrowed type. Consulted
     // before declared types; erased when the path (or a prefix) is assigned.
     std::unordered_map<std::string, Type> narrow_;
-    // bind/inject DI (§12.5): a stack of per-lexical-scope, type-keyed factory
-    // bindings (canonical type -> the `bind` Stmt). Nearest-wins on lookup. These
-    // live ONLY here, never dumped into the shared scope tables (owner ruling,
-    // system-binds.md §5) — bulk `uses` must never activate a namespace's binds.
-    std::vector<std::unordered_map<std::string, const Stmt*>> bindScopes_;
+    // bind/inject DI (§12.5): the per-block lexical stack. Factory bindings are
+    // registered by the Resolver into each scope's type-keyed `binds` table
+    // (designs/complete/techdesign-block-scoped-use.md §3.2); this stack just walks the
+    // open frames nearest-wins, layering a `use NS::T;`-activated Channel-1 bind
+    // (system-binds.md §5.3) on top per frame. Binds are NEVER dumped into the
+    // shared `names` table (owner ruling, system-binds.md §5) — they live in the
+    // separate `Scope::binds`, which a bulk `uses` (names-only) can't activate.
+    LexicalStack lexical_;
 
     // system-binds.md §5.2 (Channel 1): (namespace symbol) -> (bind's key,
-    // same string pushBindScope uses) -> that namespace's top-level factory
+    // same string fillBinds uses) -> that namespace's top-level factory
     // `bind` for the type. Built once, read-only, by buildNamespaceBindIndex
     // over BOTH the prelude's and the program's namespace bodies (walking is
     // not checking — the pass never descends into a factory body, preserving
-    // [[leviathan-prelude-not-checked]]). pushBindScope consults it to
+    // [[leviathan-prelude-not-checked]]). pushLexicalScope consults it to
     // activate a `use NS::T;`-stamped bind (§5.3).
     std::unordered_map<const Symbol*, std::unordered_map<std::string, const Stmt*>>
         namespaceBinds_;
@@ -143,8 +147,9 @@ private:
     std::unordered_map<std::string, Stmt*> specializationsByKey_;
     std::unordered_map<const Stmt*, Scope*> callableScopes_;
     std::unordered_map<const Stmt*, Symbol*> callableClasses_;
-    std::unordered_map<const Stmt*,
-        std::vector<std::unordered_map<std::string, const Stmt*>>> callableBindScopes_;
+    // The lexical bind frames in scope at a generic callable's definition, so a
+    // later-materialized specialization sees the same binds (LA-18 §12.5).
+    std::unordered_map<const Stmt*, std::vector<LexicalFrame>> callableBindScopes_;
     Stmt* activeSpecialization_ = nullptr;
     int activeSpecializationDepth_ = 0;
     std::unordered_set<const Expr*> diagnosedGenericStatic_;
@@ -270,11 +275,33 @@ private:
     const Stmt* pickInjecting(const std::vector<const Stmt*>& cands,
                               std::vector<Type>& argTypes, Expr* call, bool& ok,
                               bool& diagnosed);
-    // bind/inject scope management. pushBindScope pre-scans a body's direct
-    // factory `bind`s (dup-in-scope = error), so binds are visible block-wide.
-    void pushBindScope(const std::vector<StmtPtr>& items);
-    void popBindScope();
+    // bind/inject lexical management. Push a frame referencing `scope` (whose
+    // `binds` the Resolver already filled — dup-in-scope is reported there), then
+    // validate that body's factory `bind`s reject value types (bug.md #23) and
+    // activate its `use NS::T;` Channel-1 binds (§5.3) into the frame's overlay.
+    void pushLexicalScope(Scope* scope, const std::vector<StmtPtr>& items);
+    void popLexicalScope();
     const Stmt* lookupBind(const std::string& canonical);   // nearest-wins
+
+    // RAII for a block's lexical lifecycle (block-scoped-use §3.2): swaps `scope_`
+    // to the block's own scope for names, pushes an `env_` frame for locals, and
+    // pushes the bind frame — one guard replacing the four hand-paired ops.
+    struct BlockScopeGuard {
+        Checker& c;
+        Scope* savedScope;
+        BlockScopeGuard(Checker& c, Stmt* block) : c(c), savedScope(c.scope_) {
+            if (block->blockScope) c.scope_ = block->blockScope;
+            c.env_.emplace_back();
+            c.pushLexicalScope(block->blockScope, block->body);
+        }
+        ~BlockScopeGuard() {
+            c.popLexicalScope();
+            c.env_.pop_back();
+            c.scope_ = savedScope;
+        }
+        BlockScopeGuard(const BlockScopeGuard&) = delete;
+        BlockScopeGuard& operator=(const BlockScopeGuard&) = delete;
+    };
 
     // Generic call inference/substitution (uniform for methods and functions).
     // When `call`/`lambdaWalked` are supplied, lambda arguments are checked
@@ -312,6 +339,11 @@ private:
     Type* localLookup(std::string_view name);
     LocalBinding* localBinding(std::string_view name);
     Type error(SourceSpan span, std::string msg);
+    // block-scoped-use §5/S5 (error path only): if `name` is imported by a
+    // `use`/`uses` confined to some block of the current function (or a
+    // top-level block), append a note that the import is lexically scoped —
+    // turning a bare "unknown name" into a pointed diagnostic.
+    void noteBlockScopedImport(std::string_view name);
 
     // designs/complete/techdesign-class-method-dispatch.md §4.1: a program-wide index —
     // (T, "name\x1f canonical-sig") present iff some strict subclass of T

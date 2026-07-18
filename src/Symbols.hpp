@@ -184,6 +184,15 @@ struct Scope {
     Scope* parent = nullptr;
     std::unordered_map<std::string_view, std::vector<Symbol*>> names;
 
+    // Type-keyed bind table (system-binds.md §7.2 / designs/complete/techdesign-block-scoped-use.md
+    // §3.1): the factory `bind T => …;` statements this scope owns, keyed by the
+    // bound type's canonical string (value = the factory `Bind` stmt). Filled by
+    // the Resolver (fillBinds) at resolve time for block, namespace, and global
+    // scopes; empty for scopes that carry no binds (file overlays, most blocks).
+    // One scope object now carries both tables — names AND binds — with one
+    // lifecycle, retiring the Checker's parallel per-scope bind stack.
+    std::unordered_map<std::string, const Stmt*> binds;
+
     // Look up in this scope only.
     const std::vector<Symbol*>* localLookup(std::string_view n) const {
         auto it = names.find(n);
@@ -196,6 +205,11 @@ struct Scope {
             if (it != s->names.end() && !it->second.empty()) return it->second.front();
         }
         return nullptr;
+    }
+    // The factory `bind` registered for `canonical` in THIS scope only, or null.
+    const Stmt* localBind(const std::string& canonical) const {
+        auto it = binds.find(canonical);
+        return it == binds.end() ? nullptr : it->second;
     }
 };
 

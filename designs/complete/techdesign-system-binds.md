@@ -25,7 +25,7 @@ annotation (§5.3, `Use` handling ~:5146,5168,5307); `src/Ast.hpp` — that one 
 this design), the `use`/`uses` *name*-import machinery's semantics (imports.md is landed and
 unchanged — this design only reads a resolved fact off the `Use` statement), the `bind expr;`
 object-install parse shape (stays parsed-and-unconsumed; §7), and the block-scope-substrate
-refactor (`designs/techdesign-block-scoped-use.md` stays an independent proposal; §8).
+refactor (`designs/complete/techdesign-block-scoped-use.md` stays an independent proposal; §8).
 
 ---
 
@@ -513,7 +513,7 @@ activation-visibility rule is already settled by §1 here: installation is the l
 
 ## 8. The block-scope substrate: routed around, not blocked on
 
-`designs/techdesign-block-scoped-use.md`'s unified `Scope` (one object carrying name table +
+`designs/complete/techdesign-block-scoped-use.md`'s unified `Scope` (one object carrying name table +
 bind table) remains unbuilt, four milestones past its own dates (dossier §5). This design
 takes the dossier's option (b/c) hybrid: **route around it with the minimal bridge** — one
 annotation field (§5.3) and one Checker-side index (§5.2) — rather than blocking a P1

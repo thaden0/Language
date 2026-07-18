@@ -1,0 +1,13 @@
+// block-scoped-use §3.3 / S4: overload SETS merge across scope levels
+// (collectOverloads walks the whole chain) even though name BINDING shadows
+// nearest-wins. A block `use A::f` must NOT hide a file-level `f` overload:
+// the call still sees the merged set and picks by argument type.
+namespace A { int f(int n) => n + 10; }
+int f(string s) => 100;           // file-level overload of `f`
+
+void merged() {
+    use A::f;                     // block import of A::f (the int overload)
+    console.writeln(f(5));        // 15  — A::f(int), the block import
+    console.writeln(f("hey"));    // 100 — file-level f(string) still in the merged set
+}
+merged();
