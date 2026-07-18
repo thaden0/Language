@@ -2027,6 +2027,21 @@ comptime console.writeln("[build] ...");   // compile-time log (real console)
   after the comptime fold). A macro call in a `comptime if` **condition** is an
   error (it would feed the imports map macro resolution itself needs).
 
+#### `target::` — the compilation-target constants (item Q)
+```
+comptime if (target::os == "windows") { uses App::WinConsole; }
+else { uses App::PosixConsole; }
+```
+Three comptime-only string constants in the reserved namespace `target`
+(family with `meta`): `target::os` (`"linux"` / `"windows"` / `"macos"` /
+`"wasm"` / `"unknown"`), `target::arch` (first triple component, normalized —
+`arm64` reads as `aarch64`), and `target::triple` (the exact `--target`
+string; host builds get the canonical host spelling). Values reflect the
+**target**: under `--target <triple>` cross emission the destination's branch
+folds, never the build host's. In runtime position no `target` symbol exists
+(ordinary unresolved-name error); an unknown member (`target::bogus`) is a
+compile error naming the three constants.
+
 #### `import()` — comptime file inclusion (LA-20)
 ```
 comptime string tpl = import("views/links/index.html");

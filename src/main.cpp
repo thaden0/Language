@@ -460,6 +460,10 @@ int main(int argc, char** argv) {
                 ComptimeOptions copts;
                 if (comptimeBudget > 0) copts.stepBudget = comptimeBudget;
                 if (reentrantBudget > 0) copts.reentrantRounds = reentrantBudget;
+                // Item Q (techdesign-target-predicate.md): `target::os` & co
+                // reflect the CROSS triple when one was given — the comptime
+                // fold must pick the destination's branch, not the host's.
+                copts.targetTriple = targetTriple;
                 // §9 (Phase 3): the engine computes its own imports map,
                 // internally, AFTER comptime folding — a program-wide import
                 // list computed here (pre-fold) would miss a `uses` spliced

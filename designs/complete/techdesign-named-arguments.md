@@ -7,7 +7,7 @@ defaults, named args, and overload resolution are one resolver story that must l
 story"*). Splitting them would fracture the very interaction the design exists to unify.
 **Source (the *why*):** `designs/suggested-features.md` §3.4 (`:172-182`).
 **Unblocks:** metaprogramming item M (attribute named args) — see
-`designs/techdesign-metaprogramming-tail.md` §4 (`:126-155`), which is explicit that this is *not*
+`designs/complete/techdesign-metaprogramming-tail.md` §4 (`:126-155`), which is explicit that this is *not*
 metaprogramming work and must exist as its own language design first. M4 discharges that debt.
 **Convention docs:** `designs/complete/techdesign-00-overview.md` (contracts, engine-coverage policy,
 STOP-and-escalate, commit discipline) governs this track too; read it first.
@@ -399,7 +399,7 @@ implementer, ~2 weeks.
 | N4 | 12–14 | **M4** attribute named args | `@Route(method:..., path:...)` works; **unblocks metaprog item M** or hands back per §8 |
 
 **Gate to close the metaprogramming deferral:** M4 green + a note filed against
-`designs/techdesign-metaprogramming-tail.md` §4 that named arguments now exist, so item M is
+`designs/complete/techdesign-metaprogramming-tail.md` §4 that named arguments now exist, so item M is
 schedulable.
 
 ---

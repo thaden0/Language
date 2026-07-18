@@ -217,6 +217,13 @@ add_test(NAME corpus_procedural_macros_cpp
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/meta/procedural_macros.lev")
+# Item Q (techdesign-target-predicate.md): platform-conditional `uses` keyed by
+# target::os folds in the front end, so the compiled backends must see the
+# already-selected branch — same single-file lane pattern as procedural_macros.
+add_test(NAME corpus_target_uses_cpp
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev")
 # Metaprog Phase 4 §6: --expand emits recompilable source. This round-trips
 # every meta program (expand -> compile -> run) and asserts byte-identical run
 # output — the strong, mechanical proof the source printer is faithful.
@@ -880,6 +887,13 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan>
                    "${CMAKE_SOURCE_DIR}/tests/corpus/meta/procedural_macros.lev"
+                   ${LANG_LVRT_SOURCES})
+  # Item Q: the target-predicate uses-selection on the LLVM leg (see
+  # corpus_target_uses_cpp above).
+  add_test(NAME corpus_target_uses_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan>
+                   "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev"
                    ${LANG_LVRT_SOURCES})
   # bug.md #10: div/mod-by-zero throw on the LLVM backend (see corpus_div_by_zero_*
   # above; no ELF lane since the frozen backend still returns 0).
