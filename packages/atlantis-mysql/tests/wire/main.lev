@@ -1,0 +1,33 @@
+uses MySql;
+uses MySql::Wire;
+
+void rt(int v) {
+    string enc = writeLenenc(v);
+    LenEnc back = readLenenc(enc, 0);
+    string ok = (back.value == v && back.size == enc.length()) ? "ok" : "BAD";
+    console.writeln("lenenc " + v.toString() + " -> " + enc.length().toString() + "B " + ok);
+}
+
+void main() {
+    rt(0);
+    rt(250);
+    rt(251);
+    rt(252);
+    rt(65535);
+    rt(65536);
+    rt(0xFFFFFF);
+    rt(0x1000000);
+    // u32 round trip incl high bit
+    string b = writeLenenc(0);
+    console.writeln("wU32 hi: " + u32(wU32(0xFF00FF00), 0).toString());
+    // u64 high-bit guard
+    string big = std::byteToString(0) + std::byteToString(0) + std::byteToString(0)
+               + std::byteToString(0) + std::byteToString(0) + std::byteToString(0)
+               + std::byteToString(0) + std::byteToString(0x80);
+    try {
+        int x = u64(big, 0);
+        console.writeln("u64 guard NOT triggered = " + x.toString());
+    } catch (MySqlProtocolException e) {
+        console.writeln("u64 guard ok: " + e.message);
+    }
+}

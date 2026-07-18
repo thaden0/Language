@@ -1,0 +1,43 @@
+plan {
+    out = "mysql-compilecheck";
+    mode = "";
+    target = "";
+    optLevel = 2;
+    entry { kind = "function"; target = "main"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/main.lev"; moduleId = ""; origin = ""; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/assembler.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/auth.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/connection.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/errors.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/prepared.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/protocol.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/transaction.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../src/wire.lev"; moduleId = "/home/len/code/Language/packages/atlantis-mysql"; origin = "../.."; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/access_log.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/auth_seed.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/context.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/error_mapper.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/errors.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/facade.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/health.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/limits.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/pipeline.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/respond.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/seam.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/sse.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/kernel/static_files.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/log/log.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/routing/controller.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/routing/route.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/routing/route_rec.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/routing/router.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/routing/validation.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/json/negotiation.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/json/serializable.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/config/config.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/app/app.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/di/injectable.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    src { path = "packages/atlantis-mysql/tests/compilecheck/../../../atlantis/src/data/data.lev"; moduleId = "/home/len/code/Language/packages/atlantis"; origin = "../atlantis"; }
+    edge { from = ""; to = "/home/len/code/Language/packages/atlantis-mysql"; }
+    edge { from = "/home/len/code/Language/packages/atlantis-mysql"; to = "/home/len/code/Language/packages/atlantis"; }
+}

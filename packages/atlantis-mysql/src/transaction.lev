@@ -1,0 +1,46 @@
+// atlantis-mysql — transactions (techdesign-05 §5.3).
+//
+// ITransaction : IDisposable — `using ITransaction tx = await conn.begin();` is
+// exception-safe by construction: close() without a commit rolls back (RAII; the
+// language has no `finally`, `using` is the model). Commit/rollback after
+// completion throws. Isolation for beginWith applies to the NEXT transaction only.
+uses Atlantis::Data;
+
+namespace MySql {
+    class Tx : ITransaction {
+        Connection conn;
+        bool done;
+
+        new Tx(Connection conn) {
+            this.conn = conn;
+            this.done = false;
+        }
+
+        Promise<void> commit() {
+            if (this.done) { throw MySqlException(0, "", "transaction already completed"); }
+            this.done = true;
+            CommandResult cr = await this.conn.runText("COMMIT");
+            if (cr.error != None) { throw cr.error; }
+            return Promise(None);
+        }
+
+        Promise<void> rollback() {
+            if (this.done) { throw MySqlException(0, "", "transaction already completed"); }
+            this.done = true;
+            CommandResult cr = await this.conn.runText("ROLLBACK");
+            if (cr.error != None) { throw cr.error; }
+            return Promise(None);
+        }
+
+        // using-exit: roll back if neither commit nor rollback ran. Best-effort
+        // and fire-and-forget (close() is not async) — a broken connection needs
+        // no rollback (it is discarded by the pool anyway, §6.4).
+        void close() {
+            if (this.done) { return; }
+            this.done = true;
+            if (!this.conn.isBroken()) {
+                this.conn.runText("ROLLBACK").then((cr) => { });
+            }
+        }
+    }
+}
