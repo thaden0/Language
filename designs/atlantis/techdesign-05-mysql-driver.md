@@ -651,3 +651,36 @@ pool churn (50 sequential acquires over max 5) → drain, loop exits clean (+0B 
   (`Atlantis::Data` exception capability interfaces); (2) P6 promise-rejection
   semantics — probe first, ticket if needed; (3) pool lift into `Atlantis::Data` as a
   later minor (R8). Awaiting review.
+
+- 2026-07-17 — **M1–M6 implemented and verified on oracle + IR + LLVM.** Package
+  `packages/atlantis-mysql/` (`MySql` namespace); C3 seam added to the `atlantis`
+  package as `Atlantis::Data` (`packages/atlantis/src/data/data.lev`) with the §5.4
+  capability interfaces (the amendment is treated as approved per overview §"C3 amendment
+  approved (Track 05)").
+  - **P6 SETTLED (the load-bearing probe):** a `throw` after an internal `await`
+    propagates the **typed** exception synchronously to the caller's `await` — capability
+    interfaces (`IDuplicateKeyException` &c.) survive the crossing. So the FSM never throws
+    in the socket sink (a throw there hits the loop); it resolves the command promise with
+    an error-carrying `CommandResult`, and the public wrappers `await` it, re-`throw` the
+    typed exception, and `return Promise(value)`. `request-promise-rejection.md` NOT needed.
+  - **P2/P3/P4** green (scramble vectors vs Python hashlib; lenenc edges; assembler at
+    every granularity). See `tests/RESULTS.md`.
+  - **End-to-end validated** against an in-language fake MySQL 8 server over a real socket
+    (`tests/loopback`, `tests/pool`): connect + `mysql_native_password` + SET NAMES,
+    text `COM_QUERY` with typed mapping, prepared INSERT/SELECT (binary rows incl.
+    in-language IEEE-754), transactions, duplicate-key typed error, PING, pool churn + drain.
+  - **M5** binary codec: unsigned BIGINT → lossless decimal string; FLOAT/DOUBLE decoded
+    in-language; text-vs-binary output contract shared via `mapText`/`decodeBinaryRow`.
+  - **M7** caching_sha2 full path (§2.4): fast path is P2-validated; the TLS route
+    (SSLRequest + `std::tlsConnect` wrap-in-place) and RSA route (`sysRsaEncrypt` over the
+    nonce-tiled password) are IMPLEMENTED behind `Options.tlsMode` (dead by default, LA-2
+    now landed). **Not live-tested** — no MySQL 8.4 `caching_sha2`/TLS server in the build
+    env; §7.2 second CI job drops in unchanged.
+  - **Live Docker acceptance (§7.2)** not run — no Docker/MySQL available here; the
+    loopback fake server stands in on all three engines.
+  - **Two compiler defects found + filed** (`known_bugs_1.md`, `docs/footguns.md`):
+    **#82** cross-package nested-namespace `const int` reads as 0 when fully-qualified
+    (silent); **#83** implementing a dependency's interface requires bare (uses-imported)
+    member types and `uses` must appear in every package source file. Both worked around
+    throughout the package (bare C3 types + `uses Atlantis::Data;` in all src files); no
+    `src/**`/prelude edits were made (§11 respected).

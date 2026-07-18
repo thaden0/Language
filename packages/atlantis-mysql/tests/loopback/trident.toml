@@ -1,0 +1,13 @@
+name = "mysql-loopback"
+entry = "main"
+sources = ["main.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.1.0"
+as = "MySql"
+
+[[dep]]
+path = "../../../atlantis"
+version = "0.1.0"
+as = "Atlantis"

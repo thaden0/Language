@@ -1,4 +1,4 @@
-name = "mysql-compilecheck"
+name = "mysql-pool"
 entry = "main"
 sources = ["main.lev"]
 
@@ -6,3 +6,8 @@ sources = ["main.lev"]
 path = "../.."
 version = "0.1.0"
 as = "MySql"
+
+[[dep]]
+path = "../../../atlantis"
+version = "0.1.0"
+as = "Atlantis"

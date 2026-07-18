@@ -1,3 +1,4 @@
+uses Atlantis::Data;
 // atlantis-mysql — the little-endian wire kernel + capability flags
 // (techdesign-05 §1.2, §1.5, §1.7). Sensitive: implemented once, verbatim, so
 // every consumer shares one correct copy. Pinned by P-probe P3 (lenenc edges).

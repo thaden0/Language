@@ -152,6 +152,9 @@ namespace MySql {
         bool deprecateEof;
         bool inTrans;
         string authPlugin;
+        string scrambleNonce;       // 20-byte nonce, kept for the RSA route (§2.4)
+        bool tlsActive;             // TLS armed on this fd (caching_sha2 full path)
+        bool awaitingPubKey;        // RSA route: expecting the server public key
         HandshakeV10? hs;
         Promise<ConnOutcome> startPromise;
         CommandState? cmd;
@@ -172,10 +175,15 @@ namespace MySql {
             this.deprecateEof = false;
             this.inTrans = false;
             this.authPlugin = "mysql_native_password";
-            this.startPromise = Promise();
+            this.scrambleNonce = "";
+            this.tlsActive = false;
+            this.awaitingPubKey = false;
+            Promise<ConnOutcome> sp0 = Promise();
+            this.startPromise = sp0;
             this.queue = [];
             this.busy = false;
-            this.stmtCache = Map();
+            Map<string, PreparedStmt> sc0 = Map();
+            this.stmtCache = sc0;
             this.asm = PacketAssembler((s, payload) => { });
         }
 
@@ -246,15 +254,43 @@ namespace MySql {
             HandshakeV10 h = Proto::parseHandshake(p);
             this.hs = h;
             this.requireServerCaps(h);
+            this.scrambleNonce = h.authData;
             int clientCaps = this.buildClientCaps(h);
-            this.deprecateEof = (clientCaps & Caps::DEPRECATE_EOF) != 0;
             string plugin = h.authPluginName;
             if (plugin.length() == 0) { plugin = "mysql_native_password"; }
             this.authPlugin = plugin;
-            string authResp = Auth::scrambleFor(plugin, this.cfg.password, h.authData);
-            string resp = this.buildHandshakeResponse(clientCaps, authResp, plugin);
             this.phase = Phase::AUTH;
-            this.sendPacket(resp);
+
+            bool serverSsl = (h.capabilities & Caps::SSL) != 0;
+            if (this.opts.tlsMode == "required" && !serverSsl) {
+                this.fatal(MySqlProtocolException("tlsMode=required but server does not offer SSL"));
+                return;
+            }
+            // TLS route (§2.4-1): SSLRequest, then wrap the fd in place (LA-2), then
+            // send HandshakeResponse41 inside TLS. Dead unless tlsMode != "disabled".
+            if (this.opts.tlsMode != "disabled" && serverSsl) {
+                clientCaps = clientCaps | Caps::SSL;
+                this.deprecateEof = (clientCaps & Caps::DEPRECATE_EOF) != 0;
+                StringBuilder ssl = StringBuilder();
+                ssl << Wire::wU32(clientCaps);
+                ssl << Wire::wU32(0x01000000);
+                ssl << Wire::wU8(Charset::UTF8MB4);
+                ssl << Wire::zeros(23);
+                this.sendPacket(ssl.toString());               // SSLRequest
+                Connection self = this;
+                int caps2 = clientCaps;
+                string plug = plugin;
+                std::tlsConnect(this.sock.rawFd(), this.cfg.host, "", "", 0, (cfd) => {
+                    self.tlsActive = true;
+                    string ar = Auth::scrambleFor(plug, self.cfg.password, self.scrambleNonce);
+                    self.sendPacket(self.buildHandshakeResponse(caps2, ar, plug));
+                });
+                return;
+            }
+
+            this.deprecateEof = (clientCaps & Caps::DEPRECATE_EOF) != 0;
+            string authResp = Auth::scrambleFor(plugin, this.cfg.password, h.authData);
+            this.sendPacket(this.buildHandshakeResponse(clientCaps, authResp, plugin));
         }
 
         void requireServerCaps(HandshakeV10 h) {
@@ -306,17 +342,41 @@ namespace MySql {
                 return;
             }
             if (h == 0x01) {                          // AuthMoreData (caching_sha2)
+                if (this.awaitingPubKey) {            // RSA route: PEM public key arrives here
+                    this.awaitingPubKey = false;
+                    this.sendRsaPassword(p.subStr(1, p.length() - 1));
+                    return;
+                }
                 int more = p.byteAt(1);
                 if (more == 0x03) { return; }         // fast-auth success; an OK follows
-                if (more == 0x04) {                   // full auth required (dead-until-LA-2)
-                    this.fatal(MySqlAuthException(0, "",
-                        "caching_sha2_password full auth requires TLS or RSA — see designs/request-tls-crypto.md"));
+                if (more == 0x04) {                   // full auth required (§2.4)
+                    if (this.tlsActive) {
+                        // cleartext password (NUL-terminated) is safe INSIDE TLS
+                        this.sendPacket(this.cfg.password + std::byteToString(0));
+                        return;
+                    }
+                    // RSA route on a plaintext link: request the server public key
+                    // (0x02), then send RSA(password ^ tiled-nonce). Requires LA-2's
+                    // sysRsaEncrypt; without a private network this is best-effort —
+                    // pin serverPublicKeyPath to defeat a MITM key swap (§2.4).
+                    this.awaitingPubKey = true;
+                    this.sendPacket(std::byteToString(0x02));
                     return;
                 }
                 this.fatal(MySqlProtocolException("unexpected AuthMoreData byte " + more.toString()));
                 return;
             }
             this.fatal(MySqlProtocolException("unexpected auth packet header " + h.toString()));
+        }
+
+        // RSA route (§2.4-2): encrypt password+NUL, masked by the tiled scramble
+        // nonce, under the server's RSA public key.
+        void sendRsaPassword(string pem) {
+            string pw = this.cfg.password + std::byteToString(0);
+            string masked = Auth::xorBytes(pw, Auth::repeatTo(this.scrambleNonce, pw.length()));
+            string? enc = std::sysRsaEncrypt(pem, masked);
+            if (enc != None) { this.sendPacket(enc); }
+            else { this.fatal(MySqlAuthException(0, "", "RSA public-key encryption of the password failed")); }
         }
 
         // First post-auth command: SET NAMES utf8mb4 (§1.7), then READY.
@@ -338,8 +398,8 @@ namespace MySql {
         void fatal(MySqlException e) {
             this.broken = true;
             if (this.connecting) { this.finishConnect(e); }
-            if (this.cmd != None) {
-                var c = this.cmd;
+            CommandState? c = this.cmd;
+            if (c != None) {
                 this.cmd = None;
                 this.busy = false;
                 c.promise.resolve(Results::failed(e));
@@ -413,9 +473,10 @@ namespace MySql {
         }
 
         void onCommandPacket(string p) {
-            var cc = this.cmd;
-            if (cc == None) { return; }
-            CommandState c = cc;
+            CommandState? cc = this.cmd;
+            if (cc != None) { this.dispatchCommand(cc, p); }
+        }
+        void dispatchCommand(CommandState c, string p) {
             if (c.kind == Kind::PREPARE) { this.onPreparePacket(c, p); return; }
             if (c.sub == Sub::FIRST) {
                 if (Proto::isErr(p)) { this.completeCmd(Results::failed(this.classifyErr(p))); return; }

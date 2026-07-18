@@ -21,7 +21,9 @@ namespace MySql {
             this.done = true;
             CommandResult cr = await this.conn.runText("COMMIT");
             if (cr.error != None) { throw cr.error; }
-            return Promise(None);
+            Promise<void> done = Promise();
+            done.resolve(None);
+            return done;
         }
 
         Promise<void> rollback() {
@@ -29,7 +31,9 @@ namespace MySql {
             this.done = true;
             CommandResult cr = await this.conn.runText("ROLLBACK");
             if (cr.error != None) { throw cr.error; }
-            return Promise(None);
+            Promise<void> done = Promise();
+            done.resolve(None);
+            return done;
         }
 
         // using-exit: roll back if neither commit nor rollback ran. Best-effort

@@ -1,3 +1,4 @@
+uses Atlantis::Data;
 // atlantis-mysql — auth scrambles (techdesign-05 §2.2). Sensitive kernel;
 // exact code, verified by P-probe P2 against Python hashlib vectors.
 //
