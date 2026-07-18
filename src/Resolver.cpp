@@ -338,6 +338,55 @@ class string {
     // `reverse()` is deliberately NOT implemented here: a byte-reverse is wrong
     // for UTF-8. Deferred to Track 03's `chars()` — once it lands, this becomes
     // `chars().reverse().joinToString("")`. Logged so the gap isn't lost.
+
+    // LA-31 ruling R13: SQL LIKE semantics, byte-oriented, anchored full-string
+    // match. `%` = any run of bytes incl. empty; `_` = exactly one byte; `\`
+    // escapes the next byte to a literal (a lone trailing `\` matches a literal
+    // `\`). `ilike` folds A-Z<->a-z per byte at each comparison site, no folded
+    // string copies. Explicit `this.` on every self-call (this-receiver rule).
+    bool like(string pattern) return this.__likeMatch(pattern, false);
+
+    bool ilike(string pattern) return this.__likeMatch(pattern, true);
+
+    bool __likeMatch(string pattern, bool fold) {
+        int n = this.length();
+        int m = pattern.length();
+        int i = 0;
+        int j = 0;
+        int star = 0 - 1;
+        int mark = 0;
+        while (i < n) {
+            int pb = 0 - 1;
+            if (j < m) pb = pattern.byteAt(j);
+            if (pb == 92 && j + 1 < m) {
+                int lit = pattern.byteAt(j + 1);
+                int tb = this.byteAt(i);
+                if (fold) {
+                    if (lit >= 65 && lit <= 90) lit = lit + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (lit == tb) { i = i + 1; j = j + 2; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            } else if (pb == 95) {
+                i = i + 1; j = j + 1;
+            } else if (pb == 37) {
+                star = j; mark = i; j = j + 1;
+            } else {
+                int tb = this.byteAt(i);
+                int qb = pb;
+                if (fold) {
+                    if (qb >= 65 && qb <= 90) qb = qb + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (j < m && qb == tb) { i = i + 1; j = j + 1; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            }
+        }
+        while (j < m && pattern.byteAt(j) == 37) j = j + 1;
+        return j == m;
+    }
 }
 
 // Array<T>: a tiny native core (length/at/add — add is pure, returns a new
@@ -5276,6 +5325,71 @@ namespace json {
 }
 )prelude";
 
+// --- kPreludeExpr: LA-31 expression reification `expr::Expr<F>` -----------
+// The reified-tree node taxonomy. Bodies are trivial field stores only (the
+// checker never walks the prelude — prelude-not-checked rule); constructor
+// parameter names deliberately differ from field names so every store is an
+// unambiguous bare write. No module-level `expr::` globals (emit-C++ eager-
+// global-instance footgun) and no methods beyond constructors (the tree is
+// data; behavior lives in consumers).
+const char* kPreludeExpr = R"prelude(
+namespace expr {
+
+    class Node { }
+
+    class Field : Node {
+        Array<string> path;
+        new Field(Array<string> p) { path = p; }
+    }
+
+    class Lit : Node {
+        string | int | float | bool | None v;
+        new Lit(string | int | float | bool | None value) { v = value; }
+    }
+
+    class Bind : Node {
+        int slot;
+        new Bind(int s) { slot = s; }
+    }
+
+    class Bin : Node {
+        string op;
+        Node l;
+        Node r;
+        new Bin(string o, Node left, Node right) { op = o; l = left; r = right; }
+    }
+
+    class Un : Node {
+        string op;
+        Node e;
+        new Un(string o, Node inner) { op = o; e = inner; }
+    }
+
+    class Call : Node {
+        string name;
+        Node recv;
+        Array<Node> args;
+        new Call(string n, Node receiver, Array<Node> a) { name = n; recv = receiver; args = a; }
+    }
+
+    class Assign : Node {
+        Field target;
+        Node value;
+        new Assign(Field t, Node val) { target = t; value = val; }
+    }
+
+    class Expr<F> {
+        F fn;
+        expr::Node tree;
+        Array<string | int | float | bool | None> binds;
+        int siteId;
+        new Expr(F f, expr::Node t, Array<string | int | float | bool | None> b, int s) {
+            fn = f; tree = t; binds = b; siteId = s;
+        }
+    }
+}
+)prelude";
+
 bool isTypeKind(SymbolKind k) {
     return k == SymbolKind::Class || k == SymbolKind::TypeParam ||
            k == SymbolKind::Primitive;
@@ -5302,7 +5416,8 @@ void addToScope(Scope* scope, Symbol* sym) {
 Program Resolver::parsePrelude() {
     preludeFile_.name = "<prelude>";
     preludeFile_.text = std::string(kPreludeCore) + kPreludeStd +
-                        kPreludeRest + kPreludeRegexCore + kPreludeRegexApi + kPreludeWeb;
+                        kPreludeRest + kPreludeRegexCore + kPreludeRegexApi + kPreludeWeb +
+                        kPreludeExpr;
     DiagnosticSink dummy;  // the prelude is trusted; ignore its diagnostics
     Lexer lexer(preludeFile_, dummy);
     Parser parser(lexer.tokenize(), preludeFile_, dummy);
