@@ -30,6 +30,7 @@ namespace Helm {
         string encoding_ = "UTF-8";
         string language_ = "Leviathan";
         string branch_   = "";        // "" = not a git workspace / unknown
+        string engine_   = "";        // "" = default (trident); else oracle/ir/llvm
         int    errors_   = 0;
         int    warnings_ = 0;
         int    build_    = BuildIdle;
@@ -42,6 +43,9 @@ namespace Helm {
         void setEncoding(string e) { encoding_ = e; }
         void setLanguage(string l) { language_ = l; }
         void setBranch(string b)   { branch_ = b; }
+        // The differential engine the "Choose engine" affordance selected (§7.2,
+        // H11) — shown on the right; empty means the default trident lane.
+        void setEngine(string e)   { engine_ = e; }
         void setBuild(int state)   { build_ = state; }
         void setCounts(int errs, int warns) { errors_ = errs; warnings_ = warns; }
 
@@ -78,6 +82,7 @@ namespace Helm {
             segs = segs.add("Ln " + line_.toString() + ", Col " + col_.toString());
             segs = segs.add(encoding_);
             segs = segs.add(language_);
+            if (!engine_.isEmpty()) segs = segs.add("⚙ " + engine_);
             return joinSegs(segs);
         }
     }

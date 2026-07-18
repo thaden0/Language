@@ -9,6 +9,11 @@ sources = [
     "src/command/*.lev",
     "src/workspace/*.lev",
     "src/explorer/*.lev",
+    "src/editor/*.lev",
+    "src/lang/*.lev",
+    "src/panels/*.lev",
+    "src/status/*.lev",
+    "src/build/*.lev",
 ]
 
 [[dep]]

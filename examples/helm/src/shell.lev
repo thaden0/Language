@@ -1,0 +1,219 @@
+// H01 — the shell / composition root (§2, §3), assembled at G-H4.
+//
+// `HelmShell` is Helm's single wiring point (the ReconApp precedent): it owns the
+// `SonarApp`, the one `CommandRegistry` (every accelerator, menu item, and
+// palette row derives from it — §0.3), the `MenuModel`, the `PanelHost`, the
+// `StatusModel`, and the `BuildDriver` (H11), and it assembles them into the dock
+// chrome — a menu bar on top, the editor/panel body in the middle, the panel-tab
+// strip and the status bar on the bottom.
+//
+// Everything is assembled in the constructor (so the shell is fully wired on
+// construction, testable without `run()`), and two entry points drive it:
+//   • `run()`      — the live event loop (`SonarApp.run()`; oracle+IR — the
+//                    subprocess/PTY floor is interpreter-only in v1, §7.1).
+//   • `renderShell(w,h)` — a headless snapshot of the assembled chrome through a
+//                    `TestRenderer`, the §11 doctrine, so the golden lane proves
+//                    the shell paints without spinning the event loop.
+//
+// Scope (design-vs-gate, the H-C4/H-C2/H-C3 precedent recorded in the doc log):
+// G-H4 assembles the chrome and wires the command/menu/palette surface + the
+// build driver. The live EditorView/TreeView mount into the body, the command
+// palette overlay, and the dropdown menus are H04/H05/H12 riders on the live
+// shell — the body area is the mount point, blank in the assembled snapshot.
+
+uses Sonar;
+uses Sonar::Dom;
+
+namespace Helm {
+
+    class HelmShell {
+        SonarApp        app_      = SonarApp();
+        CommandRegistry commands_ = CommandRegistry();
+        MenuModel       menu_     = MenuModel();
+        PanelHost       panels_   = PanelHost();
+        StatusModel     status_   = StatusModel();
+        BuildDriver?    driver_   = None;
+
+        // Chrome components (real Sonar widgets, added to the app tree).
+        ContentBar menuBar_   = ContentBar();
+        ContentBox body_      = ContentBox();
+        ContentBar panelBar_  = ContentBar();
+        ContentBar statusBar_ = ContentBar();
+
+        // Resolved tool paths + workspace (a live command spawns these).
+        string wsRoot_     = ".";
+        string testsDir_   = "./tests";
+        string tridentExe_ = "/usr/bin/trident";
+        string levExe_     = "/usr/bin/leviathan";
+
+        new HelmShell(string wsRoot, string tridentExe, string levExe) {
+            wsRoot_     = wsRoot;
+            tridentExe_ = tridentExe;
+            levExe_     = levExe;
+            testsDir_   = joinPath(wsRoot, "tests");
+            driver_     = BuildDriver(panels_, status_);
+            status_.setMode("EDIT");
+            this.wireCommands();
+            this.wireMenu();
+            this.build();
+            commands_.bindInto(app_.keymap());
+        }
+
+        // Lazily-narrowed driver accessor (the Sonar renderer()/inputSource()
+        // lazy-init pattern; the ctor always sets it, so this never rebuilds).
+        BuildDriver driver() {
+            BuildDriver? d = driver_;
+            if (d != None) return d;
+            BuildDriver made = BuildDriver(panels_, status_);
+            driver_ = made;
+            return made;
+        }
+
+        SonarApp        app()      => app_;
+        CommandRegistry commands() => commands_;
+        MenuModel       menu()     => menu_;
+        PanelHost       panels()   => panels_;
+        StatusModel     status()   => status_;
+
+        // ---- command handlers (explicit `this.` receivers — bug #53) --------
+        void doBuild()     { this.driver().build(this.tridentExe_, this.wsRoot_); }
+        void doRun()       { this.driver().run(this.tridentExe_, this.wsRoot_); }
+        void doStop()      { this.driver().stop(); }
+        void doTest()      { this.driver().test(this.tridentExe_, this.testsDir_); }
+        void doRunEngine() { this.driver().runEngine(this.levExe_, this.wsRoot_); }
+        void chooseEngine(int e) { this.driver().setEngine(e); }
+        void togglePanel() { this.panels_.toggle(); }
+        void quit()        { this.app_.quit(); }
+
+        // ---- command surface — the single source of truth (§0.3) ------------
+        void wireCommands() {
+            CommandRegistry c = commands_;
+            c.register("helm.build",   "Build Workspace",       "Run", () => this.doBuild());
+            c.setKey("helm.build", "^B");
+            c.register("helm.run",     "Run",                   "Run", () => this.doRun());
+            c.setKey("helm.run", "F5");
+            c.register("helm.stop",    "Stop",                  "Run", () => this.doStop());
+            c.setKey("helm.stop", "S-F5");
+            c.register("helm.test",    "Run Tests",             "Run", () => this.doTest());
+            c.setKey("helm.test", "^;");
+            c.register("helm.runEngine", "Run (current engine)", "Run", () => this.doRunEngine());
+            c.register("helm.engine.oracle", "Engine: oracle",  "Run", () => this.chooseEngine(EngineOracle));
+            c.register("helm.engine.ir",     "Engine: ir",      "Run", () => this.chooseEngine(EngineIr));
+            c.register("helm.engine.llvm",   "Engine: llvm",    "Run", () => this.chooseEngine(EngineLlvm));
+            c.register("helm.togglePanel", "Toggle Panel",      "View", () => this.togglePanel());
+            c.setKey("helm.togglePanel", "^`");
+            // Palette overlay + editor save are live-shell riders (H01/H04); the
+            // commands exist now so the accelerator + menu surface is complete.
+            c.register("helm.palette", "Command Palette…",      "View", () => {});
+            c.setKey("helm.palette", "^P");
+            c.register("helm.save",    "Save",                  "File", () => {});
+            c.setKey("helm.save", "^S");
+            c.register("helm.quit",    "Quit",                  "File", () => this.quit());
+            c.setKey("helm.quit", "^Q");
+        }
+
+        // ---- menu bar (File / Edit / View / Run / Help — §3) ----------------
+        void wireMenu() {
+            MenuModel m = menu_;
+            // Fix the bar order up front; items follow.
+            m.category("File");
+            m.category("Edit");
+            m.category("View");
+            m.category("Run");
+            m.category("Help");
+
+            m.item("File", "helm.save");
+            m.item("File", "helm.quit");
+
+            m.item("View", "helm.togglePanel");
+            m.item("View", "helm.palette");
+
+            m.item("Run", "helm.build");
+            m.item("Run", "helm.run");
+            m.item("Run", "helm.stop");
+            m.item("Run", "helm.test");
+            m.item("Run", "helm.runEngine");
+            m.item("Run", "helm.engine.oracle");
+            m.item("Run", "helm.engine.ir");
+            m.item("Run", "helm.engine.llvm");
+        }
+
+        // ---- tree assembly (dock: menubar / body / panel-tabs / statusbar) --
+        void build() {
+            app_.title("Helm");
+            menuBar_.setLeft(menu_.barLine());
+            menuBar_.setHeight(Constraint::Fixed(1));
+            body_.setHeight(Constraint::Flex(1));
+            panelBar_.setLeft(this.panelTabsLine());
+            panelBar_.setHeight(Constraint::Fixed(1));
+            statusBar_.setHeight(Constraint::Fixed(1));
+            this.syncStatus();
+
+            app_.add(menuBar_);
+            app_.add(body_);
+            app_.add(panelBar_);
+            app_.add(statusBar_);
+        }
+
+        // The panel-tab strip: the four bottom tabs, the active one bracketed
+        // (or a hidden marker when the dock is collapsed, ^` toggles it).
+        string panelTabsLine() {
+            if (!panels_.visible()) return "(panel hidden)";
+            Array<string> names = ["Terminal", "Problems", "Output", "Test"];
+            Array<string> out = [];
+            int i = 0;
+            for (string n in names) {
+                if (i == panels_.active()) out = out.add("[" + n + "]");
+                else out = out.add(n);
+                i = i + 1;
+            }
+            return out.joinToString(" ");
+        }
+
+        // Push the status model's three regions into the bottom bar.
+        void syncStatus() {
+            statusBar_.setLeft(status_.left());
+            statusBar_.setCenter(status_.center());
+            statusBar_.setRight(status_.right());
+        }
+
+        // The command-palette source (`^P`): the fuzzy-filtered command list.
+        Array<Command> paletteMatches(string query) => commands_.matching(query);
+
+        // ---- headless snapshot of the assembled chrome (§11) ----------------
+        //
+        // Paints the top bar, panel strip, and status bar directly onto one
+        // Surface (the editor/panel body is the blank mount region) through a
+        // TestRenderer — no event loop, so the golden lane stays deterministic.
+        string renderShell(int w, int h) {
+            this.syncStatus();
+            menuBar_.setLeft(menu_.barLine());
+            panelBar_.setLeft(this.panelTabsLine());
+
+            Surface surf = Surface(w, h);
+            // Prime the default background over the whole surface (the live App's
+            // root fills this; a standalone paint must, or unpainted cells render
+            // as zeroed/black instead of the default style).
+            Style def;
+            surf.clear(def);
+            menuBar_.arrange(Rect(Point(0, 0), Size(w, 1)));
+            menuBar_.paint(surf);
+            panelBar_.arrange(Rect(Point(0, h - 2), Size(w, 1)));
+            panelBar_.paint(surf);
+            statusBar_.arrange(Rect(Point(0, h - 1), Size(w, 1)));
+            statusBar_.paint(surf);
+
+            TestRenderer tr = TestRenderer(w, h);
+            tr.present(surf);
+            return tr.snapshot();
+        }
+
+        // ---- live event loop (oracle+IR; blocks until quit) -----------------
+        // Accelerators are already installed on the app keymap in the ctor
+        // (re-binding would throw on the duplicate chord), so this just runs.
+        void run() {
+            app_.run();
+        }
+    }
+
+}

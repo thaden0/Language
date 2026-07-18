@@ -2,70 +2,64 @@
 // main() so `entry = "main"` resolves it, `uses Helm;` to reach the package's
 // own namespace (recon/src/main.lev precedent).
 //
-// Gates landed so far: G-H0 (subprocess bridge H09 + command registry H03) and
-// G-H1 (workspace H02 + file tree H05, read-only). Until the Sonar retained-UI
-// shell (H01) lands, `main` is a headless driver: it registers the command
-// surface and, given a workspace directory, prints its file tree (the explorer)
-// and can build it (H11 wires the streamed build into a real panel).
+// Gates landed: G-H0 (proc bridge H09 + command registry H03), G-H1 (workspace
+// H02 + file tree H05), G-H2 (editor H04), G-H3 (diagnostics H06 + panels H07 +
+// status H08), and now G-H4 — H11 build/run/test wired to commands + palette +
+// menu, and the H01 shell assembled (`HelmShell`).
+//
+// `main` composes the shell and, by default, prints its assembled surface (the
+// command list, menu bar, and a rendered chrome snapshot) — a deterministic,
+// non-blocking demonstration usable from `trident run`. Set HELM_RUN=1 to launch
+// the live event loop instead (a real terminal; `SonarApp.run()` blocks until
+// quit — oracle+IR only, the §7.1 process/PTY floor).
 uses Sonar;
 uses Helm;
 
-// `Process` needs an explicit path (no PATH search — reference §6.6.59). Point
-// HELM_TRIDENT at the trident binary; a workspace path is passed to trident
-// explicitly, so no cwd is needed.
-string tridentPath() => env::get("HELM_TRIDENT") ?? "/usr/bin/trident";
+// `Process` needs explicit binary paths (no PATH search — reference §6.6.59).
+string tridentPath()   => env::get("HELM_TRIDENT")   ?? "/usr/bin/trident";
+string leviathanPath() => env::get("HELM_LEVIATHAN") ?? "/usr/bin/leviathan";
 
-void runBuild(string ws) {
-    Proc p = Proc(tridentPath(), ["build", ws], "");
-    ProcStreamer st = ProcStreamer(p, (e) => {
-        if (e.isExit())        console.writeln("[exit " + e.code.toString() + "]");
-        else if (e.isStderr()) console.writeln("! " + e.line);
-        else                   console.writeln("  " + e.line);
-    });
-    st.run(20);
-}
-
-void printTree(FileTree ft, TreeNodeId n, int depth) {
-    string indent = "";
-    for (int i in 0..depth - 1) indent = indent + "  ";
-    console.writeln(indent + ft.labelAt(n));
-    if (ft.hasChildren(n)) {
-        int c = ft.childCount(n);
-        for (int i in 0..c - 1) printTree(ft, ft.childAt(n, i), depth + 1);
+void printCommands(CommandRegistry reg) {
+    console.writeln("commands (" + reg.count().toString() + "):");
+    for (Command c in reg.commands()) {
+        string key = c.key.isEmpty() ? "" : (" [" + c.key + "]");
+        console.writeln("  " + c.id + key + "  — " + c.title);
     }
 }
 
-CommandRegistry helmCommands(string ws) {
-    CommandRegistry reg = CommandRegistry();
-    reg.register("helm.build", "Build Workspace", "Build", () => runBuild(ws));
-    reg.setKey("helm.build", "^B");
-    reg.register("helm.quit",  "Quit",            "File",  () => {});
-    reg.setKey("helm.quit", "^Q");
-    return reg;
+void printMenu(MenuModel menu, CommandRegistry reg) {
+    console.writeln("menu: " + menu.barLine());
+    for (string cat in menu.categories()) {
+        Array<string> ids = menu.itemsFor(cat);
+        if (ids.isEmpty()) continue;
+        console.writeln("  " + cat + ":");
+        for (string id in ids) {
+            string key = reg.key(id);
+            string k = key.isEmpty() ? "" : ("  " + key);
+            console.writeln("    " + reg.title(id) + k);
+        }
+    }
 }
 
 void main() {
-    console.writeln("Helm 0.1.0-dev — a terminal IDE for Leviathan (G-H0/G-H1)");
+    console.writeln("Helm 0.1.0-dev — a terminal IDE for Leviathan (G-H4)");
 
     // Pick the first argument that names a real directory. argv[0] may be the
     // program/package name under some run modes, so probe rather than index [0].
-    string dir = "";
+    string dir = ".";
     for (string a in env::args()) { if (std::isDir(a)) { dir = a; break; } }
 
-    if (dir.isEmpty()) {
-        CommandRegistry reg = helmCommands(".");
-        console.writeln("usage: helm <workspace-dir>   (open a trident workspace)");
-        console.writeln("commands:");
-        for (Command c in reg.commands())
-            console.writeln("  " + c.id + " [" + c.key + "]  " + c.title);
+    Workspace ws = Workspace(dir);
+    HelmShell shell = HelmShell(ws.root(), tridentPath(), leviathanPath());
+
+    if (env::get("HELM_RUN") == "1") {
+        shell.run();      // live event loop — blocks until quit
         return;
     }
 
-    Workspace ws = Workspace(dir);
-    CommandRegistry reg = helmCommands(ws.root());
     console.writeln("workspace: " + ws.root());
-    console.writeln("commands:  " + reg.count().toString());
-    console.writeln("files:");
-    FileTree ft = FileTree(ws.root());
-    printTree(ft, ft.rootAt(0), 1);
+    printCommands(shell.commands());
+    printMenu(shell.menu(), shell.commands());
+    console.writeln("shell:");
+    console.writeln(shell.renderShell(60, 8));
 }

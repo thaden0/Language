@@ -2,3 +2,14 @@ build/
 **/build/
 scratch_ft/
 **/scratch_ft/
+
+# H11's module + its golden live in dirs literally named "build" (design §5:
+# helm/src/build/*.lev) — real source, not compiler/plan output. Re-include the
+# dirs and their contents; the nested trident plan-output `build/` (e.g.
+# tests/build/build/) is still caught by the **/build/ rule above.
+!src/build/
+!src/build/**
+!tests/build/
+!tests/build/**
+# ...but re-ignore trident's plan output nested under the test project dir.
+tests/build/build/

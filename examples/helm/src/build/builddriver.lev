@@ -1,0 +1,183 @@
+// H11 — the trident build/run/test driver (§7.2, G-H4).
+//
+// The single seam that turns a Build/Run/Test command into a child process and
+// routes its output into the panels + status bar. It reuses H09's `Proc`/
+// `ProcStreamer` (spawn + queue drain) and H06's `StderrDiagnosticSource`/
+// `StderrCollector` (compiler-diagnostic parse), so this file owns only the
+// job lifecycle and the routing:
+//
+//     begin(job)  → status "building…", clear the job's panel
+//     onEvent(e)  → stdout/stderr stream to Output; stderr collects for the
+//                   diagnostic parse; test stdout collects for the harpoon parse
+//     finish(code)→ parse → Problems (build/test) + Test panel (test) + status ✓/✗
+//
+// The routing is driven through `onEvent(ProcEvent)`, exactly the shape a real
+// `Proc` streams and a test drives directly — so the whole build→panels→status
+// loop is golden-testable with **zero subprocesses** (the `FakeProc` doctrine,
+// §11). `spawn`/`build`/`run`/`test` are the thin live wire (Proc runs on
+// oracle+IR only — G-LANG-2 floor); the argv builders below are pure and shared
+// by both the live path and the golden.
+//
+// Design-vs-reality (the H-C4/H-C2/H-C3 precedent, recorded in the doc log):
+// `trident` exposes no `test` subcommand, so Test runs a harpoon project via
+// `trident run <testsDir>` and parses stdout (harpoon.lev). "Choose engine"
+// (§7.2) drives a differential run of the already-built plan through
+// `leviathan --plan <ws>/build/plan.lvplan <flag>` — the exact invocation the
+// project's own test runners use.
+
+namespace Helm {
+
+    // Job kinds. Plain int consts (never a user enum in an Array/Map — bug
+    // #40/#41); read through `jobName`.
+    const int JobBuild = 0;
+    const int JobRun   = 1;
+    const int JobTest  = 2;
+
+    string jobName(int j) {
+        if (j == JobRun)  return "run";
+        if (j == JobTest) return "test";
+        return "build";
+    }
+
+    // Differential engines the "Choose engine" affordance selects (§7.2). The
+    // flag is passed straight through to `leviathan` over the built plan.
+    const int EngineOracle = 0;   // leviathan --run   (tree-walk)
+    const int EngineIr     = 1;   // leviathan --ir    (IR interpreter)
+    const int EngineLlvm   = 2;   // leviathan --emit-llvm (compile-only lane)
+
+    string engineFlagFor(int e) {
+        if (e == EngineIr)   return "--ir";
+        if (e == EngineLlvm) return "--emit-llvm";
+        return "--run";
+    }
+    string engineNameFor(int e) {
+        if (e == EngineIr)   return "ir";
+        if (e == EngineLlvm) return "llvm";
+        return "oracle";
+    }
+
+    class BuildDriver {
+        PanelHost         panels_;
+        StatusModel       status_;
+        IDiagnosticSource diagSrc_ = StderrDiagnosticSource();
+
+        int  engine_  = EngineOracle;
+        int  jobId_   = 0;            // monotonic; the diagnostic-batch version
+        int  job_     = JobBuild;
+        bool running_ = false;
+
+        // Per-job accumulators (reference-type fields — a stream closure cannot
+        // write back a captured local, the G-H2 footgun; §langservice precedent).
+        StderrCollector errbuf_ = StderrCollector();   // stderr → diagnostics
+        StderrCollector outbuf_ = StderrCollector();   // test stdout → harpoon
+
+        // Path attributed to a location-less diagnostic (the compiler usually
+        // emits real paths; "" keeps every Diagnostic addressable).
+        string defaultPath_ = "";
+
+        // Live-path state (held so the streamer's tick timer isn't dropped).
+        Proc?               proc_ = None;
+        Array<ProcStreamer> live_ = [];
+
+        new BuildDriver(PanelHost panels, StatusModel status) {
+            panels_ = panels;
+            status_ = status;
+        }
+
+        // ---- engine selection (the status-bar affordance) -------------------
+        int    engine()      => engine_;
+        string engineName()  => engineNameFor(engine_);
+        void   setEngine(int e) {
+            engine_ = e;
+            status_.setEngine(engineNameFor(e));
+        }
+
+        bool running() => running_;
+        int  jobId()   => jobId_;
+        int  job()     => job_;
+
+        // ---- pure argv builders (shared by the live spawn and the golden) ---
+        Array<string> buildArgs(string ws)  => ["build", ws];
+        Array<string> runArgs(string ws)    => ["run", ws];
+        Array<string> testArgs(string dir)  => ["run", dir];
+        string        planPath(string ws)   => joinPath(ws, "build/plan.lvplan");
+        // The differential-run invocation for `leviathan` (not trident).
+        Array<string> engineRunArgs(string ws) =>
+            ["--plan", this.planPath(ws), engineFlagFor(engine_)];
+
+        // ---- job lifecycle (the routing core — driven by onEvent) -----------
+
+        void begin(int job) {
+            job_     = job;
+            jobId_   = jobId_ + 1;
+            running_ = true;
+            errbuf_  = StderrCollector();
+            outbuf_  = StderrCollector();
+            status_.setBuild(BuildRunning);
+            panels_.appendOutput("$ trident " + jobName(job));
+            if (job == JobTest) panels_.tests.clear();
+        }
+
+        // The sink a real `Proc` streams into; a test calls it with synthetic
+        // events to exercise the whole route without a subprocess.
+        void onEvent(ProcEvent e) {
+            if (e.isStdout())      this.onLine(e.line, false);
+            else if (e.isStderr()) this.onLine(e.line, true);
+            else                   this.finish(e.code);
+        }
+
+        void onLine(string line, bool isErr) {
+            panels_.appendOutput(line);
+            // Compiler diagnostics arrive on stderr; collect them for build and
+            // test (a failed test build shows compiler errors). A plain `run`'s
+            // stderr is program output, not diagnostics — streamed only.
+            if (isErr) { if (job_ == JobBuild || job_ == JobTest) errbuf_.add(line); }
+            else       { if (job_ == JobTest) outbuf_.add(line); }
+        }
+
+        void finish(int code) {
+            running_ = false;
+            status_.setBuild(code == 0 ? BuildOk : BuildFailed);
+
+            if (job_ == JobBuild || job_ == JobTest) {
+                // Route compiler diagnostics into Problems + the status counts
+                // (reusing H06's parser, §7.2). Version-keyed by the job id.
+                DiagnosticBatch b = DiagnosticBatch(jobId_, diagSrc_.parse(errbuf_.text(), defaultPath_));
+                panels_.applyBatch(b);   // reveals Problems iff it carries errors
+                status_.applyBatch(b);
+
+                if (job_ == JobTest) {
+                    panels_.tests.setResults(parseHarpoon(outbuf_.text()));
+                    // Surface the Test panel unless a build error already pulled
+                    // Problems forward (a broken test build is more urgent).
+                    if (b.errorCount() == 0) panels_.show(PanelTest);
+                }
+            }
+            panels_.appendOutput("[exit " + code.toString() + "]");
+        }
+
+        // ---- live path (oracle+IR only — the §7.1 process floor) ------------
+
+        void spawn(string exe, Array<string> args, string cwd) {
+            Proc p = Proc(exe, args, cwd);
+            proc_ = p;
+            // Explicit `this.` receiver in the stored lambda (bug #53).
+            ProcStreamer st = ProcStreamer(p, (e) => this.onEvent(e));
+            live_ = live_.add(st);
+            st.run(20);
+        }
+
+        void build(string tridentExe, string ws)     { this.begin(JobBuild); this.spawn(tridentExe, this.buildArgs(ws), ""); }
+        void run(string tridentExe, string ws)        { this.begin(JobRun);   this.spawn(tridentExe, this.runArgs(ws), ""); }
+        void test(string tridentExe, string testsDir) { this.begin(JobTest);  this.spawn(tridentExe, this.testArgs(testsDir), ""); }
+        // Differential run of the built plan through the selected engine.
+        void runEngine(string levExe, string ws)      { this.begin(JobRun);   this.spawn(levExe, this.engineRunArgs(ws), ""); }
+
+        // Cancellation — the build spinner's ^C / Run's Shift-F5 (signal; the
+        // `Process` floor exposes SIGTERM only, §7.1).
+        void stop() {
+            if (proc_ != None) { Proc p = proc_; p.signal(0); }
+        }
+    }
+
+}

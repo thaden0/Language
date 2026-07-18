@@ -1,0 +1,23 @@
+== argv builders + engine choice ==
+build:  trident build /ws
+run:    trident run /ws
+test:   trident run /ws/tests
+engine(oracle): leviathan --plan /ws/build/plan.lvplan --run
+engine(ir):     leviathan --plan /ws/build/plan.lvplan --ir
+engineName=ir
+== build job — compiler diagnostics, exit 1 ==
+  output.lines=5 problems=2 tests=0 active=1
+  status.left=[EDIT  ● 1  ▲ 1  ✗ build failed]
+  status.right=[Ln 1, Col 1  UTF-8  Leviathan  ⚙ oracle]
+  problem[0]=src/main.lev:12:5: error: unknown name 'foo'
+== test job — harpoon report, exit 0 ==
+  output.lines=13 problems=0 tests=3 active=3
+  status.left=[EDIT  ✓ build ok]
+  status.right=[Ln 1, Col 1  UTF-8  Leviathan  ⚙ oracle]
+  test[0] ✓ Calc::adds
+  test[1] ✗ Calc::divides :: expected 2 but got 3
+  test[2] ✓ Calc::wip :: skipped
+== run job — stderr is program output, not diagnostics ==
+  output.lines=17 problems=0 tests=3 active=3
+  status.left=[EDIT  ✓ build ok]
+  status.right=[Ln 1, Col 1  UTF-8  Leviathan  ⚙ oracle]

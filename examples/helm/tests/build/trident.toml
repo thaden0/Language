@@ -1,0 +1,26 @@
+name    = "helm-build-test"
+entry   = "Helm::main"
+sources = [
+    "build_test.lev",
+    "../../src/build/harpoon.lev",
+    "../../src/build/builddriver.lev",
+    "../../src/lang/diagnostic.lev",
+    "../../src/lang/diagparse.lev",
+    "../../src/lang/langservice.lev",
+    "../../src/workspace/paths.lev",
+    "../../src/proc/proc.lev",
+    "../../src/editor/piece.lev",
+    "../../src/editor/lineindex.lev",
+    "../../src/editor/cursor.lev",
+    "../../src/editor/buffer.lev",
+    "../../src/panels/problems.lev",
+    "../../src/panels/output.lev",
+    "../../src/panels/testresults.lev",
+    "../../src/panels/panelhost.lev",
+    "../../src/status/statusbar.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

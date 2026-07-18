@@ -740,3 +740,54 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     assembled. The `IDiagnosticSource`/`ILanguageService` DI seams are ready for the trident-driven
     diagnostics path; `PanelHost.appendOutput` and the status build-state consts are the seams H11
     streams build output and ✓/✗ into.
+- 2026-07-17 — **G-H4 landed.** H11 build/run/test driver + the H01 shell assembled. Four new
+  `.lev` files (`src/build/{harpoon,builddriver}.lev`, `src/command/menu.lev`, `src/shell.lev`),
+  `main.lev` rewritten to compose the shell, the package `trident.toml` sources widened to every
+  `src/**` dir, and two golden tests (`tests/{build,shell}`); **13 Helm tests total, all green on
+  oracle + IR** (byte-identical). No `src/**`/`runtime/**` touched; no compiler bugs hit.
+  - **H11 — the trident driver (`src/build/`).**
+    - `builddriver.lev` — `BuildDriver`, the single seam turning a Build/Run/Test command into a
+      child process and routing its output. It reuses H09's `Proc`/`ProcStreamer` and H06's
+      `StderrDiagnosticSource`/`StderrCollector`, owning only the job lifecycle + routing, driven
+      through **`onEvent(ProcEvent)`** — the exact shape a live `Proc` streams, so the whole
+      build→Output/Problems/Test/status loop is golden-testable with **zero subprocesses** (the
+      `FakeProc` doctrine, §11). Pure argv builders (`buildArgs`/`runArgs`/`testArgs`/
+      `engineRunArgs`) are shared by the live spawn and the golden. Job/engine tags are int consts
+      (bug #40/#41). Build/test stderr parses into Problems + status counts (`applyBatch`); test
+      stdout parses into the Test panel and reveals it; a plain `run`'s stderr is program output,
+      **not** parsed as diagnostics. Exit code → `BuildOk`/`BuildFailed`. `stop()` = SIGTERM (§7.1).
+    - `harpoon.lev` — `parseHarpoon(stdout)` → `Array<TestResult>`, matching
+      `harpoon/src/runner.lev`'s exact report (`  Class::method … ok|FAIL|ERROR|skip`, six-space
+      detail lines, `N run:` summary). Tolerant by construction (K4); the `tests/build` golden is
+      the drift guard. harpoon reports no per-test timing/location in v1, so `ms`/`path`/`line` are 0.
+    - **Design-vs-reality refinements (the H-C4/H-C2/H-C3 precedent; no new escalation).**
+      (1) `trident` exposes **no `test` subcommand** (verified: `build|run|check|emit-llvm|plan`), so
+      Helm's Test command runs a harpoon project via `trident run <testsDir>` and parses stdout.
+      (2) "Choose engine" (§7.2) drives a differential run of the already-built plan through
+      `leviathan --plan <ws>/build/plan.lvplan <flag>` — the exact invocation the project's own test
+      runners use — surfaced as a status-bar affordance (`StatusModel.setEngine`, a new right-side
+      `⚙ <engine>` segment that stays empty by default so H08's golden is unchanged).
+  - **H01 — the shell assembled (`src/shell.lev`).** `HelmShell` is the single wiring point (the
+    ReconApp precedent): it owns the `SonarApp`, the one `CommandRegistry` (12 commands — build/run/
+    stop/test/engine×4/runEngine/togglePanel/palette/save/quit, each with its accelerator), the
+    `MenuModel` (File/Edit/View/Run/Help), the `PanelHost`, `StatusModel`, and `BuildDriver`, and
+    assembles them into the dock chrome (menu bar / body / panel-tab strip / status bar as real
+    `ContentBar`/`ContentBox` widgets `app.add`-ed to the tree). Everything is wired in the ctor
+    (accelerators `bindInto` the app keymap) so the shell is testable without `run()`. Two drivers:
+    `run()` (the live `SonarApp.run()` loop) and **`renderShell(w,h)`** — a headless `TestRenderer`
+    snapshot of the assembled chrome. `main.lev` composes the shell and prints its surface + a
+    rendered snapshot by default (deterministic, non-blocking); `HELM_RUN=1` launches the live loop.
+    - **Shell-snapshot refinement.** `renderShell` paints the top/panel/status bars directly onto one
+      `Surface` (priming the default background with `surface.clear`, which the live App's root fill
+      supplies) rather than driving `SonarApp.pumpOnce()` — matching the editor/status golden idiom
+      and keeping the oracle+IR lane free of the frame-timer the event loop would start. The live
+      EditorView/TreeView body mount, the command-palette overlay, and dropdown menus are H04/H05/H12
+      riders on the live shell; the body is their (blank) mount region in the assembled snapshot.
+  - **`tests/build`** drives the driver with synthetic `ProcEvent`s (build with 2 diagnostics→exit 1,
+    a harpoon test report→exit 0, a run whose stderr is program output) and checks the panels/status
+    routing + argv builders + engine choice. **`tests/shell`** constructs the shell and prints the
+    command surface, the menu structure, a palette filter, and three `renderShell` snapshots (initial;
+    after a diagnostic batch reveals Problems + folds the counts; after a `^`\`-style panel toggle).
+  - **Next gate G-H5** = H12 settings/keymap/theme + workspace search, and the self-host milestone
+    (edit Helm's own source in Helm). The `HelmShell` body is the EditorView mount point; the
+    `CommandRegistry`/`MenuModel`/palette surface is ready for the settings + search commands.
