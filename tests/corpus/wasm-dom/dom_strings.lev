@@ -1,0 +1,17 @@
+// Track W W-M3 (doc 05 §7): the UTF-8<->UTF-16 boundary pins. The marshaler
+// transcodes at the wasm boundary; these pin ASCII, multibyte, and astral
+// (surrogate-pair) round-trips both ways — echo (Leviathan -> JS) and a real
+// setAttribute/getAttribute round-trip (Leviathan -> JS -> Leviathan). Wasm-lane
+// only. The encoding-ruling question (info.md §9/§10) is neutral here: the
+// marshaler moves bytes + lens, only these pins would care about a ruling.
+
+console.writeln(std::sysHostEcho("ascii"));      // ASCII
+console.writeln(std::sysHostEcho("café"));       // multibyte (U+00E9)
+console.writeln(std::sysHostEcho("日本語"));      // multibyte (3-byte)
+console.writeln(std::sysHostEcho("🎉"));          // astral (surrogate pair)
+
+// Full boundary round-trip: Leviathan string -> JS (setAttribute) -> JS string
+// -> Leviathan (getAttribute).
+DomNode n = Dom::create("div");
+n.setAttr("data-x", "café🎉日本語 mix");
+console.writeln("roundtrip: " + n.attr("data-x"));

@@ -3098,6 +3098,38 @@ void lvrt_callclosure(LvValue* out, const LvValue* clo,
     if (window != small) free(window);
 }
 
+/* Track W hard-06 (designs/wasm-frontend/hard-06-hostbridge-seam.md): the
+ * JS/DOM host-bridge accessor + native stubs. lvrt_class_field_name is the one
+ * host-facing reader the JS marshaler pairs with lvrt_fieldcount to walk an
+ * object's slots (doc 05 §3); real on every target (reads the registered class
+ * table), meaningful only when a JS host reads it through the wasm export.
+ * On wasm the bridge ENTRY points (lvrt_hostcall/host_clo_reg/hostecho) live in
+ * lv_bridge_wasm.c; here they are native stubs that raise, since DOM/JS is a
+ * wasm-only capability (a program that reaches one on a native build gets a
+ * loud, catchable RuntimeException — the existing corpus never does). */
+const char* lvrt_class_field_name(int64_t classId, int64_t i) {
+    const LvClassInfo* c = lv_find_class(classId);
+    if (!c || i < 0 || i >= c->nslots || !c->slotNames) return NULL;
+    return c->slotNames[i];
+}
+
+#ifndef __wasm__
+static void lv_host_native_only(LvValue* out) {
+    if (out) { out->tag = LV_VOID; out->payload = 0; }
+    lvrt_raise("host bridge: available on the wasm-browser target only");
+}
+void lvrt_hostcall(LvValue* out, const LvValue* op, const LvValue* h0,
+                   const LvValue* h1, const LvValue* a, const LvValue* b) {
+    (void)op; (void)h0; (void)h1; (void)a; (void)b; lv_host_native_only(out);
+}
+void lvrt_host_clo_reg(LvValue* out, const LvValue* cb) {
+    (void)cb; lv_host_native_only(out);
+}
+void lvrt_hostecho(LvValue* out, const LvValue* v) {
+    (void)v; lv_host_native_only(out);
+}
+#endif /* !__wasm__ */
+
 void lvrt_uncaught(void) {
     if (!lv_g_throwing) return;
     /* gap (b) (designs/exit-codes.md §5): an uncaught exception exits 1 — a

@@ -1,0 +1,10 @@
+// Track W doc 04 §6's fetch-shaped end-to-end (probe_* mode, run_wasm.sh):
+// while this program's activations park on a timer, the driver runs one
+// extra lv_probe_fetch activation through a GENUINE WebAssembly.Suspending
+// fetch of a data: URI plus a yield-lane suspension, proving Suspending
+// imports compose with the lvrt_await park machinery in one instance ahead
+// of doc 05's real fetch bridge. The program itself must still match --ir.
+Promise<int> p = Promise();
+std::sysTimerStart(10, 0, (n) => { p.resolve(7); });
+int x = await p;
+console.writeln("got " + x.toString());

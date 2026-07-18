@@ -1,0 +1,18 @@
+// Track W W-M3 (doc 05 §3/§8): reflective marshaler round-trip pins — one
+// std::sysHostEcho per tag exercises the single table-driven JS marshaler
+// (marshal -> host render). Wasm-lane only.
+
+class Point { int x; int y; new Point(int a, int b) { x = a; y = b; } }
+
+console.writeln(std::sysHostEcho(42));          // INT
+console.writeln(std::sysHostEcho(0 - 7));       // INT (negative)
+console.writeln(std::sysHostEcho(true));        // BOOL
+console.writeln(std::sysHostEcho(false));       // BOOL
+console.writeln(std::sysHostEcho('A'));         // CHAR -> string
+console.writeln(std::sysHostEcho(3.5));         // FLOAT (payload bits as f64)
+console.writeln(std::sysHostEcho("hi"));        // STR
+console.writeln(std::sysHostEcho([1, 2, 3]));   // ARR (boxed)
+console.writeln(std::sysHostEcho(Point(1, 2))); // OBJ (slot walk)
+
+string? gone = None;
+console.writeln(std::sysHostEcho(gone));        // NONE

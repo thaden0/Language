@@ -248,6 +248,8 @@ struct Gen {
         rtLoopHasWork, rtLoopStep, rtAwait, rtPeakBytes, rtLiveBytes, rtThreadStats, rtToString,
         // Track W hard-03 (doc 02 §5 tier 2): the wasm capability-gate trap stub
         rtUnsupported,
+        // Track W hard-06 (doc 05 §2-§4): the JS/DOM host-bridge seam
+        rtHostCall, rtHostCloReg, rtHostEcho,
         // §9 A-M6 arena tier: the raw allocator + tier-blind helpers already in
         // lv_abi.h (§2.5/§2.6), reused (not extended) to build the two arena-
         // tier constructors below without touching the frozen ABI.
@@ -455,6 +457,11 @@ struct Gen {
         // Track W hard-03 (doc 02 §5 tier 2): trap stub for gated natives in
         // emitted-but-not-user-reachable prelude bodies. Never returns.
         rtUnsupported  = fn("lvrt_unsupported", voidTy, {ptrTy});
+        // Track W hard-06 (doc 05 §2-§4): the JS/DOM host-bridge seam.
+        rtHostCall     = fn("lvrt_hostcall", voidTy,
+                            {ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
+        rtHostCloReg   = fn("lvrt_host_clo_reg", voidTy, {ptrTy, ptrTy});
+        rtHostEcho     = fn("lvrt_hostecho", voidTy, {ptrTy, ptrTy});
         // LA-30 B2 (doc 06 §4): the sysTask* floor — ids across the boundary,
         // scalar results; joinAll/awaitAny2 park and may raise (throw check
         // rides CallNativeFn's blanket emitThrowCheck).
@@ -750,11 +757,25 @@ struct Gen {
                     } else if (in.op == Op::CallDyn) {
                         if (in.decl && mod.byDecl.count(in.decl))
                             umark(mod.byDecl.at(in.decl));
-                        else {
-                            auto it = methodFns.find(in.sname);
-                            if (it != methodFns.end())
-                                for (auto& [fnIdx, cls] : it->second) umark(fnIdx);
-                        }
+                        // Unresolved by-name CallDyn: NO name-fallback here,
+                        // deliberately diverging from scan() above (doc 04
+                        // as-built, W-M2). The full walk's markByName is an
+                        // EMISSION over-approximation (nothing may be pruned);
+                        // reused verbatim for gating it marked every same-named
+                        // method on every class — e.g. any `close()` on a
+                        // generic stream reached Channel.close ->
+                        // sysChannelClose and bricked every Timer user at
+                        // compile time (found by the W-M2 async corpus). For
+                        // this walk the receiver's class is covered anyway:
+                        // every user-instantiated class marks ALL its members
+                        // at its NewObject (collectMembersLG above), so a
+                        // by-name edge adds only never-constructed classes.
+                        // Under-marking is gate-safe by construction: a gated
+                        // native missed here still compiles to the tier-2
+                        // lvrt_unsupported trap — loud at runtime, never a
+                        // silent pass and never wrong emission. (Receivers
+                        // constructed only in @ginit take that trap tier too,
+                        // consistent with "@ginit is not a root".)
                     } else if (in.op == Op::MakeClosure) umark(in.b);
                 }
             }
@@ -2860,6 +2881,29 @@ struct Gen {
                             } else {  // sysKill
                                 b.CreateCall(rtSysKill, {regs[in.a], arg(0), arg(1)});
                             }
+                        } else if (n == "sysHostI" || n == "sysHostS" ||
+                                   n == "sysHostV") {
+                            // Track W hard-06 (doc 05 §2-§4): the generic sync
+                            // JS/DOM host bridge. One C entry for all three
+                            // return-type-distinguished decls (op, h0, h1, a, b);
+                            // the tag of the result is decided host-side by `op`.
+                            // NOT gated (a wasm-GAINED capability, not a hard-03
+                            // LOST one); on native lvrt_hostcall raises. Result
+                            // retained +1 (fresh string/handle transfer; the
+                            // int/void results no-op the retain via the
+                            // immediate gate, exactly as sysRecv's None/"" path).
+                            b.CreateCall(rtHostCall, {regs[in.a], arg(0), arg(1),
+                                                      arg(2), arg(3), arg(4)});
+                            retainDst();
+                        } else if (n == "sysHostCloReg") {
+                            // Register a handler closure as a doc-05 §5 root
+                            // (retained host-side); returns its table index.
+                            b.CreateCall(rtHostCloReg, {regs[in.a], arg(0)});
+                        } else if (n == "sysHostEcho") {
+                            // Reflective marshaler round-trip probe (doc 05 §8):
+                            // fresh host-rendered string -> +1.
+                            b.CreateCall(rtHostEcho, {regs[in.a], arg(0)});
+                            retainDst();
                         } else {
                             fail("native floor function '" + n + "'");
                         }

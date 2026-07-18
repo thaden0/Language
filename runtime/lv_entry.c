@@ -31,7 +31,27 @@ static void lv_main_task(void* a, void* b) {
     lv_main((LvValue*)a);
 }
 
+#if defined(__wasm__)
+/* Track W (doc 02 §6/§7, hard-02's link lane): on native, `main` (the entry
+ * symbol lv_entry.c exposes) is pulled from the archive automatically —
+ * every generated object leaves it undefined, so the linker always needs it.
+ * wasm-ld's archive pulls are the same "someone must need this symbol"
+ * mechanism, but nothing needs `lv_entry_main` that way (no crt0, no libc
+ * `_start` — main.cpp's link lane skips both), so it has to be forced with
+ * `--export=lv_entry_main`; `export_name` then pins the WASM EXPORT table
+ * entry to "main" regardless of that internal C name, so the JS host
+ * (lv_host.js) and any `--invoke main` driver still call it by the same name
+ * as the doc's `--export=<entry>` describes. A literal `main(argc, argv)` is
+ * NOT used as the forced symbol itself: clang mangles a wasm `main` with
+ * this signature to `__main_argc_argv` (there being no process argv on this
+ * target otherwise), which would make the forcing flag an obscure,
+ * signature-dependent implementation detail instead of a name this file
+ * controls directly. */
+__attribute__((export_name("main")))
+int lv_entry_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     lv_rt_init(argc, argv);            /* regions, registries, argv capture */
 
     LvValue ret;

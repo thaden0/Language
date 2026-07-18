@@ -1,6 +1,8 @@
 # Track W — doc 2 of 6: the backend column (W-M1, part 1)
 
-**Status:** PROPOSED. **Depends on:** W-M0 spike verdict (doc 01).
+**Status:** LANDED (2026-07-17) — see §6/§7 for the as-built shape (wasi-libc-backed
+archive, `lv_entry_main`/`export_name` finding, headless-Node corpus lane). **Depends
+on:** W-M0 spike verdict (doc 01).
 **HARD content:** extracted to their own minimal packets — `hard-01-tls-pin.md`,
 `hard-02-link-lane.md`, `hard-03-capability-gate.md` (one packet = one commit, four-lane
 differential green after each). §3–§5 below are context stubs only.
@@ -57,13 +59,55 @@ If `lv_runtime.c` or `lv_loop.c` fail to compile under `-nostdlib` wasm32 (stray
 include, host-only assumption), fix belongs to the *runtime*, coordinated with the
 portable-backend owner — the spike (doc 01) should have surfaced any such case already.
 
+**As-built (2026-07-17) — three findings this section didn't anticipate:**
+
+1. **`-nostdlib` was never viable.** `lv_runtime.c` alone calls `malloc`/`free`/`calloc`/
+   `realloc`, the whole `mem*`/`str*` family, and `snprintf` (~90 call sites) — none of
+   which a bare `-nostdlib` wasm32 build supplies, and reimplementing them isn't in scope.
+   The archive compiles against **wasi-libc** (`clang --target=wasm32-wasi --sysroot=...`)
+   for that C-level surface instead; the browser-vs-WASI split lives entirely in
+   `lv_plat_wasm.c`'s imports (doc 03), never in which libc supplies `memcpy`. Toolchain
+   env vars: `LVRT_WASI_SYSROOT` (default `/usr`, matching the `wasi-libc` apt package's
+   own layout), `LVRT_WASI_BUILTINS` (default resolved via `clang -print-resource-dir`,
+   matching `libclang-rt-<ver>-dev-wasm32`). Because `main.cpp`'s wasm-ld invocation links
+   only the generated object plus one archive (no `-l` flags on wasm), the archive itself
+   folds in the needed wasi-libc/compiler-rt objects — see build-triple.sh's wasm32 branch
+   for the extraction discipline that needed (wasi-libc's `libc.a` carries more than one
+   member with the same basename, e.g. two distinct `errno.o`s — a blanket `ar x`
+   silently drops one; `ar xN <count>` per (name, occurrence) pair fixes it).
+2. **`lv_thread.c`/`lv_proc.c` are dropped, not ported.** Both need `pthread.h`/`fork(2)`,
+   neither in wasi-libc's sysroot — but nothing in a wasm-linked binary ever calls into
+   them: the capability gate (hard-03) redirects every reachable spawn/thread native
+   before codegen emits a real call, so their object code is unreferenced weight a wasm
+   archive doesn't need to carry.
+3. **`main.cpp`'s `--export=main` (hard-02) couldn't resolve.** Clang mangles a wasm
+   `main(argc, argv)`'s *linker* symbol to `__main_argc_argv`; `--export=main` looks for a
+   linker symbol literally named `main` and errors. Fixed by renaming the wasm leg of
+   `lv_entry.c`'s entry point to `lv_entry_main` (a name this file controls, not an
+   implementation-detail mangling) with `__attribute__((export_name("main")))`, and
+   changing the wasm-ld flag to `--export=lv_entry_main` — the WASM EXPORT table entry is
+   still spelled `"main"` either way, so JS hosts and `--invoke main` drivers are
+   unaffected.
+
 ## 7. Verification (W-M1 backend half)
 
 - Four-lane differential on the full pre-existing suite after **each** HARD commit.
-- New corpus lane: `tests/run_wasm.sh <leviathan> <file-or-dir>` — compile with
-  `--build-native out.wasm --target wasm32-unknown-unknown`, run under `wasmtime`
-  (`--invoke` the entry), diff stdout against `--ir`. Wire the pure-compute + console
-  clusters. Browser check is doc 03's (needs the floor's JS host).
+- New corpus lane: `tests/run_wasm.sh <leviathan> <file-or-dir> [file-or-dir ...]` —
+  compile with `--build-native out.wasm --target wasm32-unknown-unknown`, run headlessly,
+  diff stdout (not stderr — the LLVM backend's escaping-tier meter has no `--ir`
+  counterpart) against `--ir`. Wired as CTest's `corpus_wasm` against the same 28-file
+  pure-compute+console cluster the W-M0 spike validated
+  (`tests/spike-wasm/run.sh`'s `default_corpus`) plus `tests/corpus/wasm/`'s gated + trap
+  pins and the `time_random` shape pin (doc 03 §5's as-built note) — 32 files, all green
+  as of 2026-07-17. **As-built:** "run under wasmtime (`--invoke` the
+  entry)" doesn't work as literally written — the wasmtime CLI only auto-supplies WASI
+  imports, and this floor's real output path is the `"lv"` module (doc 03 §1), which
+  nothing but our own host code can satisfy. `tests/wasm_node_run.mjs` — Node's native
+  `WebAssembly` plus `runtime/lv_host.js`'s shared `makeImports()` — is the headless host
+  instead (doc 03 §3's "node/wasmtime shim", concretely); it and `run_wasm.sh` both build
+  their imports from that one shared function. Browser check is doc 03's (needs the
+  floor's JS host) — spot-checked in real headless Chrome via `lv_host_page.html` +
+  `--dump-dom`, byte-identical against `--ir`.
 - Gate-diagnostic pins: a `tests/corpus/wasm/gated_file.lev` (uses `File`) asserting the
   compile-time diagnostic text — the checker-test style (`ERROR_HAS`) or a run_wasm.sh
-  negative mode, whichever is cheaper.
+  negative mode, whichever is cheaper. Landed as the run_wasm.sh negative mode.

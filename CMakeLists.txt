@@ -1325,12 +1325,45 @@ add_test(NAME rt_platform_audit
 # Track W (techdesign-02-backend-column.md §7): the wasm corpus lane.
 # gated_*.lev files are NEGATIVE pins for the hard-03 capability-gate
 # diagnostic (compile must fail with the pinned text — needs only the LLVM
-# wasm backend, no archive). Non-gated files run end-to-end under wasmtime
-# and are skipped inside the script until the §6 wasm runtime archive,
-# wasm-ld, and wasmtime are all present.
+# wasm backend, no archive). Non-gated files run end-to-end under a headless
+# Node host (tests/wasm_node_run.mjs) and are skipped inside the script until
+# the §6 wasm runtime archive, wasm-ld, or node are missing.
+#
+# The pure-compute + console cluster below is the same curated subset the
+# W-M0 spike differential already validated end-to-end (tests/spike-wasm/
+# run.sh's default_corpus) — house rule (doc 00 §6): portable pins "simply
+# gain the wasm lane" rather than being duplicated under tests/corpus/wasm/.
+# time_random is doc 03 §5's time/random cluster (shape pins, not golden
+# values — the only corpus file whose output crosses the floor's
+# now_ms/now_ns/random imports).
+set(LVRT_WASM_PURE_COMPUTE_CORPUS
+    math structs structs_array generics collections loops match match_nested
+    classes oo floats literals const sieve strcmp bitops optional exceptions
+    cow maps_set namespaces qualified use seq iterator readonly
+    class_dispatch method_refs named_defaults time_random
+    # Track W W-M2 (techdesign-04-async-jspi.md §6): the async cluster —
+    # await/then-chains/timers/interleaving/throw-across-await through the
+    # JSPI lane, diffed against --ir. The LA-30 doc-5 pins reused verbatim:
+    # C1 completion order (order_two_awaits), C2 failure routing
+    # (throw_uncaught_callback), C3 loud drain (drained_await_throws), C4
+    # ready-no-yield, plus the B2 cancellation set. The tasks files that use
+    # std::spawn/Channel stay off this lane (gated on wasm, doc 04 §7).
+    tasks/drained_await_throws tasks/throw_uncaught_callback
+    tasks/ready_no_yield tasks/cancelled_exception tasks/order_two_awaits
+    tasks/b2_group_cancel_timeout tasks/b2_group_exit_edges
+    tasks/b2_nested_group_shield)
+set(LVRT_WASM_CORPUS_FILES "")
+foreach(name ${LVRT_WASM_PURE_COMPUTE_CORPUS})
+  foreach(ext ext lev)
+    if (EXISTS "${CMAKE_SOURCE_DIR}/tests/corpus/${name}.${ext}")
+      list(APPEND LVRT_WASM_CORPUS_FILES "${CMAKE_SOURCE_DIR}/tests/corpus/${name}.${ext}")
+    endif()
+  endforeach()
+endforeach()
 add_test(NAME corpus_wasm
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_wasm.sh"
-                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm")
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm"
+                 ${LVRT_WASM_CORPUS_FILES})
 
 # B-M4: aarch64-linux cross corpus lane under qemu-user (doc-2 §6 item 4).
 # Feature-detected: it materializes ONLY when the full cross chain is present

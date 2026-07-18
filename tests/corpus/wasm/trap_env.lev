@@ -1,0 +1,18 @@
+// Track W (techdesign-03-floor-wasm.md §5 / hard-03 verification): the
+// contrived tier-2 pin — a gated native that compiles for wasm and reaches
+// lvrt_unsupported at RUNTIME. The seam is deliberate (LlvmGen.cpp's tier-1
+// walk): @ginit is not a user-reachability root, so a gated native reached
+// only through a namespace-global initializer is never a compile-time
+// diagnostic — it lands on the tier-2 trap stub instead. run_wasm.sh's
+// trap_* mode asserts the build SUCCEEDS (tier 2 keeps prelude bodies
+// buildable), the run exits 134, and stderr carries trap_env.expected.
+namespace G {
+    string? E = env::get("PATH");   // sysEnv: gated ("env"), @ginit-only
+}
+
+void run() {
+    // Never reached on wasm: @ginit traps before @main runs. The read keeps
+    // the global (and its initializer) live.
+    console.writeln(G::E == None ? "unset" : "set");
+}
+run();

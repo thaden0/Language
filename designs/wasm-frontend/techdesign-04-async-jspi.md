@@ -1,8 +1,10 @@
 # Track W — doc 4 of 6: async on wasm — JSPI as the stackful realization (W-M2)
 
-**Status:** PROPOSED. **Depends on:** W-M1 complete (docs 02, 03).
+**Status:** LANDED (2026-07-17) — see §8 for the as-built deltas. **Depends on:** W-M1
+complete (docs 02, 03).
 **HARD content:** none *by design goal* — the one contingency is its own packet,
-`hard-04-await-routing.md` (§4).
+`hard-04-await-routing.md` (§4, closed NOT NEEDED). As-built, ONE `LlvmGen.cpp` edit
+happened anyway — a hard-03 GATE refinement, not an Await-path change (§8 item 2).
 
 ## 1. The one idea
 
@@ -127,3 +129,77 @@ landed flatten/rebuild copy boundary, `lv_thread.h:23-25`; SAB+Atomics = the gat
 shared-mutable tier), but it is its own leg with its own doc when scheduled. Until then
 `spawn`/`Channel` on wasm stays compile-time gated (doc 02 §5), exactly like Windows/ELF
 today (`info.md:1606-1607`). Revisit doc 02 §3's LocalExec TLS pin when this leg opens.
+
+## 8. As-built (2026-07-17) — what the mechanism sections didn't anticipate
+
+1. **The C shadow stack is the real task-stack problem.** §1's "the browser supplying
+   the task stacks" covers the ENGINE's wasm stack only: JSPI does not save
+   `__stack_pointer`, the module global clang's C lowering uses for address-taken
+   locals in linear memory, so two live activations on one shadow stack clobber each
+   other. `lv_task_wasm.c` enforces a four-rule discipline (its file header):
+   per-activation pooled 256 KiB stacks (the lv_task.c mmap-pool analog, malloc'd),
+   save/restore of `__stack_pointer` + the current-task pointer around every
+   suspending import, one static service stack for non-suspending host-entry work
+   (the settle scan, wrapper bookkeeping), and main pinned to the wasm-ld default
+   stack as the FIRST export entered (lv_host.js's `run()` guarantees the order; the
+   probe driver learned this the hard way). The sp accessors are the wasi-libc
+   `.globaltype __stack_pointer` inline-asm idiom — data movement, not a context
+   switch; doc 02 §6's "no .S files" stance stands.
+2. **One `LlvmGen.cpp` edit after all — hard-03's gate, not Await.** The §4 audit
+   re-confirmed clean routing (hard-04 stays CLOSED NOT NEEDED; `Op::Await` is still
+   the single `lvrt_await` call). But the async corpus found a hard-03 tier-1 FALSE
+   POSITIVE: the user-reach walk reused the emission walk's by-name CallDyn fallback,
+   so any generic `close()` dispatch (every `Timer` — its ctor builds
+   StreamBuffer/OutStream) marked `Channel.close` → `sysChannelClose` and bricked the
+   compile. Fixed by dropping the name-fallback from the GATING walk only (the
+   emission walk is untouched): user-instantiated classes already mark all their
+   members at `NewObject`, and under-marking only shifts a case to the tier-2
+   `lvrt_unsupported` trap — loud at runtime, never wrong emission. Native lanes
+   byte-identical (`userReach` is only consumed under `targetWasm`); full suite green.
+3. **Park key = the task record, scanned via a new `lv_park_poll` export** — not §3.3's
+   "export `lvrt_promise_state` via the link flags". One scan export covers all three
+   park shapes (promise / any2 / join — the B2 surface §2 didn't enumerate but
+   "realizes the `lv_task.h` interface" requires: `sysTask*` is NOT gated on wasm, so
+   TaskGroup/cancel/shield/joinall and the b2_* corpus all run on this lane). Zero
+   `main.cpp` edits: `export_name` attributes on always-pulled archive members make
+   `--export` link flags unnecessary. The G11 invariant and the §3.3 ARC retain landed
+   as specified; `lv_task_stub.c` is deleted, superseded.
+4. **`lv_loop_wasm.c` REPLACES `lv_loop.c` in the wasm archive** (§2's "thin
+   `lv_loop_wasm.c`" option — the shared file's registries are file-static and its
+   step blocks in poll, so interposing wasn't possible; `lv_loop.c` is untouched, per
+   the §2 rule, and stays on every native triple). Its one behavioral invention:
+   `lvrt_loop_step` = "suspend until the host completes one dispatch" (`lv.step`),
+   which keeps `lv_main`'s EMITTED tail drain — pumped from inside task 0 in both
+   modes since LA-30 — correct with zero codegen edits, C2 throw routing included.
+   Repeating timers re-arm from C after each fire (fixed-delay vs native fixed-rate;
+   the corpus pins tick shape/order, not phase — `repeat_cancel.lev`). FD watches
+   register/cancel but never arm or count as loop work (every fd source is gated).
+5. **`lv_plat_map` had to stop bump-allocating** (`lv_plat_wasm.c`): the W-M1 cursor
+   from `__heap_base` could overlap wasi-libc dlmalloc's sbrk region once both had
+   grown the memory — latent in W-M1, real the moment task stacks made malloc traffic
+   (§8 item 1). Now page-granular `memory.grow` from the live end; two end-growers
+   are disjoint by construction.
+6. **§3.4's "print the same message" lands runtime-side:** the host resolves each
+   parked task `LV_PARK_DRAINED` (park order, matching `drain_wake_all`) and the
+   RUNTIME raises the native flip mode's own C3 message — which is what keeps
+   `drained_await_throws` byte-identical against `--ir`, exit 1 included. The corpus
+   lane now diffs exit codes as well as stdout.
+7. **Verification as run (the §6 gate):** the corpus_wasm lane is 44 files, 0
+   skipped — W-M1's 28 pure-compute+console + the async cluster (LA-30 doc-5 pins
+   verbatim: C1 `order_two_awaits`, C2 `throw_uncaught_callback`, C3
+   `drained_await_throws`, C4 `ready_no_yield`, plus `cancelled_exception` and the
+   three `b2_*` files) + four new wasm pins (`order_timers` — §3.2's simultaneous-due
+   pin, `repeat_cancel`, `then_chain` — then-chains + throw-across-await, and
+   `probe_async`). The §6 fetch e2e is `lv_probe_fetch`: one extra activation
+   suspending on a GENUINE `fetch('data:text/plain,42')` through a Suspending import
+   plus a yield-lane suspension while corpus activations sit parked (run_wasm.sh's
+   `probe_*` mode; in-stack fetch-under-`lvrt_await` arrives with doc 05's bridge).
+   Hosts: Node 24.14 with `--experimental-wasm-jspi` (detected in run_wasm.sh;
+   pure-compute still passes without it, async fails loud naming the floor) and
+   headless Chrome 145 (JSPI on by default since 137) via `lv_host_page.html` —
+   `then_chain` byte-identical, C3 drain banner + exit 1 verbatim.
+8. **Asyncify fallback NOT exercised:** no Binaryen `wasm-opt` on the build host, and
+   the engine-coverage complaint it was de-risking has shrunk (JSPI default-on in
+   Chrome, behind one flag in Node). Recorded here per §5 and shelved unbuilt —
+   bring-up reserve only, never CI-required, never load-bearing (STOP condition 4);
+   the no-CPS stance stands.

@@ -1,0 +1,30 @@
+// Track W W-M3 gate (techdesign-05-dom-bridge.md §8): "hello DOM" — build a DOM
+// subtree, set attributes, install a click handler that AWAITS a timer then
+// mutates text, and self-dispatch the click (in a page the user clicks; a
+// headless harness self-dispatches through the same dispatchEvent API, §4/§8).
+// Run only on the wasm lane (tests/run_wasm_dom.sh) — DOM is a wasm-gained
+// capability with no --ir equivalent (native sysHost* raises).
+
+DomNode app = Dom::create("div");
+app.setAttr("id", "app");
+
+DomNode btn = Dom::create("button");
+btn.setAttr("class", "primary");
+btn.setText("click me");
+app.append(btn);
+Dom::body().append(app);
+
+console.writeln("built #" + app.attr("id") + " > [" + btn.attr("class") + "] " + btn.text());
+
+btn.on("click", (e) => {
+    // await a timer, then mutate text — proves suspension works inside a DOM
+    // handler (doc 05 §4: the trampoline runs on its own promising activation).
+    Promise<bool> p = Promise();
+    std::sysTimerStart(10, 0, (n) => p.resolve(true));
+    bool ok = await p;
+    btn.setText("clicked!");
+    console.writeln("handler: " + e.type() + " -> " + btn.text());
+});
+
+btn.click();
+console.writeln("dispatched (handler runs on the drain)");

@@ -624,9 +624,19 @@ int main(int argc, char** argv) {
                                     // Track W hard-02 (doc 02 §4): the wasm-ld
                                     // lane — early and parallel to the native
                                     // probe below, which stays byte-identical
-                                    // for non-wasm triples. `--export=main`:
-                                    // `main` is the entry symbol lv_entry.c
-                                    // exposes on native (reused, not invented);
+                                    // for non-wasm triples. `main` is the entry
+                                    // symbol lv_entry.c exposes on native
+                                    // (reused, not invented); on wasm the same
+                                    // function is named `lv_entry_main` and
+                                    // carries `export_name("main")` (doc 02
+                                    // §6/§7 finding: there is no crt0/libc
+                                    // `_start` pulling it in the way native's
+                                    // linker always needs `main`, so wasm-ld
+                                    // has nothing to force the archive pull
+                                    // with unless told; `--export=lv_entry_main`
+                                    // is that forcing root, and the attribute
+                                    // then pins the WASM EXPORT table entry to
+                                    // "main" regardless — see lv_entry.c).
                                     // `--import-undefined` resolves the
                                     // remaining imports from the JS host
                                     // (techdesign-03-floor-wasm.md §2). No -lm,
@@ -664,7 +674,8 @@ int main(int argc, char** argv) {
                                                              kWasm.size(), kWasm) != 0)
                                         finalOutPath += kWasm;
                                     std::string cmd = wasmLd + " \"" + objPath + "\" \"" +
-                                        runtimeLib + "\" --no-entry --export=main "
+                                        runtimeLib + "\" --no-entry "
+                                        "--export=lv_entry_main "
                                         "--import-undefined -o \"" + finalOutPath + "\"";
                                     int rc = std::system(cmd.c_str());
                                     if (rc != 0) {

@@ -1,0 +1,22 @@
+// Track W W-M3 (hard-05 verification / doc 05 §4): a throwing DOM handler must
+// surface CLEANLY through the trampoline — the same C2 routing a throwing timer
+// callback gets (LA-30 doc 5 §2 C2, throw_uncaught_callback). Like C2, main
+// stays alive (parked on `await keep`) while the event fires, so the handler's
+// throw is program-uncaught (standard banner, exit 1 — the exit-codes
+// contract), never a silent-wrong continue. Wasm-lane only.
+
+DomNode btn = Dom::create("button");
+btn.on("click", (e) => {
+    throw RuntimeException("handler boom");
+});
+
+// Keep the program alive in its event loop (a real page never exits); the
+// deferred click (setTimeout 0) fires before this 100ms timer, while main is
+// still parked here — exactly C2's shape.
+Promise<bool> keep = Promise();
+std::sysTimerStart(100, 0, (n) => keep.resolve(true));
+
+console.writeln("before dispatch");
+btn.click();
+bool done = await keep;               // main parked here when the handler throws
+console.writeln("after dispatch");    // unreachable — the uncaught throw exits 1

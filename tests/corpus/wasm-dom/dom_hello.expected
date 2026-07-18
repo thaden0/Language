@@ -1,0 +1,3 @@
+built #app > [primary] click me
+dispatched (handler runs on the drain)
+handler: click -> clicked!
