@@ -698,7 +698,7 @@ poll, LvPollFd), `:77-89` (signals-as-streams, self-pipe), `:50-75` (host termin
 floor); `runtime/lv_plat_posix.c:462-515` (spawn/pidfd/reap/kill), `:186-248`
 (signalfd + self-pipe fallback); `runtime/lv_plat_win32.c:237-241` (spawn reject
 stubs), `:448-461` (WSAPoll + POLLNVAL). Prior floor doctrine:
-`designs/techdesign-spawn-llvm.md`.
+`designs/complete/techdesign-spawn-llvm.md`.
 
 **POSIX man pages:** `posix_openpt(3)`, `grantpt(3)` (no-op-on-Linux NOTES),
 `unlockpt(3)`, `ptsname_r(3)`, `openpty(3)`/`forkpty(3)` (`<pty.h>`), `pty(7)`,

@@ -1528,7 +1528,7 @@ spawn failure), `sysPidfdOpen(pid)`, `sysReap(pid)` (`-1` still running, else th
 `sysKill(pid, sig)` (`pid <= 0` refused at the floor — the `kill(2)` broadcast forms are
 never exposed). All `sys*`-prefixed → comptime-denied automatically. Oracle + IR + **LLVM**
 (G-LANG-2 process half, 2026-07-16: `runtime/lv_proc.c` over the `lv_plat_spawn/pidfd_open/
-reap/kill` floor, `designs/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
+reap/kill` floor, `designs/complete/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
 the threads precedent). emit-C++ still defers cleanly (deliberate system-layer policy).
 
 ### 6.6.54 Promises and await

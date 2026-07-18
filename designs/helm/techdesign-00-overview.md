@@ -622,7 +622,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
 ```
 
 - **2026-07-16 — G-LANG-2 process half is GREEN on LLVM** (language-side landing,
-  `designs/techdesign-spawn-llvm.md`): `sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` now
+  `designs/complete/techdesign-spawn-llvm.md`): `sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` now
   compile and run under `--build-native`, byte-identical to the interpreters
   (`tests/corpus/sys_spawn/`, oracle=IR=LLVM). Helm's proc-bridge (H09) features are no
   longer interpreter-pinned — the golden lane can add LLVM for proc-bridge tests. The PTY

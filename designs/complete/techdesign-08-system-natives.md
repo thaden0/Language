@@ -397,4 +397,4 @@ reap/kill` floor rows, byte-identical to this track's oracle; `run_sysnatives.sh
 §10's LLVM leg flipped from "clean spawn deferral" to covered (the F5/sysMonotonic
 precedent), the spawn golden moved to `tests/corpus/sys_spawn/` with an LLVM lane,
 and emit-C++'s deliberate deferral stays asserted. Design + log:
-`designs/techdesign-spawn-llvm.md`.
+`designs/complete/techdesign-spawn-llvm.md`.

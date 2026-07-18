@@ -5,7 +5,7 @@
 natives TU, the `lv_plat_recv` EIO collapse, **HARD** `lv_abi.h`/`LlvmGen.cpp` wiring, build
 lists, selftest, and the promotion of `tests/corpus/sys_pty/` to three-lane byte-identity.
 Closing this gate makes the **G-LANG-2 terminal half GREEN on POSIX**.
-**Template:** this doc deliberately mirrors `designs/techdesign-spawn-llvm.md` §3–§7 — same
+**Template:** this doc deliberately mirrors `designs/complete/techdesign-spawn-llvm.md` §3–§7 — same
 conventions, same landing order, same gates-within-the-stage. Where that design said "spawn",
 read "pty"; deviations are called out explicitly.
 
