@@ -30,7 +30,7 @@ Excluded:
   `atlantis/techdesign-00-overview.md`).
 - Trackers/registers that explicitly schedule no implementation
   (`techdesign-http-and-streams-maturity.md`, `techdesign-metaprogramming-tail.md`,
-  `deferal-performance-optimizations.md`, `deferal-trident-post-v1.md`,
+  `deferal-performance-optimizations.md`, `waiting/trident-post-v1--waits-on-selfhost-g5.md`,
   `techdesign-track03-type-surface.md`, `suggested-features.md`).
 - Exploratory designs with remaining open questions and no settled implementation
   target (`system-binds.md`).
