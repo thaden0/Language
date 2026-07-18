@@ -1,0 +1,136 @@
+// Atlantis contract C3 — the data-access seam (overview §"C3", techdesign-05 §5).
+//
+// Every driver package (Track 05 MySQL, a future atlantis-postgres) implements
+// THIS surface and nothing MySQL-shaped leaks past it; Track 06 (ORM) consumes
+// only these types, tested against a FakeDriver. The seam is frozen by the
+// overview owner — a change here is an escalation, not a driver edit.
+//
+// DbValue — what a single cell holds. v1 (text + binary protocol):
+//     string | int | float | bool | None
+// There is no type-alias facility in the language yet, so the union is written
+// out at every use site; this file is the single authority on its shape.
+namespace Atlantis {
+    namespace Data {
+
+        // ---- C6-adjacent shared config shape (passed explicitly; never a
+        // struct-typed bind — bug #23). Driver-specific knobs ride the Driver,
+        // not this frozen struct (techdesign-05 §2.5). ----
+        struct DbConfig {
+            string host;
+            int port;
+            string user;
+            string password;
+            string database;
+            new DbConfig(string host, int port, string user, string password, string database) {
+                this.host = host;
+                this.port = port;
+                this.user = user;
+                this.password = password;
+                this.database = database;
+            }
+        }
+
+        // ---- Result carriers (C3) ----
+
+        // Row wraps a cell array + a column-name index SHARED across every row of
+        // one ResultSet (built once, referenced N times). byName on an unknown
+        // column THROWS — a typo must never read as a SQL NULL (techdesign-05 §5.1).
+        class Row {
+            Array<string | int | float | bool | None> cells;
+            Map<string, int> index;
+
+            new Row(Array<string | int | float | bool | None> cells, Map<string, int> index) {
+                this.cells = cells;
+                this.index = index;
+            }
+
+            string | int | float | bool | None at(int i) => this.cells.at(i);
+
+            string | int | float | bool | None byName(string name) {
+                if (!this.index.has(name)) {
+                    throw RuntimeException("unknown column: " + name);
+                }
+                return this.cells.at(this.index.at(name));
+            }
+
+            // Narrowing sugar: None both when the cell is SQL NULL and when the
+            // column holds another type — callers that want the distinction read
+            // byName and match themselves.
+            int? intAt(string name) {
+                string | int | float | bool | None v = this.byName(name);
+                match (v) {
+                    int => { return v; }
+                    else => { return None; }
+                }
+            }
+            string? strAt(string name) {
+                string | int | float | bool | None v = this.byName(name);
+                match (v) {
+                    string => { return v; }
+                    else => { return None; }
+                }
+            }
+        }
+
+        class ResultSet {
+            Array<string> columns;
+            Array<Row> rows;
+            new ResultSet(Array<string> columns, Array<Row> rows) {
+                this.columns = columns;
+                this.rows = rows;
+            }
+        }
+
+        class ExecResult {
+            int affectedRows;
+            int lastInsertId;
+            new ExecResult(int affectedRows, int lastInsertId) {
+                this.affectedRows = affectedRows;
+                this.lastInsertId = lastInsertId;
+            }
+        }
+
+        // ---- Behavioural interfaces (C3) ----
+
+        // ITransaction : IDisposable — `using ITransaction tx = await conn.begin();`
+        // is exception-safe by construction; close() without a commit rolls back.
+        interface ITransaction : IDisposable {
+            Promise<void> commit();
+            Promise<void> rollback();
+        }
+
+        // IDbConnection : IDisposable — close() is usable with `using`.
+        // Parameters are ALWAYS bound via `params` (placeholder `?`); string-
+        // concatenated SQL from user input is a design violation (overview C3).
+        interface IDbConnection : IDisposable {
+            Promise<ResultSet>  query  (string sql, Array<string | int | float | bool | None> params);
+            Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params);
+            Promise<ITransaction> begin();
+        }
+
+        interface IDbDriver {
+            Promise<IDbConnection> connect(DbConfig cfg);
+        }
+
+        interface IDbPool {
+            Promise<IDbConnection> acquire();
+            void release(IDbConnection c);
+        }
+
+        // ---- Exception capability interfaces (the approved additive C3
+        // amendment, overview §"C3 amendment approved (Track 05)", techdesign-05
+        // §5.4). Catch-by-capability is the framework's ONE error model: Track 06
+        // catches these driver-agnostically WITHOUT depending on atlantis-mysql.
+        // A driver's concrete exceptions additionally implement them (multiple
+        // inheritance earning its keep, same move as C4). ----
+        interface IDbException : IException {
+            int errno;
+            string sqlstate;
+        }
+        interface IDuplicateKeyException  : IDbException { }
+        interface IDeadlockException      : IDbException { }
+        interface IConnectionLostException: IDbException { }
+        // retry-safe marker (deadlock + lock-timeout carry it)
+        interface ITransientDbException   : IDbException { }
+    }
+}

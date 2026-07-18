@@ -84,7 +84,7 @@ The two facts that matter most for this design:
   broadcasting an event *re-enters user code*, which may in turn call `close()`. Every
   mid-delivery hazard (§5.1) flows from this one line.
 - **There is no `closed` flag and no `close()`** — the substrate cannot express end-of-stream
-  or "producer detached." (The parallel `deferal-http-and-streams-maturity.md` D-B §2.3 already
+  or "producer detached." (The parallel `techdesign-http-and-streams-maturity.md` D-B §2.3 already
   proposes adding `bool closed` + `void close()` here for the *EOF* problem; this request wants
   the same field for the *unsubscribe* problem — §7 and §12 argue they should land coherently.)
 
@@ -231,7 +231,7 @@ Two loop facts the design must also respect:
 - **A live signal watch pins the loop** (`hasWork()` stays true). This is intended for Sonar's
   lifetime WINCH sub, and it is exactly why unsubscribe matters for *bounded-window* subs: an
   un-disposed signal sub keeps a one-shot program from exiting (the same disease
-  `deferal-http-and-streams-maturity.md` §5 #4 documents for idle HTTP pools). Disposing the
+  `techdesign-http-and-streams-maturity.md` §5 #4 documents for idle HTTP pools). Disposing the
   last sub must remove the watch so the loop can drain.
 - **Program-end already backstops** (interp `interpSignalCleanup()` `RuntimeNatives.cpp:137`
   closes every signal fd + unblocks at end of `Eval::run`/`IrInterp::run`; a compiled process's
@@ -269,7 +269,7 @@ way the checker gate above is the acceptance test.
 
 **Crucial low-cost fact:** adding `: IDisposable` (an interface with one slotless method
 requirement) to a prelude class is a **prelude-only change with zero checker/Lower/backend
-work** — the same finding `deferal-http-and-streams-maturity.md` §2.3 records for adding
+work** — the same finding `techdesign-http-and-streams-maturity.md` §2.3 records for adding
 `: IIterable` to `InStream` ("Track 07's dispatch … lowers to plain `CallDyn`; adding `:
 IIterable` to a prelude class needs zero checker, Eval, Lower, or backend work"), reinforced by
 the covariant-return interface-satisfaction work (F6, `reference.md` §4.2). Interface dispatch is
@@ -531,7 +531,7 @@ view's* teardown only (there is no separate write-side resource in the current m
 6. **Teardown order** — unwatch → `sysSignalClose` → drop registry row; idempotent; free-function
    `signal::off` (§5.2/§5.5/§5.6).
 7. **Does the EOF/`closed` half land now or later?** The request is about *producer→consumer
-   detach* (unsubscribe). `deferal-http-and-streams-maturity.md` D-B is about
+   detach* (unsubscribe). `techdesign-http-and-streams-maturity.md` D-B is about
    *consumer-observable end-of-stream* (`StreamBuffer.close()` + `pullOrNone`). They share the
    `StreamBuffer.closed` field. Decide whether to (a) land unsubscribe alone (minimal), or (b)
    co-land the `closed` flag so a disposed sub also makes its own `pull` observably ended (§12).
@@ -731,7 +731,7 @@ What is explicitly **out of floor scope** and must not be reached for: `lvrt_loo
 
 ## 12. Coordination — the streams-maturity neighbor
 
-This request overlaps `deferal-http-and-streams-maturity.md` **D-B** (`InStream<T>` iteration /
+This request overlaps `techdesign-http-and-streams-maturity.md` **D-B** (`InStream<T>` iteration /
 end-of-stream). They are **distinct but share `StreamBuffer.closed`**:
 
 - **This request (unsubscribe):** producer→consumer *detach* + source teardown. Motivated by

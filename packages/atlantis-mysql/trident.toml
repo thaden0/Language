@@ -1,0 +1,8 @@
+name = "atlantis-mysql"
+version = "0.1.0"
+sources = ["src/*.lev"]
+
+[[dep]]
+path = "../atlantis"
+version = "0.1.0"
+as = "Atlantis"

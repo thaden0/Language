@@ -31,7 +31,7 @@ engines including LLVM** (§3.6) — a claim no prior document had actually test
 What remains genuinely unbuilt is narrower and more specific than the stale header suggests:
 system-binds.md's own **two activation channels** (§4) — "a bind travels with a selective
 `use` import" and "an installable `Bindings` binder object" — plus the **per-block scope
-unification** another proposal (`designs/deferal-block-scoped-use.md`) was supposed to
+unification** another proposal (`designs/techdesign-block-scoped-use.md`) was supposed to
 deliver and never did (§5). A real downstream consumer, `designs/atlantis/techdesign-04-di-config.md`,
 already spent a probe session against this exact gap in 2026-07-06/07 and designed around it
 (§8) — its findings are the single best empirical map of what a v1 tech design needs to
@@ -55,7 +55,7 @@ either fix or design *for* rather than *around*.
   install form for bulk/explicit capability wiring. **Not implemented** — no `Bindings` type
   exists in the prelude at all (§4.2).
 - **The block-scope substrate** — the unified per-block object (`imports.md` §9,
-  `designs/deferal-block-scoped-use.md`) that was supposed to carry both the name-import
+  `designs/techdesign-block-scoped-use.md`) that was supposed to carry both the name-import
   table and the bind table so `use`/`uses` and `bind` share one lexical-scope mechanism.
   **Designed but never implemented** — see §5.
 - **Capability interface** — an interface like `IEnv` whose only purpose is to be an
@@ -320,11 +320,11 @@ metaprogramming-driven aggregation problem gets solved a different way.
 
 ## 5. The block-scope substrate — proposed, never implemented, worth flagging plainly
 
-`designs/deferal-block-scoped-use.md` (proposal, dated 2026-07-06, **still sitting in
+`designs/techdesign-block-scoped-use.md` (proposal, dated 2026-07-06, **still sitting in
 `designs/` — not moved to `designs/complete/`**) designed exactly the shared substrate
 system-binds.md §7 staging item 2 names as a prerequisite: one `Scope` object carrying both
 an imported-name table and a type-keyed bind table (`Scope::binds`,
-`designs/deferal-block-scoped-use.md:186`), with `Stmt::importScope` renamed to
+`designs/techdesign-block-scoped-use.md:186`), with `Stmt::importScope` renamed to
 `Stmt::blockScope` and `Checker::bindScopes_`/`pushBindScope`/`popBindScope` deleted in favor
 of a shared `LexicalStack`.
 
@@ -369,7 +369,7 @@ alias)?;` selectively imports one name. Both are **lexically scoped to where the
 written**, with **top-of-file = file-wide** as the *consequence* of "an import is a
 declaration in its enclosing lexical scope" (info.md §12, "The lexical model"), not a special
 file-wide primitive. **Block-level `use`/`uses` is real and functions today** (info.md's
-"12.5/imports.md" cross-reference; `deferal-block-scoped-use.md §1.1` documents the two
+"12.5/imports.md" cross-reference; `techdesign-block-scoped-use.md §1.1` documents the two
 same-day, feature-private mechanisms — `Stmt::importScope` + the Lowerer's private
 `blockImportScopes_` — that deliver it) — what's missing is only the *unification* with
 `bind`'s scope tracking (§5), not block-level imports themselves.
@@ -658,7 +658,7 @@ plus the new ones this research surfaced:
 | Bug #9 DI-core landing commit | `3722ded` |
 | Bug #24/#23 (ctor injection, value-bind rejection) landing commit | `1fe86cc` |
 | system-binds.md source (the request itself) | `designs/requests/accepted/system-binds.md` (this dossier's companion) |
-| Block-scope substrate proposal (unimplemented) | `designs/deferal-block-scoped-use.md` |
+| Block-scope substrate proposal (unimplemented) | `designs/techdesign-block-scoped-use.md` |
 | Atlantis Track 04 (the primary downstream consumer) | `designs/atlantis/techdesign-04-di-config.md` |
 | LA-22 splice mechanism (unimplemented, un-accepted request) | `designs/requests/request-metaprog-splices.md` |
 | Normative bind/inject spec | `docs/reference.md` §4.7 (lines 713-724) |

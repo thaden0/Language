@@ -1,6 +1,16 @@
 # Deferral Resolution — Labeled `break` / `continue`
 
-**Status: design ready, not implemented.** **Date:** 2026-07-06.
+**Status: ACTIVE — design ready, not implemented.** Promoted out of deferral 2026-07-17
+(was `deferal-labeled-break-continue.md`). Re-verified against master that day: still 100%
+unbuilt (no `Stmt::label`/`labelTarget`/`labelStack_` anywhere in `src/`). The §4 blocker is
+**cleared** — Track 03 landed in full long ago, so the compiler-file serialization concern is
+moot; coordinate only with whatever track is live at pickup. Currency notes: (a) all `file:line`
+refs are Jul-6-era and have drifted — anchors hold, re-ground at implementation start (the F5
+`usingsFloor`/`LoopCtx` machinery and Eval flag sites should be re-audited per P2/P3 regardless);
+(b) F7's "runners glob `*.ext` only" is stale — `.lev` corpus files are auto-globbed today
+(e.g. `tests/corpus/const_section.lev`), so the runner change is likely already done; verify
+instead of re-doing it. §7's dates are stale; effort estimate (~3 days) stands. **Date:**
+2026-07-06 (design); 2026-07-17 (promoted).
 **Resolves:** the explicit v1 deferral in
 `designs/complete/techdesign-02-control-flow.md` F1 spec, line 36 ("Unlabeled
 only. Labeled forms: **explicitly deferred** (roadmap, overview §5)") and the
@@ -117,7 +127,7 @@ enough to build on.
 2. `Ast.hpp` `Stmt` (247-342): one new field beside `isUsing`/`usingClose`
    (295-296):
    ```cpp
-   // Labeled loops (deferal-labeled-break-continue.md): on While/DoWhile/
+   // Labeled loops (techdesign-labeled-break-continue.md): on While/DoWhile/
    // For/ForIn — this loop's label ("" = unlabeled). On Break/Continue —
    // the target label ("" = unlabeled, nearest loop). `labelTarget` is the
    // checker-resolved target loop Stmt for a labeled Break/Continue (same

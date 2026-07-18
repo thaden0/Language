@@ -45,7 +45,7 @@ The design's acceptance bookkeeping. Text-only; no compiler changes.
   decision history.
 - The tree has unrelated in-flight const-design edits under `designs/` —
   do not touch `designs/complete/const.md` or
-  `designs/deferal-const-system-extensions.md`.
+  `designs/techdesign-const-system-extensions.md`.
 
 ## Acceptance
 

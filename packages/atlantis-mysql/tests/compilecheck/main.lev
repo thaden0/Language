@@ -1,0 +1,10 @@
+uses MySql;
+uses Atlantis::Data;
+void main() {
+    Driver d = Driver();
+    DbConfig cfg = DbConfig("127.0.0.1", 3306, "u", "p", "db");
+    console.writeln("driver built; cfg=" + cfg.host);
+    // reference key types so they must resolve
+    Options o = Options();
+    console.writeln("tls=" + o.tlsMode + " maxbytes=" + o.maxResultBytes.toString());
+}

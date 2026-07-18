@@ -1,0 +1,312 @@
+// atlantis-mysql — prepared-statement binary protocol (techdesign-05 §4).
+// Parameter encoding from DbValue (§4.2), binary row decoding incl. in-language
+// IEEE-754 FLOAT/DOUBLE (§4.3), and the length-prefixed temporal components.
+// mapBinary mirrors mapText — one fixture corpus asserts text-vs-binary row
+// equality for identical queries (the strongest cross-check this track has).
+namespace MySql {
+
+    // A cached prepared statement (§4.4): keyed by exact SQL text.
+    struct PreparedStmt {
+        int stmtId;
+        int numParams;
+        int numColumns;
+        new PreparedStmt(int stmtId, int numParams, int numColumns) {
+            this.stmtId = stmtId;
+            this.numParams = numParams;
+            this.numColumns = numColumns;
+        }
+    }
+
+    namespace Prepared {
+
+        // ---- parameter encoding (§4.2) ----
+
+        // COM_STMT_EXECUTE body (including the 0x17 command byte). null bitmap +
+        // new-params-bound flag + per-param [type, flags] pairs + LE values.
+        string encodeExecute(int stmtId, Array<string | int | float | bool | None> params) {
+            StringBuilder sb = StringBuilder();
+            sb << Wire::wU8(Com::STMT_EXECUTE);
+            sb << Wire::wU32(stmtId);
+            sb << Wire::wU8(0x00);                 // flags: no cursor
+            sb << Wire::wU32(1);                    // iteration count = 1
+            int n = params.length();
+            if (n > 0) {
+                // null bitmap: (numParams + 7) / 8 bytes, bit i = param i is None
+                int bmLen = (n + 7) / 8;
+                Array<int> bm = [];
+                int z = 0;
+                while (z < bmLen) { bm = bm.add(0); z = z + 1; }
+                int i = 0;
+                for (string | int | float | bool | None v in params) {
+                    match (v) {
+                        None => { bm = bm.with(i >> 3, bm.at(i >> 3) | (1 << (i & 7))); }
+                        else => { }
+                    }
+                    i = i + 1;
+                }
+                for (int b in bm) { sb << Wire::wU8(b); }
+                sb << Wire::wU8(0x01);              // new-params-bound flag
+                // per-param [type byte, flags byte]
+                for (string | int | float | bool | None v in params) {
+                    sb << paramTypePair(v);
+                }
+                // values, LE-packed (non-null only)
+                for (string | int | float | bool | None v in params) {
+                    sb << paramValue(v);
+                }
+            }
+            return sb.toString();
+        }
+
+        string paramTypePair(string | int | float | bool | None v) {
+            match (v) {
+                int   => { return Wire::wU8(FieldType::LONGLONG) + Wire::wU8(0x00); }
+                bool  => { return Wire::wU8(FieldType::TINY) + Wire::wU8(0x00); }
+                float => { return Wire::wU8(FieldType::VAR_STRING) + Wire::wU8(0x00); }
+                string=> { return Wire::wU8(FieldType::VAR_STRING) + Wire::wU8(0x00); }
+                None  => { return Wire::wU8(FieldType::NULL_TYPE) + Wire::wU8(0x00); }
+            }
+        }
+
+        string paramValue(string | int | float | bool | None v) {
+            match (v) {
+                int    => { return Wire::wU64(v); }             // 8-byte LE two's-complement
+                bool   => { return Wire::wU8(v ? 1 : 0); }
+                float  => { return Wire::writeLenStr(v.toString()); }   // textual; server coerces (v1)
+                string => { return Wire::writeLenStr(v); }
+                None   => { return ""; }
+            }
+        }
+
+        // ---- binary row decoding (§4.3) ----
+
+        struct Decoded {
+            string | int | float | bool | None value;
+            int next;
+            new Decoded(string | int | float | bool | None value, int next) {
+                this.value = value;
+                this.next = next;
+            }
+        }
+
+        // Row packet: 0x00 header, null bitmap of (numColumns + 7 + 2)/8 bytes
+        // with a 2-BIT OFFSET (the protocol's oddest corner — fixture-pinned),
+        // then values by column type.
+        Array<string | int | float | bool | None> decodeBinaryRow(string p, Array<ColumnDef> cols) {
+            int n = cols.length();
+            int bmLen = (n + 7 + 2) / 8;
+            int off = 1;                             // skip 0x00 header
+            string bitmap = p.subStr(off, bmLen);
+            off = off + bmLen;
+            Array<string | int | float | bool | None> out = [];
+            int i = 0;
+            while (i < n) {
+                int bitIndex = i + 2;                 // 2-bit offset
+                int byteIdx = bitIndex >> 3;
+                int bitInByte = bitIndex & 7;
+                bool isNull = ((bitmap.byteAt(byteIdx) >> bitInByte) & 1) != 0;
+                if (isNull) {
+                    out = out.add(None);
+                } else {
+                    Decoded d = decodeValue(cols.at(i), p, off);
+                    out = out.add(d.value);
+                    off = d.next;
+                }
+                i = i + 1;
+            }
+            return out;
+        }
+
+        Decoded decodeValue(ColumnDef c, string p, int off) {
+            int t = c.type;
+            bool uns = c.isUnsigned();
+            if (t == FieldType::TINY)     { return intVal(p, off, 1, uns); }
+            if (t == FieldType::SHORT || t == FieldType::YEAR) { return intVal(p, off, 2, uns); }
+            if (t == FieldType::LONG || t == FieldType::INT24) { return intVal(p, off, 4, uns); }
+            if (t == FieldType::LONGLONG) { return intVal(p, off, 8, uns); }
+            if (t == FieldType::FLOAT)    { return Decoded(decodeFloat32(p, off), off + 4); }
+            if (t == FieldType::DOUBLE)   { return Decoded(decodeDouble64(p, off), off + 8); }
+            if (t == FieldType::DATE || t == FieldType::DATETIME || t == FieldType::TIMESTAMP) {
+                return temporal(t, p, off);
+            }
+            if (t == FieldType::TIME) { return timeVal(p, off); }
+            // strings / blob / decimal / json / bit -> lenenc string, mapped to
+            // mirror mapText's output contract
+            Wire::LenStr s = Wire::readLenStr(p, off);
+            int next = off + s.size;
+            if (t == FieldType::BIT && s.value.length() == 1) {
+                return Decoded(s.value.byteAt(0) == 1, next);
+            }
+            if (t == FieldType::DECIMAL || t == FieldType::NEWDECIMAL) {
+                float? f = s.value.toFloat();
+                if (f != None) { return Decoded(f, next); }
+            }
+            return Decoded(s.value, next);
+        }
+
+        // Fixed-width LE integer; signedness from the column flags. Unsigned
+        // LONGLONG > int64::max falls back to a lossless decimal string (§3.2).
+        Decoded intVal(string p, int off, int size, bool uns) {
+            int v = 0;
+            int i = 0;
+            int shift = 0;
+            while (i < size) {
+                v = v | (p.byteAt(off + i) << shift);
+                shift = shift + 8;
+                i = i + 1;
+            }
+            if (size < 8) {
+                if (!uns) {
+                    int signbit = 1 << (size * 8 - 1);
+                    if ((v & signbit) != 0) { v = v - (1 << (size * 8)); }
+                }
+                return Decoded(v, off + size);
+            }
+            // size == 8
+            if (p.byteAt(off + 7) >= 0x80) {
+                if (uns) { return Decoded(u64Decimal(p, off), off + 8); }
+                return Decoded(v, off + 8);          // signed negative: v is already 2's-complement
+            }
+            return Decoded(v, off + 8);
+        }
+
+        // Unsigned 64-bit -> lossless decimal string (base-256 big-endian into a
+        // decimal accumulator; no in-language bigint needed).
+        string u64Decimal(string p, int off) {
+            string dec = "0";
+            int i = 7;
+            while (i >= 0) {
+                dec = decMulAdd(dec, 256, p.byteAt(off + i));
+                i = i - 1;
+            }
+            return dec;
+        }
+        string decMulAdd(string dec, int m, int add) {
+            int carry = add;
+            StringBuilder rev = StringBuilder();
+            int i = dec.length() - 1;
+            while (i >= 0) {
+                int prod = (dec.byteAt(i) - 48) * m + carry;
+                rev << std::byteToString(48 + (prod % 10));
+                carry = prod / 10;
+                i = i - 1;
+            }
+            while (carry > 0) {
+                rev << std::byteToString(48 + (carry % 10));
+                carry = carry / 10;
+            }
+            return reverseStr(rev.toString());
+        }
+        string reverseStr(string s) {
+            StringBuilder sb = StringBuilder();
+            int i = s.length() - 1;
+            while (i >= 0) { sb << s.subStr(i, 1); i = i - 1; }
+            return sb.toString();
+        }
+
+        // ---- IEEE-754 decode in-language (§4.3) ----
+
+        float pow2(int e) {
+            float r = 1.0;
+            if (e >= 0) {
+                int i = 0;
+                while (i < e) { r = r * 2.0; i = i + 1; }
+            } else {
+                int i = 0;
+                while (i > e) { r = r / 2.0; i = i - 1; }
+            }
+            return r;
+        }
+
+        float decodeFloat32(string p, int off) {
+            int bits = Wire::u32(p, off);
+            int sign = (bits >> 31) & 1;
+            int exp = (bits >> 23) & 0xFF;
+            int frac = bits & 0x7FFFFF;
+            if (exp == 0xFF) {
+                throw MySql::MySqlProtocolException("FLOAT column carries NaN/Inf (not storable)");
+            }
+            float mag = floatFromParts(exp, frac, 23, 127);
+            if (sign == 1) { return 0.0 - mag; }
+            return mag;
+        }
+
+        float decodeDouble64(string p, int off) {
+            // Extract without forming a signed-overflowing int64 (bit 63 = sign).
+            int b7 = p.byteAt(off + 7);
+            int b6 = p.byteAt(off + 6);
+            int sign = (b7 >> 7) & 1;
+            int exp = ((b7 & 0x7F) << 4) | (b6 >> 4);
+            // 52-bit mantissa (< 2^53, fits int64)
+            int frac = (b6 & 0x0F);
+            int i = 5;
+            while (i >= 0) { frac = (frac << 8) | p.byteAt(off + i); i = i - 1; }
+            if (exp == 0x7FF) {
+                throw MySql::MySqlProtocolException("DOUBLE column carries NaN/Inf (not storable)");
+            }
+            float mag = floatFromParts(exp, frac, 52, 1023);
+            if (sign == 1) { return 0.0 - mag; }
+            return mag;
+        }
+
+        // value = (1 + frac/2^mBits) * 2^(exp-bias); subnormals scaled from the
+        // minimum exponent; exp==0 & frac==0 -> +0.
+        float floatFromParts(int exp, int frac, int mBits, int bias) {
+            float denom = pow2(mBits);
+            if (exp == 0) {
+                if (frac == 0) { return 0.0; }
+                return (frac.toFloat() / denom) * pow2(1 - bias);   // subnormal
+            }
+            float mant = 1.0 + (frac.toFloat() / denom);
+            return mant * pow2(exp - bias);
+        }
+
+        // ---- length-prefixed temporal components (§4.3) ----
+        // Rendered to the SAME string shapes as the text protocol (§3.2) so
+        // DbValue is protocol-agnostic.
+
+        string pad(int v, int width) {
+            string s = v.toString();
+            while (s.length() < width) { s = "0" + s; }
+            return s;
+        }
+
+        Decoded temporal(int type, string p, int off) {
+            int len = p.byteAt(off);
+            int cur = off + 1;
+            int year = 0; int month = 0; int day = 0;
+            int hour = 0; int minute = 0; int second = 0; int micros = 0;
+            if (len >= 4) {
+                year = Wire::u16(p, cur); month = p.byteAt(cur + 2); day = p.byteAt(cur + 3);
+            }
+            if (len >= 7) {
+                hour = p.byteAt(cur + 4); minute = p.byteAt(cur + 5); second = p.byteAt(cur + 6);
+            }
+            if (len >= 11) { micros = Wire::u32(p, cur + 7); }
+            string date = pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2);
+            if (type == FieldType::DATE) { return Decoded(date, off + 1 + len); }
+            string s = date + " " + pad(hour, 2) + ":" + pad(minute, 2) + ":" + pad(second, 2);
+            if (len >= 11 && micros > 0) { s = s + "." + pad(micros, 6); }
+            return Decoded(s, off + 1 + len);
+        }
+
+        Decoded timeVal(string p, int off) {
+            int len = p.byteAt(off);
+            int cur = off + 1;
+            if (len == 0) { return Decoded("00:00:00", off + 1); }
+            int neg = p.byteAt(cur);
+            int days = Wire::u32(p, cur + 1);
+            int hour = p.byteAt(cur + 5);
+            int minute = p.byteAt(cur + 6);
+            int second = p.byteAt(cur + 7);
+            int totalHours = days * 24 + hour;
+            string sign = (neg == 1) ? "-" : "";
+            string s = sign + pad(totalHours, 2) + ":" + pad(minute, 2) + ":" + pad(second, 2);
+            if (len >= 12) {
+                int micros = Wire::u32(p, cur + 8);
+                if (micros > 0) { s = s + "." + pad(micros, 6); }
+            }
+            return Decoded(s, off + 1 + len);
+        }
+    }
+}

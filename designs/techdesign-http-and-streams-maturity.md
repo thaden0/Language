@@ -1,8 +1,10 @@
 # Deferral Register — HTTP & Streams Maturity: Client Pooling, `InStream` Iteration, ELF DNS
 
-**Status:** reference (deferral register + resolution paths — this doc schedules
-nothing by itself; each item fires on its named trigger).
-**Date:** 2026-07-06.
+**Status:** reference — re-grounded 2026-07-17 (see the dated section at the end of §0;
+it supersedes the register's status text wherever they conflict). Promoted out of deferral
+2026-07-17 (was `deferal-http-and-streams-maturity.md`): **D-C's floor landed, D-B's
+triggers both fired** (it is now schedulable work), D-A remains demand-gated.
+**Date:** 2026-07-06 (register); 2026-07-17 (re-grounded).
 **Depends on:** nothing to *read*; each resolution path names its own gate.
 **Source:** techdesign-09 §4#5 (client pooling deferral), techdesign-07 §1
 (`InStream` iteration deferral), techdesign-08 §6/§10-M7/§11 (DNS ELF deferral);
@@ -40,6 +42,43 @@ primary, X64Gen/ELF frozen, zero-dep premise dropped) changed the ground under
 D-C and softens nothing about D-A/D-B — §4 handles the currency correction
 explicitly. **Nothing in this register proposes X64Gen work. The ELF DNS gap
 stays deferred behind its diagnostic, permanently.**
+
+**Re-grounding 2026-07-17** (verified against master; supersedes conflicting status text
+below — the 2026-07-06 register is kept as the historical record):
+
+- **D-C floor / DM-1 — LANDED.** `sysResolve` exists: prelude `string? sysResolve(string
+  host)` (`Resolver.cpp:1091`), native at `RuntimeNatives.cpp:1846-1850` — §3.1's
+  "does not exist yet anywhere in the tree" is superseded. It rode Track 08 (system
+  natives F1–F7, landed in full 2026-07-10, LLVM lane included), i.e. the §3.3 near-term
+  rider fired as planned. The ELF diagnostic stays permanent per policy. The **in-language
+  resolver (DM-5)** is still unbuilt (`sysUdp*` verified absent 2026-07-17), but its nested
+  blocker cleared — `Block` landed with Track 03 — so it gates only on the `sysUdp*` floor
+  decision, demand-scheduled.
+- **D-B — both trigger halves FIRED; partially landed under another track.** Track 07
+  (protocol + `Seq`) landed 2026-07-08, and the "runtime-loop suspension question" was
+  settled *stronger than the register hoped*: LA-30 true stackful suspension is the
+  **default** on all active engines since 2026-07-12 (`await` parks a stackful task; the
+  pump is a `LANG_PUMP=1` escape hatch), with cancellation/`TaskGroup` (B2) beside it. Then
+  SU-1 (`designs/complete/techdesign-stream-unsubscribe.md`, landed 2026-07-15) delivered
+  most of §2.3 step 1: `StreamBuffer.closed`/`close()` with pull-on-closed throwing the
+  distinct `"stream is closed"` (`Resolver.cpp:2560/2568`), producer-attached teardown,
+  `InStream : IDisposable`, `signal::off`. **Deltas to reconcile at pickup:** SU-1's close
+  is dispose-shaped — push-after-close **silent-drops** where step 1 wanted a loud throw —
+  and `pullOrNone` was not built. Remaining D-B work = `pullOrNone`, the waiter-promise
+  blocking pull (step 2 — cleaner now on true suspension than the pump-await the register
+  worried over), and the prelude-only `IIterable` flip (step 3) with the §2.3 contract
+  corpus. §5#6's re-entrant-pumping fear is largely dissolved by real parking; re-verify,
+  don't re-argue.
+- **D-A — still demand-gated, but the trigger's framework half now exists.** Atlantis
+  Tracks 02–04 (routing/controllers, serialization, DI/config) landed 2026-07-13 over
+  Track 09's web foundations (2026-07-09) and LA-2 TLS. Pooling lands when the serving
+  path demands it — unchanged in principle, materially nearer. §5#11's scheme-in-pool-key
+  rule is live advice now that https exists.
+- **Currency:** §2.1's "Track 07's log shows M2 not yet landed" is stale (landed
+  2026-07-08); the §1.2/§2.2 pump-era loop framing predates LA-30 — the loop-lifetime
+  rule itself (exit when no live work) still holds, and SU-1's `signal::off`
+  exit-by-loop-drain re-proved the idle-work analysis this register's D-A reasoning
+  leans on.
 
 ---
 
@@ -430,11 +469,11 @@ though the neighboring corpus predates the rule).
 
 | M | deliverable | when (trigger) | accept |
 |---|---|---|---|
-| DM-1 | D-C floor rider: `sysResolve` incl. `--build-native` via `lv_plat_resolve`; ELF diagnostic pinned; comptime deny-list | with Track 08 M7 (Jul 20 – Aug 7 window) | M7's resolve probe green on oracle/IR/emit-C++ **and** llvm lane; ELF diagnostic text asserted; deny-list grep clean |
-| DM-2 | D-B step 1: `StreamBuffer.close()` + `pullOrNone` + producer adoption (TcpStream/FileInStream) | after Track 07 M2 lands (its M2 window: late Jul) | `stream_close.lev`: push-after-close throws; pull-on-empty-closed distinct error; File EOF via close not `""`; churn +0B |
-| DM-3 | D-B steps 2–3: waiter-promise blocking pull + `InStream : IIterable` flip (prelude-only) | suspension ruling (natural window: portable P3, Oct 2026) | `stream_iter.lev`: Timer-fed `for..in` delivers all ticks then exits at close; iterator/subscribe/pull exclusivity errors pinned; park-inside-callback churn (+0B) per §5#6; all non-frozen engines byte-identical |
-| DM-4 | D-A: `HttpConnectionPool` per §1.3 | Track 09 M6 + framework Phase A (~Sep 2026) | loopback corpus: N sequential requests over ≤ maxIdle connections; stale-reuse retry pinned (§5#2); desync poison-pill (§5#1); one-shot CLI program exits (no loop pinning); `pool_churn.lev` +0B |
-| DM-5 | D-C phase 2: `sysUdp*` floor + in-language `namespace dns` resolver | statics ruling → Track 03 `Block` accepted (Sep–Oct 2026) | fixture-resolver test matrix (§5#10); lcurl resolves a hostname end-to-end on oracle/IR/llvm; ELF unchanged (diagnostic) |
+| DM-1 | D-C floor rider: `sysResolve` incl. `--build-native` via `lv_plat_resolve`; ELF diagnostic pinned; comptime deny-list | **LANDED** (rode Track 08, 2026-07-10) | M7's resolve probe green on oracle/IR/emit-C++ **and** llvm lane; ELF diagnostic text asserted; deny-list grep clean |
+| DM-2 | D-B step 1: `StreamBuffer.close()` + `pullOrNone` + producer adoption (TcpStream/FileInStream) | **substantially LANDED via SU-1, 2026-07-15** (deltas: push-after-close silent-drops, `pullOrNone` unbuilt — see re-grounding) | `stream_close.lev`: push-after-close throws; pull-on-empty-closed distinct error; File EOF via close not `""`; churn +0B |
+| DM-3 | D-B steps 2–3: waiter-promise blocking pull + `InStream : IIterable` flip (prelude-only) | **UNBLOCKED** — LA-30 true suspension default since 2026-07-12; schedulable now | `stream_iter.lev`: Timer-fed `for..in` delivers all ticks then exits at close; iterator/subscribe/pull exclusivity errors pinned; park-inside-callback churn (+0B) per §5#6; all non-frozen engines byte-identical |
+| DM-4 | D-A: `HttpConnectionPool` per §1.3 | framework exists (Atlantis T02–T04 landed 2026-07-13); demand-scheduled | loopback corpus: N sequential requests over ≤ maxIdle connections; stale-reuse retry pinned (§5#2); desync poison-pill (§5#1); one-shot CLI program exits (no loop pinning); `pool_churn.lev` +0B |
+| DM-5 | D-C phase 2: `sysUdp*` floor + in-language `namespace dns` resolver | `Block` landed (Track 03); gates only on the `sysUdp*` floor decision; demand-scheduled | fixture-resolver test matrix (§5#10); lcurl resolves a hostname end-to-end on oracle/IR/llvm; ELF unchanged (diagnostic) |
 
 No dates in this table override an owning track's own timeline; where a trigger
 slips, the milestone slips with it (the register is trigger-relative by design).
