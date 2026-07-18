@@ -1,3 +1,4 @@
+uses Atlantis::Data;
 // atlantis-mysql — incremental packet reassembly (techdesign-05 §1.3, §1.4).
 //
 // onData chunks arrive at arbitrary granularity — mid-header, mid-payload,

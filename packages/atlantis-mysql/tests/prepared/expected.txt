@@ -1,0 +1,8 @@
+int:-123456
+flt:3.141593
+str:hello
+null
+f32=flt:-2.500000
+u64=str:18446744073709551615
+i64=int:-1
+execlen=29 cmd=23 stmtId=7

@@ -1,3 +1,4 @@
+uses Atlantis::Data;
 // atlantis-mysql — prepared-statement binary protocol (techdesign-05 §4).
 // Parameter encoding from DbValue (§4.2), binary row decoding incl. in-language
 // IEEE-754 FLOAT/DOUBLE (§4.3), and the length-prefixed temporal components.
