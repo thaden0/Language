@@ -124,9 +124,11 @@ stdlib tracks — if Atlantis needs a prelude change, that is a Language Ask, no
 ### 0.6 Naming
 
 - Framework: **Atlantis**. Packages: `atlantis`, `atlantis-mysql` (future: `atlantis-postgres`, …).
-- Namespaces: `Atlantis` root facade (app code writes `uses Atlantis;` once); subsystems as
-  `Atlantis::X` (C1). Attributes are PascalCase types (`@Injectable`, not `@injectable` —
-  normalizes the sketch).
+- Namespaces: `Atlantis` root facade (facade types only — rules and attributes live in
+  their consuming subsystem, C1); subsystems as `Atlantis::X` (C1). App files import the
+  subsystems they use (`uses Atlantis::Json;`, `uses Atlantis::Orm;`), not a blanket root
+  import. Attributes are PascalCase types (`@Injectable`, not `@injectable` — normalizes
+  the sketch).
 - Design docs: `designs/atlantis/techdesign-NN-slug.md`. Completed docs move to
   `designs/atlantis/complete/` when landed.
 - Future VCS identity for git-dep consumption: `github.com/thaden0/atlantis` (tagged
@@ -250,12 +252,22 @@ one: owner updates disposition; consuming tracks flip their fallback notes in th
 ## 3. Cross-track contracts (frozen — changes are escalation events)
 
 **C1 — Namespaces & packages.** Package `atlantis` exports root namespace `Atlantis`
-(attributes, rules, facade types) with subsystems `Atlantis::Http`, `::Routing`, `::Json`,
+(facade types only) with subsystems `Atlantis::Http`, `::Routing`, `::Json`,
 `::Config`, `::App`, `::Orm`, `::Mcp`, `::OpenApi`, `::Client`, `::Auth`, `::Views`, `::Log`.
-**All attributes and all rules live in namespace `Atlantis` itself** so one `uses Atlantis;`
-opts a file into the framework's ergonomics (rules fire only where imported). Package
-`atlantis-mysql` exports `MySql` and depends on `atlantis` (for C3 interfaces). App code
-namespaces itself `App::…` by convention.
+**Rules and attributes live in the subsystem namespace that consumes them** (amended
+2026-07-18, retroactive — supersedes the original all-in-root rule). Rules fire only where
+imported, so a file activates exactly the rule sets it imports and nothing is imported that
+is not used: `uses Atlantis::Json;` on a DTO file, `uses Atlantis::Orm;` on an entity file;
+an entity that is both persisted and JSON-exposed imports both. Metaprogramming consumed
+only within a subsystem (e.g. `Atlantis::Orm`-internal rules) is defined in that subsystem.
+Placement tiebreak for multi-consumer metaprogramming: the most specific namespace covering
+all consumers; root `Atlantis` only for genuinely framework-wide surface, and it never holds
+subsystem rules. Retroactive mapping for landed code: `@Serializable`/`@JsonIgnore`, the
+serializer rule set, `ISerializable` → `Atlantis::Json`; `@Injectable` + its validation
+rule → `Atlantis::App`. Every rule-bearing subsystem ships the loud silent-no-fire boot
+warning (07's risk-#5 pattern: expected-but-missing generation names the class and the
+required `uses`). Package `atlantis-mysql` exports `MySql` and depends on `atlantis` (for
+C3 interfaces). App code namespaces itself `App::…` by convention.
 
 **C2 — Handler & middleware shape (the one composition model).**
 ```
@@ -380,7 +392,7 @@ myapp/
   trident.toml                # [[dep]] atlantis, atlantis-mysql; entry = "main"
   main.lev                    # class Main: Builder → Build() → app.useX(); calls
                               #   App::Routes::addRoutes(app) + App::AddBindings()
-  Controllers/                # AuthController.lev … (uses Atlantis;)
+  Controllers/                # AuthController.lev … (uses Atlantis; + Atlantis::Routing)
   Models/
     Entities/                 # classes : Model (+ mixins) — Models/ root also legal
     Dtos/Requests/            # value structs, @Serializable + validation attrs
@@ -509,7 +521,8 @@ console.writeln("Hello ${user.name}, ${2 + 2}");
 
 // Namespaces & imports; manifest is trident.toml (TOML), files are .lev
 namespace App::Controllers { … }
-uses Atlantis;                                    // opts this file into Atlantis rules
+uses Atlantis;                                    // facade types only — no rules in root (C1)
+uses Atlantis::Json;                              // opts this file into Json's rules (@Serializable)
 use Atlantis::Http::Context as Ctx;              // single-name import + alias
 ```
 
@@ -583,3 +596,18 @@ Forbidden in designs: `any`, `null`, truthiness, `finally`, `static`, runtime re
   spelling is kept verbatim everywhere; `const` (compile-time) is NEVER substituted for it
   (wrong semantics — these hold runtime-injected values). The ticket flags the
   `const`/`readonly` field-semantics division for the owner to formalize in the reference.
+- 2026-07-18 (owner amendment) — **C1 rule placement inverted, retroactively.** The
+  original "all attributes and all rules live in root `Atlantis`" clause is purged. New
+  rule: rules and attributes live in the subsystem namespace that consumes them; nothing
+  is imported that is not used; subsystem-internal metaprogramming (e.g. Orm's) is defined
+  in that subsystem. Owner ruled retroactive with no grandfathering: landed
+  `@Serializable`/`@JsonIgnore`/serializer rules/`ISerializable` relocate to
+  `Atlantis::Json`, `@Injectable` + its rule to `Atlantis::App` (migration of
+  `packages/atlantis/src/{json,di}` is a follow-up implementation task; app files then
+  import per subsystem). Considered and rejected: a shared `Atlantis::Dto::{model,Json}`
+  parent — ORM (`@Column`-selected fields on reference-class entities) and JSON
+  (all-minus-`@JsonIgnore` fields on value-struct DTOs, class-level `@Serializable`)
+  share no attribute vocabulary and only partially overlap in target types, so a shared
+  parent would re-couple what this amendment decouples. Multi-consumer tiebreak recorded
+  in C1; §0.6, §4 scaffold, and §8 sample updated to match; techdesign-07's `uses
+  Atlantis;`-anchored MCP/OpenApi rules must move to `::Mcp`/`::OpenApi` (edit pending).
