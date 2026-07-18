@@ -1,0 +1,29 @@
+namespace Sonar { namespace Dom {
+    // ======================================================================
+    // D05 scaffolding, landed by D02 M4 (the dom! emission references these
+    // two symbols; techdesign-05 owns this file and replaces the interim).
+    //
+    // INTERIM CONTRACT (documented, not a STOP):
+    //   * `bindText` applies the INITIAL render only (registration runs the
+    //     getter once immediately — the T11 `__sonarBind` precedent, D05 §2).
+    //     The Binding table, tombstoning, and the frame sweep are D05 M1/M3;
+    //     `Document.__sweepBindings()` stays a no-op until then, so a later
+    //     write to the captured state is picked up when D05 lands.
+    //   * `text` is the hole renderer's overload family (D05 §3.1). The
+    //     `string | None` union member is gated on probe D-P3 and enters
+    //     with D05 M2; `float` joins if/when the type is exercised.
+    // ======================================================================
+
+    string text(string v) => v;
+    string text(int v)    => v.toString();
+    string text(bool v)   => v ? "true" : "false";
+    string text(char v)   => v.toString();
+
+    // Registers a text binding for `textNode` (a `span` Text built by either
+    // markup tier) and renders it once. `sourceText` ("{{expr}}") is the
+    // serializer/inspector channel — carried through the signature now so
+    // dom! expansions do not change shape when D05 fills the table in.
+    void bindText(Document doc, IComponent textNode, string sourceText, () => string getter) {
+        if (textNode is Text) { Text t = textNode; t.text(getter()); }
+    }
+}}

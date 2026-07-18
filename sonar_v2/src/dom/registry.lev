@@ -60,20 +60,16 @@ namespace Sonar { namespace Dom {
             this.reg("menu", () => Menu(),        (c) => c is Menu);
             this.reg("menubar", () => BarMenu(),  (c) => c is BarMenu);
             this.reg("modal", () => Modal(),      (c) => c is Modal);
-            // container tags owned by D03 (FlexContainer/Bar). INTERIM: a plain
-            // Container with the right default axis until D03's classes land;
-            // no reverse matcher (would ambiguously match every Container).
-            this.reg("flex", () => this.newFlow(Axis::Vertical),  (c) => false);
-            this.reg("bar",  () => this.newFlow(Axis::Horizontal),(c) => false);
-            this.reg("contentbar", () => this.newFlow(Axis::Horizontal), (c) => false);
+            // container tags owned by D03 (landed 2026-07-17; the documented
+            // interim plain-Container rows are swapped out with it). `bar` is
+            // an alias row for the same Bar class — `contentbar` owns the
+            // reverse match (D03: "Bar is <contentbar>"); `flex` excludes Bar
+            // so a Bar never reverse-matches as flex (Bar : FlexContainer).
+            this.reg("flex", () => FlexContainer(), (c) => (c is FlexContainer) && !(c is Bar));
+            this.reg("bar",  () => Bar(),           (c) => false);
+            this.reg("contentbar", () => Bar(),     (c) => c is Bar);
             // Deferred rows (documented): textarea (D06), grid (GridBox needs
             // (rows,cols) — no nullary factory), list (ListView source-bound).
-        }
-
-        IComponent newFlow(Axis axis) {
-            Container c = Container();
-            c.setLayout(FlexLayout(axis));
-            return c;
         }
 
         IComponent create(string tag) {

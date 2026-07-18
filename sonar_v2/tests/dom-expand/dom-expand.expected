@@ -1,0 +1,516 @@
+### self-closing leaf
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Input();
+    __doc.__recordBuild(__sonar_0, "input", [], []);
+    return __sonar_0;
+})
+
+### open-close container
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    return __sonar_0;
+})
+
+### registry rows resolve
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Menu();
+    __doc.__recordBuild(__sonar_0, "menu", [], []);
+    var __sonar_1 = MenuItem();
+    __doc.__recordBuild(__sonar_1, "menuitem", [], []);
+    __sonar_1.label("Open");
+    __sonar_0.add(__sonar_1);
+    var __sonar_2 = MenuSeparator();
+    __doc.__recordBuild(__sonar_2, "separator", [], []);
+    __sonar_0.add(__sonar_2);
+    return __sonar_0;
+})
+
+### nested containers
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = SplitBox();
+    __doc.__recordBuild(__sonar_0, "split", [], []);
+    var __sonar_1 = Tabs();
+    __doc.__recordBuild(__sonar_1, "tabs", [], []);
+    var __sonar_2 = ContentBox();
+    __doc.__recordBuild(__sonar_2, "box", [], []);
+    __sonar_1.add(__sonar_2);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### bar aliases
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Bar();
+    __doc.__recordBuild(__sonar_0, "bar", [], []);
+    var __sonar_1 = Bar();
+    __doc.__recordBuild(__sonar_1, "contentbar", [], []);
+    var __sonar_2 = Text();
+    __sonar_2.text("Ready");
+    __doc.__recordBuild(__sonar_2, "span", [], []);
+    __sonar_1.add(__sonar_2);
+    var __sonar_3 = FlexContainer();
+    __sonar_3.add(__sonar_0);
+    __sonar_3.add(__sonar_1);
+    return __sonar_3;
+})
+
+### common literals
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", ["id", "class", "width", "height", "padding"], ["main", "panel side", "40", "10", "1"]);
+    __sonar_0.setWidth(Constraint::Fixed(40));
+    __sonar_0.setHeight(Constraint::Fixed(10));
+    __sonar_0.padding = Insets::Uniform(1);
+    this.main = __sonar_0;
+    return __sonar_0;
+})
+
+### dock + grid cells
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Spinner();
+    __doc.__recordBuild(__sonar_0, "spinner", ["dock", "row", "col", "rowSpan", "colSpan"], ["Top", "1", "2", "1", "3"]);
+    __sonar_0.dock = Dock::Top;
+    __sonar_0.gridRow = 1;
+    __sonar_0.gridCol = 2;
+    __sonar_0.gridRowSpan = 1;
+    __sonar_0.gridColSpan = 3;
+    return __sonar_0;
+})
+
+### flex both axes
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = ProgressBar();
+    __doc.__recordBuild(__sonar_0, "progress", ["flex"], ["2"]);
+    __sonar_0.setWidth(Constraint::Flex(2));
+    __sonar_0.setHeight(Constraint::Flex(2));
+    return __sonar_0;
+})
+
+### hidden literal
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Spinner();
+    __doc.__recordBuild(__sonar_0, "spinner", ["hidden"], ["true"]);
+    __sonar_0.addClass("hidden");
+    var __sonar_1 = Spinner();
+    __doc.__recordBuild(__sonar_1, "spinner", ["hidden"], ["false"]);
+    var __sonar_2 = FlexContainer();
+    __sonar_2.add(__sonar_0);
+    __sonar_2.add(__sonar_1);
+    return __sonar_2;
+})
+
+### title bordered vs not
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Menu();
+    __doc.__recordBuild(__sonar_0, "menu", ["title"], ["File"]);
+    __sonar_0.setTitle("File");
+    var __sonar_1 = Spinner();
+    __doc.__recordBuild(__sonar_1, "spinner", ["title"], ["nope"]);
+    var __sonar_2 = FlexContainer();
+    __sonar_2.add(__sonar_0);
+    __sonar_2.add(__sonar_1);
+    return __sonar_2;
+})
+
+### per-tag typed rows
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Input();
+    __doc.__recordBuild(__sonar_0, "input", ["placeholder", "value", "maxLength"], ["name", "len", "20"]);
+    __sonar_0.setPlaceholder("name");
+    __sonar_0.setValue("len");
+    __sonar_0.setMaxLength(20);
+    var __sonar_1 = Text();
+    __doc.__recordBuild(__sonar_1, "span", ["align", "wrap"], ["Center", "Wrap"]);
+    __sonar_1.align(Align::Center);
+    __sonar_1.wrap(Overflow::Wrap);
+    __sonar_1.text("hi");
+    var __sonar_2 = CheckBox();
+    __doc.__recordBuild(__sonar_2, "checkbox", ["checked", "label"], ["true", "Agree"]);
+    __sonar_2.setChecked(true);
+    __sonar_2.setLabel("Agree");
+    var __sonar_3 = FlexContainer();
+    __sonar_3.add(__sonar_0);
+    __sonar_3.add(__sonar_1);
+    __sonar_3.add(__sonar_2);
+    return __sonar_3;
+})
+
+### expr attrs splice raw
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    __sonar_0.setWidth(w);
+    __sonar_0.dock = d;
+    if (cond) __sonar_0.addClass("hidden");
+    return __sonar_0;
+})
+
+### action/hotkey are meta only
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Button();
+    __doc.__recordBuild(__sonar_0, "button", ["action", "hotkey"], ["save", "ctrl+s"]);
+    __sonar_0.setLabel("Save");
+    return __sonar_0;
+})
+
+### on: handlers
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Button();
+    __doc.__recordBuild(__sonar_0, "button", [], []);
+    __sonar_0.onPress(this.save);
+    __sonar_0.onKey((e) => this.onKey(e));
+    __sonar_0.setLabel("Go");
+    return __sonar_0;
+})
+
+### container text becomes span
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __sonar_1.text("hello world");
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### multiline whitespace collapse
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __sonar_1.text("one two");
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### one-shot splice
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __sonar_1.text("hi" + (name) + "!");
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### binding hole in container
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __sonar_1.text("Editing");
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    var __sonar_2 = Text();
+    Sonar::Dom::bindText(__doc, __sonar_2, "{{filename}}", () => Sonar::Dom::text(filename));
+    __doc.__recordBuild(__sonar_2, "span", [], []);
+    __sonar_0.add(__sonar_2);
+    return __sonar_0;
+})
+
+### typed hole
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    Sonar::Dom::bindText(__doc, __sonar_1, "{{count}}", () => Sonar::Dom::text(count));
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### leaf text channels
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Button();
+    __doc.__recordBuild(__sonar_0, "button", [], []);
+    __sonar_0.setLabel("Open");
+    var __sonar_1 = MenuItem();
+    __doc.__recordBuild(__sonar_1, "menuitem", [], []);
+    __sonar_1.label("Quit");
+    var __sonar_2 = ContentBar();
+    __doc.__recordBuild(__sonar_2, "statusbar", [], []);
+    __sonar_2.setLeft("Ready");
+    var __sonar_3 = Input();
+    __doc.__recordBuild(__sonar_3, "input", [], []);
+    __sonar_3.setValue("seed");
+    var __sonar_4 = ProgressBar();
+    __doc.__recordBuild(__sonar_4, "progress", [], []);
+    var __sonar_5 = FlexContainer();
+    __sonar_5.add(__sonar_0);
+    __sonar_5.add(__sonar_1);
+    __sonar_5.add(__sonar_2);
+    __sonar_5.add(__sonar_3);
+    __sonar_5.add(__sonar_4);
+    return __sonar_5;
+})
+
+### leaf hole is one-shot
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Button();
+    __doc.__recordBuild(__sonar_0, "button", [], []);
+    __sonar_0.setLabel("count" + " " + Sonar::Dom::text(n));
+    return __sonar_0;
+})
+
+### escapes
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __sonar_1.text("a < b { c $ d } e ` f");
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### comment skipped
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    var __sonar_1 = Text();
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_1.text("x");
+    __sonar_0.add(__sonar_1);
+    return __sonar_0;
+})
+
+### for loop
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    for (var p in perms) {
+        var __sonar_1 = CheckBox();
+        __doc.__recordBuild(__sonar_1, "checkbox", [], []);
+        __sonar_1.setLabel(p);
+        __sonar_0.add(__sonar_1);
+    }
+    return __sonar_0;
+})
+
+### hole inside for is one-shot
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    for (var p in perms) {
+        var __sonar_1 = Text();
+        __sonar_1.text(Sonar::Dom::text(p));
+        __doc.__recordBuild(__sonar_1, "span", [], []);
+        __sonar_0.add(__sonar_1);
+    }
+    return __sonar_0;
+})
+
+### if/else
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = FlexContainer();
+    __doc.__recordBuild(__sonar_0, "flex", [], []);
+    if (this.showHelp) {
+        var __sonar_1 = Text();
+        __doc.__recordBuild(__sonar_1, "span", [], []);
+        __sonar_1.text("help");
+        __sonar_0.add(__sonar_1);
+    } else {
+        var __sonar_2 = Text();
+        __doc.__recordBuild(__sonar_2, "span", [], []);
+        __sonar_2.text("ok");
+        __sonar_0.add(__sonar_2);
+    }
+    return __sonar_0;
+})
+
+### user tag + pass-through attr
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Gizmo();
+    __doc.__recordBuild(__sonar_0, "Gizmo", ["spin", "width"], ["3", "5"]);
+    __sonar_0.setSpin("3");
+    __sonar_0.setWidth(Constraint::Fixed(5));
+    return __sonar_0;
+})
+
+### qualified user tag
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Views::Panel();
+    __doc.__recordBuild(__sonar_0, "Views::Panel", ["title"], ["T"]);
+    if (__sonar_0 is Bordered) __sonar_0.setTitle("T");
+    return __sonar_0;
+})
+
+### multi-root auto-wrap
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Text();
+    __doc.__recordBuild(__sonar_0, "span", [], []);
+    __sonar_0.text("a");
+    var __sonar_1 = Text();
+    __doc.__recordBuild(__sonar_1, "span", [], []);
+    __sonar_1.text("b");
+    var __sonar_2 = FlexContainer();
+    __sonar_2.add(__sonar_0);
+    __sonar_2.add(__sonar_1);
+    return __sonar_2;
+})
+
+### text root
+__sonarBuild(() => {
+    var __doc = Sonar::Dom::document();
+    var __sonar_0 = Text();
+    __sonar_0.text("just text");
+    __doc.__recordBuild(__sonar_0, "span", [], []);
+    return __sonar_0;
+})
+
+### E-D1 unclosed
+markup:1:1: '<menu>' was never closed (E-D1)
+<menu>
+^
+
+### E-D1 mismatched close
+markup:1:1: '<menu>' opened here is closed by '</flex>' (E-D1)
+<menu>
+^
+
+### E-D1 stray close
+markup:1:1: unexpected '</' with no open tag (E-D1)
+</menu>
+^
+
+### E-D2 missing =
+markup:1:8: attribute 'placeholder' is missing '=' (E-D2)
+<input placeholder/>
+       ^
+
+### E-D2 unterminated literal
+markup:1:21: unterminated "..." for attribute 'value' (E-D2)
+<input value="oops/>
+                    ^
+
+### E-D2 reserved separator byte
+markup:1:16: reserved separator byte in attribute literal (E-D2)
+<input value="ab"/>
+               ^
+
+### E-D2 unterminated hole
+markup:1:7: unterminated '{{' binding hole (E-D2)
+<flex>{{filename</flex>
+      ^
+
+### E-D2 id expr
+markup:1:7: 'id' takes a "name", not {expr} (E-D2)
+<flex id={x}></flex>
+      ^
+
+### E-D2 on: literal
+markup:1:9: 'on:press' handler must be {expr} (E-D2)
+<button on:press="save">x</button>
+        ^
+
+### E-D3 unknown tag
+markup:2:5: unknown tag '<nope>' (E-D3) — lowercase tags come from the registry; a user class is Capitalized at the dom! tier
+    <nope/>
+    ^
+
+### E-D4 unknown attr + did-you-mean
+markup:1:8: '<input>' has no attribute 'placholder' (did you mean 'placeholder'?) (E-D4)
+<input placholder="x"/>
+       ^
+
+### E-D4 unknown attr no suggestion
+markup:1:7: '<span>' has no attribute 'bogus' (E-D4)
+<span bogus="1">x</span>
+      ^
+
+### E-D5 int
+markup:1:7: attribute 'width="wide"' must be an integer (E-D5)
+<flex width="wide"></flex>
+      ^
+
+### E-D5 bool
+markup:1:11: attribute 'checked="maybe"' must be "true" or "false" (E-D5)
+<checkbox checked="maybe"/>
+          ^
+
+### E-D5 enum align
+markup:1:7: align="Wat" is not one of Start/Center/End/Stretch (E-D5)
+<span align="Wat">x</span>
+      ^
+
+### E-D5 enum dock
+markup:1:10: dock="Under" is not one of Top/Bottom/Left/Right/Fill (E-D5)
+<spinner dock="Under"/>
+         ^
+
+### E-D6 theme
+markup:1:7: theme="dark" is not supported yet (E-D6)
+<flex theme="dark"></flex>
+      ^
+
+### E-D12 empty payload
+markup is empty (E-D12: a node is required)
+
+### id inside for
+markup:1:28: 'id' is not allowed inside a $for body
+<flex>$for p in xs { <span id="bad">x</span> }</flex>
+                           ^
+
+### for at top level
+markup:1:1: '$for' needs an enclosing element at the dom! tier
+$for p in xs { <span>x</span> }
+^
+
+### else without if
+markup:1:7: unexpected '$else' with no matching '$if'
+<flex>$else { <span>x</span> }</flex>
+      ^
+
+### for missing in
+markup:1:16: '$for p' expected 'in'
+<flex>$for p of xs { }</flex>
+               ^
+
+### unclosed block
+markup:1:32: unexpected '</' inside a '{ }' block (missing '}')
+<flex>$if cond { <span>x</span></flex>
+                               ^
+
+### leaf with element child
+markup:1:9: <button> is a leaf and cannot hold element children
+<button><span>x</span></button>
+        ^
+
+### for inside leaf
+markup:1:9: '$for'/'$if' need a container tag, not leaf <button>
+<button>$for p in xs { x }</button>
+        ^
+

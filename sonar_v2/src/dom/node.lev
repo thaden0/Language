@@ -161,6 +161,29 @@ namespace Sonar { namespace Dom {
                 + "' (known: key mouse paste press change submit toggle select dismiss)");
         }
 
+        // ---- popover (D03 §5) ----------------------------------------------
+        // Open this node as a floating overlay anchored to another node's edge.
+        // Sets this node Absolute + anchored, wraps it in a PopoverHost, and
+        // pushes it with dismissOnOutsidePress under a fresh group (R13 input
+        // exclusivity + outside-press dismiss). Returns a DomNode over the HOST
+        // so `.dismiss()` pops exactly this popover.
+        DomNode popover(DomNode anchor, AnchorEdge edge) {
+            if (raw_ is Component) {
+                Component c = raw_;
+                Position p = c.position();
+                p.method = PositionMethod::Absolute;
+                p.anchorTo(anchor.raw(), edge);
+            }
+            PopoverHost host = PopoverHost(raw_);
+            App a = Sonar::app();
+            a.pushOverlay(host, true, false, a.newOverlayGroup());
+            return DomNode(host, doc_);
+        }
+        // Pop this popover overlay (no-op if it is not on the stack). Safe on
+        // either the host node returned by popover() or a plain node whose raw
+        // IS the overlay component.
+        void dismiss() { Sonar::app().popOverlayComponent(raw_); }
+
         // ---- serializer ----------------------------------------------------
         string outerMarkup() => doc_.outerMarkup(raw_);
     }

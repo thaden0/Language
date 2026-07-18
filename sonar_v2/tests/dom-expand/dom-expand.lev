@@ -1,0 +1,109 @@
+uses Sonar;
+uses Sonar::Dom;
+
+// D02 M4 runtime golden harness (design §8): `expandDom` is exercised as a
+// pure string->string library — the exact code path the `dom!` macro runs at
+// comptime — so every grammar production and every E-D catalog row is pinned
+// here without needing F4. Each case prints its expansion (or caught error,
+// line:col + caret included); the .expected file locks the bytes.
+
+// A `${...}` one-shot splice, built by concatenation (the lexer would
+// interpolate a literal `${` in a "double-quoted" string; real dom! callers
+// use raw backtick payloads or import()ed .sonar assets, which are exempt).
+string h(string expr) { return "$" + "{" + expr + "}"; }
+
+void show(string title, string payload) {
+    console.writeln("### " + title);
+    console.writeln(Sonar::Dom::expandDom(payload));
+    console.writeln("");
+}
+
+void showErr(string title, string payload) {
+    console.writeln("### " + title);
+    try {
+        console.writeln(Sonar::Dom::expandDom(payload));
+        console.writeln("!! expected an error, got none");
+    } catch (SonarException e) {
+        console.writeln(e.message);
+    }
+    console.writeln("");
+}
+
+void main() {
+    // ---- grammar productions (§2) ----
+    show("self-closing leaf", "<input/>");
+    show("open-close container", "<flex></flex>");
+    show("registry rows resolve", "<menu><menuitem>Open</menuitem><separator/></menu>");
+    show("nested containers", "<split><tabs><box></box></tabs></split>");
+    show("bar aliases", "<bar></bar><contentbar>Ready</contentbar>");
+
+    // ---- attributes: literal, {expr}, typed (§3.2 mirror) ----
+    show("common literals",
+        "<flex id=\"main\" class=\"panel side\" width=\"40\" height=\"10\" padding=\"1\"></flex>");
+    show("dock + grid cells", "<spinner dock=\"Top\" row=\"1\" col=\"2\" rowSpan=\"1\" colSpan=\"3\"/>");
+    show("flex both axes", "<progress flex=\"2\"/>");
+    show("hidden literal", "<spinner hidden=\"true\"/><spinner hidden=\"false\"/>");
+    show("title bordered vs not", "<menu title=\"File\"></menu><spinner title=\"nope\"/>");
+    show("per-tag typed rows",
+        "<input placeholder=\"name\" value=\"len\" maxLength=\"20\"/>"
+        + "<span align=\"Center\" wrap=\"Wrap\">hi</span>"
+        + "<checkbox checked=\"true\" label=\"Agree\"/>");
+    show("expr attrs splice raw",
+        "<flex width={w} dock={d} hidden={cond}></flex>");
+    show("action/hotkey are meta only", "<button action=\"save\" hotkey=\"ctrl+s\">Save</button>");
+    show("on: handlers", "<button on:press={this.save} on:key={(e) => this.onKey(e)}>Go</button>");
+
+    // ---- text, splices, holes (§2/§4) ----
+    show("container text becomes span", "<flex>hello world</flex>");
+    show("multiline whitespace collapse", "<flex>\n    one\n    two\n</flex>");
+    show("one-shot splice", "<flex>hi " + h("name") + "!</flex>");
+    show("binding hole in container", "<flex>Editing {{filename}}</flex>");
+    show("typed hole", "<flex>{{count}}</flex>");
+    show("leaf text channels",
+        "<button>Open</button><menuitem>Quit</menuitem><statusbar>Ready</statusbar>"
+        + "<input>seed</input><progress>ignored</progress>");
+    show("leaf hole is one-shot", "<button>count {{n}}</button>");
+    show("escapes", "<flex>a \\< b \\{ c \\$ d \\} e \\` f</flex>");
+    show("comment skipped", "<flex><!-- note --><span>x</span></flex>");
+
+    // ---- control flow (T06 semantics, §4) ----
+    show("for loop", "<flex>$for p in perms { <checkbox label={p}/> }</flex>");
+    show("hole inside for is one-shot", "<flex>$for p in perms { {{p}} }</flex>");
+    show("if/else", "<flex>$if this.showHelp { <span>help</span> } $else { <span>ok</span> }</flex>");
+
+    // ---- user classes (Capitalized pass-through) ----
+    show("user tag + pass-through attr", "<Gizmo spin=\"3\" width=\"5\"/>");
+    show("qualified user tag", "<Views::Panel title=\"T\"/>");
+
+    // ---- fragments (§2) ----
+    show("multi-root auto-wrap", "<span>a</span><span>b</span>");
+    show("text root", "just text");
+
+    // ---- error catalog (§5) — every row carries line:col + caret ----
+    showErr("E-D1 unclosed", "<menu>\n  <button>x</button>");
+    showErr("E-D1 mismatched close", "<menu>\n</flex>");
+    showErr("E-D1 stray close", "</menu>");
+    showErr("E-D2 missing =", "<input placeholder/>");
+    showErr("E-D2 unterminated literal", "<input value=\"oops/>");
+    showErr("E-D2 reserved separator byte",
+        "<input value=\"a" + std::charFromCode(31).toString() + "b\"/>");
+    showErr("E-D2 unterminated hole", "<flex>{{filename</flex>");
+    showErr("E-D2 id expr", "<flex id={x}></flex>");
+    showErr("E-D2 on: literal", "<button on:press=\"save\">x</button>");
+    showErr("E-D3 unknown tag", "<flex>\n    <nope/>\n</flex>");
+    showErr("E-D4 unknown attr + did-you-mean", "<input placholder=\"x\"/>");
+    showErr("E-D4 unknown attr no suggestion", "<span bogus=\"1\">x</span>");
+    showErr("E-D5 int", "<flex width=\"wide\"></flex>");
+    showErr("E-D5 bool", "<checkbox checked=\"maybe\"/>");
+    showErr("E-D5 enum align", "<span align=\"Wat\">x</span>");
+    showErr("E-D5 enum dock", "<spinner dock=\"Under\"/>");
+    showErr("E-D6 theme", "<flex theme=\"dark\"></flex>");
+    showErr("E-D12 empty payload", "   ");
+    showErr("id inside for", "<flex>$for p in xs { <span id=\"bad\">x</span> }</flex>");
+    showErr("for at top level", "$for p in xs { <span>x</span> }");
+    showErr("else without if", "<flex>$else { <span>x</span> }</flex>");
+    showErr("for missing in", "<flex>$for p of xs { }</flex>");
+    showErr("unclosed block", "<flex>$if cond { <span>x</span></flex>");
+    showErr("leaf with element child", "<button><span>x</span></button>");
+    showErr("for inside leaf", "<button>$for p in xs { x }</button>");
+}

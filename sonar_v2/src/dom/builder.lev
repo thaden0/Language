@@ -156,12 +156,12 @@ namespace Sonar { namespace Dom {
     }
 
     // Single component: one root returns itself; multiple roots auto-wrap in a
-    // vertical flow container (the anchor's fragment rule, §2).
+    // vertical FlexContainer (the anchor's fragment rule, §2 — the same wrap
+    // the dom! tier emits, kept identical for the drift corpus).
     IComponent buildMarkup(string markup, Document doc) {
         Array<IComponent> roots = buildMarkupFragment(markup, doc);
         if (roots.length() == 1) return roots[0];
-        Container wrap = Container();
-        wrap.setLayout(FlexLayout(Axis::Vertical));
+        FlexContainer wrap = FlexContainer();
         for (IComponent r in roots) wrap.add(r);
         return wrap;
     }
