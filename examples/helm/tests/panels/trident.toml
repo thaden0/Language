@@ -1,0 +1,15 @@
+name    = "helm-panels-test"
+entry   = "Helm::main"
+sources = [
+    "panels_test.lev",
+    "../../src/lang/diagnostic.lev",
+    "../../src/panels/problems.lev",
+    "../../src/panels/output.lev",
+    "../../src/panels/testresults.lev",
+    "../../src/panels/panelhost.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

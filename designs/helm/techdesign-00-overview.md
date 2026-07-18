@@ -622,8 +622,172 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
 ```
 
 - **2026-07-16 — G-LANG-2 process half is GREEN on LLVM** (language-side landing,
-  `designs/techdesign-spawn-llvm.md`): `sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` now
+  `designs/complete/techdesign-spawn-llvm.md`): `sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` now
   compile and run under `--build-native`, byte-identical to the interpreters
   (`tests/corpus/sys_spawn/`, oracle=IR=LLVM). Helm's proc-bridge (H09) features are no
   longer interpreter-pinned — the golden lane can add LLVM for proc-bridge tests. The PTY
   floor (the terminal half of G-LANG-2, needed by H10) remains open.
+
+- 2026-07-17 — **G-H2 landed.** H04, the editor — the XL long pole. Five new `.lev` files under
+  `examples/helm/src/editor/` and two golden tests (`tests/{buffer,editor}`); 7 Helm tests total,
+  all green on **oracle + IR** (byte-identical). Split headless-model (H04a) / Sonar-view (H04b),
+  exactly per §4.
+  - **H04a — the buffer/edit algebra (headless, no Sonar).**
+    - `piece.lev` — `PieceTable` over two immutable **`Block`** byte stores (`original` +
+      append-only `added`, doubled on growth so repeated inserts amortise O(1)). Byte-offset
+      splice API: `insert` splits ≤1 piece (3 out), `remove` trims the two boundary pieces + drops
+      the middle, `textRange` materialises via `Block.toString`. `Piece`/`PieceLoc` are **class**
+      rows (footgun #5 / Sonar #66). Undo/redo = snapshots of the small persistent pieces array
+      (the shared `added` store only grows, so old offsets stay valid forever).
+    - `lineindex.lev` — `LineIndex`: line→byte-start, found by scanning **bytes** for 0x0A
+      (correct for UTF-8 — multibyte bytes are all ≥0x80 — and dodges the `string.at` mid-sequence
+      throw, Sonar #59). v1 rebuilds fully on edit (O(n) scan); incremental is a noted perf rider
+      (K1), slots behind the same interface. Big files still open read-only per §4.1.
+    - `cursor.lev` — `Pos`/`Range`/`Cursor` **class** carriers (col in **scalars**); Cursor holds
+      a selection anchor + sticky `goalCol` for vertical motion.
+    - `buffer.lev` — `TextBuffer`, the **frozen H-C1** contract, owning the scalar↔byte
+      translation (`utf8Len` off the codepoint, no allocation) so nothing above it touches a byte.
+      `FromFile`/`Empty`/`FromString`, version, dirty, undo/redo, `save`, `onChange` (R12 token,
+      version-keyed `ChangeEvent` with the dirtied line range). Golden covers split inserts,
+      newline inserts, remove, slice, a **wide-glyph** (世) column, undo/redo byte reconstruction,
+      and change-event fan-out. (Test-side footgun logged: a closure that reassigns a captured
+      *local* array doesn't write back — accumulate through a reference-type field instead.)
+  - **H04b — `EditorView`, the Sonar component (frozen H-C2).** Virtualized (paints only
+    `scrollY..scrollY+h` lines), gutter with right-aligned 1-based line numbers, wide-glyph-aware
+    caret + horizontal/vertical auto-scroll, selection painting (Shift+motion), full editing
+    (insert/enter/backspace/delete, selection-delete, Ctrl+Z/Y undo/redo, in-process
+    Ctrl+C/X/V clipboard, bracketed paste). `cursorPos()` returns the box-relative caret (Input
+    contract). Golden drives synthetic `KeyEvent`s → paint → `TestRenderer.snapshot()` (text +
+    style channels + `@cursor`); a reverse-video selection theme makes selections visible in the
+    style channel; scrolling verified with a 10-line buffer in a height-6 viewport.
+    - **H-C2 refinement (design vs language reality — the H-C4 precedent).** §4.3 froze the header
+      as `EditorView : Container, Scrollable, Focusable, Bordered` and made "redeclare inherited
+      Container/Scrollable methods" load-bearing against the open multi-mixin children-loop paint
+      bug. The direct Sonar precedent resolves this more cleanly: **TreeView** — an
+      identically-shaped virtualized/scrollable/focusable leaf that paints rows, not children — is
+      deliberately **NOT a Container**. An editor has no child components (it paints text spans), so
+      being a Container would only re-expose the children-loop bug for zero benefit. `EditorView`
+      therefore mirrors TreeView's header exactly (`Focusable, Scrollable, Bordered, Styleable`) and
+      redeclares the methods the multi-mixin dispatch family can drop (`scrollTo`, `paintChrome`)
+      plus its overrides (`contentDesired`, `paintContent`, `cursorPos`). H-C2's "Container" line is
+      amended to match; the redeclaration discipline it mandated is honoured against the
+      non-Container base the codebase's own precedent proves safe. No new escalation.
+  - **Floor / lane note.** Nothing in H04 is process-pinned (pure `Block` + Sonar `TestRenderer`,
+    both LLVM-supported), so the §11 three-lane oracle=IR=**LLVM** byte-identity is *expected*
+    green; wiring the native lane (`tests/run_native.sh` + the runtime `.S` context-switch objects)
+    is deferred to H13's harness rather than the Helm test runner (which stays oracle+IR because the
+    proc/spike tests remain there). No compiler bugs hit; no `src/**`/`runtime/**` touched.
+  - **Next gate G-H3** = H06 diagnostics (stderr parse) + H07 Problems/Output + H08 status bar; the
+    edit→diagnostics loop. The highlight seam is ready (paintContent reads one resolved text style
+    today; H06 swaps in the per-span highlight cache keyed by `buffer.version()`). `OpenDoc`
+    (§G-H1) is now ready to be superseded by `TextBuffer` in the Workspace open-set.
+- 2026-07-17 — **G-H3 landed.** H06 diagnostics + H07 Problems/Output/Test panels + H08 status bar
+  — the edit→diagnostics loop closes. Eight new `.lev` files under `examples/helm/src/{lang,panels,
+  status}/` and four golden tests (`tests/{diag,panels,status,langloop}`); **11 Helm tests total,
+  all green on oracle + IR** (byte-identical). No `src/**`/`runtime/**` touched; no compiler bugs
+  hit.
+  - **H06 — the language-service bridge (`src/lang/`).**
+    - `diagnostic.lev` — `Diagnostic` (path/line/col/severity/message) + `DiagnosticBatch`
+      (version + `Array<Diagnostic>`), both **class** rows (no `Array<struct>`). Severity int
+      consts + `sevGlyph` (`● ▲ ‣ ◦`); the batch is version-keyed (§6.2) with error/warning counts
+      and a `forPath` per-buffer view.
+    - `diagparse.lev` — `IDiagnosticSource` (the G-LANG-1 swap seam) + `StderrDiagnosticSource`,
+      which parses the **exact** `src/Diagnostic.cpp` fprintf forms verified against the live
+      compiler: spanned `path:line:col: sev: msg` and whole-file/prelude `path: sev: msg`, skipping
+      the source-snippet, caret, and `N error(s)` summary lines (tolerant by construction — K4).
+      A golden corpus (`tests/diag`) is the format-drift guard.
+    - `langservice.lev` — `BufferSnapshot`; the frozen **H-C3** `ILanguageService` (diagnostics
+      surface); a shared `DiagSubscribers` R12 token registry; `LeviathanService` (the live path);
+      `FakeLanguageService` (the test seam); and `DiagnosticsController`, which version-keys results
+      (drops a batch older than the newest request) and fans surviving batches to its sinks,
+      `bindBuffer`ing a `TextBuffer` so an edit requests diagnostics without the editor knowing the
+      service exists.
+    - **H-C3 scope refinement (design vs gate — the H-C4/H-C2 precedent).** §6.4 froze
+      `ILanguageService` with a synchronous in-process `highlight(...)` alongside the diagnostics
+      methods. Highlighting (§6.1) is a **separate concern** from the diagnostics loop G-H3 names,
+      and the `EditorView` highlight seam already exists (it reads one resolved text style, ready to
+      swap in a per-span cache). So this gate ships the **diagnostics surface** of H-C3; the
+      in-process lexer/`highlight()` lands as an H06 rider. No new escalation.
+    - **Live-path floor note (G-LANG-2).** `LeviathanService` drives H09's `Proc` with
+      `--emit-ir` over a shadow copy of the (possibly dirty) buffer — `Proc` runs on oracle+IR only,
+      so this path is exercised by the **isolated live integration test** (§11), not the hermetic
+      golden lane, which binds `FakeLanguageService`. The single-file shadow (vs a trident-driven
+      cross-`uses` compile) is the honest v1 limit the shadow-file open question (§13.1) tracks;
+      cross-file diagnostics are an H11 rider.
+  - **H07 — the panels (`src/panels/`).** `problems.lev` (`ProblemsModel : ITableSource`, sorted
+    errors→warnings→notes then path/line/col via a zero-padded composite `sortBy` key,
+    `diagnosticAt` for click-to-jump), `output.lev` (`OutputModel` — a capped append-only line
+    buffer + `IListSource`; `Proc`-free, H11 feeds it), `testresults.lev` (`TestResult` rows +
+    `TestResultsModel : ITableSource`; harpoon-output parsing deferred to H11), and `panelhost.lev`
+    (`PanelHost` owns the three models; `applyBatch` refreshes Problems and reveals its tab when a
+    batch carries errors, never stealing focus on a clean batch).
+  - **H08 — the status bar (`src/status/statusbar.lev`).** `StatusModel` composes mode / branch /
+    diagnostics counts (`● 2  ▲ 5`) / build-state on the left and cursor `Ln,Col` / encoding /
+    language on the right into `ContentBar`'s three regions (pure model — no Sonar dep; the golden
+    renders it through a **real** `Sonar::ContentBar` + `TestRenderer`). Build-state int consts
+    (idle/running/ok/failed); `applyBatch` folds a delivered batch into the counts — the status half
+    of the loop.
+  - **`langloop` golden** drives the whole loop with zero subprocesses: `FakeLanguageService` +
+    `DiagnosticsController` + a live `TextBuffer`, proving edit→request→deliver→fan-out **and** the
+    version-keyed drop (edit bumps to v2, a late v1 batch is discarded, Problems/counts unchanged),
+    then recovery through v2 (errors→warning) and v3 (clean).
+  - **Language facts (recorded so later tracks don't relearn).** A bare `version` field reference
+    inside a method reads as an "ambiguous function reference" against same-named `version()`
+    methods elsewhere in the program — qualify the field with `this.`. `sortBy((x) => keyString)`
+    sorts ascending lexically, so a zero-padded composite key string gives deterministic
+    multi-column ordering. `build/` is gitignored, so plan files stay out of the tree.
+  - **Next gate G-H4** = H11 build/run/test wired to commands + palette + menu, and H01 shell fully
+    assembled. The `IDiagnosticSource`/`ILanguageService` DI seams are ready for the trident-driven
+    diagnostics path; `PanelHost.appendOutput` and the status build-state consts are the seams H11
+    streams build output and ✓/✗ into.
+- 2026-07-17 — **G-H4 landed.** H11 build/run/test driver + the H01 shell assembled. Four new
+  `.lev` files (`src/build/{harpoon,builddriver}.lev`, `src/command/menu.lev`, `src/shell.lev`),
+  `main.lev` rewritten to compose the shell, the package `trident.toml` sources widened to every
+  `src/**` dir, and two golden tests (`tests/{build,shell}`); **13 Helm tests total, all green on
+  oracle + IR** (byte-identical). No `src/**`/`runtime/**` touched; no compiler bugs hit.
+  - **H11 — the trident driver (`src/build/`).**
+    - `builddriver.lev` — `BuildDriver`, the single seam turning a Build/Run/Test command into a
+      child process and routing its output. It reuses H09's `Proc`/`ProcStreamer` and H06's
+      `StderrDiagnosticSource`/`StderrCollector`, owning only the job lifecycle + routing, driven
+      through **`onEvent(ProcEvent)`** — the exact shape a live `Proc` streams, so the whole
+      build→Output/Problems/Test/status loop is golden-testable with **zero subprocesses** (the
+      `FakeProc` doctrine, §11). Pure argv builders (`buildArgs`/`runArgs`/`testArgs`/
+      `engineRunArgs`) are shared by the live spawn and the golden. Job/engine tags are int consts
+      (bug #40/#41). Build/test stderr parses into Problems + status counts (`applyBatch`); test
+      stdout parses into the Test panel and reveals it; a plain `run`'s stderr is program output,
+      **not** parsed as diagnostics. Exit code → `BuildOk`/`BuildFailed`. `stop()` = SIGTERM (§7.1).
+    - `harpoon.lev` — `parseHarpoon(stdout)` → `Array<TestResult>`, matching
+      `harpoon/src/runner.lev`'s exact report (`  Class::method … ok|FAIL|ERROR|skip`, six-space
+      detail lines, `N run:` summary). Tolerant by construction (K4); the `tests/build` golden is
+      the drift guard. harpoon reports no per-test timing/location in v1, so `ms`/`path`/`line` are 0.
+    - **Design-vs-reality refinements (the H-C4/H-C2/H-C3 precedent; no new escalation).**
+      (1) `trident` exposes **no `test` subcommand** (verified: `build|run|check|emit-llvm|plan`), so
+      Helm's Test command runs a harpoon project via `trident run <testsDir>` and parses stdout.
+      (2) "Choose engine" (§7.2) drives a differential run of the already-built plan through
+      `leviathan --plan <ws>/build/plan.lvplan <flag>` — the exact invocation the project's own test
+      runners use — surfaced as a status-bar affordance (`StatusModel.setEngine`, a new right-side
+      `⚙ <engine>` segment that stays empty by default so H08's golden is unchanged).
+  - **H01 — the shell assembled (`src/shell.lev`).** `HelmShell` is the single wiring point (the
+    ReconApp precedent): it owns the `SonarApp`, the one `CommandRegistry` (12 commands — build/run/
+    stop/test/engine×4/runEngine/togglePanel/palette/save/quit, each with its accelerator), the
+    `MenuModel` (File/Edit/View/Run/Help), the `PanelHost`, `StatusModel`, and `BuildDriver`, and
+    assembles them into the dock chrome (menu bar / body / panel-tab strip / status bar as real
+    `ContentBar`/`ContentBox` widgets `app.add`-ed to the tree). Everything is wired in the ctor
+    (accelerators `bindInto` the app keymap) so the shell is testable without `run()`. Two drivers:
+    `run()` (the live `SonarApp.run()` loop) and **`renderShell(w,h)`** — a headless `TestRenderer`
+    snapshot of the assembled chrome. `main.lev` composes the shell and prints its surface + a
+    rendered snapshot by default (deterministic, non-blocking); `HELM_RUN=1` launches the live loop.
+    - **Shell-snapshot refinement.** `renderShell` paints the top/panel/status bars directly onto one
+      `Surface` (priming the default background with `surface.clear`, which the live App's root fill
+      supplies) rather than driving `SonarApp.pumpOnce()` — matching the editor/status golden idiom
+      and keeping the oracle+IR lane free of the frame-timer the event loop would start. The live
+      EditorView/TreeView body mount, the command-palette overlay, and dropdown menus are H04/H05/H12
+      riders on the live shell; the body is their (blank) mount region in the assembled snapshot.
+  - **`tests/build`** drives the driver with synthetic `ProcEvent`s (build with 2 diagnostics→exit 1,
+    a harpoon test report→exit 0, a run whose stderr is program output) and checks the panels/status
+    routing + argv builders + engine choice. **`tests/shell`** constructs the shell and prints the
+    command surface, the menu structure, a palette filter, and three `renderShell` snapshots (initial;
+    after a diagnostic batch reveals Problems + folds the counts; after a `^`\`-style panel toggle).
+  - **Next gate G-H5** = H12 settings/keymap/theme + workspace search, and the self-host milestone
+    (edit Helm's own source in Helm). The `HelmShell` body is the EditorView mount point; the
+    `CommandRegistry`/`MenuModel`/palette surface is ready for the settings + search commands.

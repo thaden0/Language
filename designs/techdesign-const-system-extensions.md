@@ -1,6 +1,11 @@
-# Deferral Resolution — `const` System Extensions
+# `const` System Extensions
 
 **Status: OQ2 + OQ3/OQ4 landed (2026-07-16); OQ1 designed, not yet implemented.**
+Promoted out of deferral 2026-07-17 (was `deferal-const-system-extensions.md`) — with three of
+four items discharged (§8), **OQ1 (definite single assignment, §2) is the live remaining
+milestone**, checker-only, riding the existing flow-narrowing engine. Its §7 sequencing rule
+("when a program actually wants the `if/else`-init pattern") is retired by the promotion; it is
+now ordinarily schedulable. The §2.3 exclusion fence and §7 STOP conditions stand unchanged.
 **Date:** 2026-07-07 (design); 2026-07-16 (OQ2/M-doc landed — see §8).
 **Resolves / tracks:** the four open questions logged at the tail of the landed
 `const` feature — [`designs/complete/const.md` §9](designs/complete/const.md)

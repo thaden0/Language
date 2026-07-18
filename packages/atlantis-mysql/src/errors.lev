@@ -1,0 +1,100 @@
+// atlantis-mysql — the MySqlException family (techdesign-05 §5.4).
+//
+// Catch-by-capability is the framework's one error model. Each concrete class
+// ADDITIONALLY implements the driver-agnostic Atlantis::Data capability
+// interfaces (the approved additive C3 amendment) so Track 06 catches
+// IDuplicateKeyException / IDeadlockException / etc. WITHOUT depending on this
+// package — multiple inheritance earning its keep (§5.4).
+uses Atlantis::Data;
+
+namespace MySql {
+
+    // Local re-export of the driver-agnostic base so MySql code can name it.
+    interface IMySqlException : Atlantis::Data::IDbException { }
+
+    // Base: any server ERR packet. errno + sqlstate carried; message from Exception.
+    class MySqlException : Exception, IMySqlException {
+        int errno;
+        string sqlstate;
+        new MySqlException(int errno, string sqlstate, string message) {
+            Exception::Exception(message);
+            this.errno = errno;
+            this.sqlstate = sqlstate;
+        }
+    }
+
+    // Framing / desync — breaks the connection (§6.4). No server errno.
+    class MySqlProtocolException : MySqlException {
+        new MySqlProtocolException(string message) {
+            MySqlException::MySqlException(0, "", message);
+        }
+    }
+
+    // Auth failures: 1044/1045/1698/3159.
+    class MySqlAuthException : MySqlException {
+        new MySqlAuthException(int errno, string sqlstate, string message) {
+            MySqlException::MySqlException(errno, sqlstate, message);
+        }
+    }
+
+    // 1062/1586/1859; sqlstate class 23xxx.
+    class MySqlDuplicateKeyException : MySqlException, Atlantis::Data::IDuplicateKeyException {
+        new MySqlDuplicateKeyException(int errno, string sqlstate, string message) {
+            MySqlException::MySqlException(errno, sqlstate, message);
+        }
+    }
+
+    // 1213; sqlstate 40001 — transient (retry-safe).
+    class MySqlDeadlockException : MySqlException, Atlantis::Data::IDeadlockException, Atlantis::Data::ITransientDbException {
+        new MySqlDeadlockException(int errno, string sqlstate, string message) {
+            MySqlException::MySqlException(errno, sqlstate, message);
+        }
+    }
+
+    // 1205 — transient (retry-safe).
+    class MySqlLockTimeoutException : MySqlException, Atlantis::Data::ITransientDbException {
+        new MySqlLockTimeoutException(int errno, string sqlstate, string message) {
+            MySqlException::MySqlException(errno, sqlstate, message);
+        }
+    }
+
+    // Socket EOF / reset mid-command — breaks the connection (§6.4).
+    class MySqlConnectionLostException : MySqlException, Atlantis::Data::IConnectionLostException {
+        new MySqlConnectionLostException(string message) {
+            MySqlException::MySqlException(0, "", message);
+        }
+    }
+
+    // Pool acquire deadline (§6.2).
+    class PoolTimeoutException : MySqlException {
+        new PoolTimeoutException(string message) {
+            MySqlException::MySqlException(0, "", message);
+        }
+    }
+
+    namespace Errors {
+        // sqlstate class = first two chars (SQL-99 class), used as the fallback
+        // when the errno is unrecognised.
+        string sqlstateClass(string sqlstate) {
+            if (sqlstate.length() >= 2) { return sqlstate.subStr(0, 2); }
+            return "";
+        }
+
+        // Classification: errno first, sqlstate class as fallback (§5.4).
+        // The single place an ERR packet becomes a typed exception.
+        MySqlException classify(int errno, string sqlstate, string message) {
+            if (errno == 1213) { return MySqlDeadlockException(errno, sqlstate, message); }
+            if (errno == 1205) { return MySqlLockTimeoutException(errno, sqlstate, message); }
+            if (errno == 1062 || errno == 1586 || errno == 1859) {
+                return MySqlDuplicateKeyException(errno, sqlstate, message);
+            }
+            if (errno == 1044 || errno == 1045 || errno == 1698 || errno == 3159) {
+                return MySqlAuthException(errno, sqlstate, message);
+            }
+            string cls = sqlstateClass(sqlstate);
+            if (cls == "23") { return MySqlDuplicateKeyException(errno, sqlstate, message); }
+            if (sqlstate == "40001") { return MySqlDeadlockException(errno, sqlstate, message); }
+            return MySqlException(errno, sqlstate, message);
+        }
+    }
+}

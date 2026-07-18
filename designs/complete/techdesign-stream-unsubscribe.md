@@ -396,7 +396,7 @@ M1+M2 then M3+M4 as two pushes.
 
 ## 8. Coordination — the D-B (streams-maturity EOF) neighbor
 
-`deferal-http-and-streams-maturity.md` D-B wants `StreamBuffer.close()` for **producer-side EOF**
+`techdesign-http-and-streams-maturity.md` D-B wants `StreamBuffer.close()` for **producer-side EOF**
 (so `for..in`/`toArray` over a live stream can terminate); this design lands the **same field and
 method** for consumer-side detach. Convergence rulings so the two never collide:
 

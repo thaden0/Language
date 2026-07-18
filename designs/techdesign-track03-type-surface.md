@@ -1,6 +1,14 @@
-# Deferral — Track 03 type-surface items
+# Track 03 type-surface items
 
-**Status:** deferred (design-noted, not blockers). **Date:** 2026-07-08.
+**Status:** ACTIVE — promoted out of deferral 2026-07-17 (was `deferal-track03-type-surface.md`);
+three self-contained surface items, buildable independently. `char` and `enum` are landed in full
+on all four active engines, so nothing below is substrate-blocked anymore. Priority note added
+2026-07-17: item 3 (char literals in call-argument position) has since recurred as a real
+friction cost twice — Sonar T04 filed bug.md **#50** (char literal not retyping in call-arg
+position) and T06 filed **#58** (char literals don't retype at comptime, forcing `.code()`
+comparisons throughout the template engine) — so item 3 is the one to schedule first, with the
+§5-problem-#1 overload back-compat rule (`string` wins when both `f(char)`/`f(string)` exist)
+re-verified as its acceptance gate. **Date:** 2026-07-08 (design); 2026-07-17 (promoted).
 **Source of record:** `designs/complete/techdesign-03-core-types.md` (§1.1 char-range note,
 §2.1 string-carrier note, §5 problem #1 call-arg note; §9 implementation log
 2026-07-08). These are **surface refinements**, not gated on any contract — each

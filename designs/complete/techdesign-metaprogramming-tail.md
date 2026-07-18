@@ -1,6 +1,19 @@
 # Tracker: Metaprogramming deferrals — the consolidated tail
 
-**Status:** tracker, current as of 2026-07-06. **No implementation rides this doc.**
+**Status: CLOSED 2026-07-17** — the implementation sweep the same day resolved every row
+that could still stall (see the close-out note below the re-grounding section): item Q
+landed (`designs/complete/techdesign-target-predicate.md`, the §8.2 one-pager + build),
+item M verified already-landed (named attribute args rode the named-arguments landing —
+`evalAttrArgs`, corpus `attr_named.lev`), item G verified landed (phase4 §14 item 5,
+`Checker::checkComptimeRoot` in tree). Remaining rows are all *by-design* terminal:
+D/F demand-gated behind their written triggers, H–L pull-based with filed request
+tickets (`designs/requests/request-metaprog-{attr-values,splices}.md`), N/O/P
+resolved-by-reference. Doc moved to `designs/complete/` per §7.5.
+
+**Prior status:** tracker — re-grounded 2026-07-17 (see the dated section below; the 2026-07-06
+baseline text is kept as the historical record and is superseded where the two conflict).
+Promoted out of deferral 2026-07-17 (was `deferal-metaprogramming-tail.md`).
+**No implementation rides this doc.**
 **Canonical resolution design:** `docs/techdesign-metaprog-phase4.md` — that doc already
 *designs* nearly everything listed here; this doc exists so the deferral set is visible
 from `designs/` alongside the track index, cross-checked against the current tree, and so
@@ -21,6 +34,74 @@ is unimplemented), `src/main.cpp:196-197` (`--expand` / `--ast-after-rules` stil
 alias), `src/Ast.hpp:319` (`ruleRewrites` flag parked, unused), no `provenanceId` in
 `Ast.hpp`. Phases 1–3 are feature-complete (`docs/techdesign-metaprog-phase3.md` header,
 suite green at its third sync).
+
+**Re-grounding 2026-07-17** (verified against master; supersedes the table/status text below
+where they conflict):
+
+- **Phase 4 SHIPPED.** info.md §0 records "Metaprogramming Phases 1–4 + procedural macros
+  (F4)" landed. Verified in-tree: Layer-D `rewrites body of` parses for real
+  (`Parser.cpp:1350-1359`, `:1901` — the "Phase 4" error stub this doc cites at `:1108-1112`
+  is gone) → **item A LANDED**; M33 confluence/conflict detection exists (`Rules.cpp:2422`,
+  the "rule X and rule Y conflict at \<anchor\>" shape) → **item B LANDED**; `reentrant`
+  parses (`Parser.cpp:1364`) → **item C LANDED**; `--expand` is now the source-shaped
+  re-emit with `--ast-after-rules` split off as its own mode (`main.cpp:247-251`) →
+  **item E LANDED**. Beyond this doc's inventory, F4 procedural macros
+  (`macro name(string) comptime` + `meta::parseExpr`/`parseStmts`, `Rules.cpp:39-49`) also landed.
+- **Item M is UNBLOCKED — the §4 prerequisite was built.** Named arguments + default
+  parameter values landed as a language feature (info.md §0/§2;
+  `designs/complete/techdesign-named-arguments.md`, whose own §log updates this tracker by
+  name). What remains of M is only the attribute-side inheritance (phase4 §9.5's "nothing
+  attribute-specific to design here") — verify whether it rode the named-args landing;
+  if not, it is now a trivial follow-on, **not** blocked.
+- **Item Q is half-unblocked.** The Track 03 statics STOP resolved long ago — `enum` landed
+  in full (closed int-carried value type, all four engines), so the `Platform::current`-as-enum
+  shape is buildable. The predicate itself is still **absent** (verified: no
+  `Platform::current`/target-const anywhere in `src/` or `docs/reference.md`), so Q's §8.2
+  one-pager (predicate shape + target-not-host semantics per the portable pivot) is now
+  **the tracker's one open design item**. New demand signal since 2026-07-06: the
+  LA-15/LA-16-shaped asks filed from Sonar T11 and Atlantis Track 03 (field-type holes,
+  name-string reification — `designs/requests/request-metaprog-attr-values.md`,
+  `request-metaprog-splices.md`) mean the pull-based tail items (H/I and friends) now have
+  real pullers; and the Harpoon compiler work (2026-07-15) already extended the rule engine
+  adjacently (`$C.name`/`$m.name` reification, `$for`-bound-method selector splicing,
+  type-position `$C` hygiene — reference.md §5.2/§6.9). Re-ground H–L against that before
+  building any of them.
+- **Demand gates that stand:** D (no `provenanceId` in `Ast.hpp` — v1 range-based provenance
+  remains the accepted answer) and F (no measured compile-time regression logged). G/K/N/O/P
+  unverified individually; K's `Symbol::homeNs` confirmed absent.
+- **Path currency:** the `docs/techdesign-metaprog-*` citations below now live at
+  `designs/complete/techdesign-metaprog-*` (the 2026-07-07 designs reorg); `docs/` holds only
+  reference material.
+
+**Close-out 2026-07-17 (implementation sweep — supersedes the rows it touches):**
+
+- **G LANDED** (correcting this doc's own table): phase4 §14 item 5 records it built
+  2026-07-10; verified in tree (`Checker::checkComptimeRoot`, `Checker.cpp`, wired via
+  `RuleEngine::precheckComptime`). The table's "designed, unbuilt" was stale.
+- **M LANDED**: the attribute-side inheritance did ride the named-args landing —
+  `RuleEngine::evalAttrArgs` maps labeled args onto the attribute's field list (name
+  lookup, mixed positional/named, duplicate + unknown-name errors, defaults for unfilled
+  fields), and corpus `tests/corpus/meta/attr_named.lev` exercises out-of-order and
+  defaulted named args. Nothing left to build; phase4 §9.5's "for free" prediction held.
+- **Q LANDED**: the §8.2 one-pager was authored AND implemented same-day —
+  `designs/complete/techdesign-target-predicate.md`. Shape chosen: compiler-provided
+  comptime string constants `target::os`/`target::arch`/`target::triple` (reserved
+  comptime namespace, family with `meta`), sourced from `--target` (host fallback) —
+  **target-not-host proven** by a metatest folding the windows `uses` branch under a
+  windows cross triple on a linux host. The `Platform::current`-enum shape was declined:
+  the enum's value must be compiler-injected anyway, and a closed variant list ossifies
+  (the statics dependency dissolves rather than being paid). Corpus
+  `tests/corpus/meta/target_uses.lev` (oracle/IR/emit-C++/LLVM + `--expand` roundtrip);
+  reference.md §6.9 "`target::`" subsection.
+- **H–L re-grounded** (per the standing instruction above, recorded for the eventual
+  builder): the Harpoon-era engine extensions in tree are `$C.name`/`$m.name` decl
+  reification (`Rules.cpp:2038`-area), decl-hole **member-selector** splicing `t.$m`
+  (`Rules.cpp:2094`-area), and type-position `$C` hygiene (`Rules.cpp:2235`, `:2304`) —
+  i.e. parts of `request-metaprog-splices.md` item (A)/(B) already exist. Still absent,
+  verified: `meta::Attr`/`attrObjects` (I), structured `meta::Type` (H),
+  `StmtKind::ForSplice` (J — only the expr kind exists), `Symbol::homeNs` (K), class-wide
+  marker search (L — `findMarkerSlot` is still subject-body-scoped). H/I/J remain the
+  request tickets' P1/P2 asks; they are scheduling, not design (phase4 §9.1/§9.2).
 
 ---
 
@@ -68,23 +149,23 @@ Three classifications used below:
 
 | # | Item | Source of punt | Class | Status | Resolution |
 |---|---|---|---|---|---|
-| A | Body-replacing rules (`rewrites body of m`, `replace`, `$body`) | proposal §4.4/§10.5; parser stub `Parser.cpp:1108-1112` | (a) | designed, unbuilt | phase4 §2; M30–M32/M35 |
-| B | Confluence / rule-conflict detection at a shared anchor | proposal §5.4 | (a) | designed, unbuilt; only meaningful once A lands | phase4 §3; M33 |
-| C | `reentrant` — gated rule re-triggering | proposal §8/§13-Q3; master §15 | (a) | designed, unbuilt | phase4 §4; M34 |
+| A | Body-replacing rules (`rewrites body of m`, `replace`, `$body`) | proposal §4.4/§10.5; parser stub `Parser.cpp:1108-1112` | (a) | **LANDED** (verified 2026-07-17: `rewrites` parses, stub gone) | phase4 §2; M30–M32/M35 |
+| B | Confluence / rule-conflict detection at a shared anchor | proposal §5.4 | (a) | **LANDED** (verified 2026-07-17: M33 conflict shape in `Rules.cpp`) | phase4 §3; M33 |
+| C | `reentrant` — gated rule re-triggering | proposal §8/§13-Q3; master §15 | (a) | **LANDED** (verified 2026-07-17: `reentrant` parses) | phase4 §4; M34 |
 | D | Exact per-clone provenance (`provenanceId`) | master §8.2 (`techdesign-metaprogramming.md:625-643`), §14 dev. 8 (`:900-902`); Phase-2 landed-note (`:818-825`) | (c) | v1 range-based is the accepted answer; upgrade designed, **demand-gated** | phase4 §5; trigger = a real ambiguous diagnostic |
-| E | `--expand` as readable source (pretty-printer) | master §14 dev. 7 (`:897-899`); `main.cpp:196-197` still one alias | (a) | designed, unbuilt | phase4 §6 (round-trip acceptance) |
+| E | `--expand` as readable source (pretty-printer) | master §14 dev. 7 (`:897-899`); `main.cpp:196-197` still one alias | (a) | **LANDED** (verified 2026-07-17: `--expand`/`--ast-after-rules` demuxed) | phase4 §6 (round-trip acceptance) |
 | F | Incremental per-file rule-output caching | proposal §3.6/§13.7; master §15 (`:915`) | (a) | designed, **demand-gated** | phase4 §7; trigger = measured compile-time regression |
-| G | Pass-1 comptime-root pre-checking | master §7 ("good enough for v1") | (a) | designed, unbuilt; pure diagnostic polish | phase4 §8 |
+| G | Pass-1 comptime-root pre-checking | master §7 ("good enough for v1") | (a) | **LANDED** (phase4 §14 item 5; verified 2026-07-17: `checkComptimeRoot` in tree) | phase4 §8 |
 | H | `meta.*` structured `Type` | P3 §3/§4 | (a) | designed, pull-based | phase4 §9.1; add on a real `where` driver |
 | I | Attribute-value reflection (`meta::Attr`) | P3 §3, §5 landed-note | (a) | designed, pull-based | phase4 §9.1; values already exist in `attrValues_` |
 | J | Statement-position `$for` | P3 §5 | (a) | designed, pull-based | phase4 §9.2; bounded — no `$if`/`$while` follows |
 | K | Def-site "true home" (`Symbol::homeNs`) | P3 §10 landed-note | (a) | designed, pull-based; provenance-cosmetic only | phase4 §9.3 |
 | L | Class-wide marker search | P3 §15 Q2 | (a) | designed, pull-based | phase4 §9.4 |
-| M | Attribute named arguments | master §3.2 (`techdesign-metaprogramming.md:169-171`), §14 dev. 4 (`:886-889`) | **(b)** | **blocked** — waits on language-level named arguments | phase4 §9.5 records the dependency; the prerequisite itself has **no design doc** (§4 below) |
+| M | Attribute named arguments | master §3.2 (`techdesign-metaprogramming.md:169-171`), §14 dev. 4 (`:886-889`) | **(b)→(a)** | **LANDED** (verified 2026-07-17: rode the named-args landing — `evalAttrArgs` + corpus `attr_named.lev`; see close-out) | phase4 §9.5; prerequisite discharged — see §4 note |
 | N | Single-resolve fast path | master §14 dev. 1 (`:876-880`) | (a) | resolved-by-reference: folded into F, no standalone build | phase4 §9.6 |
 | O | Macro single-splice auto-hoisting | P3 §15 (M22 is the honest v1) | (a) | designed-by-association: rides A's statement-lifting | phase4 §9.7 |
 | P | Golden-`--expand` determinism fixture | P3 §14 landed-note | (a) | subsumed by E's round-trip test; standalone fallback only if E slips | phase4 §9.8 |
-| Q | Platform-conditional `uses` — the **platform predicate** half | master §14 dev. 6 (`:893-896`), §16 decision 4 (`:928-929`); proposal §4.3 example (`proposal-metaprogramming.md:351-355`) | **(b)** | mechanism **landed** (P3 §9, M15 deleted); the `Platform::current` predicate is **unbuilt and untracked by phase4** | §5 below; waits on the Track 03 statics ruling |
+| Q | Platform-conditional `uses` — the **platform predicate** half | master §14 dev. 6 (`:893-896`), §16 decision 4 (`:928-929`); proposal §4.3 example (`proposal-metaprogramming.md:351-355`) | **(b)→(a)** | **LANDED 2026-07-17** — `target::os`/`arch`/`triple` comptime constants, target-not-host (`designs/complete/techdesign-target-predicate.md`; see close-out) | the one-pager, designed + built same-day |
 
 Reading the table: fifteen of seventeen rows are already resolved on paper by phase4
 (twelve buildable/pull-based, two demand-gated by explicit written triggers, one
@@ -127,6 +208,12 @@ tracker-relevant delta per item:
 
 ## 4. The named-arguments prerequisite (item M's blocker)
 
+> **2026-07-17: DISCHARGED.** The prerequisite this section commissions was designed and
+> built — `designs/complete/techdesign-named-arguments.md` (named args + default parameter
+> values + overload interaction, one story, exactly the §4 shape below). Item M is
+> unblocked; only the attribute-side inheritance (phase4 §9.5) remains to verify/build.
+> The section is kept as the record of the dependency chain.
+
 This is the one place a metaprogramming deferral is really a **language-design dependency**,
 and it deserves its own callout because the dependency chain is easy to lose:
 
@@ -156,6 +243,18 @@ and it deserves its own callout because the dependency chain is easy to lose:
 ---
 
 ## 5. Item Q — platform-conditional `uses`, the residual phase4 does not track
+
+> **2026-07-17 (later the same day): LANDED.** The one-pager was authored and implemented —
+> `designs/complete/techdesign-target-predicate.md`. The statics-free shape won (comptime
+> string constants `target::os`/`arch`/`triple`, reserved namespace, `--target`-sourced
+> with host fallback); rationale and the target-not-host proof are in the close-out note
+> at the top of this doc. The section below is kept as the record of the residual.
+
+> *(morning note, superseded)* **blocker cleared, work still open.** The Track 03 statics ruling landed and
+> `enum` shipped in full, so the `Platform::current`-as-enum shape (and the statics-free
+> comptime-target-const alternative) are both buildable. Verified the same day: no such
+> predicate exists in the tree yet. The §8.2 one-pager — predicate shape + **target**-not-host
+> sourcing per the portable pivot — is now this tracker's single open design item.
 
 The one deferral in the cited sources that is **absent from phase4's A–P inventory**,
 because its bigger half already landed and the leftover is small and easy to lose:
@@ -268,15 +367,20 @@ In priority order, cheapest-unblock first:
 
 ## 8. What still needs new design
 
+> **2026-07-17: nothing.** Both items below are discharged — (1) by
+> `designs/complete/techdesign-named-arguments.md`, (2) by
+> `designs/complete/techdesign-target-predicate.md`. Kept as the record.
+
 Everything in the table except two rows points at phase4 as its finished resolution.
 The complete list of genuinely undesigned work:
 
 1. **Language-level named arguments** (prerequisite for M) — its own design doc, scoped
    as named args + default parameter values + overload interaction. Not a metaprogramming
-   doc; attributes consume it for free afterward (phase4 §9.5).
+   doc; attributes consume it for free afterward (phase4 §9.5). *(DONE)*
 2. **The Q predicate one-pager** — which comptime constant platform-conditional `uses`
    conditions on, target-not-host semantics, and its statics dependency (or the
    statics-free shape). Small; blocked on (or shaped by) the Track 03 statics ruling.
+   *(DONE — the statics-free shape.)*
 
 Everything else: `docs/techdesign-metaprog-phase4.md` is canonical, and the correct
 response to "should we redesign X?" for any A–P item is *no — read phase4 §N*.

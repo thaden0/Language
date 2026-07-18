@@ -1,9 +1,19 @@
 # Deferral resolution — UTF-8 `chars()` & the string ops blocked on it
 
-**Status:** ready (gated — see §7). **Date:** 2026-07-06. **Depends on:** Track 03
-M1 (`char` value primitive — this doc *details* that milestone's `chars()` piece,
-it does not fork it); Track 04 landed (byteAt/`std::byteToString`/concatAll — all
-landed, `designs/complete/techdesign-04-stdlib-strings.md` §8).
+**Status:** ACTIVE — promoted out of deferral 2026-07-17 (was
+`deferal-utf8-chars-string-ops.md`); **every gate is now open.** Track 03 `char` landed in
+full on all four active engines (oracle/IR/emit-C++/LLVM) including the LV_CHAR ABI addendum —
+so the §3.4 lane plan's "LLVM gated on the addendum" is satisfied and D3 collapses into D1/D2
+(ELF stays excluded — X64Gen frozen). Re-verified against master 2026-07-17: `chars()` is
+*declared* in the prelude (`Resolver.cpp:194`) — reconcile any existing body/native against
+§3.1/§3.2 at pickup rather than assuming absence — while `reverse()` is still the literal
+deferral comment (`Resolver.cpp:331-333`), i.e. §4.1 is unbuilt. Problem #8 (corpus `.lev`
+glob) is resolved — `.lev` corpus files are auto-globbed today. `file:line` refs are
+Jul-6-era; re-ground at start. Note this is also on the self-host/interpreter critical path
+(a Leviathan-written lexer needs scalar iteration), which raises its priority beyond the
+original string-ops framing. **Date:** 2026-07-06 (design); 2026-07-17 (promoted).
+**Depends on:** ~~Track 03 M1~~ (landed); Track 04 landed (byteAt/`std::byteToString`/
+concatAll — all landed, `designs/complete/techdesign-04-stdlib-strings.md` §8).
 **Source:** the logged deferrals in `src/Resolver.cpp:264-266`,
 `designs/complete/techdesign-04-stdlib-strings.md:43` (+ impl log :195-196,
 :370-372), `designs/complete/techdesign-07-iteration.md:44-48`, `docs/reference.md:563-565`;

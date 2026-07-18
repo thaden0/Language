@@ -646,7 +646,7 @@ because it is easy to assume the two compiled backends share a runtime; they do 
 
 ## 13. Open questions surfaced by the research (not decided here)
 
-> **RESOLVED 2026-07-16** by `designs/techdesign-spawn-llvm.md` (landed): #1 → the
+> **RESOLVED 2026-07-16** by `designs/complete/techdesign-spawn-llvm.md` (landed): #1 → the
 > `sysArgs` rc-0 + `retainDst()` convention (D1); #2 → a new `runtime/lv_proc.c` (D2);
 > #3 → Linux-first with the prelude poll-reap fallback, macOS/BSD recorded as a seam,
 > not code (its §6.3); #4 → the Windows-reject precedent, compile-time `fail` +

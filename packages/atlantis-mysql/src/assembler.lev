@@ -1,0 +1,116 @@
+uses Atlantis::Data;
+// atlantis-mysql — incremental packet reassembly (techdesign-05 §1.3, §1.4).
+//
+// onData chunks arrive at arbitrary granularity — mid-header, mid-payload,
+// many-packets-at-once. This is Track 09 §4's parse-feed discipline: a state
+// machine fed chunks, never assuming boundaries. Sensitive kernel; pinned by
+// P-probe P4 (fragmentation at every granularity).
+//
+// 16MB continuation (§1.3): a packet with length 0xFFFFFF concatenates with its
+// successors until one with length < 0xFFFFFF arrives; the join is ONE logical
+// packet. A payload of exactly n*0xFFFFFF bytes is followed by an empty packet
+// (length 0) — that empty follower terminates the join here (need==0, joining).
+namespace MySql {
+    class PacketAssembler {
+        string buf;
+        int pos;                          // cursor; compacted every feed (§9#6)
+        int state;                        // Wire::ST_HEADER | Wire::ST_PAYLOAD
+        int need;
+        int seq;                          // from header
+        StringBuilder joined;             // 16MB-continuation accumulator
+        bool joining;
+        (int, string) => void sink;       // (seq of LAST frame, logical payload)
+
+        new PacketAssembler((int, string) => void sink) {
+            this.sink = sink;
+            this.reset();
+        }
+
+        void feed(string chunk) {
+            // compact-then-append: leftover is bounded by one frame (< 16MB + 4)
+            if (this.pos == this.buf.length()) {
+                this.buf = chunk;
+            } else {
+                this.buf = this.buf.subStr(this.pos, this.buf.length() - this.pos) + chunk;
+            }
+            this.pos = 0;
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                int avail = this.buf.length() - this.pos;
+                if (this.state == Wire::ST_HEADER && avail >= 4) {
+                    this.need = Wire::u24(this.buf, this.pos);
+                    this.seq  = Wire::u8(this.buf, this.pos + 3);
+                    this.pos = this.pos + 4;
+                    this.state = Wire::ST_PAYLOAD;
+                    progress = true;
+                } else if (this.state == Wire::ST_PAYLOAD && avail >= this.need) {
+                    string payload = this.buf.subStr(this.pos, this.need);
+                    this.pos = this.pos + this.need;
+                    this.state = Wire::ST_HEADER;
+                    progress = true;
+                    if (this.need == Wire::MAX_PAYLOAD) {            // continuation
+                        this.joined << payload;
+                        this.joining = true;
+                    } else if (this.joining) {
+                        this.joined << payload;
+                        string whole = this.joined.toString();
+                        this.joined = StringBuilder();
+                        this.joining = false;
+                        var s = this.sink;
+                        s(this.seq, whole);
+                    } else {
+                        var s = this.sink;
+                        s(this.seq, payload);
+                    }
+                }
+            }
+        }
+
+        void reset() {
+            this.buf = "";
+            this.pos = 0;
+            this.joined = StringBuilder();
+            this.joining = false;
+            this.state = Wire::ST_HEADER;
+        }
+    }
+
+    // Packet framing (§1.3): split a logical payload into 0xFFFFFF-byte packets,
+    // sequence id incrementing per slice. A payload of exactly n*0xFFFFFF bytes
+    // MUST be followed by an empty packet (length 0) — the classic trap.
+    // Returns the number the sequence id has reached (next id to use).
+    namespace Framing {
+        // Encode one logical payload as wire bytes starting at sequence `seq`.
+        // The result is the full byte stream (possibly several physical packets).
+        string encode(string payload, int seq) {
+            StringBuilder out = StringBuilder();
+            int off = 0;
+            int total = payload.length();
+            int s = seq;
+            bool more = true;
+            while (more) {
+                int remaining = total - off;
+                int take = remaining;
+                if (take > Wire::MAX_PAYLOAD) { take = Wire::MAX_PAYLOAD; }
+                out << Wire::wU24(take);
+                out << Wire::wU8(s);
+                out << payload.subStr(off, take);
+                off = off + take;
+                s = (s + 1) & 0xFF;
+                // continue only while we just emitted a full-size packet; the
+                // exactly-n*0xFFFFFF case emits a trailing empty packet (take==0)
+                more = (take == Wire::MAX_PAYLOAD);
+            }
+            return out.toString();
+        }
+
+        // Number of physical packets encode() emits for a payload of `len` bytes
+        // — always at least one, plus a trailing empty packet when len is an exact
+        // multiple of MAX_PAYLOAD (the empty-follower rule). Used to advance the
+        // shared sequence counter after a send.
+        int packetCount(int len) {
+            return (len / Wire::MAX_PAYLOAD) + 1;
+        }
+    }
+}

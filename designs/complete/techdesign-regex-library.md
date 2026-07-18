@@ -232,7 +232,7 @@ parsed once per `replace` call, before scanning.
 5. **Byte-oriented v1:** offsets/lengths are bytes; `.` matches one **byte**; a
    multi-byte UTF-8 scalar is not one `.` — stated in reference with the Track 03
    `chars()` cross-ref, and codepoint classes are the designed follow-up
-   (`deferal-utf8-chars-string-ops.md` gains a regex line).
+   (`techdesign-utf8-chars-string-ops.md` gains a regex line).
 6. **`ignoreCase` is ASCII-only** in v1 (compile-time fold, doc 1 §1.2).
 
 ## 5. Worked examples (these go into reference.md and double as corpus seeds)

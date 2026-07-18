@@ -1,0 +1,70 @@
+// H04a — the line index (designs/helm/techdesign-00-overview.md §4.1).
+//
+// Maps line number -> starting byte offset in the document, so the buffer can
+// answer line(i)/lineCount() and translate a (line, scalar-col) Pos into a byte
+// offset without rescanning the whole text each call.
+//
+// v1 rebuilds the whole index from the document text on every edit (O(n) scan).
+// The design calls for an *incremental* rebuild over the touched piece range;
+// that is a perf optimisation (risk K1, benched before G-H2) and slots in
+// behind this same interface later. Big files open read-only (the syntax +
+// diagnostics passes are what don't scale, not this scan) — see §4.1's guard.
+//
+// Newlines are found by scanning BYTES for 0x0A. That is correct for UTF-8:
+// every byte of a multi-byte sequence is >= 0x80, so 0x0A only ever appears as
+// a genuine '\n' (never mid-sequence). Scanning bytes (not string.at(i), which
+// throws mid-sequence — Sonar bug #59) sidesteps the decode hazard entirely.
+
+namespace Helm {
+
+    const int NewlineByte = 10;
+
+    class LineIndex {
+        Array<int> starts_ = [0];   // starts_[i] = byte offset of line i's first byte
+        int        total_  = 0;     // total document byte length
+
+        new LineIndex() { }
+
+        // Rebuild from the full document text. starts_ always has >= 1 entry
+        // (an empty document is one empty line), and a trailing newline yields a
+        // final empty line (matching the split("\n") convention used elsewhere).
+        void rebuild(string fullText) {
+            Block b = Block::fromString(fullText);
+            int n = b.length();
+            Array<int> starts = [0];
+            for (int i in 0..n - 1) {
+                if (b.byteAt(i) == NewlineByte) starts = starts.add(i + 1);
+            }
+            starts_ = starts;
+            total_  = n;
+        }
+
+        int lineCount() => starts_.length();
+        int totalBytes() => total_;
+
+        int clampLine(int i) {
+            if (i < 0) return 0;
+            int last = starts_.length() - 1;
+            return i > last ? last : i;
+        }
+
+        // Byte offset where line `i` begins.
+        int lineStart(int i) => starts_[clampLine(i)];
+
+        // Byte offset one past line `i`'s last content byte (i.e. AT its '\n',
+        // or at end-of-document for the final line) — the newline is excluded
+        // from the line's own content.
+        int lineEnd(int i) {
+            int c = clampLine(i);
+            if (c + 1 < starts_.length()) return starts_[c + 1] - 1;   // before the '\n'
+            return total_;
+        }
+
+        // Content byte length of line `i` (no trailing newline).
+        int lineLen(int i) {
+            int len = lineEnd(i) - lineStart(i);
+            return len < 0 ? 0 : len;
+        }
+    }
+
+}

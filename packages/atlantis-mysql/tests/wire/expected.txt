@@ -1,0 +1,10 @@
+lenenc 0 -> 1B ok
+lenenc 250 -> 1B ok
+lenenc 251 -> 3B ok
+lenenc 252 -> 3B ok
+lenenc 65535 -> 3B ok
+lenenc 65536 -> 4B ok
+lenenc 16777215 -> 4B ok
+lenenc 16777216 -> 9B ok
+wU32 hi: 4278255360
+u64 guard ok: u64 exceeds int64 range

@@ -1062,6 +1062,19 @@ Type Checker::typeOfInner(const Expr* e) {
 }
 
 Type Checker::typeOfMember(const Expr* e) {
+    // Item Q (techdesign-target-predicate.md): inside a comptime root the
+    // reserved namespace `target` provides the target constants (strings).
+    // Handled here so the §8 precheck neither flags a valid read as
+    // "unknown name 'target'" nor masks the oracle's targeted message for an
+    // unknown member with that generic one.
+    if (comptimeRoot_ && e->colon && e->a && e->a->kind == ExprKind::Name &&
+        e->a->text == "target") {
+        if (e->text == "os" || e->text == "arch" || e->text == "triple")
+            return primType("string");
+        return error(e->span, "unknown target:: constant '" +
+                     std::string(e->text) +
+                     "' (target::os, target::arch, target::triple)");
+    }
     // Flow-narrowed path?
     {
         std::string p = pathOf(e);
@@ -3962,5 +3975,7 @@ void Checker::checkComptimeRoot(const Expr* e, Scope* scope) {
     lambdaReturns_ = nullptr;
     env_.clear();
     narrow_.clear();
+    comptimeRoot_ = true;   // item Q: `target::` is live in comptime roots
     typeOf(e);
+    comptimeRoot_ = false;
 }

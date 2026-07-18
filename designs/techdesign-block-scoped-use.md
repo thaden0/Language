@@ -1,6 +1,15 @@
 # Block-scoped `use`/`uses` — resolving the deferred per-block symbol-scope substrate — Technical Design
 
-**Status:** proposal (design only — nothing implemented by this document). **Date:** 2026-07-06.
+**Status:** ACTIVE — promoted out of deferral 2026-07-17 (was `deferal-block-scoped-use.md`).
+Premise re-verified against master that day: the substrate is **still unbuilt** — `Stmt::importScope`
+and the Checker's `bindScopes_` remain two separate mechanisms, `blockScope` does not exist, and the
+Lowerer still carries its private `blockImportScopes_`. System-binds Channel 1 (`use NS::T;`
+bind-activation, landed 2026-07-14) was built **on top of the split mechanisms** as a Checker-only
+scope-table fact — it joins §4.2's behavior-freeze set: the migration must keep it observationally
+identical. All `file:line` references below are affa8a4-era (Jul 6) and have drifted; anchors
+(function/field names) hold — re-ground them at implementation start. §7's dates are stale;
+re-plan the milestones at pickup, the design itself is current. **Date:** 2026-07-06 (design);
+2026-07-17 (promoted).
 **Resolves:** the logged deferral of block-level `use`/`uses` scoping and, with it, the
 **shared per-block lexical-scope substrate** that deferral named as the missing
 dependency (imports.md §2 staging note and §9; system-binds.md §7.2).

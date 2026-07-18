@@ -1,0 +1,60 @@
+// G-H4 golden — the H01 shell, assembled and wired.
+//
+// Constructs the `HelmShell` composition root and proves it is fully wired
+// without spinning the event loop:
+//   • the command surface (every id + accelerator + title) derives from the one
+//     `CommandRegistry` (§0.3);
+//   • the menu bar groups those commands (File / Edit / View / Run / Help);
+//   • the command palette fuzzy-filters the same registry (`^P`);
+//   • the assembled dock chrome (menu bar / panel-tab strip / status bar) paints
+//     through a `TestRenderer` (§11), and a delivered diagnostic batch + a panel
+//     toggle flow through the wired panels/status into the next snapshot.
+// Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    void main() {
+        HelmShell shell = HelmShell("/proj", "/usr/bin/trident", "/usr/bin/leviathan");
+
+        section("command surface");
+        for (Command c in shell.commands().commands()) {
+            string key = c.key.isEmpty() ? "" : (" [" + c.key + "]");
+            console.writeln("  " + c.category + " / " + c.id + key + "  — " + c.title);
+        }
+
+        section("menu bar");
+        MenuModel menu = shell.menu();
+        console.writeln("bar: " + menu.barLine());
+        for (string cat in menu.categories()) {
+            Array<string> ids = menu.itemsFor(cat);
+            console.writeln("  " + cat + " (" + ids.length().toString() + "): " + ids.joinToString(", "));
+        }
+
+        section("command palette — filter 'engine'");
+        for (Command c in shell.paletteMatches("engine"))
+            console.writeln("  " + c.title + " (" + c.id + ")");
+
+        section("assembled shell — initial");
+        shell.status().setBranch("agent1");
+        shell.status().setCursor(0, 0);
+        console.writeln(shell.renderShell(60, 8));
+
+        section("after a diagnostic batch + panel already revealed");
+        DiagnosticBatch b = DiagnosticBatch(1, [
+            Diagnostic("/proj/src/main.lev", 12, 5, SevError,   "unknown name 'foo'"),
+            Diagnostic("/proj/src/main.lev", 20, 1, SevWarning, "unused import")
+        ]);
+        shell.panels().applyBatch(b);    // reveals Problems (errors present)
+        shell.status().applyBatch(b);    // folds into the counts
+        shell.status().setCursor(11, 4); // Ln 12, Col 5
+        console.writeln(shell.renderShell(60, 8));
+
+        section("toggle the panel dock off (^`)");
+        shell.panels().toggle();
+        console.writeln(shell.renderShell(60, 8));
+    }
+
+}

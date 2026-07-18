@@ -1,0 +1,121 @@
+// atlantis-mysql — pool churn acceptance (design §6, §7.2 "pool churn"): a
+// multi-connection fake MySQL server; the Pool acquires/releases repeatedly over
+// a small cap, then drains and the loop exits clean. oracle / IR / LLVM.
+uses MySql;
+uses MySql::Wire;
+uses Atlantis::Data;
+
+string okPacket(int affected, int lastInsert, int status) {
+    StringBuilder sb = StringBuilder();
+    sb << wU8(0x00);
+    sb << writeLenenc(affected);
+    sb << writeLenenc(lastInsert);
+    sb << wU16(status);
+    sb << wU16(0);
+    return sb.toString();
+}
+string handshake(string nonce20) {
+    int caps = 0x0200 | 0x00080000 | 0x00008000 | 0x0008 | 0x2000 | 0x00200000;
+    StringBuilder sb = StringBuilder();
+    sb << wU8(10);
+    sb << "8.0.32"; sb << std::byteToString(0);
+    sb << wU32(1);
+    sb << nonce20.subStr(0, 8);
+    sb << std::byteToString(0);
+    sb << wU16(caps & 0xFFFF);
+    sb << wU8(45);
+    sb << wU16(2);
+    sb << wU16((caps >> 16) & 0xFFFF);
+    sb << wU8(21);
+    sb << zeros(10);
+    sb << nonce20.subStr(8, 12); sb << std::byteToString(0);
+    sb << "mysql_native_password"; sb << std::byteToString(0);
+    return sb.toString();
+}
+
+// per-connection server handler
+class ServerConn {
+    TcpStream client;
+    bool authed;
+    MySql::PacketAssembler asm;
+    new ServerConn(TcpStream client) {
+        this.client = client;
+        this.authed = false;
+        this.asm = MySql::PacketAssembler((s, p) => { });
+    }
+    void begin() {
+        ServerConn self = this;
+        this.asm = MySql::PacketAssembler((s, p) => self.onPacket(s, p));
+        this.client.onData((chunk) => self.asm.feed(chunk));
+        string nonce = "";
+        int i = 1; while (i <= 20) { nonce = nonce + std::byteToString(i); i = i + 1; }
+        this.client.send(MySql::Framing::encode(handshake(nonce), 0));
+    }
+    void send1(string payload, int seq) {
+        this.client.send(MySql::Framing::encode(payload, seq));
+    }
+    void onPacket(int seq, string payload) {
+        int reply = (seq + 1) & 0xFF;
+        if (!this.authed) { this.authed = true; this.send1(okPacket(0, 0, 2), reply); return; }
+        int cmd = payload.byteAt(0);
+        if (cmd == 0x01) { this.client.close(); return; }   // QUIT
+        if (cmd == 0x0E) { this.send1(okPacket(0, 0, 2), reply); return; }   // PING
+        // every COM_QUERY (SET NAMES, SELECT 1, ...) -> OK
+        this.send1(okPacket(1, 0, 2), reply);
+    }
+}
+
+class FakeServer {
+    TcpListener listener;
+    Array<ServerConn> conns;
+    new FakeServer(int port) { this.listener = TcpListener(port); this.conns = []; }
+    bool ok() => this.listener.ok();
+    void start() {
+        FakeServer self = this;
+        this.listener.connections((c) => self.onConnect(c));
+    }
+    void onConnect(TcpStream c) {
+        ServerConn sc = ServerConn(c);
+        this.conns = this.conns.add(sc);
+        sc.begin();
+    }
+    void stop() { this.listener.stop(); }
+}
+
+Promise<void> runPool() {
+    Driver drv = Driver();
+    DbConfig cfg = DbConfig("127.0.0.1", 13307, "atlantis", "atlantis-pass", "db");
+    PoolOptions opts = PoolOptions(2, 0, 600000, 30000, 30000, 1024);   // max 2
+    Pool pool = Pool(drv, cfg, opts);
+
+    Array<string | int | float | bool | None> none = [];
+    int i = 0;
+    while (i < 5) {
+        IDbConnection c = await pool.acquire();
+        ExecResult r = await c.execute("SELECT 1", none);
+        c.close();                                  // releases to pool
+        i = i + 1;
+    }
+    console.writeln("[pool] churned 5 acquires over max 2; open=" + pool.openCount().toString()
+        + " idle=" + pool.idleCount().toString());
+
+    // withConnection one-liner
+    Pool p2 = pool;
+    ExecResult wr = await pool.withConnection((c) => c.execute("SELECT 1", none));
+    console.writeln("[pool] withConnection affected=" + wr.affectedRows.toString());
+
+    await pool.drain();
+    console.writeln("[pool] drained; open=" + pool.openCount().toString());
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    FakeServer srv = FakeServer(13307);
+    if (!srv.ok()) { console.writeln("listener failed"); return; }
+    srv.start();
+    await runPool();
+    srv.stop();
+    console.writeln("[done]");
+}

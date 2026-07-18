@@ -103,7 +103,7 @@ exactly once, possibly deferred past the declaration) is precisely the semantics
 **`readonly`** ([techdesign-readonly.md:34](../complete/techdesign-readonly.md#L34):
 "its initializer **or** any declaring-class constructor, **exactly once**"), and for
 `const` locals it is the still-unimplemented OQ1 in
-[deferal-const-system-extensions.md §2](../deferal-const-system-extensions.md) ("Definite
+[techdesign-const-system-extensions.md §2](../techdesign-const-system-extensions.md) ("Definite
 single assignment for `const` locals", M-OQ1, *not started*).
 
 So the docs currently attach `readonly`'s meaning to `let`'s name, describing a

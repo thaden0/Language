@@ -134,7 +134,7 @@ Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
 Call-argument position is **not** yet a target-typing site (a `char`-typed value
 binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/deferal-track03-type-surface.md`).
+`designs/techdesign-track03-type-surface.md`).
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
@@ -540,7 +540,7 @@ Method d;                            // bare declaration -> the first-declared m
   an enum compares by value (contract C3).
 - **`fromCode(int) -> Enum?`** returns `None` when no member carries that value.
 - **Carriers:** `: int` is the only carrier in v1 (string carriers deferred,
-  `designs/deferal-track03-type-surface.md`). Members without an explicit value auto-increment
+  `designs/techdesign-track03-type-surface.md`). Members without an explicit value auto-increment
   from the previous member's carrier (`Gap` above); **duplicate carrier values are a compile
   error**.
 - **`match` is exhaustive over the closed set** — every member covered means no `else` is
@@ -1528,7 +1528,7 @@ spawn failure), `sysPidfdOpen(pid)`, `sysReap(pid)` (`-1` still running, else th
 `sysKill(pid, sig)` (`pid <= 0` refused at the floor — the `kill(2)` broadcast forms are
 never exposed). All `sys*`-prefixed → comptime-denied automatically. Oracle + IR + **LLVM**
 (G-LANG-2 process half, 2026-07-16: `runtime/lv_proc.c` over the `lv_plat_spawn/pidfd_open/
-reap/kill` floor, `designs/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
+reap/kill` floor, `designs/complete/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
 the threads precedent). emit-C++ still defers cleanly (deliberate system-layer policy).
 
 ### 6.6.54 Promises and await
@@ -2026,6 +2026,21 @@ comptime console.writeln("[build] ...");   // compile-time log (real console)
   become visible to rule/attribute/macro scoping (the imports map is recomputed
   after the comptime fold). A macro call in a `comptime if` **condition** is an
   error (it would feed the imports map macro resolution itself needs).
+
+#### `target::` — the compilation-target constants (item Q)
+```
+comptime if (target::os == "windows") { uses App::WinConsole; }
+else { uses App::PosixConsole; }
+```
+Three comptime-only string constants in the reserved namespace `target`
+(family with `meta`): `target::os` (`"linux"` / `"windows"` / `"macos"` /
+`"wasm"` / `"unknown"`), `target::arch` (first triple component, normalized —
+`arm64` reads as `aarch64`), and `target::triple` (the exact `--target`
+string; host builds get the canonical host spelling). Values reflect the
+**target**: under `--target <triple>` cross emission the destination's branch
+folds, never the build host's. In runtime position no `target` symbol exists
+(ordinary unresolved-name error); an unknown member (`target::bogus`) is a
+compile error naming the three constants.
 
 #### `import()` — comptime file inclusion (LA-20)
 ```

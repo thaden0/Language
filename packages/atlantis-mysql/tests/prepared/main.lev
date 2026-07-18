@@ -1,0 +1,43 @@
+uses MySql;
+uses MySql::Prepared;
+uses MySql::FieldType;
+uses MySql::FieldFlag;
+string bytesFrom(Array<int> xs) {
+    StringBuilder sb = StringBuilder();
+    for (int x in xs) { sb << std::byteToString(x & 0xFF); }
+    return sb.toString();
+}
+string dv(string | int | float | bool | None v) {
+    match (v) {
+        int => { return "int:" + v.toString(); }
+        float => { return "flt:" + v.toString(); }
+        string => { return "str:" + v; }
+        bool => { return "bool:" + v.toString(); }
+        None => { return "null"; }
+    }
+}
+MySql::ColumnDef col(int type, bool uns) {
+    int flags = uns ? UNSIGNED : 0;
+    return MySql::ColumnDef("c", 45, 0, type, flags, 0);
+}
+void main() {
+    Array<MySql::ColumnDef> cols = [];
+    cols = cols.add(col(LONG, false));
+    cols = cols.add(col(DOUBLE, false));
+    cols = cols.add(col(VAR_STRING, false));
+    cols = cols.add(col(LONG, false));
+    string row = bytesFrom([0,32,192,29,254,255,24,45,68,84,251,33,9,64,5,104,101,108,108,111]);
+    Array<string | int | float | bool | None> cells = decodeBinaryRow(row, cols);
+    for (string | int | float | bool | None v in cells) { console.writeln(dv(v)); }
+    Array<MySql::ColumnDef> fc = [];  fc = fc.add(col(FLOAT, false));
+    console.writeln("f32=" + dv(decodeBinaryRow(bytesFrom([0,0,0,0,32,192]), fc).at(0)));
+    Array<MySql::ColumnDef> uc = [];  uc = uc.add(col(LONGLONG, true));
+    console.writeln("u64=" + dv(decodeBinaryRow(bytesFrom([0,0,255,255,255,255,255,255,255,255]), uc).at(0)));
+    Array<MySql::ColumnDef> sc = [];  sc = sc.add(col(LONGLONG, false));
+    console.writeln("i64=" + dv(decodeBinaryRow(bytesFrom([0,0,255,255,255,255,255,255,255,255]), sc).at(0)));
+    Array<string | int | float | bool | None> params = [];
+    params = params.add(42); params = params.add("hi"); params = params.add(None);
+    string ex = encodeExecute(7, params);
+    console.writeln("execlen=" + ex.length().toString() + " cmd=" + ex.byteAt(0).toString()
+        + " stmtId=" + MySql::Wire::u32(ex, 1).toString());
+}

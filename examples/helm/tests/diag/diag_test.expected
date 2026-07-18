@@ -1,0 +1,17 @@
+== syntax errors + snippet noise ==
+count: 2
+  /tmp/badsyntax.lev:1:22: error: expected expression
+  /tmp/badsyntax.lev:1:24: error: expected ';'
+== unknown function ==
+count: 1
+  /tmp/bad2.lev:1:14: error: unknown function 'undefinedFn'
+== whole-file warning ==
+count: 1
+  prelude.lev: warning: unused import 'Foo'
+== mixed severities ==
+count: 3
+  a.lev:3:1: error: type mismatch: int vs string
+  a.lev:9:5: warning: shadowed name 'x'
+  a.lev:9:5: note: previous 'x' declared here
+== clean ==
+count: 0

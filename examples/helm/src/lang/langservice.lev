@@ -1,0 +1,208 @@
+// H06 — the language-service bridge (§6.4, frozen H-C3) + the fan-out
+// controller that closes the edit→diagnostics loop (§6.2).
+//
+// `ILanguageService` is the DI seam tests bind a `FakeLanguageService` into
+// (zero subprocesses, §11). `LeviathanService` is the live implementation: it
+// shadow-writes a dirty buffer and shells out through H09's `Proc`, parsing the
+// stderr with an `IDiagnosticSource`. `DiagnosticsController` sits above the
+// service — it version-keys results (dropping stale batches) and fans each
+// surviving batch out to its sinks (the Problems table, the status counts, and
+// — a later gate — the editor gutter).
+//
+// Scope note (G-H3): the frozen H-C3 interface also lists a synchronous
+// in-process `highlight(...)` (§6.1). Highlighting is a separate concern from
+// the diagnostics loop this gate closes; the EditorView highlight seam already
+// exists (it reads one resolved text style, ready to swap in a per-span cache),
+// and the in-process lexer lands as an H06 rider. This gate ships the
+// diagnostics surface of H-C3.
+
+namespace Helm {
+
+    // An immutable snapshot of a buffer at one version — what the service
+    // compiles (shadow-written when dirty, §6.2). Path + content + the
+    // `TextBuffer.version()` it was taken at.
+    class BufferSnapshot {
+        string path;
+        string content;
+        int    version;
+        new BufferSnapshot(string p, string c, int v) { path = p; content = c; version = v; }
+    }
+
+    // The frozen H-C3 surface (diagnostics half). Nav/completion (`definitionAt`,
+    // `completeAt`, `hoverAt`) are v1.1 and stay unwritten (§6.3); `highlight`
+    // is an H06 rider (see the file header).
+    interface ILanguageService {
+        int  onDiagnostics((DiagnosticBatch) => void h);   // token (R12)
+        void offDiagnostics(int token);
+        void requestDiagnostics(BufferSnapshot snap);       // debounced upstream
+    }
+
+    // Shared subscriber registry (the Sonar R12 token pattern) — factored out so
+    // both service implementations share one correct copy. Parallel columns, no
+    // `Array<struct>`.
+    class DiagSubscribers {
+        Array<(DiagnosticBatch) => void> handlers_ = [];
+        Array<int>                       tokens_   = [];
+        int next_ = 1;
+
+        int add((DiagnosticBatch) => void h) {
+            int token = next_;
+            next_ = next_ + 1;
+            handlers_ = handlers_.add(h);
+            tokens_   = tokens_.add(token);
+            return token;
+        }
+        void remove(int token) {
+            Array<(DiagnosticBatch) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..tokens_.length() - 1) if (tokens_[i] != token) {
+                hs = hs.add(handlers_[i]);
+                ts = ts.add(tokens_[i]);
+            }
+            handlers_ = hs;
+            tokens_   = ts;
+        }
+        void fire(DiagnosticBatch b) {
+            Array<(DiagnosticBatch) => void> snap = handlers_;
+            for ((DiagnosticBatch) => void h in snap) h(b);
+        }
+    }
+
+    // Mutable stderr accumulator for the Proc stream closure (a closure cannot
+    // write back a captured *local* array — the G-H2 footgun; accumulate through
+    // a reference-type field instead).
+    class StderrCollector {
+        Array<string> lines_ = [];
+        void add(string l) { lines_ = lines_.add(l); }
+        string text() => lines_.joinToString("\n");
+    }
+
+    // ---- the live service ---------------------------------------------------
+    //
+    // Drives `leviathan` over a shadow copy of the (possibly dirty) buffer and
+    // parses its stderr. `Proc` runs on the oracle+IR engines only (G-LANG-2),
+    // so this path is exercised by the isolated live integration test (§11), not
+    // the hermetic golden lane — which binds `FakeLanguageService` instead.
+    //
+    // `--emit-ir` runs the whole frontend (so every diagnostic is emitted to
+    // stderr) without executing the program; its IR on stdout is ignored. The
+    // single-file shadow is the honest v1 limitation the shadow-file open
+    // question (§13.1) tracks — cross-file `uses` resolution is a later
+    // trident-driven diagnostics path (H11).
+    class LeviathanService : ILanguageService {
+        string          exe_;         // leviathan binary path
+        string          shadowDir_;   // scratch dir for dirty-buffer shadows
+        IDiagnosticSource src_ = StderrDiagnosticSource();
+        DiagSubscribers subs_ = DiagSubscribers();
+        // In-flight streamers held alive until they drain (the reader ticks off
+        // a Timer; dropping the ref would cancel it).
+        Array<ProcStreamer> live_ = [];
+
+        new LeviathanService(string exe, string shadowDir) {
+            exe_ = exe; shadowDir_ = shadowDir;
+        }
+
+        int  onDiagnostics((DiagnosticBatch) => void h) => subs_.add(h);
+        void offDiagnostics(int token) { subs_.remove(token); }
+
+        string writeShadow(BufferSnapshot snap) {
+            string name = basename(snap.path);
+            if (name.isEmpty()) name = "shadow.lev";
+            string sp = joinPath(shadowDir_, name);
+            using File f = File(sp, std::write);
+            f.write(snap.content);
+            return sp;
+        }
+
+        void requestDiagnostics(BufferSnapshot snap) {
+            string shadow = this.writeShadow(snap);
+            Proc p = Proc(exe_, ["--emit-ir", shadow], "");
+            StderrCollector col = StderrCollector();
+            int ver = snap.version;
+            string path = snap.path;
+            ProcStreamer st = ProcStreamer(p, (e) => this.onEvent(e, col, ver, path));
+            live_ = live_.add(st);
+            st.run(20);
+        }
+
+        void onEvent(ProcEvent e, StderrCollector col, int ver, string path) {
+            if (e.isStderr())     col.add(e.line);
+            else if (e.isExit())  subs_.fire(DiagnosticBatch(ver, src_.parse(col.text(), path)));
+        }
+    }
+
+    // ---- the fake service ---------------------------------------------------
+    //
+    // Records requests and lets a test deliver scripted batches on demand — the
+    // portal for the whole edit→diagnostics loop with zero subprocesses (§11).
+    // Delivery is manual so a test can reproduce out-of-order completion (an old
+    // version arriving after a newer one) and prove the controller drops it.
+    class FakeLanguageService : ILanguageService {
+        DiagSubscribers        subs_     = DiagSubscribers();
+        Array<BufferSnapshot>  requests_ = [];
+
+        int  onDiagnostics((DiagnosticBatch) => void h) => subs_.add(h);
+        void offDiagnostics(int token) { subs_.remove(token); }
+
+        void requestDiagnostics(BufferSnapshot snap) { requests_ = requests_.add(snap); }
+
+        int requestCount() => requests_.length();
+        BufferSnapshot? lastRequest() {
+            if (requests_.isEmpty()) return None;
+            return requests_[requests_.length() - 1];
+        }
+
+        // Test-driven completion: fire a batch to every subscriber, simulating
+        // the compiler finishing for `batch.version`.
+        void deliver(DiagnosticBatch b) { subs_.fire(b); }
+    }
+
+    // ---- the fan-out controller --------------------------------------------
+    //
+    // Owns the service subscription, version-keys results, and fans surviving
+    // batches to its sinks. `bindBuffer` wires a live `TextBuffer` so an edit
+    // requests diagnostics for the new version without the editor (H04) knowing
+    // anything about the language service — the single-writer UI task applies
+    // the delivered batch through the sinks.
+    class DiagnosticsController {
+        ILanguageService svc_;
+        int latestRequested_ = -1;   // newest buffer version asked about
+        int lastApplied_     = -1;   // version of the last batch fanned out
+        int subTok_ = 0;
+        Array<(DiagnosticBatch) => void> sinks_ = [];
+
+        new DiagnosticsController(ILanguageService svc) {
+            svc_ = svc;
+            subTok_ = svc.onDiagnostics((b) => this.onBatch(b));
+        }
+
+        void addSink((DiagnosticBatch) => void s) { sinks_ = sinks_.add(s); }
+
+        // Ask for diagnostics on a snapshot; remembering the version is what
+        // makes a later, older result droppable.
+        void request(BufferSnapshot snap) {
+            latestRequested_ = snap.version;
+            svc_.requestDiagnostics(snap);
+        }
+
+        void bindBuffer(TextBuffer buf) {
+            buf.onChange((e) => this.onBufChange(buf, e));
+        }
+        void onBufChange(TextBuffer buf, ChangeEvent e) {
+            this.request(BufferSnapshot(buf.path(), buf.text(), e.version));
+        }
+
+        // Version-keyed apply (§6.2): a batch computed against a version older
+        // than the newest request is stale — the edit already moved on — so it
+        // is dropped before any sink sees it.
+        void onBatch(DiagnosticBatch b) {
+            if (b.version < latestRequested_) return;
+            lastApplied_ = b.version;
+            for ((DiagnosticBatch) => void s in sinks_) s(b);
+        }
+
+        int latestRequestedVersion() => latestRequested_;
+        int lastAppliedVersion()     => lastApplied_;
+    }
+
+}

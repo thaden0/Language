@@ -1,0 +1,9 @@
+[connect] READY
+[select] cols=id,name,flag,ratio,note
+[select] id=int:42 name=str:alice flag=int:1 ratio=flt:3.500000 note=null
+[insert] affected=1 lastId=7
+[prepared-select] id=int:99
+[tx] committed, affected=1
+[dup] caught IDuplicateKeyException errno=1062 state=23000
+[ping] alive=true
+[done]

@@ -93,6 +93,9 @@ private:
     // Assignment left-hand members are slot targets, not value-position
     // method references. typeOfBinary clears this while typing such an lhs.
     bool methodRefsAllowed_ = true;
+    // Item Q: true only inside checkComptimeRoot — makes the reserved
+    // comptime namespace `target` (os/arch/triple) type as string.
+    bool comptimeRoot_ = false;
     // Some call paths revisit an argument after overload selection. Keep a
     // rejected bound reference from emitting the same diagnostic twice.
     std::unordered_set<const Expr*> diagnosedMethodRefs_;

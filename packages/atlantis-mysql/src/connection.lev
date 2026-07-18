@@ -1,0 +1,713 @@
+// atlantis-mysql — the Connection, its onData-driven FSM, and the Driver
+// (techdesign-05 §2 handshake/auth, §3 text protocol, §4 prepared, §5 C3 impl).
+//
+// Error delivery (§5.2, P6 verdict): a throw inside the socket-driven sink hits
+// the event loop, not the caller — so the FSM NEVER throws; it resolves the
+// in-flight promise with a CommandResult carrying an optional exception. The
+// public wrappers `await` that promise and re-throw the TYPED exception, which
+// propagates synchronously through the caller's own `await` (verified: capability
+// interfaces survive the throw). C3 signatures are unchanged.
+uses Atlantis::Data;
+
+namespace MySql {
+
+    // Driver-specific knobs (§2.5). DbConfig stays the frozen C6 shape.
+    struct Options {
+        string tlsMode;               // disabled | preferred | required
+        string serverPublicKeyPath;
+        int maxResultBytes;
+        int connectTimeoutMs;
+        new Options() {
+            this.tlsMode = "disabled";
+            this.serverPublicKeyPath = "";
+            this.maxResultBytes = 67108864;
+            this.connectTimeoutMs = 30000;
+        }
+        new Options(string tlsMode, string serverPublicKeyPath, int maxResultBytes, int connectTimeoutMs) {
+            this.tlsMode = tlsMode;
+            this.serverPublicKeyPath = serverPublicKeyPath;
+            this.maxResultBytes = maxResultBytes;
+            this.connectTimeoutMs = connectTimeoutMs;
+        }
+    }
+
+    // Outcome of the connect FSM (start()).
+    class ConnOutcome {
+        MySqlException? error;
+        new ConnOutcome(MySqlException? error) { this.error = error; }
+    }
+
+    // The result of one command round-trip. Carries an optional exception
+    // instead of throwing (§5.2). Built via the free helpers below.
+    class CommandResult {
+        bool isResultSet;
+        Array<ColumnDef> columns;
+        Array<Array<string | int | float | bool | None>> rows;
+        int affectedRows;
+        int lastInsertId;
+        int statusFlags;
+        MySqlException? error;
+        int prepStmtId;
+        int prepNumParams;
+        int prepNumColumns;
+        new CommandResult(bool isResultSet,
+                          Array<ColumnDef> columns,
+                          Array<Array<string | int | float | bool | None>> rows,
+                          int affectedRows, int lastInsertId, int statusFlags,
+                          MySqlException? error,
+                          int prepStmtId, int prepNumParams, int prepNumColumns) {
+            this.isResultSet = isResultSet;
+            this.columns = columns;
+            this.rows = rows;
+            this.affectedRows = affectedRows;
+            this.lastInsertId = lastInsertId;
+            this.statusFlags = statusFlags;
+            this.error = error;
+            this.prepStmtId = prepStmtId;
+            this.prepNumParams = prepNumParams;
+            this.prepNumColumns = prepNumColumns;
+        }
+    }
+
+    namespace Results {
+        Array<ColumnDef> noCols() { Array<ColumnDef> c = []; return c; }
+        Array<Array<string | int | float | bool | None>> noRows() {
+            Array<Array<string | int | float | bool | None>> r = []; return r;
+        }
+        CommandResult ok(OkPacket o) {
+            return CommandResult(false, noCols(), noRows(),
+                o.affectedRows, o.lastInsertId, o.statusFlags, None, 0 - 1, 0 - 1, 0 - 1);
+        }
+        CommandResult resultSet(Array<ColumnDef> cols,
+                                Array<Array<string | int | float | bool | None>> rows, int status) {
+            return CommandResult(true, cols, rows, 0, 0, status, None, 0 - 1, 0 - 1, 0 - 1);
+        }
+        CommandResult failed(MySqlException e) {
+            return CommandResult(false, noCols(), noRows(), 0, 0, 0, e, 0 - 1, 0 - 1, 0 - 1);
+        }
+        CommandResult prepared(int stmtId, int numParams, int numColumns) {
+            return CommandResult(false, noCols(), noRows(), 0, 0, 0, None, stmtId, numParams, numColumns);
+        }
+    }
+
+    // Phases of the connection-level FSM.
+    namespace Phase {
+        const int HANDSHAKE = 0;
+        const int AUTH      = 1;
+        const int COMMAND   = 2;
+    }
+    // Command kinds.
+    namespace Kind {
+        const int TEXT    = 0;   // COM_QUERY / PING / QUIT-style OK
+        const int EXECUTE = 1;   // COM_STMT_EXECUTE (binary rows)
+        const int PREPARE = 2;   // COM_STMT_PREPARE
+    }
+    // Sub-states within a command.
+    namespace Sub {
+        const int FIRST        = 0;
+        const int COLUMNS      = 1;
+        const int ROWS         = 2;
+        const int PREP_PARAMS  = 3;
+        const int PREP_COLUMNS = 4;
+    }
+
+    class CommandState {
+        Promise<CommandResult> promise;
+        int kind;
+        int sub;
+        int columnCount;
+        Array<ColumnDef> columns;
+        Array<Array<string | int | float | bool | None>> rows;
+        bool deprecateEof;
+        int prepStmtId;
+        int prepNumParams;
+        int prepNumColumns;
+        int prepRemaining;
+        new CommandState(Promise<CommandResult> promise, int kind, bool deprecateEof) {
+            this.promise = promise;
+            this.kind = kind;
+            this.sub = Sub::FIRST;
+            this.columnCount = 0;
+            this.columns = [];
+            this.rows = [];
+            this.deprecateEof = deprecateEof;
+            this.prepStmtId = 0;
+            this.prepNumParams = 0;
+            this.prepNumColumns = 0;
+            this.prepRemaining = 0;
+        }
+    }
+
+    class Connection : IDbConnection {
+        DbConfig cfg;
+        Options opts;
+        TcpStream sock;
+        PacketAssembler asm;
+        int seq;                    // shared MySQL sequence counter (both directions)
+        int phase;
+        bool broken;
+        bool ready;
+        bool closed;
+        bool connecting;
+        bool deprecateEof;
+        bool inTrans;
+        string authPlugin;
+        string scrambleNonce;       // 20-byte nonce, kept for the RSA route (§2.4)
+        bool tlsActive;             // TLS armed on this fd (caching_sha2 full path)
+        bool awaitingPubKey;        // RSA route: expecting the server public key
+        HandshakeV10? hs;
+        Promise<ConnOutcome> startPromise;
+        CommandState? cmd;
+        Array<() => void> queue;
+        bool busy;
+        Map<string, PreparedStmt> stmtCache;
+
+        new Connection(DbConfig cfg, Options opts) {
+            this.cfg = cfg;
+            this.opts = opts;
+            this.sock = TcpStream(0 - 1);
+            this.seq = 0;
+            this.phase = Phase::HANDSHAKE;
+            this.broken = false;
+            this.ready = false;
+            this.closed = false;
+            this.connecting = false;
+            this.deprecateEof = false;
+            this.inTrans = false;
+            this.authPlugin = "mysql_native_password";
+            this.scrambleNonce = "";
+            this.tlsActive = false;
+            this.awaitingPubKey = false;
+            Promise<ConnOutcome> sp0 = Promise();
+            this.startPromise = sp0;
+            this.queue = [];
+            this.busy = false;
+            Map<string, PreparedStmt> sc0 = Map();
+            this.stmtCache = sc0;
+            this.asm = PacketAssembler((s, payload) => { });
+        }
+
+        // ---- connect / handshake / auth ----
+
+        Promise<ConnOutcome> start() {
+            Promise<ConnOutcome> sp = Promise();
+            this.startPromise = sp;
+            this.connecting = true;
+            Connection self = this;
+            std::connectTimeout(this.cfg.host, this.cfg.port, this.opts.connectTimeoutMs, (fd) => {
+                if (fd < 0) {
+                    self.finishConnect(MySqlConnectionLostException(
+                        "cannot connect to " + self.cfg.host + ":" + self.cfg.port.toString()));
+                    return;
+                }
+                self.attach(fd);
+            });
+            return sp;
+        }
+
+        void attach(int fd) {
+            Connection self = this;
+            this.sock = TcpStream(fd);
+            this.asm = PacketAssembler((s, payload) => self.onPacket(s, payload));
+            this.sock.onData((chunk) => self.asm.feed(chunk));
+            this.sock.onClose(() => self.onClose());
+            this.phase = Phase::HANDSHAKE;
+            this.seq = 0;
+        }
+
+        void finishConnect(MySqlException? err) {
+            if (!this.connecting) { return; }
+            this.connecting = false;
+            if (err != None) { this.broken = true; }
+            var sp = this.startPromise;
+            sp.resolve(ConnOutcome(err));
+        }
+
+        void onClose() {
+            if (this.closed) { return; }
+            if (!this.broken) {
+                this.fatal(MySqlConnectionLostException("connection closed by peer"));
+            }
+        }
+
+        // Any exception surfacing in the sink is converted to a clean failure.
+        void onPacket(int s, string payload) {
+            try {
+                if (s != this.seq) {
+                    this.fatal(MySqlProtocolException(
+                        "sequence desync: expected " + this.seq.toString() + " got " + s.toString()));
+                    return;
+                }
+                this.seq = (s + 1) & 0xFF;
+                if (this.phase == Phase::HANDSHAKE) { this.onHandshake(payload); }
+                else if (this.phase == Phase::AUTH) { this.onAuth(payload); }
+                else { this.onCommandPacket(payload); }
+            } catch (MySqlException e) {
+                this.fatal(e);
+            } catch (IException e) {
+                this.fatal(MySqlProtocolException(e.message));
+            }
+        }
+
+        void onHandshake(string p) {
+            if (Proto::isErr(p)) { this.fatalErr(p); return; }
+            HandshakeV10 h = Proto::parseHandshake(p);
+            this.hs = h;
+            this.requireServerCaps(h);
+            this.scrambleNonce = h.authData;
+            int clientCaps = this.buildClientCaps(h);
+            string plugin = h.authPluginName;
+            if (plugin.length() == 0) { plugin = "mysql_native_password"; }
+            this.authPlugin = plugin;
+            this.phase = Phase::AUTH;
+
+            bool serverSsl = (h.capabilities & Caps::SSL) != 0;
+            if (this.opts.tlsMode == "required" && !serverSsl) {
+                this.fatal(MySqlProtocolException("tlsMode=required but server does not offer SSL"));
+                return;
+            }
+            // TLS route (§2.4-1): SSLRequest, then wrap the fd in place (LA-2), then
+            // send HandshakeResponse41 inside TLS. Dead unless tlsMode != "disabled".
+            if (this.opts.tlsMode != "disabled" && serverSsl) {
+                clientCaps = clientCaps | Caps::SSL;
+                this.deprecateEof = (clientCaps & Caps::DEPRECATE_EOF) != 0;
+                StringBuilder ssl = StringBuilder();
+                ssl << Wire::wU32(clientCaps);
+                ssl << Wire::wU32(0x01000000);
+                ssl << Wire::wU8(Charset::UTF8MB4);
+                ssl << Wire::zeros(23);
+                this.sendPacket(ssl.toString());               // SSLRequest
+                Connection self = this;
+                int caps2 = clientCaps;
+                string plug = plugin;
+                std::tlsConnect(this.sock.rawFd(), this.cfg.host, "", "", 0, (cfd) => {
+                    self.tlsActive = true;
+                    string ar = Auth::scrambleFor(plug, self.cfg.password, self.scrambleNonce);
+                    self.sendPacket(self.buildHandshakeResponse(caps2, ar, plug));
+                });
+                return;
+            }
+
+            this.deprecateEof = (clientCaps & Caps::DEPRECATE_EOF) != 0;
+            string authResp = Auth::scrambleFor(plugin, this.cfg.password, h.authData);
+            this.sendPacket(this.buildHandshakeResponse(clientCaps, authResp, plugin));
+        }
+
+        void requireServerCaps(HandshakeV10 h) {
+            bool ok = (h.capabilities & Caps::PROTOCOL_41) != 0
+                   && (h.capabilities & Caps::PLUGIN_AUTH) != 0
+                   && (h.capabilities & Caps::SECURE_CONNECTION) != 0;
+            if (!ok) {
+                throw MySqlProtocolException(
+                    "server lacks required PROTOCOL_41/PLUGIN_AUTH/SECURE_CONNECTION (pre-4.1 out of scope)");
+            }
+        }
+
+        int buildClientCaps(HandshakeV10 h) {
+            int c = Caps::PROTOCOL_41 | Caps::PLUGIN_AUTH | Caps::SECURE_CONNECTION
+                  | Caps::LONG_PASSWORD | Caps::TRANSACTIONS | Caps::PLUGIN_AUTH_LENENC;
+            if (this.cfg.database.length() > 0) { c = c | Caps::CONNECT_WITH_DB; }
+            if ((h.capabilities & Caps::DEPRECATE_EOF) != 0) { c = c | Caps::DEPRECATE_EOF; }
+            return c;
+        }
+
+        // HandshakeResponse41 (§2.3).
+        string buildHandshakeResponse(int clientCaps, string authResp, string plugin) {
+            StringBuilder sb = StringBuilder();
+            sb << Wire::wU32(clientCaps);
+            sb << Wire::wU32(0x01000000);            // max packet size 16MB
+            sb << Wire::wU8(Charset::UTF8MB4);       // 45
+            sb << Wire::zeros(23);
+            sb << Wire::writeNul(this.cfg.user);
+            sb << Wire::writeLenStr(authResp);       // PLUGIN_AUTH_LENENC
+            if ((clientCaps & Caps::CONNECT_WITH_DB) != 0) { sb << Wire::writeNul(this.cfg.database); }
+            if ((clientCaps & Caps::PLUGIN_AUTH) != 0) { sb << Wire::writeNul(plugin); }
+            return sb.toString();
+        }
+
+        void onAuth(string p) {
+            if (Proto::isErr(p)) { this.fatalErr(p); return; }
+            if (Proto::isOk(p, this.deprecateEof)) { this.postAuth(); return; }
+            int h = p.byteAt(0);
+            if (h == 0xFE) {
+                if (p.length() == 1) {
+                    this.fatal(MySqlAuthException(0, "", "old_password (mysql_old_password) auth is unsupported"));
+                    return;
+                }
+                Wire::NulStr plugin = Wire::readNul(p, 1);
+                string newNonce = p.subStr(plugin.next, 20);
+                this.authPlugin = plugin.value;
+                string resp = Auth::scrambleFor(plugin.value, this.cfg.password, newNonce);
+                this.sendPacket(resp);               // bare payload, seq continues
+                return;
+            }
+            if (h == 0x01) {                          // AuthMoreData (caching_sha2)
+                if (this.awaitingPubKey) {            // RSA route: PEM public key arrives here
+                    this.awaitingPubKey = false;
+                    this.sendRsaPassword(p.subStr(1, p.length() - 1));
+                    return;
+                }
+                int more = p.byteAt(1);
+                if (more == 0x03) { return; }         // fast-auth success; an OK follows
+                if (more == 0x04) {                   // full auth required (§2.4)
+                    if (this.tlsActive) {
+                        // cleartext password (NUL-terminated) is safe INSIDE TLS
+                        this.sendPacket(this.cfg.password + std::byteToString(0));
+                        return;
+                    }
+                    // RSA route on a plaintext link: request the server public key
+                    // (0x02), then send RSA(password ^ tiled-nonce). Requires LA-2's
+                    // sysRsaEncrypt; without a private network this is best-effort —
+                    // pin serverPublicKeyPath to defeat a MITM key swap (§2.4).
+                    this.awaitingPubKey = true;
+                    this.sendPacket(std::byteToString(0x02));
+                    return;
+                }
+                this.fatal(MySqlProtocolException("unexpected AuthMoreData byte " + more.toString()));
+                return;
+            }
+            this.fatal(MySqlProtocolException("unexpected auth packet header " + h.toString()));
+        }
+
+        // RSA route (§2.4-2): encrypt password+NUL, masked by the tiled scramble
+        // nonce, under the server's RSA public key.
+        void sendRsaPassword(string pem) {
+            string pw = this.cfg.password + std::byteToString(0);
+            string masked = Auth::xorBytes(pw, Auth::repeatTo(this.scrambleNonce, pw.length()));
+            string? enc = std::sysRsaEncrypt(pem, masked);
+            if (enc != None) { this.sendPacket(enc); }
+            else { this.fatal(MySqlAuthException(0, "", "RSA public-key encryption of the password failed")); }
+        }
+
+        // First post-auth command: SET NAMES utf8mb4 (§1.7), then READY.
+        void postAuth() {
+            this.phase = Phase::COMMAND;
+            Connection self = this;
+            this.runText("SET NAMES utf8mb4").then((cr) => {
+                if (cr.error != None) { self.finishConnect(cr.error); }
+                else { self.ready = true; self.finishConnect(None); }
+            });
+        }
+
+        void fatalErr(string p) {
+            ErrPacket e = Proto::parseErr(p);
+            this.fatal(Errors::classify(e.errno, e.sqlstate, e.message));
+        }
+
+        // Mark broken and fail every outstanding promise with `e`.
+        void fatal(MySqlException e) {
+            this.broken = true;
+            if (this.connecting) { this.finishConnect(e); }
+            CommandState? c = this.cmd;
+            if (c != None) {
+                this.cmd = None;
+                this.busy = false;
+                c.promise.resolve(Results::failed(e));
+            }
+            // fail everything still queued
+            var q = this.queue;
+            this.queue = [];
+            for (var starter in q) { starter(); }   // each starter sees broken -> fails fast
+            if (this.sock.rawFd() >= 0) { this.sock.close(); }
+        }
+
+        // ---- command plumbing ----
+
+        void sendPacket(string payload) {
+            string wire = Framing::encode(payload, this.seq);
+            this.seq = (this.seq + Framing::packetCount(payload.length())) & 0xFF;
+            this.sock.send(wire);
+        }
+        void startCommand() { this.seq = 0; }
+
+        void enqueue(() => void starter) {
+            this.queue = this.queue.add(starter);
+            this.pump();
+        }
+        void pump() {
+            if (this.busy) { return; }
+            if (this.queue.length() == 0) { return; }
+            this.busy = true;
+            var starter = this.queue.first();
+            this.queue = this.queue.skip(1);
+            starter();
+        }
+        void completeCmd(CommandResult r) {
+            var c = this.cmd;
+            this.cmd = None;
+            this.busy = false;
+            if (c != None) { c.promise.resolve(r); }
+            this.pump();
+        }
+
+        void trackTrans(int status) {
+            this.inTrans = (status & Status::IN_TRANS) != 0;
+        }
+
+        // ---- text / execute resultset FSM ----
+
+        Promise<CommandResult> runText(string sql) {
+            Promise<CommandResult> p = Promise();
+            Connection self = this;
+            this.enqueue(() => self.beginText(sql, p));
+            return p;
+        }
+        void beginText(string sql, Promise<CommandResult> p) {
+            if (this.broken) { p.resolve(Results::failed(MySqlConnectionLostException("connection is broken"))); this.busy = false; this.pump(); return; }
+            this.cmd = CommandState(p, Kind::TEXT, this.deprecateEof);
+            this.startCommand();
+            this.sendPacket(Wire::wU8(Com::QUERY) + sql);
+        }
+
+        Promise<CommandResult> runPing() {
+            Promise<CommandResult> p = Promise();
+            Connection self = this;
+            this.enqueue(() => self.beginPing(p));
+            return p;
+        }
+        void beginPing(Promise<CommandResult> p) {
+            if (this.broken) { p.resolve(Results::failed(MySqlConnectionLostException("connection is broken"))); this.busy = false; this.pump(); return; }
+            this.cmd = CommandState(p, Kind::TEXT, this.deprecateEof);
+            this.startCommand();
+            this.sendPacket(Wire::wU8(Com::PING));
+        }
+
+        void onCommandPacket(string p) {
+            CommandState? cc = this.cmd;
+            if (cc != None) { this.dispatchCommand(cc, p); }
+        }
+        void dispatchCommand(CommandState c, string p) {
+            if (c.kind == Kind::PREPARE) { this.onPreparePacket(c, p); return; }
+            if (c.sub == Sub::FIRST) {
+                if (Proto::isErr(p)) { this.completeCmd(Results::failed(this.classifyErr(p))); return; }
+                if (Proto::isLocalInfile(p)) {
+                    this.completeCmd(Results::failed(MySqlProtocolException(
+                        "LOCAL INFILE requested by server — rejected (§0 security)")));
+                    return;
+                }
+                if (Proto::isOk(p, c.deprecateEof)) {
+                    OkPacket o = Proto::parseOk(p);
+                    this.trackTrans(o.statusFlags);
+                    this.completeCmd(Results::ok(o));
+                    return;
+                }
+                Wire::LenEnc cnt = Wire::readLenenc(p, 0);
+                c.columnCount = cnt.value;
+                c.columns = [];
+                c.sub = Sub::COLUMNS;
+                return;
+            }
+            if (c.sub == Sub::COLUMNS) {
+                if (!c.deprecateEof && Proto::isEof(p)) { c.sub = Sub::ROWS; return; }
+                c.columns = c.columns.add(Proto::parseColumnDef(p));
+                if (c.columns.length() == c.columnCount && c.deprecateEof) { c.sub = Sub::ROWS; }
+                return;
+            }
+            // Sub::ROWS
+            if (Proto::isErr(p)) { this.completeCmd(Results::failed(this.classifyErr(p))); return; }
+            if (p.byteAt(0) == 0xFE && p.length() < 9) {
+                int status = 0;
+                if (c.deprecateEof) { OkPacket o = Proto::parseOk(p); status = o.statusFlags; }
+                else if (p.length() >= 5) { status = Wire::u16(p, 3); }
+                this.trackTrans(status);
+                this.completeCmd(Results::resultSet(c.columns, c.rows, status));
+                return;
+            }
+            if (c.kind == Kind::EXECUTE) {
+                c.rows = c.rows.add(Prepared::decodeBinaryRow(p, c.columns));
+            } else {
+                c.rows = c.rows.add(Proto::decodeTextRow(p, c.columns));
+            }
+        }
+
+        MySqlException classifyErr(string p) {
+            ErrPacket e = Proto::parseErr(p);
+            return Errors::classify(e.errno, e.sqlstate, e.message);
+        }
+
+        // ---- prepared statement FSM ----
+
+        Promise<CommandResult> runPrepare(string sql) {
+            Promise<CommandResult> p = Promise();
+            Connection self = this;
+            this.enqueue(() => self.beginPrepare(sql, p));
+            return p;
+        }
+        void beginPrepare(string sql, Promise<CommandResult> p) {
+            if (this.broken) { p.resolve(Results::failed(MySqlConnectionLostException("connection is broken"))); this.busy = false; this.pump(); return; }
+            this.cmd = CommandState(p, Kind::PREPARE, this.deprecateEof);
+            this.startCommand();
+            this.sendPacket(Wire::wU8(Com::STMT_PREPARE) + sql);
+        }
+
+        void onPreparePacket(CommandState c, string p) {
+            if (c.sub == Sub::FIRST) {
+                if (Proto::isErr(p)) { this.completeCmd(Results::failed(this.classifyErr(p))); return; }
+                c.prepStmtId = Wire::u32(p, 1);
+                c.prepNumColumns = Wire::u16(p, 5);
+                c.prepNumParams = Wire::u16(p, 7);
+                if (c.prepNumParams > 0) { c.sub = Sub::PREP_PARAMS; c.prepRemaining = c.prepNumParams; }
+                else if (c.prepNumColumns > 0) { c.sub = Sub::PREP_COLUMNS; c.prepRemaining = c.prepNumColumns; }
+                else { this.completePrepare(c); }
+                return;
+            }
+            if (c.sub == Sub::PREP_PARAMS) {
+                if (c.prepRemaining > 0) {
+                    c.prepRemaining = c.prepRemaining - 1;
+                    if (c.prepRemaining == 0 && c.deprecateEof) { this.afterPrepParams(c); }
+                    return;
+                }
+                this.afterPrepParams(c);         // the EOF after params (non-deprecate)
+                return;
+            }
+            if (c.sub == Sub::PREP_COLUMNS) {
+                if (c.prepRemaining > 0) {
+                    c.prepRemaining = c.prepRemaining - 1;
+                    if (c.prepRemaining == 0 && c.deprecateEof) { this.completePrepare(c); }
+                    return;
+                }
+                this.completePrepare(c);         // the EOF after columns (non-deprecate)
+                return;
+            }
+        }
+        void afterPrepParams(CommandState c) {
+            if (c.prepNumColumns > 0) { c.sub = Sub::PREP_COLUMNS; c.prepRemaining = c.prepNumColumns; }
+            else { this.completePrepare(c); }
+        }
+        void completePrepare(CommandState c) {
+            this.completeCmd(Results::prepared(c.prepStmtId, c.prepNumParams, c.prepNumColumns));
+        }
+
+        Promise<CommandResult> runExecute(PreparedStmt st, Array<string | int | float | bool | None> params) {
+            Promise<CommandResult> p = Promise();
+            Connection self = this;
+            this.enqueue(() => self.beginExecute(st, params, p));
+            return p;
+        }
+        void beginExecute(PreparedStmt st, Array<string | int | float | bool | None> params, Promise<CommandResult> p) {
+            if (this.broken) { p.resolve(Results::failed(MySqlConnectionLostException("connection is broken"))); this.busy = false; this.pump(); return; }
+            this.cmd = CommandState(p, Kind::EXECUTE, this.deprecateEof);
+            this.startCommand();
+            this.sendPacket(Prepared::encodeExecute(st.stmtId, params));
+        }
+
+        // Orchestrate prepare (cached) + execute, with one transparent re-prepare
+        // on errno 1243 (server restart invalidated the id) (§4.4).
+        Promise<CommandResult> runPreparedFlow(string sql, Array<string | int | float | bool | None> params) {
+            Promise<CommandResult> out = Promise();
+            Connection self = this;
+            if (this.stmtCache.has(sql)) {
+                PreparedStmt st = this.stmtCache.at(sql);
+                this.execPrepared(st, params, sql, out, true);
+            } else {
+                this.runPrepare(sql).then((pr) => {
+                    if (pr.error != None) { out.resolve(pr); return; }
+                    PreparedStmt st = PreparedStmt(pr.prepStmtId, pr.prepNumParams, pr.prepNumColumns);
+                    self.stmtCache = self.stmtCache.with(sql, st);
+                    self.execPrepared(st, params, sql, out, false);
+                });
+            }
+            return out;
+        }
+        void execPrepared(PreparedStmt st, Array<string | int | float | bool | None> params,
+                          string sql, Promise<CommandResult> out, bool allowReprepare) {
+            if (params.length() != st.numParams) {
+                out.resolve(Results::failed(MySqlException(0, "",
+                    "parameter count mismatch: statement expects " + st.numParams.toString()
+                    + ", got " + params.length().toString())));
+                return;
+            }
+            Connection self = this;
+            this.runExecute(st, params).then((cr) => {
+                if (cr.error != None && allowReprepare) {
+                    var ex = cr.error;
+                    if (ex.errno == 1243) {
+                        self.stmtCache = self.stmtCache.without(sql);
+                        self.runPreparedFlow(sql, params).then((cr2) => out.resolve(cr2));
+                        return;
+                    }
+                }
+                out.resolve(cr);
+            });
+        }
+
+        Promise<CommandResult> runCommand(string sql, Array<string | int | float | bool | None> params) {
+            if (params.length() == 0) { return this.runText(sql); }
+            return this.runPreparedFlow(sql, params);
+        }
+
+        // ---- C3 surface ----
+
+        Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+            CommandResult cr = await this.runCommand(sql, params);
+            if (cr.error != None) { throw cr.error; }
+            return Promise(this.buildResultSet(cr));
+        }
+
+        Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+            CommandResult cr = await this.runCommand(sql, params);
+            if (cr.error != None) { throw cr.error; }
+            return Promise(ExecResult(cr.affectedRows, cr.lastInsertId));
+        }
+
+        ResultSet buildResultSet(CommandResult cr) {
+            Array<string> names = [];
+            Map<string, int> idx = Map();
+            int i = 0;
+            for (ColumnDef c in cr.columns) {
+                names = names.add(c.name);
+                idx = idx.with(c.name, i);
+                i = i + 1;
+            }
+            Array<Row> rows = [];
+            for (Array<string | int | float | bool | None> cells in cr.rows) {
+                rows = rows.add(Row(cells, idx));
+            }
+            return ResultSet(names, rows);
+        }
+
+        Promise<ITransaction> begin() {
+            CommandResult cr = await this.runText("BEGIN");
+            if (cr.error != None) { throw cr.error; }
+            ITransaction tx = Tx(this);
+            return Promise(tx);
+        }
+
+        Promise<ITransaction> beginWith(string isolation) {
+            CommandResult cr = await this.runText("SET TRANSACTION ISOLATION LEVEL " + isolation);
+            if (cr.error != None) { throw cr.error; }
+            return this.begin();
+        }
+
+        Promise<bool> ping() {
+            CommandResult cr = await this.runPing();
+            return Promise(cr.error == None);
+        }
+
+        bool isBroken() => this.broken;
+        bool isInTrans() => this.inTrans;
+
+        void close() {
+            if (this.closed) { return; }
+            this.closed = true;
+            if (!this.broken && this.sock.rawFd() >= 0) {
+                this.startCommand();
+                this.sock.send(Framing::encode(Wire::wU8(Com::QUIT), 0));  // best-effort
+            }
+            this.sock.close();
+        }
+    }
+
+    class Driver : IDbDriver {
+        Options opts;
+        new Driver() { this.opts = Options(); }
+        new Driver(Options opts) { this.opts = opts; }
+        Promise<IDbConnection> connect(DbConfig cfg) {
+            Connection c = Connection(cfg, this.opts);
+            ConnOutcome o = await c.start();
+            if (o.error != None) { throw o.error; }
+            IDbConnection ic = c;
+            return Promise(ic);
+        }
+    }
+}

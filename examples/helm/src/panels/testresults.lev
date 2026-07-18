@@ -1,0 +1,70 @@
+// H07 — the Test-results panel model (§3, §7.2).
+//
+// A `Sonar::ITableSource` of `@Test` results (name / pass-fail / time /
+// message) for the shell's `#testresults` tableview; `resultAt(row)` gives the
+// shell the failing test to jump to. Parsing `harpoon`'s output into
+// `TestResult`s belongs to the build/test driver (H11, G-H4) — this file owns
+// only the panel model, populated via `setResults`.
+
+uses Sonar;
+
+namespace Helm {
+
+    const int TestColStatus  = 0;
+    const int TestColName    = 1;
+    const int TestColTime    = 2;
+    const int TestColMessage = 3;
+
+    // One test outcome. A `class` row (never packed in an `Array<struct>`).
+    // `path`/`line` locate the failing assertion for click-to-jump (0 if the
+    // harness reported no location).
+    class TestResult {
+        string name;
+        bool   passed;
+        int    ms;
+        string message;   // failure detail; "" when passed
+        string path;
+        int    line;
+        new TestResult(string n, bool p, int t, string msg, string pt, int ln) {
+            name = n; passed = p; ms = t; message = msg; path = pt; line = ln;
+        }
+        new Pass(string n, int t) { name = n; passed = true;  ms = t; message = ""; path = ""; line = 0; }
+        new Fail(string n, int t, string msg) { name = n; passed = false; ms = t; message = msg; path = ""; line = 0; }
+        string statusGlyph() => passed ? "✓" : "✗";
+    }
+
+    class TestResultsModel : ITableSource {
+        Array<TestResult> rows_ = [];
+
+        void setResults(Array<TestResult> rs) { rows_ = rs; }
+        void clear() { rows_ = []; }
+
+        int count() => rows_.length();
+        bool isEmpty() => rows_.isEmpty();
+        int passCount() {
+            int n = 0;
+            for (TestResult t in rows_) if (t.passed) n = n + 1;
+            return n;
+        }
+        int failCount() => rows_.length() - this.passCount();
+        bool allPassed() => this.failCount() == 0;
+
+        TestResult? resultAt(int row) {
+            if (row < 0 || row >= rows_.length()) return None;
+            return rows_[row];
+        }
+
+        // ---- ITableSource ---------------------------------------------------
+        int rowCount() => rows_.length();
+        int colCount() => 4;
+        string cellAt(int r, int c) {
+            if (r < 0 || r >= rows_.length()) return "";
+            TestResult t = rows_[r];
+            if (c == TestColStatus)  return t.statusGlyph();
+            if (c == TestColName)    return t.name;
+            if (c == TestColTime)    return t.ms.toString() + "ms";
+            return t.message;
+        }
+    }
+
+}

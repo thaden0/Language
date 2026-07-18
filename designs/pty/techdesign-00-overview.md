@@ -8,7 +8,7 @@ terminal half of gate **G-LANG-2** and unblocks Helm H10 (the integrated termina
 `designs/helm/techdesign-00-overview.md` §8).
 **Ground truth:** `docs/pty-floor-research.md` (the research dossier — every OS/precedent claim in
 this design is anchored there; its §-references are cited as `R§…`), plus the landed process-spawn
-design `designs/techdesign-spawn-llvm.md` (conventions D1–D7 there are inherited wholesale).
+design `designs/complete/techdesign-spawn-llvm.md` (conventions D1–D7 there are inherited wholesale).
 **Out of scope (frozen):** VT parsing (in-language, Helm-side — the floor moves bytes, R§E);
 X64Gen/ELF; emit-C++ (keeps its deliberate system-layer deferral); winpty (ratified out, D-P8);
 TIOCPKT packet mode (R§A.3 — rejected, noise for our scope); a general per-fd "descriptor bag"

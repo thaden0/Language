@@ -1,0 +1,51 @@
+// H06 golden — the stderr diagnostic parser corpus (§6.2, K4). Feeds the parser
+// real `leviathan` stderr (the two `src/Diagnostic.cpp` fprintf forms plus the
+// source-snippet / caret / summary noise it must skip) and prints the parsed
+// diagnostics. This is the format-drift guard: if the compiler's human format
+// changes, this golden goes red instead of the parser silently mis-reading.
+// No Sonar dependency — pure model, oracle + IR.
+
+namespace Helm {
+
+    void dump(string label, string stderr) {
+        console.writeln("== " + label + " ==");
+        IDiagnosticSource src = StderrDiagnosticSource();
+        Array<Diagnostic> ds = src.parse(stderr, "?.lev");
+        console.writeln("count: " + ds.length().toString());
+        for (Diagnostic d in ds) console.writeln("  " + d.render());
+    }
+
+    void main() {
+        // Spanned form with the snippet + caret lines the parser must skip, and
+        // a trailing "N error(s)" summary line.
+        string a = "/tmp/badsyntax.lev:1:22: error: expected expression\n"
+                 + "  void main(){ int x = ; }\n"
+                 + "                       ^\n"
+                 + "/tmp/badsyntax.lev:1:24: error: expected ';'\n"
+                 + "  void main(){ int x = ; }\n"
+                 + "                         ^\n"
+                 + "\n3 error(s)\n";
+        dump("syntax errors + snippet noise", a);
+
+        // A span underline (^~~~) under the caret — still skipped.
+        string b = "/tmp/bad2.lev:1:14: error: unknown function 'undefinedFn'\n"
+                 + "  void main(){ undefinedFn(); }\n"
+                 + "               ^~~~~~~~~~~\n"
+                 + "\n1 error(s)\n";
+        dump("unknown function", b);
+
+        // Whole-file / prelude form: `path: severity: message` (no line/col).
+        string c = "prelude.lev: warning: unused import 'Foo'\n";
+        dump("whole-file warning", c);
+
+        // Mixed severities including a note continuation.
+        string e = "a.lev:3:1: error: type mismatch: int vs string\n"
+                 + "a.lev:9:5: warning: shadowed name 'x'\n"
+                 + "a.lev:9:5: note: previous 'x' declared here\n";
+        dump("mixed severities", e);
+
+        // Empty stderr -> no diagnostics.
+        dump("clean", "");
+    }
+
+}

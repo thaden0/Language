@@ -1,0 +1,116 @@
+uses Atlantis::Data;
+// atlantis-mysql — the little-endian wire kernel + capability flags
+// (techdesign-05 §1.2, §1.5, §1.7). Sensitive: implemented once, verbatim, so
+// every consumer shares one correct copy. Pinned by P-probe P3 (lenenc edges).
+namespace MySql {
+
+    namespace Wire {
+        // ---- receive-side reads (byte-in-string; byteAt -> 0..255) ----
+        int u8 (string b, int off) => b.byteAt(off);
+        int u16(string b, int off) => b.byteAt(off) | (b.byteAt(off + 1) << 8);
+        int u24(string b, int off) => u16(b, off) | (b.byteAt(off + 2) << 16);
+        int u32(string b, int off) => u24(b, off) | (b.byteAt(off + 3) << 24);
+        int u64(string b, int off) {                       // lenenc 0xFE payloads
+            if (b.byteAt(off + 7) >= 0x80) {
+                throw MySql::MySqlProtocolException("u64 exceeds int64 range");
+            }
+            return u32(b, off) | (u32(b, off + 4) << 32);
+        }
+
+        // ---- send-side writes ----
+        string wU8 (int v) => std::byteToString(v & 0xFF);
+        string wU16(int v) => wU8(v) + wU8(v >> 8);
+        string wU24(int v) => wU16(v) + wU8(v >> 16);
+        string wU32(int v) => wU24(v) + wU8(v >> 24);
+        string wU64(int v) => wU32(v) + wU32(v >> 32);
+
+        // ---- length-encoded integer (§1.2) ----
+        // < 0xFB inline; FC=2B, FD=3B, FE=8B. 0xFB is NOT a lenenc int — it is
+        // NULL (row context) / LOCAL INFILE marker (response context); callers
+        // check the first byte BEFORE calling readLenenc.
+        struct LenEnc {
+            int value;
+            int size;
+            new LenEnc(int value, int size) { this.value = value; this.size = size; }
+        }
+        LenEnc readLenenc(string b, int off) {
+            int first = b.byteAt(off);
+            if (first < 0xFB)  { return LenEnc(first, 1); }
+            if (first == 0xFC) { return LenEnc(u16(b, off + 1), 3); }
+            if (first == 0xFD) { return LenEnc(u24(b, off + 1), 4); }
+            if (first == 0xFE) { return LenEnc(u64(b, off + 1), 9); }
+            throw MySql::MySqlProtocolException("0xFB/0xFF is not a lenenc int");
+        }
+        string writeLenenc(int v) {
+            if (v < 0xFB)      { return wU8(v); }
+            if (v <= 0xFFFF)   { return std::byteToString(0xFC) + wU16(v); }
+            if (v <= 0xFFFFFF) { return std::byteToString(0xFD) + wU24(v); }
+            return std::byteToString(0xFE) + wU32(v) + wU32(v >> 32);
+        }
+
+        // ---- lenenc string = lenenc length + raw bytes ----
+        struct LenStr {
+            string value;
+            int size;                 // total bytes consumed (lenenc header + data)
+            new LenStr(string value, int size) { this.value = value; this.size = size; }
+        }
+        LenStr readLenStr(string b, int off) {
+            LenEnc le = readLenenc(b, off);
+            string data = b.subStr(off + le.size, le.value);
+            return LenStr(data, le.size + le.value);
+        }
+        string writeLenStr(string s) => writeLenenc(s.length()) + s;
+
+        // ---- nul-terminated string (handshake fields) ----
+        struct NulStr {
+            string value;
+            int next;                 // index just past the terminating NUL
+            new NulStr(string value, int next) { this.value = value; this.next = next; }
+        }
+        NulStr readNul(string b, int off) {
+            int i = off;
+            int n = b.length();
+            while (i < n && b.byteAt(i) != 0) { i = i + 1; }
+            return NulStr(b.subStr(off, i - off), i + 1);
+        }
+        string writeNul(string s) => s + std::byteToString(0);
+
+        // fixed-width zero fill
+        string zeros(int n) {
+            StringBuilder sb = StringBuilder();
+            int i = 0;
+            while (i < n) { sb << std::byteToString(0); i = i + 1; }
+            return sb.toString();
+        }
+
+        // packet-assembler states
+        const int ST_HEADER  = 0;
+        const int ST_PAYLOAD = 1;
+
+        const int MAX_PAYLOAD = 0xFFFFFF;   // 16MB - 1, the split boundary
+    }
+
+    // Capability flags (§1.5). No enum (LA-8 fallback: namespace consts).
+    namespace Caps {
+        const int LONG_PASSWORD      = 0x00000001;
+        const int CONNECT_WITH_DB    = 0x00000008;
+        const int PROTOCOL_41        = 0x00000200;
+        const int SSL                = 0x00000800;
+        const int TRANSACTIONS       = 0x00002000;
+        const int SECURE_CONNECTION  = 0x00008000;
+        const int PLUGIN_AUTH        = 0x00080000;
+        const int PLUGIN_AUTH_LENENC = 0x00200000;
+        const int DEPRECATE_EOF      = 0x01000000;
+    }
+
+    // Server status flags (§1.6).
+    namespace Status {
+        const int IN_TRANS            = 0x0001;
+        const int MORE_RESULTS_EXISTS = 0x0008;
+    }
+
+    // Column charset for the handshake response (§1.7): 45 = utf8mb4_general_ci.
+    namespace Charset {
+        const int UTF8MB4 = 45;
+    }
+}

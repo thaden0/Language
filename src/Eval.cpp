@@ -482,11 +482,59 @@ bool Evaluator::spendStep() {
     return false;
 }
 
+// Item Q (techdesign-target-predicate.md): derive the `target::` constants
+// from a --target triple, or from the host the compiler was built for when no
+// triple was given. Values reflect the TARGET (portable pivot: cross emission
+// must fold the destination's branch, never the build host's uname).
+static void deriveTargetInfo(const std::string& triple, std::string& os,
+                             std::string& arch, std::string& tripleOut) {
+    if (triple.empty()) {
+#if defined(_WIN32)
+        os = "windows";
+#elif defined(__APPLE__)
+        os = "macos";
+#elif defined(__linux__)
+        os = "linux";
+#else
+        os = "unknown";
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+        arch = "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        arch = "aarch64";
+#else
+        arch = "unknown";
+#endif
+        tripleOut = arch + (os == "windows" ? "-pc-windows-gnu"
+                          : os == "macos"   ? "-apple-darwin"
+                          : os == "linux"   ? "-pc-linux-gnu"
+                                            : "-unknown-unknown");
+        return;
+    }
+    tripleOut = triple;
+    arch = triple.substr(0, triple.find('-'));
+    if (arch == "arm64") arch = "aarch64";
+    if (arch.rfind("wasm", 0) == 0 || triple.find("wasi") != std::string::npos)
+        os = "wasm";
+    else if (triple.find("windows") != std::string::npos ||
+             triple.find("mingw") != std::string::npos)
+        os = "windows";
+    else if (triple.find("darwin") != std::string::npos ||
+             triple.find("macos") != std::string::npos ||
+             triple.find("apple") != std::string::npos)
+        os = "macos";
+    else if (triple.find("linux") != std::string::npos)
+        os = "linux";
+    else
+        os = "unknown";
+}
+
 void Evaluator::setComptime(const ComptimeOptions& o) {
     comptime_ = true;
     hermetic_ = o.hermetic;
     steps_ = o.stepBudget;
     budgetExhausted_ = false;
+    deriveTargetInfo(o.targetTriple, targetOs_, targetArch_, targetTriple_);
 }
 
 void Evaluator::defineGlobal(const std::string& name, const Value& v) {
@@ -1365,6 +1413,20 @@ Value Evaluator::eval(Expr* e) {
             return vvoid();                          // no arm matched (checker requires else)
         }
         case ExprKind::Member: {
+            // Item Q: the reserved comptime namespace `target` (family with
+            // `meta`). Locals shadow; runtime positions are never intercepted
+            // (no `target` symbol exists there — ordinary resolution applies).
+            // An unknown member is loud: pre-Q it evaluated to void and a
+            // `comptime if` condition folded silently false.
+            if (comptime_ && e->colon && e->a && e->a->kind == ExprKind::Name &&
+                e->a->text == "target" && !localLookup(e->a->text)) {
+                if (e->text == "os")     return vstr(targetOs_);
+                if (e->text == "arch")   return vstr(targetArch_);
+                if (e->text == "triple") return vstr(targetTriple_);
+                return throwRuntime("unknown target:: constant '" +
+                                    std::string(e->text) +
+                                    "' (target::os, target::arch, target::triple)");
+            }
             // Track 03 §2: a checker-resolved enum member read (`Method::GET`)
             // resolves to the mangled const global the desugar initialized.
             if (e->resolved && e->resolved->kind == StmtKind::Var) {
