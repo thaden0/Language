@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #84, #85 |
+| P1       | — |
 | P2       | — |
 
 Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
@@ -95,75 +95,3 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
-
----
-
-## #84 [P1] — a top-level bare `match` statement requires a trailing `;` that block-scoped `match` statements don't
-
-**Markers:** P1.2 (the only workaround is per-use: every future track writing
-a top-level corpus/example file with a bare `match` statement followed by
-more top-level code must independently know to add the trailing `;`).
-
-`docs/reference.md` §3.15 states `match` "is an expression ... or a
-statement (no trailing `;`)" with no scoping caveat. Inside a function/block
-body this is true (`Parser::parseStatement`'s default case, Parser.cpp:1074,
-special-cases `s->expr->kind == ExprKind::Match` to `accept` rather than
-`expect` the semicolon). At **top level**, `Parser::parseTopLevelItemInner`'s
-bare-expression-statement fallback (Parser.cpp:1984-1988) has no such
-special case — it unconditionally `expect(TokenKind::Semicolon, "';'")`s
-after `parseExpr(0)`. A top-level `match {...}` statement immediately
-followed by another top-level statement therefore fails to parse with a
-misleading "expected ';'" pointed at the *following* statement, not the
-match itself.
-
-Repro:
-```
-int x = 5;
-match (x) {
-    int => console.writeln("int");
-    else => console.writeln("other");
-}
-console.writeln("after match");   // error: expected ';' (points here)
-```
-Adding a trailing `;` after the match's closing `}` parses fine and runs
-correctly (`int` / `after match`); wrapping the same statements inside a
-`void run() { ... } run();` body (the common corpus idiom) also sidesteps it
-— `parseStatement`'s path is unaffected. **Root-cause pointer:**
-Parser.cpp:1984-1988 needs the same `ExprKind::Match` special case
-Parser.cpp:1074 already has. **Workaround:** append `;` after a top-level
-bare `match` statement's closing `}`, or wrap top-level match-then-more-code
-sequences in a function body. Found implementing LA-31 Stage 1
-(`designs/expr-reification/techdesign-01-prelude.md`) while hand-writing the
-`expr::eval` tree-walk taxonomy proof corpus. **Fix designed:**
-`designs/expr-reification/techdesign-005-preprelude-fixes.md` R6.
-
-## #85 [P1] — a namespace-qualified type in match-arm position parses as a value pattern and silently never matches
-
-**Markers:** P1.1 (the oracle silently takes the `else` arm — exit 0, no
-diagnostic — for checker-accepted code; the actively-maintained engines
-diverge by erroring loudly on the same program — IR/emit-C++: `not yet
-lowerable: name 'ns'` — so the oracle's silent output is the wrong one).
-Owner ruling 2026-07-18: symbol-driven reclassification, designed in
-`designs/expr-reification/techdesign-005-preprelude-fixes.md`.
-
-Repro (oracle prints `wrong`, should print `sub`; IR/emit-C++ refuse to
-compile):
-```
-namespace ns { class Base { } class Sub : Base { int x; new Sub(int v) { x = v; } } }
-ns::Base b = ns::Sub(5);
-match (b) {
-    ns::Sub => { console.writeln("sub"); }
-    else => { console.writeln("wrong"); }
-};
-```
-**Root cause:** `Parser::parseMatch` (Parser.cpp:458-463) routes every arm
-headed `Identifier ::` to the value route (`arm.value = parseExpr(2)`) — the
-Track 03 §2 choice that makes enum-member arms (`Method::GET =>`) parse.
-`expr::Field` and `Method::GET` are token-identical, so the parser guesses
-"value", and no later pass validates the guess: the Checker types the pattern
-but never compares it against the subject (Checker.cpp:1017-1043), and the
-oracle's `matchesValue` (Eval.cpp:144-160) compiles it to an equality test
-against a type-value that is constant-false. **Workaround:** `uses ns;` and
-match on the bare class name (bare-head arms route through `parseType`).
-Found: LA-31 Stage 1, first hand-built `expr::` tree corpus (blocks the
-`match (n) { expr::Field => …; }` shape the whole `expr::eval` walker uses).

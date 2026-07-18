@@ -42,8 +42,6 @@ The `packages/atlantis/tests/corpus/serialization` native leg is unblocked.)
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
 | A dependency's nested-namespace `const int` read fully-qualified (`Pkg::Ns::CONST`) from consumer code reads as **0/empty**, silently | #82 | import with `uses Pkg::Ns;` and use the bare name; keep constants internal to the owning package where possible | `packages/atlantis-mysql/tests/*` (all consume `MySql::FieldType`/`MySql::Caps` via `uses` + bare) |
-| A `match` arm patterned with a namespace-qualified type (`ns::Sub =>`) parses as a value pattern: silently never matches on the oracle; IR/emit-C++ error loud | #85 | `uses ns;` and match on the bare class name | none — fix designed (`designs/expr-reification/techdesign-005-preprelude-fixes.md`), no workaround code committed |
-| A **top-level** bare `match` statement followed by another statement fails to parse ("expected ';'" pointed at the *next* statement) | #84 | append `;` after the match's closing `}`, or wrap the sequence in a function body | none — fix designed (same 005 design), no workaround code committed |
 | Implementing a dependency's interface with **alias-qualified** member types (`A::Data::Foo`) fails interface satisfaction (`not assignable to Foo`); and a package `.lev` file missing `uses A::Data;` breaks bare-name lookup in its sibling files | #83 | spell C3/interface member types **bare** via `uses A::Data;`, put that `uses` in **every** src file of the package; the `class X : A::Data::IFace` clause may stay qualified | every file in `packages/atlantis-mysql/src/` (8 files) + `packages/atlantis-mysql/tests/{loopback,pool}/main.lev` |
 
 ## By design — permanent semantics that read like bugs

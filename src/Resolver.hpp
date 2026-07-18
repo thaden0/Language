@@ -95,6 +95,9 @@ private:
     void resolveStmtTypes(Stmt* s, Scope* scope);
     void resolveExprTypes(Expr* e, Scope* scope);
     std::string resolveType(TypeRef* t, Scope* scope);
+    // 005 R2/R3: reclassify a `::`-qualified `match`-arm value pattern to a type
+    // pattern when the leaf resolves to a type (not an enum member / const).
+    void reclassifyMatchArm(MatchArm& arm, Scope* scope);
 
     // shapes
     void buildShape(Symbol* cls);

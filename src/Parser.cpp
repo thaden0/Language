@@ -446,6 +446,20 @@ ExprPtr Parser::parseMatch() {
     e->a = parseExpr(0);                         // the subject
     expect(TokenKind::RParen, "')'");
     expect(TokenKind::LBrace, "'{'");
+    // R1 (005): a `::`-qualified arm head immediately followed by `<` after the
+    // whole chain is a generic TYPE pattern (`k1::Box<int> =>`) — enum members
+    // and consts never take generic arguments, so this is the one parse-time-
+    // provable case. Every other qualified head stays on the neutral value route
+    // and is classified semantically in the resolver (parse neutrally, classify
+    // semantically). Precondition at call: `cur()` is `Identifier ::`.
+    auto qualifiedHeadIsGeneric = [&]() -> bool {
+        size_t j = 0;
+        while (peek(j).kind == TokenKind::Identifier &&
+               peek(j + 1).kind == TokenKind::ColonColon)
+            j += 2;
+        return peek(j).kind == TokenKind::Identifier &&
+               peek(j + 1).kind == TokenKind::Lt;
+    };
     while (!at(TokenKind::RBrace) && !atEnd()) {
         MatchArm arm;
         arm.span = cur().span;
@@ -456,10 +470,13 @@ ExprPtr Parser::parseMatch() {
                    at(TokenKind::KwTrue) ||
                    at(TokenKind::KwFalse) || at(TokenKind::Minus) ||
                    (at(TokenKind::Identifier) &&
-                    peek(1).kind == TokenKind::ColonColon)) {
+                    peek(1).kind == TokenKind::ColonColon &&
+                    !qualifiedHeadIsGeneric())) {
             // Value/range pattern (range = bp 2). A `::`-qualified name in arm
-            // position is a constant value pattern, not a type pattern — this is
-            // how enum-member arms `Method::GET =>` parse (Track 03 §2, problem #4).
+            // position is parsed neutrally as a value pattern — this is how
+            // enum-member arms `Method::GET =>` parse (Track 03 §2, problem #4);
+            // a namespace-qualified TYPE with the same token shape is
+            // reclassified later in the resolver (R2/R3).
             arm.value = parseExpr(2);
         } else {
             arm.type = parseType();              // type pattern
@@ -1984,7 +2001,11 @@ StmtPtr Parser::parseTopLevelItemInner() {
     // bare expression statement (e.g. `Demo::run();`)
     auto s = mkStmt(StmtKind::ExprStmt, cur().span);
     s->expr = parseExpr(0);
-    expect(TokenKind::Semicolon, "';'");
+    // R6 (005, bug #84): a block-terminated bare `match` needs no trailing ';',
+    // mirroring parseStatement's default case — otherwise a top-level `match`
+    // followed by another statement fails with "expected ';'" at the *next* one.
+    if (s->expr && s->expr->kind == ExprKind::Match) accept(TokenKind::Semicolon);
+    else expect(TokenKind::Semicolon, "';'");
     return s;
 }
 

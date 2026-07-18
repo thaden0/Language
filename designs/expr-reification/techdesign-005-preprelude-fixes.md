@@ -242,5 +242,37 @@ passthrough, Checker.cpp:1235-1239. Today it silently takes `else`.)
   unchanged). Checker/Resolver anchors shifted and were updated; Parser and
   AstPrinter anchors unmoved.
 
-(Append findings, golden-churn enumeration, the R10 audit result, and the
-completion note here.)
+- 2026-07-18: **IMPLEMENTED IN FULL.** All of R1–R10 landed.
+  - **R1** (`src/Parser.cpp` `parseMatch`): a `qualifiedHeadIsGeneric()` lambda
+    scans the `::`-chain; `Ident <` after the chain routes the arm to
+    `parseType()`, everything else stays on the neutral value route.
+  - **R6** (`src/Parser.cpp` `parseTopLevelItemInner`): the bare-`ExprStmt` tail
+    now mirrors `parseStatement` — `accept(Semicolon)` for a block-terminated
+    `match`, `expect` otherwise.
+  - **R2/R3** (`src/Resolver.cpp`): new file-local helpers `ArmLeaf`,
+    `asChainLeaf`, `collectPipeLeaves`, `leafClassify`, `leafIsType` (anon
+    namespace, beside `isTypeKind`/`findLocal`), plus a `reclassifyMatchArm`
+    member called first in `resolveExprTypes`'s Match branch. Navigation mirrors
+    `resolveType`'s Named case exactly. Value→type reclassification, ambiguity
+    error, and `|`-union handling all as specified.
+  - **R4** (`src/Checker.cpp`): the Match value-arm branch now captures the
+    pattern type and errors on `TKind::TypeValue` with the exact §R4 message.
+  - **R5** (`src/AstPrinter.cpp`): `typeStr`'s Named case emits the `path::`
+    prefix. Verified the `--expand`→recompile round-trip on qualified type/union
+    arm patterns reproduces identical output (`k1::Sub`, `k1::Box<int>`,
+    `k1::Sub | None`).
+  - **R7**: `docs/reference.md` §3.15 sentence landed.
+  - **R9**: known_bugs_2.md #84/#85 entries + the P1 standings row swept;
+    `docs/footguns.md` #84/#85 rows deleted. No debt sites existed.
+  - **R10 prelude audit result: NONE FOUND.** No `match (...)` statement exists
+    anywhere in the six `kPrelude*` segments (only substring hits inside words
+    like "matches"/"mismatch"), so no qualified-head arm could change behavior.
+  - **Golden churn: NONE.** Full `ctest` = 199/199 passed (688s), including the
+    auto-included `corpus_treewalk` (`match_qualified`) and the new
+    `match_pattern_error` negative pin. No golden required regeneration.
+  - **Acceptance #5 (unblock proof):** `match (n) { ast::Field => …; ast::Bin
+    => …; }` over a hand-built qualified-type tree prints the correct arm on the
+    oracle *and* IR (before: oracle silently took `else`, IR errored). The real
+    `expr::` corpus lands with doc 01's resumption.
+  - §5.1 corpus green on all four auto-lanes (oracle/IR/emit-C++/LLVM); §5.2
+    negative green.
