@@ -1,0 +1,11 @@
+// M2 pin (struct-equality design §3.1, §4): -0.0 and +0.0 collapse into one
+// canon class, so struct fields holding them compare equal — and the scalar
+// operator agrees on the zeros (the two relations differ ONLY on NaN, §2).
+// Bools only.
+struct Box { float f; new Box(float ff) { f = ff; } }
+void main() {
+    console.writeln(Box(-0.0) == Box(0.0));   // true  — canonical field compare
+    console.writeln(-0.0 == 0.0);             // true  — IEEE agrees on the zeros
+    console.writeln(Box(-0.0) != Box(0.0));   // false
+}
+main();

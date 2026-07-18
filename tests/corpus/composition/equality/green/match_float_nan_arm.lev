@@ -1,0 +1,21 @@
+// M3 pin (struct-equality design §6): a float scrutinee classifies each value
+// arm by the CANONICAL relation — so `float::NaN =>` is a REACHABLE arm (every
+// NaN payload/sign collapses onto it) and ±0.0 collapse to a single `0.0 =>`
+// arm. Canonical ≡ IEEE except NaN (§2), so 1.5 / 2.0 behave exactly as the
+// scalar `==` always did. NaN is built via float::fromBits (bug #12: 0.0/0.0
+// yields 0.0 on the LLVM lane — never construct NaN that way). Markers only.
+string classify(float x) => match (x) {
+    float::NaN => "nan";
+    0.0        => "zero";
+    1.5        => "onefive";
+    else       => "other";
+};
+void main() {
+    console.writeln(classify(float::fromBits(9221120237041090560)));  // 0x7FF8000000000000 -> nan
+    console.writeln(classify(float::fromBits(9221120237041090561)));  // a different NaN payload -> nan
+    console.writeln(classify(0.0));    // zero
+    console.writeln(classify(-0.0));   // zero — canon collapses the signed zeros
+    console.writeln(classify(1.5));    // onefive
+    console.writeln(classify(2.0));    // other
+}
+main();

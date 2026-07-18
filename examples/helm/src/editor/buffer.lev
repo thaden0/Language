@@ -1,0 +1,213 @@
+// H04a — TextBuffer, the frozen H-C1 contract (§4.2).
+//
+// The document model the EditorView paints from: a piece table (byte storage +
+// splice) under a scalar/line coordinate API, with a monotonic version, dirty
+// tracking, undo/redo, and change notification. `col` is measured in Unicode
+// scalars (§4.2); this class owns the scalar<->byte translation so nothing
+// above it ever touches a byte offset.
+
+namespace Helm {
+
+    // UTF-8 byte length of one scalar (no allocation — keyed off the codepoint).
+    int utf8Len(char c) {
+        int s = c.code();
+        if (s < 0x80)    return 1;
+        if (s < 0x800)   return 2;
+        if (s < 0x10000) return 3;
+        return 4;
+    }
+
+    // Newlines contained in `text` (how many lines an insert spans).
+    int countNewlines(string text) {
+        Block b = Block::fromString(text);
+        int n = b.length();
+        int count = 0;
+        for (int i in 0..n - 1) if (b.byteAt(i) == NewlineByte) count = count + 1;
+        return count;
+    }
+
+    // The dirtied-line range of an edit, handed to change handlers so the
+    // highlighter/diagnostics only re-touch what moved (§6.1). A class carrier.
+    class ChangeEvent {
+        int firstLine;
+        int lastLine;
+        int version;
+        new ChangeEvent(int f, int l, int v) { firstLine = f; lastLine = l; version = v; }
+    }
+
+    class TextBuffer {
+        PieceTable pt_;
+        LineIndex  li_ = LineIndex();
+        string     path_    = "";
+        bool       dirty_   = false;
+        int        version_ = 0;
+
+        // Undo/redo are stacks of piece-array snapshots (cheap: the array is
+        // small and persistent-sharing). The added store is shared across all
+        // snapshots, so an older snapshot's byte offsets stay valid (§4.1).
+        Array<Array<Piece>> undo_ = [];
+        Array<Array<Piece>> redo_ = [];
+
+        Array<(ChangeEvent) => void> changeHandlers_ = [];
+        Array<int>                   changeTokens_   = [];
+        int nextToken_ = 1;
+
+        // ---- construction ---------------------------------------------------
+
+        new FromFile(string path) {
+            path_ = path;
+            using File f = File(path, std::read);
+            string bytes = f.read(f.size());
+            pt_ = PieceTable::FromString(bytes);
+            li_.rebuild(bytes);
+        }
+
+        new Empty() {
+            pt_ = PieceTable::Empty();
+            li_.rebuild("");
+        }
+
+        new FromString(string content) {
+            pt_ = PieceTable::FromString(content);
+            li_.rebuild(content);
+        }
+
+        // ---- queries --------------------------------------------------------
+
+        string path()    => path_;
+        bool   isDirty() => dirty_;
+        int    version() => version_;
+        int    lineCount() => li_.lineCount();
+        int    pieceCount() => pt_.pieceCount();
+        bool   canUndo() => !undo_.isEmpty();
+        bool   canRedo() => !redo_.isEmpty();
+
+        // Decoded content of line `i` (no trailing newline).
+        string line(int i) => pt_.textRange(li_.lineStart(i), li_.lineLen(i));
+
+        // Scalar length of line `i` (column-clamping for the view).
+        int lineLenScalars(int i) => this.line(i).chars().length();
+
+        // Whole-document text (save / full re-index / the view's fallback).
+        string text() => pt_.text();
+
+        string slice(Range r) {
+            Range n = r.normalized();
+            int a = this.byteOf(n.start);
+            int b = this.byteOf(n.end);
+            if (b <= a) return "";
+            return pt_.textRange(a, b - a);
+        }
+
+        // ---- coordinate translation ----------------------------------------
+
+        // (line, scalar-col) -> absolute byte offset. Clamps out-of-range
+        // coordinates to the nearest valid position (defensive: the view can
+        // ask about a stale cursor between an edit and a re-clamp).
+        int byteOf(Pos p) {
+            int lc = li_.lineCount();
+            int line = p.line < 0 ? 0 : (p.line > lc - 1 ? lc - 1 : p.line);
+            int ls = li_.lineStart(line);
+            Array<char> cs = pt_.textRange(ls, li_.lineLen(line)).chars();
+            int col = p.col < 0 ? 0 : (p.col > cs.length() ? cs.length() : p.col);
+            int b = 0;
+            for (int i in 0..col - 1) b = b + utf8Len(cs[i]);
+            return ls + b;
+        }
+
+        // ---- edits ----------------------------------------------------------
+
+        void insert(Pos at, string text) {
+            if (text.isEmpty()) return;
+            this.pushUndo();
+            pt_.insert(this.byteOf(at), text);
+            li_.rebuild(pt_.text());
+            version_ = version_ + 1;
+            dirty_ = true;
+            this.fireChange(at.line, at.line + countNewlines(text));
+        }
+
+        void remove(Range r) {
+            Range n = r.normalized();
+            if (n.isEmpty()) return;
+            int a = this.byteOf(n.start);
+            int b = this.byteOf(n.end);
+            if (b <= a) return;
+            this.pushUndo();
+            pt_.remove(a, b - a);
+            li_.rebuild(pt_.text());
+            version_ = version_ + 1;
+            dirty_ = true;
+            this.fireChange(n.start.line, n.start.line);
+        }
+
+        // ---- undo/redo ------------------------------------------------------
+
+        void pushUndo() {
+            undo_ = undo_.add(pt_.snapshot());
+            redo_ = [];   // a fresh edit invalidates the redo branch
+        }
+
+        bool undo() {
+            if (undo_.isEmpty()) return false;
+            int top = undo_.length() - 1;
+            Array<Piece> snap = undo_[top];
+            undo_ = undo_.removeAt(top);
+            redo_ = redo_.add(pt_.snapshot());
+            pt_.restore(snap);
+            li_.rebuild(pt_.text());
+            version_ = version_ + 1;
+            dirty_ = true;
+            this.fireChange(0, li_.lineCount() - 1);
+            return true;
+        }
+
+        bool redo() {
+            if (redo_.isEmpty()) return false;
+            int top = redo_.length() - 1;
+            Array<Piece> snap = redo_[top];
+            redo_ = redo_.removeAt(top);
+            undo_ = undo_.add(pt_.snapshot());
+            pt_.restore(snap);
+            li_.rebuild(pt_.text());
+            version_ = version_ + 1;
+            dirty_ = true;
+            this.fireChange(0, li_.lineCount() - 1);
+            return true;
+        }
+
+        // ---- persistence ----------------------------------------------------
+
+        void save() {
+            using File f = File(path_, std::write);
+            f.write(pt_.text());
+            dirty_ = false;
+        }
+
+        // ---- change notification (Sonar R12 token pattern) ------------------
+
+        int onChange((ChangeEvent) => void h) {
+            int token = nextToken_;
+            nextToken_ = nextToken_ + 1;
+            changeHandlers_ = changeHandlers_.add(h);
+            changeTokens_   = changeTokens_.add(token);
+            return token;
+        }
+        void offChange(int token) {
+            Array<(ChangeEvent) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..changeTokens_.length() - 1) if (changeTokens_[i] != token) {
+                hs = hs.add(changeHandlers_[i]);
+                ts = ts.add(changeTokens_[i]);
+            }
+            changeHandlers_ = hs;
+            changeTokens_   = ts;
+        }
+        void fireChange(int firstLine, int lastLine) {
+            ChangeEvent e = ChangeEvent(firstLine, lastLine, version_);
+            Array<(ChangeEvent) => void> snapshot = changeHandlers_;
+            for ((ChangeEvent) => void h in snapshot) h(e);
+        }
+    }
+
+}

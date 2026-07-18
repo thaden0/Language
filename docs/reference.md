@@ -134,7 +134,7 @@ Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
 Call-argument position is **not** yet a target-typing site (a `char`-typed value
 binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/deferal-track03-type-surface.md`).
+`designs/techdesign-track03-type-surface.md`).
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
@@ -540,7 +540,7 @@ Method d;                            // bare declaration -> the first-declared m
   an enum compares by value (contract C3).
 - **`fromCode(int) -> Enum?`** returns `None` when no member carries that value.
 - **Carriers:** `: int` is the only carrier in v1 (string carriers deferred,
-  `designs/deferal-track03-type-surface.md`). Members without an explicit value auto-increment
+  `designs/techdesign-track03-type-surface.md`). Members without an explicit value auto-increment
   from the previous member's carrier (`Gap` above); **duplicate carrier values are a compile
   error**.
 - **`match` is exhaustive over the closed set** — every member covered means no `else` is
@@ -919,7 +919,7 @@ Written in the language over a minimal native-intrinsic core; automatically avai
 | type | methods |
 |---|---|
 | `int` | `abs()`, `max(int)`, `min(int)`, `toString()`, `pow(int) -> int` (square-and-multiply; negative exponent → `0`; overflow wraps, two's-complement), `clamp(int lo, int hi)` (`lo > hi` → `RuntimeException`), `sign() -> int` (`-1`/`0`/`1`), `toHex() -> string` (lowercase, no `0x` prefix, `-` for negatives), `toString(int radix) -> string` (`2..36`, else throws), `toFloat() -> float` (native; exact for `\|x\| < 2^53`) |
-| `float` | `toString()`, `abs()`, `floor()`, `ceil()`, `round()` (native; half-away-from-zero, matches C `round`), `trunc()` (native), `sqrt()` (native; negative → NaN, IEEE, not a throw), `pow(float) -> float` (native), `toInt() -> int` (native; truncates; NaN/±inf/out-of-int64-range → `RuntimeException`, loud), `isNaN()`, `isInfinite()` |
+| `float` | `toString()`, `abs()`, `floor()`, `ceil()`, `round()` (native; half-away-from-zero, matches C `round`), `trunc()` (native), `sqrt()` (native; negative → NaN, IEEE, not a throw), `pow(float) -> float` (native), `toInt() -> int` (native; truncates; NaN/±inf/out-of-int64-range → `RuntimeException`, loud), `isNaN()`, `isInfinite()`, `bits() -> int` (native; raw IEEE-754 bit pattern), `canonEq(float) -> bool` (native; the canonical-relation primitive — `true` iff the two collapse to the same canonical form, so every NaN equals every NaN and `-0.0` equals `0.0`). Factory: **`float::fromBits(int) -> float`** (native free function; reinterprets the bit pattern). Constant: **`float::NaN`** (the one canonical NaN, a reachable value and `match` pattern) |
 | `bool` | `toString()` |
 | `char` | `code() -> int` (native; the Unicode scalar), `toString()` (native; UTF-8 encode), `isDigit()`, `isAlpha()`, `isUpper()`, `isLower()`, `isSpace()` (in-language over `code()`; ASCII ranges only — non-ASCII returns `false` in v1), `toUpper()`, `toLower()` (in-language, ASCII-only; a non-ASCII char returns itself unchanged). Factory: **`std::charFromCode(int) -> char`** (native free function — class static sides don't exist; out-of-range/surrogate → `RuntimeException`). |
 
@@ -930,6 +930,17 @@ it with a clean diagnostic (the zero-dep boundary; polynomial emission is a
 later project). Every other method in both tables above (including
 `floor`/`ceil`/`round`/`trunc`/`sqrt`/`toInt`/`toFloat`) is covered on all
 five engines, verified byte-identical (`tests/corpus/math.ext`).
+
+**Canonical float relation.** float scalars compare IEEE; derived equality,
+hashing, ordering, and match — like all value contexts — compare canonically;
+the two differ only on NaN. Concretely: a bare `x == y` on two floats is the
+IEEE operator (`NaN != NaN`, `-0.0 == 0.0`), but a synthesized struct `(==)`,
+a `Map` key comparison, and a `match` arm over a float all use `canonEq`, under
+which every NaN equals every NaN and `float::NaN` is a reachable pattern. The
+derived-vs-hand-written rule: **derived = canonical; hand-written = what you
+wrote** — a struct's synthesized `(==)` compares float fields canonically, but
+if you write your own `(==)` its float comparisons mean exactly the IEEE
+operators you typed.
 
 `string` relational operators (`<` `>` `<=` `>=`) are **lexicographic** —
 byte-wise comparison of the character data, not identity or length; `""`
@@ -1115,7 +1126,10 @@ fail at their source line. The lower-level `programIsMatch`, `programFind`, `pro
 batch hooks consume the compiled array. `programFind` returns capture slots as start/end integer
 pairs (`0/1` is the whole match, then each group; `-1/-1` means non-participating). Most users
 should use the public `Regex`/`Match` surface described by the companion library design rather
-than this flattened boundary.
+than this flattened boundary. `programPikeProbe(program, input) -> [matched(0/1), steps]` is a
+**diagnostics-only** internal (not part of the public surface): it runs the Pike leg and reports
+its deterministic work count, consumed by the `regex_pathological_linear` linearity gate
+(techdesign-regex-linear-gate.md).
 
 **Status:** landed in full, including the public surface — see §6.4.6. Most user code should
 reach the engine only through `Regex`/`Match`/`Group`/`namespace regex`, not this flattened
@@ -1512,8 +1526,10 @@ machinery takes them unchanged):
 Floor: `sysSpawn(path, args) -> Array<int>` (`[pid, stdinFd, stdoutFd, stderrFd]`, `[]` on
 spawn failure), `sysPidfdOpen(pid)`, `sysReap(pid)` (`-1` still running, else the code),
 `sysKill(pid, sig)` (`pid <= 0` refused at the floor — the `kill(2)` broadcast forms are
-never exposed). All `sys*`-prefixed → comptime-denied automatically. Interpreters only
-(oracle + IR); compiled backends defer cleanly (per-native-on-consumer-demand policy).
+never exposed). All `sys*`-prefixed → comptime-denied automatically. Oracle + IR + **LLVM**
+(G-LANG-2 process half, 2026-07-16: `runtime/lv_proc.c` over the `lv_plat_spawn/pidfd_open/
+reap/kill` floor, `designs/complete/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
+the threads precedent). emit-C++ still defers cleanly (deliberate system-layer policy).
 
 ### 6.6.54 Promises and await
 `Promise<T>` (`resolve(v)`, `isReady()`, `get()`, `then(cb)`; construct `Promise()` pending
@@ -2010,6 +2026,21 @@ comptime console.writeln("[build] ...");   // compile-time log (real console)
   become visible to rule/attribute/macro scoping (the imports map is recomputed
   after the comptime fold). A macro call in a `comptime if` **condition** is an
   error (it would feed the imports map macro resolution itself needs).
+
+#### `target::` — the compilation-target constants (item Q)
+```
+comptime if (target::os == "windows") { uses App::WinConsole; }
+else { uses App::PosixConsole; }
+```
+Three comptime-only string constants in the reserved namespace `target`
+(family with `meta`): `target::os` (`"linux"` / `"windows"` / `"macos"` /
+`"wasm"` / `"unknown"`), `target::arch` (first triple component, normalized —
+`arm64` reads as `aarch64`), and `target::triple` (the exact `--target`
+string; host builds get the canonical host spelling). Values reflect the
+**target**: under `--target <triple>` cross emission the destination's branch
+folds, never the build host's. In runtime position no `target` symbol exists
+(ordinary unresolved-name error); an unknown member (`target::bogus`) is a
+compile error naming the three constants.
 
 #### `import()` — comptime file inclusion (LA-20)
 ```

@@ -1,0 +1,1 @@
+void main() { console.writeln((App::base() + App::made()).toString()); }

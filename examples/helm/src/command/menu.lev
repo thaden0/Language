@@ -1,0 +1,50 @@
+// H03/H01 — the menu-bar model (§3).
+//
+// "Everything is a command": the menu bar is just a grouped view over the one
+// `CommandRegistry`. `MenuModel` records an ordered set of categories
+// (File / Edit / View / Run / Help) and, per category, the ordered command ids
+// that appear in its dropdown. It carries no titles or handlers of its own —
+// those are read back from the registry — so the menu, the palette, and the
+// keymap can never drift from one another.
+//
+// Storage is parallel primitive columns (never `Array<struct>` — footgun #5),
+// the same shape as the `CommandRegistry` it mirrors.
+
+namespace Helm {
+
+    class MenuModel {
+        Array<string> cats_   = [];   // ordered category names (the bar)
+        Array<string> catOf_  = [];   // parallel: item -> its category
+        Array<string> itemIds_ = [];  // parallel: item -> command id
+
+        // Register a category (idempotent, order-preserving).
+        void category(string c) {
+            if (!cats_.contains(c)) cats_ = cats_.add(c);
+        }
+
+        // Add a command id under a category (registers the category on first use).
+        MenuModel item(string cat, string id) {
+            this.category(cat);
+            catOf_   = catOf_.add(cat);
+            itemIds_ = itemIds_.add(id);
+            return this;
+        }
+
+        Array<string> categories() => cats_;
+
+        // The command ids under one category, in insertion order.
+        Array<string> itemsFor(string cat) {
+            Array<string> out = [];
+            for (int i in 0..itemIds_.length() - 1)
+                if (catOf_[i] == cat) out = out.add(itemIds_[i]);
+            return out;
+        }
+
+        int categoryCount() => cats_.length();
+        int itemCount()     => itemIds_.length();
+
+        // The menu-bar line — the category titles, two-space gutter.
+        string barLine() => cats_.joinToString("  ");
+    }
+
+}

@@ -1,0 +1,31 @@
+// Track 08 F7 / G-LANG-2: the spawn floor + Process prelude class, golden on
+// oracle + IR + LLVM (techdesign-spawn-llvm.md §7.1 — the three lanes diff this
+// one .expected). emit-C++ keeps its deliberate system-layer deferral.
+//
+// One child at a time, each step chained off the previous exitCode
+// resolution, so the transcript is deterministic:
+//   1. /bin/echo — argv passing + onStdout capture + exit 0
+//   2. /bin/cat  — stdin write + closeStdin EOF protocol + echo-back
+//   3. a bad path — fork succeeds, exec fails, the child _exit(127)s
+void step3() {
+    Process p = Process("/no/such/binary", []);
+    p.exitCode().then((code) => {
+        console.writeln("bad: " + code.toString());
+    });
+}
+void step2() {
+    Process p = Process("/bin/cat", []);
+    p.onStdout((s) => console.write("cat: " + s));
+    p.write("piped\n");
+    p.closeStdin();
+    p.exitCode().then((code) => {
+        console.writeln("cat exit: " + code.toString());
+        step3();
+    });
+}
+Process p = Process("/bin/echo", ["hello", "world"]);
+p.onStdout((s) => console.write("echo: " + s));
+p.exitCode().then((code) => {
+    console.writeln("echo exit: " + code.toString());
+    step2();
+});

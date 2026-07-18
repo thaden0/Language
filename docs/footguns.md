@@ -33,6 +33,8 @@ _None currently._
 
 | construct that breaks | bug | sanctioned workaround | debt sites |
 |---|---|---|---|
+| A dependency's nested-namespace `const int` read fully-qualified (`Pkg::Ns::CONST`) from consumer code reads as **0/empty**, silently | #82 | import with `uses Pkg::Ns;` and use the bare name; keep constants internal to the owning package where possible | `packages/atlantis-mysql/tests/*` (all consume `MySql::FieldType`/`MySql::Caps` via `uses` + bare) |
+| Implementing a dependency's interface with **alias-qualified** member types (`A::Data::Foo`) fails interface satisfaction (`not assignable to Foo`); and a package `.lev` file missing `uses A::Data;` breaks bare-name lookup in its sibling files | #83 | spell C3/interface member types **bare** via `uses A::Data;`, put that `uses` in **every** src file of the package; the `class X : A::Data::IFace` clause may stay qualified | every file in `packages/atlantis-mysql/src/` (8 files) + `packages/atlantis-mysql/tests/{loopback,pool}/main.lev` |
 
 ## By design — permanent semantics that read like bugs
 

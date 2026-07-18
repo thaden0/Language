@@ -1,0 +1,27 @@
+root: fixtures
+openCount: 0
+== open one ==
+name: one.txt
+lineCount: 3
+| alpha
+| beta
+| gamma
+openCount: 1
+active: fixtures/one.txt
+stale: n
+== open two, switch ==
+openCount: 2
+active: fixtures/two.txt
+isOpen one: y
+activate one: y
+active: fixtures/one.txt
+openCount: 2
+== paths ==
+- fixtures/one.txt
+- fixtures/two.txt
+== close active ==
+openCount: 1
+active: fixtures/two.txt
+isOpen one: n
+openCount: 0
+active none: y

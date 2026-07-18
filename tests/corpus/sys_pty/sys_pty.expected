@@ -1,0 +1,15 @@
+echo: hi
+echo exit: 0
+cat: ping
+cat exit: 0
+winsize: 24 80
+winsize exit: 0
+resize rc: 0
+resize: 30 100
+resize exit: 0
+tty: tty
+tty exit: 0
+kill: 143
+bad: 127
+refuse: 0 0
+refuse exit: 127

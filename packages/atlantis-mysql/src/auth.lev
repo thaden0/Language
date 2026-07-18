@@ -1,0 +1,64 @@
+uses Atlantis::Data;
+// atlantis-mysql — auth scrambles (techdesign-05 §2.2). Sensitive kernel;
+// exact code, verified by P-probe P2 against Python hashlib vectors.
+//
+// digest::sha1/sha256 return RAW bytes (Track 09 §3.2) — no hex round-trips.
+namespace MySql {
+    namespace Auth {
+
+        // XOR two equal-length byte strings (caller guarantees |a| == |b|).
+        string xorBytes(string a, string b) {
+            StringBuilder out = StringBuilder();
+            int i = 0;
+            while (i < a.length()) {
+                out << std::byteToString(a.byteAt(i) ^ b.byteAt(i));
+                i = i + 1;
+            }
+            return out.toString();
+        }
+
+        // mysql_native_password: XOR(SHA1(pw), SHA1(nonce + SHA1(SHA1(pw)))) — 20 bytes.
+        // Empty password -> zero-length response (both plugins).
+        string nativeScramble(string password, string nonce20) {
+            if (password.length() == 0) { return ""; }
+            string s1 = digest::sha1(password);
+            string s2 = digest::sha1(s1);
+            return xorBytes(s1, digest::sha1(nonce20 + s2));
+        }
+
+        // caching_sha2_password fast path:
+        //   XOR(SHA256(pw), SHA256(SHA256(SHA256(pw)) + nonce)) — 32 bytes.
+        string sha2Scramble(string password, string nonce20) {
+            if (password.length() == 0) { return ""; }
+            string d1 = digest::sha256(password);
+            string d2 = digest::sha256(d1);
+            return xorBytes(d1, digest::sha256(d2 + nonce20));
+        }
+
+        // Tile a nonce to `len` bytes (RSA route: XOR password+NUL with the
+        // repeated nonce before public-key encrypt; §2.4). Dead-until-LA-2.
+        string repeatTo(string nonce, int len) {
+            if (nonce.length() == 0) { return Wire::zeros(len); }
+            StringBuilder out = StringBuilder();
+            int i = 0;
+            while (i < len) {
+                out << std::byteToString(nonce.byteAt(i % nonce.length()));
+                i = i + 1;
+            }
+            return out.toString();
+        }
+
+        // Dispatch by plugin name to the right scramble (§2.3 AuthSwitch).
+        string scrambleFor(string plugin, string password, string nonce20) {
+            if (plugin == "mysql_native_password") {
+                return nativeScramble(password, nonce20);
+            }
+            if (plugin == "caching_sha2_password") {
+                return sha2Scramble(password, nonce20);
+            }
+            throw MySql::MySqlAuthException(0, "",
+                "unsupported auth plugin '" + plugin
+                + "' — see designs/request-tls-crypto.md");
+        }
+    }
+}

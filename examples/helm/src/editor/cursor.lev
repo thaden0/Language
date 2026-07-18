@@ -1,0 +1,76 @@
+// H04a — cursor + position value carriers (§4.2, §4.4).
+//
+// All of these are **class** rows, not structs: `Cursor` lives in the editor's
+// `Array<Cursor>` (multi-cursor, §4.4) and every column carrier that lands in
+// an array must be a class to dodge the LLVM Array<struct> corruption (footgun
+// #5). Pos/Range are classes for the same reason (they flow through arrays of
+// selections) and to keep construction explicit (footgun #7 — never positional
+// auto-construction). `col` is measured in **Unicode scalars** (§4.2); byte
+// translation is TextBuffer's job.
+
+namespace Helm {
+
+    // A document position: 0-based line, 0-based scalar column within that line.
+    class Pos {
+        int line;
+        int col;
+        new Pos(int l, int c) { line = l; col = c; }
+
+        bool eq(Pos o)     => line == o.line && col == o.col;
+        // Document order: is `this` strictly before `o`?
+        bool before(Pos o) => line < o.line || (line == o.line && col < o.col);
+        Pos  clone()       => Pos(line, col);
+    }
+
+    // A half-open span [start, end) in document order. `normalized()` returns a
+    // copy with start <= end so callers never worry about drag direction.
+    class Range {
+        Pos start;
+        Pos end;
+        new Range(Pos s, Pos e) { start = s; end = e; }
+
+        bool isEmpty() => start.eq(end);
+        Range normalized() {
+            if (start.before(end) || start.eq(end)) return Range(start.clone(), end.clone());
+            return Range(end.clone(), start.clone());
+        }
+    }
+
+    // A caret plus its selection anchor. No selection <=> caret == anchor.
+    // Shift+motion moves the caret and leaves the anchor; a plain motion
+    // collapses the anchor onto the caret.
+    class Cursor {
+        int line;
+        int col;
+        int anchorLine;
+        int anchorCol;
+        // Preferred column for vertical motion (sticky "goal column" so moving
+        // up/down through short lines and back preserves the original column).
+        int goalCol;
+
+        new Cursor(int l, int c) {
+            line = l; col = c;
+            anchorLine = l; anchorCol = c;
+            goalCol = c;
+        }
+
+        bool hasSelection() => line != anchorLine || col != anchorCol;
+
+        Pos caret()  => Pos(line, col);
+        Pos anchor() => Pos(anchorLine, anchorCol);
+
+        // The selection as a normalized (ordered) range.
+        Range selection() => Range(this.anchor(), this.caret()).normalized();
+
+        // Drop the anchor onto the caret (clears any selection).
+        void collapse() { anchorLine = line; anchorCol = col; }
+
+        // Move the caret; `keepAnchor` (a Shift motion) extends the selection,
+        // otherwise the anchor follows and the selection collapses.
+        void moveTo(int l, int c, bool keepAnchor) {
+            line = l; col = c;
+            if (!keepAnchor) { anchorLine = l; anchorCol = c; }
+        }
+    }
+
+}

@@ -121,6 +121,21 @@ int64_t lv_plat_random(void* buf, int64_t n);
 int     lv_plat_tcp_connect_nb(const char* ip, int port);
 int     lv_plat_connect_result(int fd);
 
+/* --- process floor (G-LANG-2, techdesign-spawn-llvm.md) --------------------
+ * lv_plat_spawn: argv is NUL-terminated (argv[0] = path, no PATH search).
+ *   On success returns pid > 0 and writes the parent pipe ends to fds[0..2]
+ *   (stdin-write, stdout-read, stderr-read), all O_CLOEXEC + O_NONBLOCK.
+ *   Returns -1 on pipe/fork failure (exec failure is the child's 127 instead).
+ * lv_plat_pidfd_open: pollable fd, read-ready when pid exits; -1 unavailable.
+ * lv_plat_reap: -1 still running / not ours; 0..255 exited; 128+sig signaled.
+ *   Never blocks.
+ * lv_plat_kill: 0/-1. Callers refuse pid <= 0 above this line; the floor
+ *   refuses it again (broadcast forms never reach kill(2)).                  */
+int     lv_plat_spawn(const char* path, char* const argv[], int fds[3]);
+int     lv_plat_pidfd_open(int pid);
+int     lv_plat_reap(int pid);
+int     lv_plat_kill(int pid, int sig);
+
 /* poll: a platform-opaque record so a future Win32 floor can back it with
  * WSAPOLLFD (whose SOCKET fd type differs in width from POSIX's int)
  * without touching any caller. events/revents use LV_POLLIN/LV_POLLOUT,

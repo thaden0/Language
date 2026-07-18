@@ -1,0 +1,15 @@
+// M2 pin (struct-equality design §3.3): two DIFFERENT NaN bit patterns collapse
+// into one canon class (fields compare equal) while STORAGE is left untouched —
+// bits() reads back the original, distinct patterns. canon normalizes at
+// compare time, never at storage. Positive-sign payloads only (bits() of a
+// 0xFFF8... NaN is a negative int — packet 05 warning).
+struct Box { float f; new Box(float ff) { f = ff; } }
+void main() {
+    Box s = Box(float::fromBits(0x7FF8000000000001));
+    Box t = Box(float::fromBits(0x7FF8000000000042));
+    console.writeln(s == t);                            // true  — canon collapse
+    console.writeln(s.f.bits() == t.f.bits());          // false — storage untouched
+    console.writeln(s.f.bits() == 0x7FF8000000000001);  // true  — bit-exact round-trip
+    console.writeln(t.f.bits() == 0x7FF8000000000042);  // true
+}
+main();

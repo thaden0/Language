@@ -425,7 +425,7 @@ info.md §9 (char in the primitives story), §19 #9 gets its partial answer reco
     - **Remaining:** M4 (Block on ELF + ARC + sysRead/sysWrite Block I/O
       overloads) stays gated on the deferred LV_CHAR/LV_BLOCK ABI addendum; the
       char-range / string-carrier-enum deferrals are tracked in
-      `deferal-track03-type-surface.md`. Full ctest 84/84 green.
+      `techdesign-track03-type-surface.md`. Full ctest 84/84 green.
 
 - **2026-07-08 (agent3) — §7 reference-doc duty discharged + deferral docs created.**
   Verified M1/M2/M3 landed in this branch and green (the built binary was stale —
@@ -444,7 +444,7 @@ info.md §9 (char in the primitives story), §19 #9 gets its partial answer reco
       opt-in scalar path).
     - **Deferral docs** the log referenced but which did not exist:
       `designs/deferal-char-block-abi.md` (LV_CHAR/LV_BLOCK ABI shape + M4/LLVM gate)
-      and `designs/deferal-track03-type-surface.md` (char ranges, string-carrier
+      and `designs/techdesign-track03-type-surface.md` (char ranges, string-carrier
       enums, char-literal call-arg target-typing).
   This doc stays out of `designs/complete/` only because **M4** is a genuinely
   unimplemented milestone (deferred to Track B's ABI pass), not because of any

@@ -824,8 +824,11 @@ A `struct` differs from a reference `class` on exactly the axes that make it a *
   struct field copies too; a reference-class field is shared). Two variables never observe each
   other's mutations. A `class` keeps reference identity.
 - **No identity.** A struct is its fields; there is no object to be `==` by reference. Equality
-  is **field-wise by default** (each field compared recursively — a struct field field-wise, a
-  reference-class field by identity), and a defined `(==)` overrides that. This is the same
+  is **field-wise by default via a synthesized `(==)` method** (each field compared recursively —
+  a struct field field-wise, a reference-class field by identity, a float field *canonically*),
+  and a hand-written `(==)` overrides that. The synthesis is real, visible source: `--expand`
+  prints the generated `bool (==)(T other) => ...`. A struct with a field that has no comparison
+  is a **compile error** at the comparison site — never a silent `false`. This is the same
   comparison a struct uses as a `Map` key (§keys). A `class` with no `(==)`, by contrast, is
   reference identity.
 - **`mutating` methods.** Because the receiver is a value, a method that writes `this` must be
@@ -1977,7 +1980,10 @@ active** (oracle, IR, emit-C++, LLVM) plus the **frozen, reference-only ELF back
    parity with the pure backend at Gate G1 (2026-07-06): objects, collections, closures,
    exceptions, the event loop, natives, async/await, sockets, HTTP, and — as of A-M6 — the
    same per-frame arena tier for scope-owned value-struct allocations (the two remaining
-   value-struct churn leaks that distinguished it from the pure backend are closed). A
+   value-struct churn leaks that distinguished it from the pure backend are closed). Process
+   spawn (`sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` — the G-LANG-2 process half) landed
+   2026-07-16 via `runtime/lv_proc.c` + the `lv_plat_*` process floor
+   (`designs/complete/techdesign-spawn-llvm.md`); Windows targets reject it at compile time. A
    `PassBuilder` O2 module pipeline runs before object emission (`-O0`/`-O2` selectable);
    measured fast paths inline int/float `Arith`, `truth`/`Not`, fixed-offset field access,
    and checker-resolved dynamic calls rather than crossing into the runtime `.o` for each.

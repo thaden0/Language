@@ -1324,15 +1324,22 @@ void lvrt_opm(LvValue* out, int64_t opcode, const LvValue* l, const LvValue* r) 
             return;
         }
         if (opcode == LV_OP_EQ || opcode == LV_OP_NE) {
-            /* bug #77: a struct with no explicit (==) is field-wise by default
-             * (info.md §9 "a struct IS its fields"); a class with no (==)
-             * compares by reference identity. lvrt_keyeq already does the
-             * field-wise recursion for Map keys — reuse it so the two agree. */
-            int same = lvrt_isvalueclass(classId)
-                         ? lvrt_keyeq(l, r)
-                         : (r->tag == LV_OBJ && l->payload == r->payload);
-            out->tag = LV_BOOL;
-            out->payload = opcode == LV_OP_EQ ? same : !same;
+            /* a class with no (==) is reference identity (design §5.2). A value
+             * struct gets a synthesized field-wise (==) at resolve time
+             * (designs/struct-equality/, §5.5) and so never reaches here from
+             * checked code; raise rather than answer silently if it ever does. */
+            if (!lvrt_isvalueclass(classId)) {
+                int same = r->tag == LV_OBJ && l->payload == r->payload;
+                out->tag = LV_BOOL;
+                out->payload = opcode == LV_OP_EQ ? same : !same;
+                return;
+            }
+            const LvClassInfo* c = lv_find_class(classId);
+            char buf[128];
+            snprintf(buf, sizeof buf, "no operator '%s' on '%s'",
+                     kOpNames[opcode], c && c->name ? c->name : "object");
+            lvrt_raise(buf);
+            out->tag = LV_VOID; out->payload = 0;
             return;
         }
     }
@@ -2069,12 +2076,36 @@ void lvrt_arr_concatall(LvValue* out, const LvValue* arr) {
     out->tag = LV_STR; out->payload = payload;
 }
 
+/* struct-equality design §3: THE one canon for this engine (hash-consistency
+ * law §3.3 — lvrt_keyeq's LV_FLOAT leg below, lvrt_canoneq, and any future
+ * canon_hash all normalize through THIS symbol). Operates on the raw bit
+ * pattern (LV_FLOAT stores it in `payload`, §2.3) in pure integer/branchless
+ * form (§3.2): no FPU compare ever, no double materialized. NaN -> canonical
+ * qNaN; ±0.0 -> 0; else raw bits. */
+static uint64_t lv_canon_bits(uint64_t b) {
+    uint64_t is_nan  = ((b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull)
+                     & ((b & 0x000FFFFFFFFFFFFFull) != 0);
+    uint64_t is_zero = (b << 1) == 0;
+    return is_nan ? 0x7FF8000000000000ull : (is_zero ? 0 : b);
+}
+
+/* The canonical float relation the synthesized struct `(==)` compares float
+ * fields through (design §3, §8). Args are the two floats' raw bit payloads. */
+int32_t lvrt_canoneq(int64_t abits, int64_t bbits) {
+    return lv_canon_bits((uint64_t)abits) == lv_canon_bits((uint64_t)bbits) ? 1 : 0;
+}
+
 /* Track 05 C3: Map key equality — primitives by value; structs field-wise
  * recursive (a struct IS its fields, §9); classes by identity. Mirrors
  * keyEquals in RuntimeValue.hpp and CGen.cpp's keyEq. */
 int32_t lvrt_keyeq(const LvValue* a, const LvValue* b) {
     if (a->tag != b->tag) return 0;
     if (a->tag == LV_STR) return lvrt_str_eq(a, b);
+    /* struct-equality design §5 pin (float_map_key_nan): Map keys are canonical
+     * (§4). The old bit-compare below was already divergent from the
+     * interpreters on ±0.0 keys (and treated NaN payloads as distinct keys);
+     * routing LV_FLOAT through the canon fixes both. */
+    if (a->tag == LV_FLOAT) return lvrt_canoneq(a->payload, b->payload);
     if (a->tag == LV_OBJ) {
         int64_t clsA = lv_ld_i64(a->payload, 0);
         int64_t clsB = lv_ld_i64(b->payload, 0);
@@ -3029,6 +3060,42 @@ void lvrt_await(LvValue* dst, const LvValue* p) {
     lvrt_getfield(dst, p, "value");  /* BORROWED read-out — rule 1: the dk==1
                                         wrap's retain is the register's count;
                                         the +0B churn corpus is the proof */
+}
+
+/* Track W hard-03 (designs/wasm-frontend/hard-03-capability-gate.md, tier 2):
+ * the wasm capability-gate trap. A gated native inside a prelude body that is
+ * emitted anyway (the whole prelude lowers into every module) but is NOT
+ * reachable from user code compiles to a call here instead of the native.
+ * Built for ALL targets so the archive stays one source — a no-op until
+ * called, and only wasm codegen ever emits the call. Never returns. */
+void lvrt_unsupported(const char* what) {
+    static const char kSuffix[] = ": not on the wasm-browser target\n";
+    lv_plat_write(2, what, (int64_t)strlen(what));
+    lv_plat_write(2, kSuffix, (int64_t)sizeof kSuffix - 1);
+    lv_plat_exit(134);
+}
+
+/* Track W hard-05 (designs/wasm-frontend/hard-05-callclosure-seam.md): the
+ * C-callable closure seam — the contract lives on the lv_abi.h declaration.
+ * Mirrors generated CallValue code (LlvmGen.cpp case Op::CallValue): the
+ * closure value is the callee's args[0], fnIndex is the closure body's
+ * word0, argc counts the closure. Built for ALL targets (one archive
+ * source); only the wasm glue calls it in v1. */
+void lvrt_callclosure(LvValue* out, const LvValue* clo,
+                      const LvValue* args, int nargs) {
+    out->tag = LV_VOID; out->payload = 0;
+    if (!g_dispatch || clo->tag != LV_CLO || nargs < 0) return;
+    int64_t fnIndex = *(const int64_t*)(const void*)(intptr_t)clo->payload;
+    LvValue small[8];              /* fast path; heap only for wide calls */
+    LvValue* window = small;
+    if (nargs + 1 > (int)(sizeof small / sizeof small[0])) {
+        window = (LvValue*)malloc(((size_t)nargs + 1) * sizeof(LvValue));
+        if (!window) return;
+    }
+    window[0] = *clo;              /* borrowed bitwise copies, CallValue's */
+    for (int i = 0; i < nargs; ++i) window[i + 1] = args[i];
+    g_dispatch(fnIndex, out, window, (int64_t)nargs + 1);
+    if (window != small) free(window);
 }
 
 void lvrt_uncaught(void) {

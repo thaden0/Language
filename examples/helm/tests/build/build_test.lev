@@ -1,0 +1,85 @@
+// G-H4 golden — the H11 build/run/test driver, end to end with zero subprocesses.
+//
+// The driver's routing is driven through `onEvent(ProcEvent)` — the exact shape
+// a live `Proc` streams — so synthetic events exercise the whole
+// build→panels→status loop deterministically (the FakeProc doctrine, §11):
+//   • build job: stdout streams to Output; stderr diagnostics parse into
+//     Problems + the status counts; a non-zero exit sets ✗ build failed.
+//   • test job: harpoon stdout parses into the Test panel; the panel is revealed;
+//     a zero exit sets ✓ build ok.
+//   • the pure argv builders + engine selection (the "Choose engine" affordance).
+// Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    void showPanels(PanelHost h) {
+        console.writeln("  output.lines=" + h.output.lineCount().toString()
+            + " problems=" + h.problems.count().toString()
+            + " tests=" + h.tests.count().toString()
+            + " active=" + h.active().toString());
+    }
+    void showStatus(StatusModel s) {
+        console.writeln("  status.left=[" + s.left() + "]");
+        console.writeln("  status.right=[" + s.right() + "]");
+    }
+
+    void main() {
+        PanelHost   host = PanelHost();
+        StatusModel st   = StatusModel();
+        st.setCursor(0, 0);
+        BuildDriver drv  = BuildDriver(host, st);
+
+        section("argv builders + engine choice");
+        console.writeln("build:  trident " + drv.buildArgs("/ws").joinToString(" "));
+        console.writeln("run:    trident " + drv.runArgs("/ws").joinToString(" "));
+        console.writeln("test:   trident " + drv.testArgs("/ws/tests").joinToString(" "));
+        console.writeln("engine(oracle): leviathan " + drv.engineRunArgs("/ws").joinToString(" "));
+        drv.setEngine(EngineIr);
+        console.writeln("engine(ir):     leviathan " + drv.engineRunArgs("/ws").joinToString(" "));
+        console.writeln("engineName=" + drv.engineName());
+        drv.setEngine(EngineOracle);
+
+        section("build job — compiler diagnostics, exit 1");
+        drv.begin(JobBuild);
+        drv.onEvent(ProcEvent::Stdout("compiling helm ..."));
+        drv.onEvent(ProcEvent::Stderr("src/main.lev:12:5: error: unknown name 'foo'"));
+        drv.onEvent(ProcEvent::Stderr("src/main.lev:20:1: warning: unused import"));
+        drv.onEvent(ProcEvent::Exit(1));
+        showPanels(host);   // Problems revealed (active=1), 1 error + 1 warning
+        showStatus(st);
+        Diagnostic? d0 = host.problems.diagnosticAt(0);
+        if (d0 != None) { Diagnostic d = d0; console.writeln("  problem[0]=" + d.render()); }
+
+        section("test job — harpoon report, exit 0");
+        drv.begin(JobTest);
+        drv.onEvent(ProcEvent::Stdout("harpoon: 3 tests, 1 classes"));
+        drv.onEvent(ProcEvent::Stdout("  Calc::adds ............................. ok"));
+        drv.onEvent(ProcEvent::Stdout("  Calc::divides ......................... FAIL"));
+        drv.onEvent(ProcEvent::Stdout("      expected 2 but got 3"));
+        drv.onEvent(ProcEvent::Stdout("  Calc::wip ............................. skip"));
+        drv.onEvent(ProcEvent::Stdout("3 run: 1 ok, 1 FAIL, 0 ERROR, 1 skip"));
+        drv.onEvent(ProcEvent::Exit(0));
+        showPanels(host);   // Test panel revealed (active=3), problems cleared
+        showStatus(st);
+        for (int i in 0..host.tests.count() - 1) {
+            TestResult? tr = host.tests.resultAt(i);
+            if (tr != None) {
+                TestResult t = tr;
+                console.writeln("  test[" + i.toString() + "] " + t.statusGlyph()
+                    + " " + t.name + (t.message.isEmpty() ? "" : (" :: " + t.message)));
+            }
+        }
+
+        section("run job — stderr is program output, not diagnostics");
+        drv.begin(JobRun);
+        drv.onEvent(ProcEvent::Stdout("hello from the program"));
+        drv.onEvent(ProcEvent::Stderr("a warning: printed by the program itself"));
+        drv.onEvent(ProcEvent::Exit(0));
+        showPanels(host);   // problems stays 0 (run stderr is NOT parsed)
+        showStatus(st);
+    }
+
+}

@@ -217,6 +217,13 @@ add_test(NAME corpus_procedural_macros_cpp
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/meta/procedural_macros.lev")
+# Item Q (techdesign-target-predicate.md): platform-conditional `uses` keyed by
+# target::os folds in the front end, so the compiled backends must see the
+# already-selected branch — same single-file lane pattern as procedural_macros.
+add_test(NAME corpus_target_uses_cpp
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev")
 # Metaprog Phase 4 §6: --expand emits recompilable source. This round-trips
 # every meta program (expand -> compile -> run) and asserts byte-identical run
 # output — the strong, mechanical proof the source printer is faithful.
@@ -376,6 +383,27 @@ add_test(NAME corpus_sys_natives_treewalk
 add_test(NAME corpus_sys_natives_ir
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_natives")
+# G-LANG-2 (techdesign-spawn-llvm.md §7.1): the spawn golden, promoted out of
+# sys_natives/ into its own dir now that LLVM covers the process floor. All
+# three lanes diff the SAME .expected — byte-identity across oracle/IR/LLVM is
+# the pass condition (the LLVM sibling lives in the LLVM_FOUND block below).
+# emit-C++ keeps its deliberate system-layer deferral (no cpp lane).
+add_test(NAME corpus_sys_spawn_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
+add_test(NAME corpus_sys_spawn_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
+# G-PTY1 (designs/pty/ doc 01): the pty floor golden — oracle + IR byte-
+# identical against one .expected. Own directory (the sys_natives/ split), so
+# corpus_llvm_full's top-level scan never compiles it; the LLVM lane arrives
+# with doc 02 (S2) and joins the LLVM_FOUND block then.
+add_test(NAME corpus_sys_pty_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty")
+add_test(NAME corpus_sys_pty_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty")
 # Track 10 native floor. Kept outside the frozen ELF lane: sysCpuCount and the
 # SO_REUSEPORT overload are interpreter/LLVM worker primitives.
 add_test(NAME corpus_threads_treewalk
@@ -709,7 +737,11 @@ add_test(NAME corpus_regex_cpp
 add_test(NAME regex_unnarrowed_find_error
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_regex_unnarrowed_find_error.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/negative/regex_unnarrowed_find.lev")
-set_tests_properties(regex_pathological_linear PROPERTIES TIMEOUT 10)
+# techdesign-regex-linear-gate.md D3: the gate asserts a DETERMINISTIC step-count
+# ratio, so this TIMEOUT is a pure hang-guard (catch a genuine superlinear/
+# exponential blow-up), not a throughput judge — generous margin over the linear
+# in-language run (~5s on --ir) so host speed / parallel load never false-fails it.
+set_tests_properties(regex_pathological_linear PROPERTIES TIMEOUT 30)
 add_test(NAME corpus_core_treewalk
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/core")
@@ -840,6 +872,7 @@ if (LLVM_FOUND)
       "${CMAKE_SOURCE_DIR}/runtime/lv_plat_posix.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_loop.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_thread.c"
+      "${CMAKE_SOURCE_DIR}/runtime/lv_proc.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_entry.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_task.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_ctx_x86_64.S"
@@ -854,6 +887,13 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan>
                    "${CMAKE_SOURCE_DIR}/tests/corpus/meta/procedural_macros.lev"
+                   ${LANG_LVRT_SOURCES})
+  # Item Q: the target-predicate uses-selection on the LLVM leg (see
+  # corpus_target_uses_cpp above).
+  add_test(NAME corpus_target_uses_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan>
+                   "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev"
                    ${LANG_LVRT_SOURCES})
   # bug.md #10: div/mod-by-zero throw on the LLVM backend (see corpus_div_by_zero_*
   # above; no ELF lane since the frozen backend still returns 0).
@@ -1044,6 +1084,12 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/blocks_io"
                    ${LANG_LVRT_SOURCES})
+  # G-LANG-2 (techdesign-spawn-llvm.md §7.1): the LLVM leg of the spawn golden —
+  # same .expected as corpus_sys_spawn_{treewalk,ir} above (byte-identity).
+  add_test(NAME corpus_sys_spawn_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn"
+                   ${LANG_LVRT_SOURCES})
   add_test(NAME corpus_threads_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/threads"
@@ -1200,6 +1246,7 @@ add_library(lvrt STATIC
   runtime/lv_plat_posix.c
   runtime/lv_loop.c
   runtime/lv_thread.c
+  runtime/lv_proc.c
   runtime/lv_entry.c
   ${LV_TASK_SRCS}
   ${LVRT_TLS_SRC})
@@ -1274,6 +1321,16 @@ endif()
 add_test(NAME rt_platform_audit
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_rt_platform_audit.sh"
                  "${CMAKE_SOURCE_DIR}")
+
+# Track W (techdesign-02-backend-column.md §7): the wasm corpus lane.
+# gated_*.lev files are NEGATIVE pins for the hard-03 capability-gate
+# diagnostic (compile must fail with the pinned text — needs only the LLVM
+# wasm backend, no archive). Non-gated files run end-to-end under wasmtime
+# and are skipped inside the script until the §6 wasm runtime archive,
+# wasm-ld, and wasmtime are all present.
+add_test(NAME corpus_wasm
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_wasm.sh"
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm")
 
 # B-M4: aarch64-linux cross corpus lane under qemu-user (doc-2 §6 item 4).
 # Feature-detected: it materializes ONLY when the full cross chain is present

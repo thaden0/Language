@@ -137,7 +137,7 @@ recommended as the default answer here (see Known Warnings for why this matters)
 ## Known Warnings
 
 - **This intersects the Trident post-v1 deferral tracker's D-A item (workspaces/`[targets]`)** —
-  `designs/deferal-trident-post-v1.md` §3 deliberately defers multi-target/workspace
+  `designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` §3 deliberately defers multi-target/workspace
   orchestration until "the first real multi-target consumer" exists, with an explicit STOP
   condition (§9(f)) against starting it early without an owner ruling. A naive reading of "Trident
   needs to know how to handle multiple apps" for this request could look like exactly that

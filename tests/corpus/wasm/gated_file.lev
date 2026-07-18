@@ -1,0 +1,6 @@
+// Track W hard-03 (doc 02 §5 tier 1): `File` is reachable from user code, so
+// a wasm-browser compile must diagnose at compile time — pinned text in
+// gated_file.expected. On native engines this program is valid (the file
+// need not exist; the compile is what's under test here).
+File f = File("/tmp/wasm_gate_pin.txt", std::read);
+console.writeln("unreachable on wasm");

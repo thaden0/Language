@@ -21,7 +21,7 @@ the implementer STOPs and escalates (§9) rather than reaching into `src/`.
 (deliberately: prelude code is unchecked and narrowing-hostile — the request's own warning;
 Harpoon is ordinary checked project source pulled in via Trident), `tests/corpus/` (the
 compiler's corpus stays the compiler's), Trident (no `[targets]`/`[workspace]` work — the
-`deferal-trident-post-v1.md` §9(f) STOP condition is respected by construction, §8), and
+`designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` §9(f) STOP condition is respected by construction, §8), and
 `designs/sonar/` (the TUI framework keeps its name until the owner rules on the rename — §10).
 No ELF lane anywhere; nothing here is ever gated on an ELF finding.
 
@@ -330,7 +330,7 @@ Consumers add `[[dep]] path = "harpoon"` (with `dev = true` where supported by t
 a two-line test entry file: `uses harpoon;` … `harpoon::main();`. The sibling-project pattern
 (request's own recommendation) gives fast local iteration — rebuilding the test project does
 not rebuild the app binary — with **zero new Trident machinery**, which is exactly what
-`deferal-trident-post-v1.md` §9(f) demands: no `[targets]`, no workspaces, no owner-ruling
+`designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` §9(f) demands: no `[targets]`, no workspaces, no owner-ruling
 trigger. A `trident test` convenience subcommand is Trident's call, later, via a
 `designs/requests/` ticket if wanted (§11) — the PM/compiler separation keeps it out of scope
 here.

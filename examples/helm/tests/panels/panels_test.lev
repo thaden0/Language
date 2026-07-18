@@ -1,0 +1,73 @@
+// H07 golden — the panel models: Problems (ITableSource, severity-sorted,
+// click-to-jump), Output (capped line buffer + IListSource), Test results, and
+// the PanelHost that routes a diagnostic batch and reveals Problems on errors.
+// Drives the model surfaces directly (deterministic, no layout). Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    Diagnostic dg(string p, int l, int c, int sev, string msg) => Diagnostic(p, l, c, sev, msg);
+
+    // Print an ITableSource as `r: c0 | c1 | ...` rows.
+    void dumpTable(ITableSource t) {
+        console.writeln("rows=" + t.rowCount().toString() + " cols=" + t.colCount().toString());
+        for (int r in 0..t.rowCount() - 1) {
+            Array<string> cells = [];
+            for (int c in 0..t.colCount() - 1) cells = cells.add(t.cellAt(r, c));
+            console.writeln("  " + r.toString() + ": " + cells.joinToString(" | "));
+        }
+    }
+
+    void main() {
+        section("Problems: severity sort");
+        // Deliberately out of source/severity order; setBatch must sort
+        // errors→warnings→notes, then by path/line/col.
+        Array<Diagnostic> ds = [
+            dg("b.lev", 9, 5, SevWarning, "shadowed name 'x'"),
+            dg("a.lev", 3, 1, SevError,   "type mismatch"),
+            dg("a.lev", 1, 1, SevError,   "parse error"),
+            dg("b.lev", 9, 5, SevNote,    "previous 'x' here")
+        ];
+        ProblemsModel pm = ProblemsModel();
+        pm.setBatch(DiagnosticBatch(7, ds));
+        dumpTable(pm);
+        console.writeln("version=" + pm.version().toString()
+            + " errors=" + pm.errorCount().toString()
+            + " warnings=" + pm.warningCount().toString());
+        Diagnostic? j = pm.diagnosticAt(0);
+        if (j != None) { Diagnostic d = j; console.writeln("jump row0 -> " + d.location()); }
+
+        section("Output: append + cap");
+        OutputModel om = OutputModel::WithCap(3);
+        om.append("line-1\nline-2\nline-3\nline-4");   // cap 3 drops line-1
+        console.writeln("count=" + om.lineCount().toString());
+        console.writeln("text:\n" + om.text());
+        console.writeln("itemAt(0)=" + om.itemAt(0) + " itemAt(2)=" + om.itemAt(2));
+
+        section("Test results");
+        TestResultsModel tm = TestResultsModel();
+        tm.setResults([
+            TestResult::Pass("t_add", 2),
+            TestResult::Fail("t_sub", 5, "expected 1, got 2"),
+            TestResult::Pass("t_mul", 1)
+        ]);
+        dumpTable(tm);
+        console.writeln("pass=" + tm.passCount().toString()
+            + " fail=" + tm.failCount().toString()
+            + " allPassed=" + yn(tm.allPassed()));
+
+        section("PanelHost: route + reveal");
+        PanelHost host = PanelHost();
+        console.writeln("active(start)=" + host.active().toString());   // Terminal=0
+        host.applyBatch(DiagnosticBatch(7, [dg("a.lev", 1, 1, SevError, "boom")]));
+        console.writeln("active(after error)=" + host.active().toString()   // Problems=1
+            + " problems=" + host.problems.count().toString());
+        host.applyBatch(DiagnosticBatch(8, []));   // clean batch: refresh, keep focus
+        console.writeln("active(after clean)=" + host.active().toString()
+            + " problems=" + host.problems.count().toString());
+    }
+
+}

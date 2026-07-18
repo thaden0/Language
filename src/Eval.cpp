@@ -147,6 +147,16 @@ bool Evaluator::matchesValue(const Value& subj, Expr* pat) {
         return subj.kind == VKind::Int && subj.i >= lo.i && subj.i <= hi.i;
     }
     Value pv = eval(pat);
+    // struct-equality §6 (packet 07): a float value arm classifies by the
+    // CANONICAL relation, not IEEE `==` — so `float::NaN =>` is a reachable arm
+    // (canon(NaN)==canon(NaN)) and ±0.0 collapse to one arm. Canonical ≡ IEEE
+    // except NaN, so no existing float match changes behavior. Route through the
+    // ONE canon symbol (lv_canon, RuntimeValue.hpp — hash-consistency law §3.3);
+    // the same symbol the `canonEq` native the other three engines lower to
+    // uses. Mixed int/float arms keep the `combine` promotion path below (an int
+    // pattern is never NaN, so canon vs IEEE agree there anyway).
+    if (subj.kind == VKind::Float && pv.kind == VKind::Float)
+        return lv_canon(subj.f) == lv_canon(pv.f);
     return combine(TokenKind::EqEq, subj, pv, nullptr).b;
 }
 
@@ -479,11 +489,59 @@ bool Evaluator::spendStep() {
     return false;
 }
 
+// Item Q (techdesign-target-predicate.md): derive the `target::` constants
+// from a --target triple, or from the host the compiler was built for when no
+// triple was given. Values reflect the TARGET (portable pivot: cross emission
+// must fold the destination's branch, never the build host's uname).
+static void deriveTargetInfo(const std::string& triple, std::string& os,
+                             std::string& arch, std::string& tripleOut) {
+    if (triple.empty()) {
+#if defined(_WIN32)
+        os = "windows";
+#elif defined(__APPLE__)
+        os = "macos";
+#elif defined(__linux__)
+        os = "linux";
+#else
+        os = "unknown";
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+        arch = "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        arch = "aarch64";
+#else
+        arch = "unknown";
+#endif
+        tripleOut = arch + (os == "windows" ? "-pc-windows-gnu"
+                          : os == "macos"   ? "-apple-darwin"
+                          : os == "linux"   ? "-pc-linux-gnu"
+                                            : "-unknown-unknown");
+        return;
+    }
+    tripleOut = triple;
+    arch = triple.substr(0, triple.find('-'));
+    if (arch == "arm64") arch = "aarch64";
+    if (arch.rfind("wasm", 0) == 0 || triple.find("wasi") != std::string::npos)
+        os = "wasm";
+    else if (triple.find("windows") != std::string::npos ||
+             triple.find("mingw") != std::string::npos)
+        os = "windows";
+    else if (triple.find("darwin") != std::string::npos ||
+             triple.find("macos") != std::string::npos ||
+             triple.find("apple") != std::string::npos)
+        os = "macos";
+    else if (triple.find("linux") != std::string::npos)
+        os = "linux";
+    else
+        os = "unknown";
+}
+
 void Evaluator::setComptime(const ComptimeOptions& o) {
     comptime_ = true;
     hermetic_ = o.hermetic;
     steps_ = o.stepBudget;
     budgetExhausted_ = false;
+    deriveTargetInfo(o.targetTriple, targetOs_, targetArch_, targetTriple_);
 }
 
 void Evaluator::defineGlobal(const std::string& name, const Value& v) {
@@ -1077,14 +1135,12 @@ Value Evaluator::combine(TokenKind op, const Value& l, const Value& r,
                 std::vector<Value> args{r};
                 return vbool(!callFunction(eq, args, l.obj, l.obj->cls).b);
             }
-        if (op == TokenKind::EqEq || op == TokenKind::BangEq) {
-            // bug #77: a struct with no explicit (==) is field-wise by default
-            // (info.md §9 — "a struct IS its fields"); a class with no (==)
-            // compares by reference identity. Reuse the same field-wise recursion
-            // Map keys already use (keyEquals) so the two stay consistent.
-            bool same = l.obj->cls && l.obj->cls->isValue
-                          ? keyEquals(l, r)
-                          : (r.kind == VKind::Object && l.obj == r.obj);
+        if ((op == TokenKind::EqEq || op == TokenKind::BangEq) && !l.obj->cls->isValue) {
+            // a class with no (==) compares by reference identity (design §5.2).
+            // A value struct instead gets a synthesized field-wise (==) at
+            // resolve time (designs/struct-equality/, §5.5) and never lands
+            // here from checked code; falling through makes any hole loud.
+            bool same = r.kind == VKind::Object && l.obj == r.obj;
             return vbool(op == TokenKind::EqEq ? same : !same);
         }
         return throwRuntime(std::string("no operator '") + opSymbol(op) + "' on '" +
@@ -1364,6 +1420,20 @@ Value Evaluator::eval(Expr* e) {
             return vvoid();                          // no arm matched (checker requires else)
         }
         case ExprKind::Member: {
+            // Item Q: the reserved comptime namespace `target` (family with
+            // `meta`). Locals shadow; runtime positions are never intercepted
+            // (no `target` symbol exists there — ordinary resolution applies).
+            // An unknown member is loud: pre-Q it evaluated to void and a
+            // `comptime if` condition folded silently false.
+            if (comptime_ && e->colon && e->a && e->a->kind == ExprKind::Name &&
+                e->a->text == "target" && !localLookup(e->a->text)) {
+                if (e->text == "os")     return vstr(targetOs_);
+                if (e->text == "arch")   return vstr(targetArch_);
+                if (e->text == "triple") return vstr(targetTriple_);
+                return throwRuntime("unknown target:: constant '" +
+                                    std::string(e->text) +
+                                    "' (target::os, target::arch, target::triple)");
+            }
             // Track 03 §2: a checker-resolved enum member read (`Method::GET`)
             // resolves to the mangled const global the desugar initialized.
             if (e->resolved && e->resolved->kind == StmtKind::Var) {

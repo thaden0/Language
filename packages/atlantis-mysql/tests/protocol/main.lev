@@ -1,0 +1,130 @@
+uses MySql;
+uses MySql::Wire;
+uses MySql::Caps;
+
+string bytesFrom(Array<int> xs) {
+    StringBuilder sb = StringBuilder();
+    for (int x in xs) { sb << std::byteToString(x & 0xFF); }
+    return sb.toString();
+}
+string hexOf(string s) {
+    StringBuilder sb = StringBuilder();
+    int i = 0;
+    while (i < s.length()) {
+        int b = s.byteAt(i);
+        string hi = "0123456789abcdef";
+        sb << hi.subStr((b >> 4) & 0xF, 1);
+        sb << hi.subStr(b & 0xF, 1);
+        i = i + 1;
+    }
+    return sb.toString();
+}
+Array<int> range(int a, int b) {
+    Array<int> r = [];
+    int i = a;
+    while (i <= b) { r = r.add(i); i = i + 1; }
+    return r;
+}
+
+// ---- P2: scramble vectors (nonce = bytes 1..20, password "secret") ----
+void probeScrambles() {
+    string nonce = bytesFrom(range(1, 20));
+    string nat = MySql::Auth::nativeScramble("secret", nonce);
+    string sha2 = MySql::Auth::sha2Scramble("secret", nonce);
+    string natExp = bytesFrom([179,43,179,165,131,225,52,12,10,17,8,213,139,27,228,151,129,173,140,47]);
+    string s2Exp = bytesFrom([116,110,190,32,93,86,160,112,122,203,62,121,110,131,78,13,215,177,214,23,67,178,107,213,32,44,122,98,50,48,199,201]);
+    console.writeln("P2 native: " + ((nat == natExp) ? "PASS" : "FAIL " + hexOf(nat)));
+    console.writeln("P2 sha2  : " + ((sha2 == s2Exp) ? "PASS" : "FAIL " + hexOf(sha2)));
+    console.writeln("P2 empty : " + ((MySql::Auth::nativeScramble("", nonce).length() == 0) ? "PASS" : "FAIL"));
+}
+
+// ---- Handshake parse ----
+void probeHandshake() {
+    Array<int> pl = [];
+    pl = pl.add(10);                              // protocol version
+    // server version "8.0.32\0"
+    for (int c in [56,46,48,46,51,50,0]) { pl = pl.add(c); }
+    for (int c in [4,0,0,0]) { pl = pl.add(c); }  // thread id = 4
+    for (int c in range(1,8)) { pl = pl.add(c); } // auth part 1
+    pl = pl.add(0);                               // filler
+    pl = pl.add(0x08); pl = pl.add(0xA2);         // cap lower
+    pl = pl.add(45);                              // charset
+    pl = pl.add(0x02); pl = pl.add(0x00);         // status = IN_TRANS? no: 0x0002 autocommit
+    pl = pl.add(0x28); pl = pl.add(0x01);         // cap upper
+    pl = pl.add(21);                              // auth data len
+    for (int z in range(1,10)) { pl = pl.add(0); }// 10 reserved
+    for (int c in range(9,20)) { pl = pl.add(c); }// auth part 2: 12 nonce bytes 9..20
+    pl = pl.add(0);                               // + NUL terminator (13th)
+    for (int c in [109,121,115,113,108,95,110,97,116,105,118,101,95,112,97,115,115,119,111,114,100,0]) { pl = pl.add(c); } // "mysql_native_password\0"
+    string p = bytesFrom(pl);
+    MySql::HandshakeV10 h = MySql::Proto::parseHandshake(p);
+    console.writeln("HS version=" + h.serverVersion + " tid=" + h.threadId.toString()
+        + " caps=" + h.capabilities.toString()
+        + " plugin=" + h.authPluginName
+        + " noncelen=" + h.authData.length().toString()
+        + " nonce=" + hexOf(h.authData));
+    bool protocol41 = (h.capabilities & PROTOCOL_41) != 0;
+    bool deprecateEof = (h.capabilities & DEPRECATE_EOF) != 0;
+    console.writeln("HS proto41=" + protocol41.toString() + " deprecateEof=" + deprecateEof.toString());
+}
+
+// ---- OK / ERR ----
+void probeOkErr() {
+    // OK: header 0x00, affected=5, lastInsert=100, status=0x0002, warnings=0
+    string ok = bytesFrom([0x00, 5, 100, 0x02, 0x00, 0x00, 0x00]);
+    console.writeln("isOk=" + MySql::Proto::isOk(ok, false).toString());
+    MySql::OkPacket o = MySql::Proto::parseOk(ok);
+    console.writeln("OK aff=" + o.affectedRows.toString() + " lid=" + o.lastInsertId.toString()
+        + " status=" + o.statusFlags.toString());
+    // ERR 1062 duplicate: 0xFF, errno LE, '#', sqlstate "23000", message
+    Array<int> err = [0xFF, 0x26, 0x04, 0x23]; // 0x0426 = 1062
+    for (int c in [50,51,48,48,48]) { err = err.add(c); } // "23000"
+    for (int c in [100,117,112,32,101,110,116,114,121]) { err = err.add(c); } // "dup entry"
+    try {
+        MySql::Proto::throwErr(bytesFrom(err));
+    } catch (MySql::MySqlDuplicateKeyException e) {
+        console.writeln("ERR dup: errno=" + e.errno.toString() + " state=" + e.sqlstate + " msg=" + e.message);
+    } catch (MySql::MySqlException e) {
+        console.writeln("ERR wrong-type: " + e.message);
+    }
+    // EOF disambiguation: 0xFE short -> EOF; 0xFE with >=9 bytes -> NOT eof
+    string eof = bytesFrom([0xFE, 0x00, 0x00, 0x02, 0x00]);
+    string fakeRow = bytesFrom([0xFE, 1,2,3,4,5,6,7,8,9]);
+    console.writeln("EOF isEof(short)=" + MySql::Proto::isEof(eof).toString()
+        + " isEof(9byte)=" + MySql::Proto::isEof(fakeRow).toString());
+}
+
+// ---- P4: assembler at multiple granularities ----
+Array<string> collected;
+void feedAt(string wire, int step) {
+    collected = [];
+    MySql::PacketAssembler asm = MySql::PacketAssembler((seq, payload) => {
+        collected = collected.add(seq.toString() + ":" + hexOf(payload));
+    });
+    int i = 0;
+    while (i < wire.length()) {
+        int take = step;
+        if (i + take > wire.length()) { take = wire.length() - i; }
+        asm.feed(wire.subStr(i, take));
+        i = i + take;
+    }
+}
+void probeAssembler() {
+    // two logical packets: seq0 payload "AB", seq1 payload 3 bytes
+    string w = MySql::Framing::encode("AB", 0) + MySql::Framing::encode(bytesFrom([1,2,3]), 1);
+    feedAt(w, 1000);
+    string whole = collected.joinToString("|");
+    feedAt(w, 1);
+    string byByte = collected.joinToString("|");
+    feedAt(w, 3);
+    string by3 = collected.joinToString("|");
+    console.writeln("ASM whole=" + whole);
+    console.writeln("ASM match1=" + (whole == byByte).toString() + " match3=" + (whole == by3).toString());
+}
+
+void main() {
+    probeScrambles();
+    probeHandshake();
+    probeOkErr();
+    probeAssembler();
+}

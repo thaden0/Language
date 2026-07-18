@@ -1,0 +1,97 @@
+// H08 — the status bar model (§3, §6.2, §7.2).
+//
+// Composes the bottom `contentbar`'s segments — mode, cursor Ln/Col, encoding,
+// language, diagnostics counts (`● 2  ▲ 5`), build state, Git branch — into the
+// three regions `Sonar::ContentBar` paints (left / center / right). Pure model:
+// the shell (H01) binds `left()/center()/right()` into the real bar via
+// `query("#statusbar").setLeft(...)`. `applyBatch` folds a delivered
+// `DiagnosticBatch` into the counts, closing the status half of the
+// edit→diagnostics loop.
+
+namespace Helm {
+
+    // Build-state tags (the spinner while building, then ✓/✗ — §3, §7.2).
+    const int BuildIdle     = 0;
+    const int BuildRunning  = 1;
+    const int BuildOk       = 2;
+    const int BuildFailed   = 3;
+
+    string buildLabel(int state) {
+        if (state == BuildRunning) return "⟳ building…";
+        if (state == BuildOk)      return "✓ build ok";
+        if (state == BuildFailed)  return "✗ build failed";
+        return "";
+    }
+
+    class StatusModel {
+        string mode_     = "EDIT";
+        int    line_     = 1;         // 1-based cursor line
+        int    col_      = 1;         // 1-based cursor column
+        string encoding_ = "UTF-8";
+        string language_ = "Leviathan";
+        string branch_   = "";        // "" = not a git workspace / unknown
+        string engine_   = "";        // "" = default (trident); else oracle/ir/llvm
+        int    errors_   = 0;
+        int    warnings_ = 0;
+        int    build_    = BuildIdle;
+
+        // ---- setters (each returns nothing; the shell repaints the bar) -----
+        void setMode(string m)     { mode_ = m; }
+        // Cursor is stored 1-based for display; callers pass the editor's
+        // 0-based (line, scalar-col) and this bumps them.
+        void setCursor(int line0, int col0) { line_ = line0 + 1; col_ = col0 + 1; }
+        void setEncoding(string e) { encoding_ = e; }
+        void setLanguage(string l) { language_ = l; }
+        void setBranch(string b)   { branch_ = b; }
+        // The differential engine the "Choose engine" affordance selected (§7.2,
+        // H11) — shown on the right; empty means the default trident lane.
+        void setEngine(string e)   { engine_ = e; }
+        void setBuild(int state)   { build_ = state; }
+        void setCounts(int errs, int warns) { errors_ = errs; warnings_ = warns; }
+
+        void applyBatch(DiagnosticBatch b) { this.setCounts(b.errorCount(), b.warningCount()); }
+
+        // ---- composed segments ---------------------------------------------
+
+        // "● 2  ▲ 5" (only the non-zero halves show; empty when clean).
+        string diagSegment() {
+            Array<string> parts = [];
+            if (errors_ > 0)   parts = parts.add(sevGlyph(SevError) + " " + errors_.toString());
+            if (warnings_ > 0) parts = parts.add(sevGlyph(SevWarning) + " " + warnings_.toString());
+            return parts.joinToString("  ");
+        }
+
+        string branchSegment() => branch_.isEmpty() ? "" : ("⌥ " + branch_);
+
+        string left() {
+            Array<string> segs = [];
+            segs = segs.add(mode_);
+            string br = this.branchSegment();
+            if (!br.isEmpty()) segs = segs.add(br);
+            string dg = this.diagSegment();
+            if (!dg.isEmpty()) segs = segs.add(dg);
+            string bl = buildLabel(build_);
+            if (!bl.isEmpty()) segs = segs.add(bl);
+            return joinSegs(segs);
+        }
+
+        string center() => "";
+
+        string right() {
+            Array<string> segs = [];
+            segs = segs.add("Ln " + line_.toString() + ", Col " + col_.toString());
+            segs = segs.add(encoding_);
+            segs = segs.add(language_);
+            if (!engine_.isEmpty()) segs = segs.add("⚙ " + engine_);
+            return joinSegs(segs);
+        }
+    }
+
+    // Join non-empty segments with a two-space gutter.
+    string joinSegs(Array<string> segs) {
+        Array<string> keep = [];
+        for (string s in segs) if (!s.isEmpty()) keep = keep.add(s);
+        return keep.joinToString("  ");
+    }
+
+}

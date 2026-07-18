@@ -1,0 +1,4 @@
+[pool] churned 5 acquires over max 2; open=1 idle=1
+[pool] withConnection affected=1
+[pool] drained; open=0
+[done]

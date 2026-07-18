@@ -1,0 +1,22 @@
+# examples/helm/trident.toml — Helm, a terminal IDE for Leviathan, built on Sonar 2.
+# (designs/helm/techdesign-00-overview.md). Helm is a trident package: checked
+# user code, never touching src/** or runtime/**.
+name    = "helm"
+entry   = "main"
+sources = [
+    "src/*.lev",
+    "src/proc/*.lev",
+    "src/command/*.lev",
+    "src/workspace/*.lev",
+    "src/explorer/*.lev",
+    "src/editor/*.lev",
+    "src/lang/*.lev",
+    "src/panels/*.lev",
+    "src/status/*.lev",
+    "src/build/*.lev",
+]
+
+[[dep]]
+path    = "../../sonar_v2"
+as      = "Sonar"
+version = "0.2.0"

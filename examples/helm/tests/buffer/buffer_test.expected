@@ -1,0 +1,36 @@
+== empty + insert ==
+empty: lines=1 v=0 dirty=n pieces=0
+  [0] ''
+after hello world: lines=1 v=1 dirty=y pieces=1
+  [0] 'hello world'
+text: 'hello world'
+== split insert (middle) ==
+text: 'hello, world'
+line0: 'hello, world'
+== newline insert ==
+two lines: lines=2 v=3 dirty=y pieces=4
+  [0] 'hello, world'
+  [1] 'second line'
+full: 'hello, world
+second line'
+== remove range ==
+line0: 'hello, '
+full: 'hello, 
+second line'
+== slice ==
+slice(0,0..1,6): 'hello, 
+second'
+== undo/redo ==
+canUndo: y
+after undo line0: 'hello, world'
+after undo2 lines: 1 text: 'hello, world'
+after redo lines: 2 text: 'hello, world
+second line'
+== wide glyph column math ==
+lineLenScalars: 3
+wide text: 'a世Xb'
+wide slice(0..2): 'a世'
+== change events ==
+chg 1..1 v1
+chg 1..2 v2
+final lines: 4

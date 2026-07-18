@@ -1,10 +1,11 @@
-// Track 10 M3: `(a+)+$` is linear under Thompson simulation, never backtracks.
+// Track 10 M3: `(a+)+$` is linear under Thompson/Pike simulation, never
+// backtracks. techdesign-regex-linear-gate.md: prove it with a DETERMINISTIC
+// engine step count (programPikeProbe -> [matched, steps]), not wall-clock —
+// so the gate measures work done, immune to host speed / load / valgrind.
 void probe(int n) {
     string s = "a".repeat(n) + "X";
     Array<int> p = regex::compileProgram("(a+)+$", "");
-    int t0 = std::sysMonotonic();
-    bool hit = regex::programIsMatchPike(p, s);
-    int t1 = std::sysMonotonic();
-    console.writeln(n.toString() + ":" + (t1 - t0).toString() + ":" + hit.toString());
+    Array<int> r = regex::programPikeProbe(p, s);   // [matched(0/1), pikeSteps]
+    console.writeln(n.toString() + ":" + r.at(1).toString() + ":" + (r.at(0) != 0).toString());
 }
-probe(100); probe(200); probe(400);
+probe(50); probe(100); probe(200);

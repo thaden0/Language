@@ -79,6 +79,26 @@ static bool isWindowsTriple(const std::string& triple) {
            triple.find("mingw") != std::string::npos;
 }
 
+// Track W hard-02 (techdesign-02-backend-column.md §4): the wasm link lane's
+// key — the triple starts `wasm32`. Wasm never goes through the native/cross
+// C++-driver probe below; it links via wasm-ld directly.
+static bool isWasmTriple(const std::string& triple) {
+    return triple.rfind("wasm32", 0) == 0;
+}
+
+// wasm-ld probe: plain name first, then the distro-versioned one (Debian/
+// Ubuntu ship `wasm-ld-18` in the `lld-18` package without the bare alias).
+// Returns "" if none found; `tried` lists what was probed, in
+// probeLinkerDriver's human-readable form, for the diagnostic.
+static std::string probeWasmLinker(std::string* tried) {
+    static const char* const kCandidates[] = {"wasm-ld", "wasm-ld-18"};
+    for (const char* c : kCandidates) {
+        if (tried) { if (!tried->empty()) *tried += ", "; *tried += c; }
+        if (!findOnPath(c).empty()) return c;
+    }
+    return "";
+}
+
 // B-M4 (doc-2 §6 item 3): cross link probe. Prefer `clang++ -target <triple>`
 // (one clang++ retargets to any triple), then a distro cross-gcc named
 // `<prefix>-g++` / `<prefix>-gcc` (prefix == triple except on Windows, see
@@ -440,6 +460,10 @@ int main(int argc, char** argv) {
                 ComptimeOptions copts;
                 if (comptimeBudget > 0) copts.stepBudget = comptimeBudget;
                 if (reentrantBudget > 0) copts.reentrantRounds = reentrantBudget;
+                // Item Q (techdesign-target-predicate.md): `target::os` & co
+                // reflect the CROSS triple when one was given — the comptime
+                // fold must pick the destination's branch, not the host's.
+                copts.targetTriple = targetTriple;
                 // §9 (Phase 3): the engine computes its own imports map,
                 // internally, AFTER comptime folding — a program-wide import
                 // list computed here (pre-fold) would miss a `uses` spliced
@@ -596,6 +620,60 @@ int main(int argc, char** argv) {
                                 std::string objPath = std::string(outPath) + ".o";
                                 if (!gen.emitObject(objPath, targetTriple, optLevel)) {
                                     // diagnostics already reported
+                                } else if (cross && isWasmTriple(targetTriple)) {
+                                    // Track W hard-02 (doc 02 §4): the wasm-ld
+                                    // lane — early and parallel to the native
+                                    // probe below, which stays byte-identical
+                                    // for non-wasm triples. `--export=main`:
+                                    // `main` is the entry symbol lv_entry.c
+                                    // exposes on native (reused, not invented);
+                                    // `--import-undefined` resolves the
+                                    // remaining imports from the JS host
+                                    // (techdesign-03-floor-wasm.md §2). No -lm,
+                                    // no lvrt.link flags — there is no system
+                                    // linker namespace to pull from on wasm.
+                                    std::string runtimeLib = runtimePathOverride
+                                        ? runtimePathOverride
+                                        : findRuntimeArchiveForTriple(targetTriple);
+                                    if (runtimeLib.empty()) {
+                                        std::fprintf(stderr,
+                                            "error: cannot locate the %s runtime archive "
+                                            "(looked next to 'leviathan' and in runtime/%s/); "
+                                            "build it with 'runtime/build-triple.sh %s' or "
+                                            "pass --runtime <path>\n",
+                                            targetTriple, targetTriple, targetTriple);
+                                        std::remove(objPath.c_str());
+                                        return 1;
+                                    }
+                                    std::string tried;
+                                    std::string wasmLd = probeWasmLinker(&tried);
+                                    if (wasmLd.empty()) {
+                                        std::fprintf(stderr,
+                                            "error: no wasm linker on PATH (tried: %s); "
+                                            "install LLVM's lld (package 'lld', which "
+                                            "provides wasm-ld)\n", tried.c_str());
+                                        std::remove(objPath.c_str());
+                                        return 1;
+                                    }
+                                    // the output is a wasm module — name it so
+                                    // (the Windows lane's .exe-append precedent).
+                                    std::string finalOutPath = outPath;
+                                    static const std::string kWasm = ".wasm";
+                                    if (finalOutPath.size() < kWasm.size() ||
+                                        finalOutPath.compare(finalOutPath.size() - kWasm.size(),
+                                                             kWasm.size(), kWasm) != 0)
+                                        finalOutPath += kWasm;
+                                    std::string cmd = wasmLd + " \"" + objPath + "\" \"" +
+                                        runtimeLib + "\" --no-entry --export=main "
+                                        "--import-undefined -o \"" + finalOutPath + "\"";
+                                    int rc = std::system(cmd.c_str());
+                                    if (rc != 0) {
+                                        std::fprintf(stderr, "error: link failed\n");
+                                        std::remove(objPath.c_str());
+                                        return 1;
+                                    }
+                                    std::remove(objPath.c_str());
+                                    std::fprintf(stderr, "built %s\n", finalOutPath.c_str());
                                 } else {
                                     std::string runtimeLib = runtimePathOverride
                                         ? runtimePathOverride

@@ -1501,6 +1501,27 @@ int Lowerer::lowerCall(Expr* e) {
                 emit(Op::Call, dst, it->second, base, (int)argRegs.size());
                 return dst;
             }
+            // struct-equality design §8: `float::fromBits(...)` resolves to a
+            // NATIVE free function (math::floatFromBits, empty body) — no
+            // lowered body in byDecl, so dispatch by native name. The native
+            // key is the resolved decl's own name ("floatFromBits"), NOT the
+            // `::` selector text ("fromBits"). MUST be gated on `::` (colon):
+            // an INSTANCE-method native reached via `.` (e.g. `arr.length()`,
+            // whose checker-resolved decl is also an empty-body prelude native)
+            // must fall through to the CallDyn method-dispatch path below —
+            // routing it as a free CallNativeFn misdispatches it (a `length`
+            // free-native does not exist).
+            if (callee->colon && e->resolved->memberBody &&
+                e->resolved->memberBody->kind == StmtKind::Empty) {
+                std::vector<int> argRegs;
+                for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
+                int base = F().nregs;
+                emitArgCopies(argRegs, e->list);
+                int dst = newReg();
+                emit(Op::CallNativeFn, dst, 0, base, (int)argRegs.size());
+                last().sname = std::string(e->resolved->name);
+                return dst;
+            }
         }
         // NS::fn — resolve through the namespace scope (prelude bodies are
         // unchecked, so fall back to by-name lookup like the oracle does).
@@ -2040,6 +2061,33 @@ int Lowerer::lowerExpr(Expr* e) {
                     emit(Op::Arith, le, subj, lowerExpr(arm.value->b.get()));
                     last().tk = TokenKind::Le; last().sname = "ii";
                     toNext.push_back(emit(Op::JumpIfFalse, le, 0));
+                } else if (arm.value && e->a->evalKind == 3 &&
+                           arm.value->evalKind == 3) {
+                    // struct-equality §6 (packet 07): a float scrutinee classifies
+                    // each value arm by the CANONICAL relation, not IEEE `==` — so
+                    // `float::NaN =>` is a reachable arm and ±0.0 collapse. Lower
+                    // the test as the `canonEq` native (packet 05) on the subject
+                    // with the pattern as argument, exactly the method-call shape
+                    // (CallDyn by name) the synthesized `(==)` body emits for float
+                    // fields — a decl-less CallDyn dispatches through each engine's
+                    // ONE canon (findMethodByName/callm/emitNativeRows), the same
+                    // symbol keyEq uses (hash-consistency law §3.3). A hand-rolled
+                    // bit compare would diverge from that symbol. Canonical ≡ IEEE
+                    // except NaN, so no existing float match changes behavior.
+                    // Mixed int/float arms fall to the scalar Arith path below (an
+                    // int pattern is never NaN, so the two relations agree; and
+                    // canonEq's float arg would misread an int payload).
+                    // optimization deferred: canon-once (design §6) — the simple
+                    // per-arm canonEq form is observably identical (canon is
+                    // idempotent) and keeps the integer canon inside the native.
+                    int pv = lowerExpr(arm.value.get());
+                    int base = F().nregs;
+                    { int r = newReg(); emit(Op::Move, r, subj); }
+                    { int r = newReg(); emit(Op::Move, r, pv); }
+                    int eq = newReg();
+                    emit(Op::CallDyn, eq, 0, base, 2);
+                    last().sname = "canonEq";
+                    toNext.push_back(emit(Op::JumpIfFalse, eq, 0));
                 } else if (arm.value) {
                     int eq = newReg();
                     emit(Op::Arith, eq, subj, lowerExpr(arm.value.get()));

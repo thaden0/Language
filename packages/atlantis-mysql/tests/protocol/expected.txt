@@ -1,0 +1,11 @@
+P2 native: PASS
+P2 sha2  : PASS
+P2 empty : PASS
+HS version=8.0.32 tid=4 caps=19440136 plugin=mysql_native_password noncelen=20 nonce=0102030405060708090a0b0c0d0e0f1011121314
+HS proto41=true deprecateEof=true
+isOk=true
+OK aff=5 lid=100 status=2
+ERR dup: errno=1062 state=23000 msg=dup entry
+EOF isEof(short)=true isEof(9byte)=false
+ASM whole=0:4142|1:010203
+ASM match1=true match3=true

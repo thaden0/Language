@@ -1,0 +1,305 @@
+// atlantis-mysql — the connection pool (techdesign-05 §6).
+//
+// Single event loop; no locks needed (yet). Worker-readiness (§6.5): NO ambient
+// globals — a Pool is built in the composition root and reaches consumers via
+// `bind IDbPool => …`. When LA-1 lands: one Pool per worker loop, connections
+// never cross workers. A Pool instance shared across workers is a defect.
+//
+// The pool's SHAPE is written against IDbDriver / IDbConnection so it is
+// lift-ready into Atlantis::Data for driver reuse (§0 R8); it downcasts the
+// acquired connection to MySql::Connection only for the liveness probe (COM_PING)
+// and the leaked-transaction rollback — the two health operations C3 does not
+// surface. Those two lines are the whole of the MySQL coupling.
+uses Atlantis::Data;
+
+namespace MySql {
+
+    struct PoolOptions {
+        int maxConnections;
+        int minIdle;
+        int idleTimeoutMs;
+        int pingAfterIdleMs;
+        int acquireTimeoutMs;
+        int maxWaiters;
+        new PoolOptions() {
+            this.maxConnections = 10;
+            this.minIdle = 0;
+            this.idleTimeoutMs = 600000;
+            this.pingAfterIdleMs = 30000;
+            this.acquireTimeoutMs = 30000;
+            this.maxWaiters = 1024;
+        }
+        new PoolOptions(int maxConnections, int minIdle, int idleTimeoutMs,
+                        int pingAfterIdleMs, int acquireTimeoutMs, int maxWaiters) {
+            this.maxConnections = maxConnections;
+            this.minIdle = minIdle;
+            this.idleTimeoutMs = idleTimeoutMs;
+            this.pingAfterIdleMs = pingAfterIdleMs;
+            this.acquireTimeoutMs = acquireTimeoutMs;
+            this.maxWaiters = maxWaiters;
+        }
+    }
+
+    // A pooled connection wrapper (§6.3): delegates query/execute/begin, but
+    // close() RELEASES to the pool instead of closing the socket — so the blessed
+    // pattern is exactly `using IDbConnection c = await pool.acquire();`. Double
+    // release is idempotent (the released flag).
+    class PooledConnection : IDbConnection {
+        Pool pool;
+        Connection inner;
+        bool released;
+        int idleSince;
+
+        new PooledConnection(Pool pool, Connection inner) {
+            this.pool = pool;
+            this.inner = inner;
+            this.released = false;
+            this.idleSince = 0;
+        }
+
+        Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+            return this.inner.query(sql, params);
+        }
+        Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+            return this.inner.execute(sql, params);
+        }
+        Promise<ITransaction> begin() {
+            return this.inner.begin();
+        }
+        void close() {
+            if (this.released) { return; }
+            this.released = true;
+            this.pool.releasePooled(this);
+        }
+        void reopen() { this.released = false; }
+    }
+
+    class Waiter {
+        Promise<WaiterResult> promise;
+        bool settled;
+        new Waiter() {
+            Promise<WaiterResult> p = Promise();
+            this.promise = p;
+            this.settled = false;
+        }
+    }
+    class WaiterResult {
+        PooledConnection? conn;
+        MySqlException? error;
+        new WaiterResult(PooledConnection? conn, MySqlException? error) {
+            this.conn = conn;
+            this.error = error;
+        }
+    }
+
+    class Pool : IDbPool {
+        IDbDriver driver;
+        DbConfig cfg;
+        PoolOptions opts;
+        Array<PooledConnection> idle;
+        int total;
+        Array<Waiter> waiters;
+        bool draining;
+        Promise<void> drainPromise;
+        bool drainPending;
+
+        new Pool(IDbDriver driver, DbConfig cfg, PoolOptions opts) {
+            this.driver = driver;
+            this.cfg = cfg;
+            this.opts = opts;
+            this.idle = [];
+            this.total = 0;
+            this.waiters = [];
+            this.draining = false;
+            Promise<void> dp = Promise();
+            this.drainPromise = dp;
+            this.drainPending = false;
+        }
+
+        Promise<IDbConnection> acquire() {
+            if (this.draining) { throw MySqlException(0, "", "pool is draining; acquire refused"); }
+            // 1) reuse an idle connection (ping if it has been idle too long)
+            while (this.idle.length() > 0) {
+                PooledConnection c = this.idle.first();
+                this.idle = this.idle.skip(1);
+                if (c.inner.isBroken()) { this.total = this.total - 1; continue; }
+                if (this.needsPing(c)) {
+                    bool ok = await c.inner.ping();
+                    if (!ok) { this.total = this.total - 1; c.inner.close(); continue; }
+                }
+                c.reopen();
+                IDbConnection ic = c;
+                return Promise(ic);
+            }
+            // 2) open a new connection if under the cap
+            if (this.total < this.opts.maxConnections) {
+                this.total = this.total + 1;
+                IDbConnection ic0 = await this.connectOrFail();
+                Connection rc = this.asConnection(ic0);
+                PooledConnection pc = PooledConnection(this, rc);
+                IDbConnection icn = pc;
+                return Promise(icn);
+            }
+            // 3) at the cap -> FIFO waiter with an acquire-timeout
+            if (this.waiters.length() >= this.opts.maxWaiters) {
+                throw PoolTimeoutException("waiter queue full (" + this.opts.maxWaiters.toString() + ")");
+            }
+            Waiter w = Waiter();
+            this.waiters = this.waiters.add(w);
+            Pool self = this;
+            std::after(this.opts.acquireTimeoutMs).subscribe((tk) => {
+                if (!w.settled) {
+                    w.settled = true;
+                    self.removeWaiter(w);
+                    w.promise.resolve(WaiterResult(None, PoolTimeoutException(
+                        "acquire timed out after " + self.opts.acquireTimeoutMs.toString() + "ms")));
+                }
+            });
+            WaiterResult wr = await w.promise;
+            if (wr.error != None) { throw wr.error; }
+            PooledConnection? pcw = wr.conn;
+            if (pcw != None) {
+                IDbConnection icw = pcw;
+                return Promise(icw);
+            }
+            throw MySqlProtocolException("waiter resolved without a connection");
+        }
+
+        Promise<IDbConnection> connectOrFail() {
+            Pool self = this;
+            IDbConnection ic;
+            try {
+                ic = await this.driver.connect(this.cfg);
+            } catch (IException e) {
+                self.total = self.total - 1;
+                throw e;
+            }
+            return Promise(ic);
+        }
+
+        Connection asConnection(IDbConnection ic) {
+            if (ic is Connection) { return ic; }
+            throw MySqlProtocolException("MySql::Pool requires a MySql::Connection");
+        }
+
+        void release(IDbConnection c) {
+            if (c is PooledConnection) { c.close(); }
+        }
+
+        // Wrapper.close() lands here.
+        void releasePooled(PooledConnection pc) {
+            if (this.draining) {
+                pc.inner.close();
+                this.total = this.total - 1;
+                this.settleDrain();
+                return;
+            }
+            if (pc.inner.isBroken()) {
+                this.total = this.total - 1;
+                this.serveWaitersOrReplace();
+                return;
+            }
+            if (pc.inner.isInTrans()) {
+                // a transaction leaked past release -> roll it back before reuse
+                // (§5.3/§6.4) so it cannot poison the next tenant
+                pc.inner.runText("ROLLBACK").then((cr) => { });
+            }
+            // hand directly to the oldest live waiter (no idle round-trip)
+            while (this.waiters.length() > 0) {
+                Waiter w = this.waiters.first();
+                this.waiters = this.waiters.skip(1);
+                if (!w.settled) {
+                    w.settled = true;
+                    pc.reopen();
+                    w.promise.resolve(WaiterResult(pc, None));
+                    return;
+                }
+            }
+            pc.idleSince = std::sysNow();
+            this.idle = this.idle.add(pc);
+        }
+
+        // A broken connection was discarded; if waiters wait and we're under the
+        // cap, open a replacement for the oldest.
+        void serveWaitersOrReplace() {
+            if (this.waiters.length() == 0) { return; }
+            if (this.total >= this.opts.maxConnections) { return; }
+            Pool self = this;
+            this.total = this.total + 1;
+            this.driver.connect(this.cfg).then((ic) => {
+                Connection rc = self.asConnection(ic);
+                PooledConnection pc = PooledConnection(self, rc);
+                self.releasePooled(pc);
+            });
+        }
+
+        void removeWaiter(Waiter target) {
+            Array<Waiter> keep = [];
+            for (Waiter w in this.waiters) { if (w != target) { keep = keep.add(w); } }
+            this.waiters = keep;
+        }
+
+        bool needsPing(PooledConnection c) {
+            return (std::sysNow() - c.idleSince) > this.opts.pingAfterIdleMs;
+        }
+
+        // Liveness probe available to ops (§6.4).
+        Promise<void> pingAll() {
+            for (PooledConnection c in this.idle) {
+                bool ok = await c.inner.ping();
+            }
+            Promise<void> done = Promise();
+            done.resolve(None);
+            return done;
+        }
+
+        // Graceful shutdown: refuse new acquires, reject waiters, close idle, and
+        // resolve once every in-use connection has been released.
+        Promise<void> drain() {
+            this.draining = true;
+            for (Waiter w in this.waiters) {
+                if (!w.settled) {
+                    w.settled = true;
+                    w.promise.resolve(WaiterResult(None, MySqlConnectionLostException("pool draining")));
+                }
+            }
+            this.waiters = [];
+            for (PooledConnection pc in this.idle) {
+                pc.inner.close();
+                this.total = this.total - 1;
+            }
+            this.idle = [];
+            Promise<void> done = Promise();
+            if (this.total <= 0) {
+                done.resolve(None);
+            } else {
+                this.drainPromise = done;
+                this.drainPending = true;
+            }
+            return done;
+        }
+        void settleDrain() {
+            if (this.draining && this.drainPending && this.total <= 0) {
+                this.drainPending = false;
+                this.drainPromise.resolve(None);
+            }
+        }
+
+        int openCount() => this.total;
+        int idleCount() => this.idle.length();
+
+        // One-liner acquire/using/release for a unit of work.
+        Promise<T> withConnection<T>((IDbConnection) => Promise<T> fn) {
+            IDbConnection c = await this.acquire();
+            var f = fn;
+            try {
+                T result = await f(c);
+                c.close();
+                return Promise(result);
+            } catch (IException e) {
+                c.close();
+                throw e;
+            }
+        }
+    }
+}

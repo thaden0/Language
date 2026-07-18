@@ -1,0 +1,7 @@
+name    = "helm-workspace-test"
+entry   = "Helm::main"
+sources = [
+    "workspace_test.lev",
+    "../../src/workspace/workspace.lev",
+    "../../src/workspace/paths.lev",
+]

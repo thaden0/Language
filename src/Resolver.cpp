@@ -154,6 +154,13 @@ class float {
     int toInt();
     float sqrt();       // negative -> NaN (IEEE, not a throw — math convention)
     float pow(float e);
+    // struct-equality design §8: raw IEEE-754 bit access (serialization wants
+    // these regardless). `bits()` = bit_cast to int64; `float::fromBits(int)`
+    // is math::floatFromBits, routed by the checker. `canonEq` is the
+    // canonical-relation primitive (§3) the synthesized struct `(==)` compares
+    // float fields through — every engine implements it via its ONE canon.
+    int bits();
+    bool canonEq(float other);
     bool isNaN() => this != this;   // IEEE self-inequality — honest on all engines
     // Reformulated from the design's `this == 1.0/0.0` sentinel: bug.md #12
     // (LLVM's 0.0/0.0 silently yields 0.0, not NaN/inf — not this track's to
@@ -1480,6 +1487,12 @@ namespace std {
     int sysPidfdOpen(int pid);                   // pollable fd, ready when pid exits
     int sysReap(int pid);                        // -1 running; else code (128+sig if signaled)
     int sysKill(int pid, int sig);               // 0/-1; pid <= 0 refused
+    // G-LANG-2 terminal half (designs/pty/): [pid, masterFd] | [] on failure.
+    // One fd, read+write — a pty fuses stdout/stderr. rows/cols <= 0 refused.
+    // flags bit0 = deterministic termios (goldens). Resize: kernel SIGWINCHes
+    // the child; 0/-1.
+    Array<int> sysPtySpawn(string path, Array<string> args, int rows, int cols, int flags);
+    int sysPtyResize(int masterFd, int rows, int cols);
 
     // A connected socket, wearing the stream surface. Reads are event-driven:
     // onData subscribes a read-watch that recvs and delivers chunks; None from
@@ -1875,6 +1888,79 @@ namespace std {
             stderrS.pumpAll();
             stdoutS.close();
             stderrS.close();
+            exitP.resolve(code);
+        }
+    }
+
+    // A child on a pseudo-terminal (designs/pty/ D-P1): ONE merged byte stream —
+    // there is no separate stderr on a pty. The master fd rides TcpStream (send
+    // queue-and-drain, read-watch delivery, D-P9); exit rides the pidfd-watch/
+    // poll-reap pair exactly like Process. EOF protocol: a pty has no closable
+    // write half — canonical mode's VEOF does it: write("\x04").
+    // Retirement (D-P5): reap success -> pumpAll -> close -> resolve; a master
+    // close alone (child side gone) fires onClose but never resolves exitCode.
+    class Pty {
+        int pid = 0 - 1;
+        int pidfd = 0 - 1;
+        int reapWatchId = 0 - 1;
+        int reapTimerId = 0 - 1;
+        bool reaping = false;
+        bool exited = false;
+        TcpStream io = TcpStream(0 - 1);
+        Promise<int> exitP = Promise();
+
+        new Pty(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 0);
+            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+        }
+        // The frozen deterministic termios profile (echo family off) — goldens.
+        new Deterministic(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 1);
+            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+        }
+        bool ok() => pid > 0;
+
+        void write(string s) { io.send(s); }
+        void onData((string) => void cb) { io.onData(cb); }
+        void onClose(() => void cb) { io.onClose(cb); }
+        int resize(int rows, int cols) {
+            if (io.rawFd() < 0) return 0 - 1;            // stale-fd guard (TcpStream discipline)
+            return std::sysPtyResize(io.rawFd(), rows, cols);
+        }
+        void kill() {
+            if (pid > 0 && !exited) { std::sysKill(pid, 15); }
+            // do NOT close io here: D-P5 — the dying child's last output is still
+            // in the line discipline; tryReap drains it.
+        }
+
+        Promise<int> exitCode() {
+            if (exited || reaping) return exitP;
+            if (pid <= 0) {                              // spawn failure: 127 (F7 convention)
+                exited = true;
+                exitP.resolve(127);
+                return exitP;
+            }
+            reaping = true;
+            pidfd = std::sysPidfdOpen(pid);
+            Pty self = this;
+            if (pidfd >= 0) {
+                reapWatchId = std::sysWatch(pidfd, (ready) => self.tryReap());
+            } else {
+                // pidfd unavailable (exotic kernel; Windows, doc 03): poll-reap.
+                reapTimerId = std::sysTimerStart(20, 20, (n) => self.tryReap());
+            }
+            return exitP;
+        }
+        void tryReap() {
+            if (exited) return;
+            int code = std::sysReap(pid);
+            if (code < 0) return;                        // spurious wake
+            exited = true;
+            if (reapWatchId >= 0) { std::sysUnwatch(reapWatchId); reapWatchId = 0 - 1; }
+            if (reapTimerId >= 0) { std::sysTimerCancel(reapTimerId); reapTimerId = 0 - 1; }
+            if (pidfd >= 0) { std::sysClose(pidfd); pidfd = 0 - 1; }
+            io.pumpAll();                                // drain BEFORE close (D-P5, pitfall #11)
+            io.close();
             exitP.resolve(code);
         }
     }
@@ -2699,6 +2785,12 @@ namespace math {
     float cos(float x);
     float tan(float x);
     float atan2(float y, float x);
+    // struct-equality design §8: the `float::fromBits(int)` factory. No
+    // `static` keyword exists in the language (Track 04 M3 problem #6), so —
+    // like std::charFromCode / std::byteToString — the static-on-primitive is
+    // homed as a free function; the checker routes `float::fromBits(x)` here
+    // (mirrors Enum::fromCode). `math::floatFromBits` is the same native.
+    float floatFromBits(int bits);
     int   min(int a, int b) => a < b ? a : b;
     int   max(int a, int b) => a > b ? a : b;
     float min(float a, float b) => a < b ? a : b;
@@ -3441,6 +3533,10 @@ namespace regex {
         Map<string, int> dfaIds = Map();
         int scanOverflows = 0;
         int dfaBudget = 512;
+        // techdesign-regex-linear-gate.md D1: deterministic work counter for the
+        // Pike leg — one increment per (pc, position) examination. Ratio-checked
+        // by regex_pathological_linear to prove O(n) scaling without wall-clock.
+        int pikeSteps = 0;
         new RegexCoreVm(Array<int> program) {
             if (program.length() < 16 || program.at(0) != 1380271952 || program.at(15) != 2) throw RuntimeException("regex: invalid program");
             p = program; n = p.at(1); cc = p.at(2); flags = p.at(3); start = p.at(4);
@@ -3563,6 +3659,7 @@ namespace regex {
             while (si < seeds.length()) {
                 stackPc = []; stackCaps = []; stackTop = 0; stackPush(seeds.at(si), capAt(seedCaps, si));
                 while (stackTop > 0) {
+                    pikeSteps = pikeSteps + 1;   // D1: one closure pop examined
                     stackTop = stackTop - 1; int pc = stackPc.at(stackTop); Array<int> caps = capAt(stackCaps, stackTop);
                     if (pc < 0 || pc >= n || seen.at(pc) != 0) continue;
                     seen = seen.with(pc, 1); int op = p.at(opOff + pc);
@@ -3602,6 +3699,7 @@ namespace regex {
                 int c = s.byteAt(pos); int fc = ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c;
                 Array<int> next = []; Array<int> nextCaps = []; int ti = 0;
                 while (ti < state.length()) {
+                    pikeSteps = pikeSteps + 1;   // D1: one thread transition tested
                     int pc = state.at(ti); int op = p.at(opOff + pc); bool hit = false;
                     if (op == 1) hit = p.at(aOff + pc) == fc;
                     else if (op == 2) hit = p.at(clsOff + p.at(aOff + pc) * 256 + c) != 0;
@@ -3640,6 +3738,14 @@ namespace regex {
             return dfaIsMatch(s, from);
         }
         bool pikeIsMatch(string s, int from) => find(s, from).length() > 0;
+        // techdesign-regex-linear-gate.md D2: run the Pike leg from 0 and report
+        // work done — [matched(0/1), pikeSteps]. Diagnostics/testing only.
+        Array<int> pikeProbe(string s) {
+            pikeSteps = 0;
+            bool hit = pikeIsMatch(s, 0);
+            int h = hit ? 1 : 0;
+            return [h, pikeSteps];
+        }
         int count(string s) {
             int total = 0; int pos = 0;
             while (pos <= s.length()) {
@@ -3679,6 +3785,9 @@ namespace regex {
     Array<int> programFind(Array<int> program, string input) => regex::RegexCoreVm(program).find(input, 0);
     Array<int> programFindFrom(Array<int> program, string input, int from) => regex::RegexCoreVm(program).find(input, from);
     bool programIsMatchPike(Array<int> program, string input) => regex::RegexCoreVm(program).pikeIsMatch(input, 0);
+    // techdesign-regex-linear-gate.md: [matched(0/1), pikeSteps] — the Pike leg's
+    // deterministic work count, for the linearity gate. Diagnostics-only internal.
+    Array<int> programPikeProbe(Array<int> program, string input) => regex::RegexCoreVm(program).pikeProbe(input);
     bool programIsMatchDfa(Array<int> program, string input) => regex::RegexCoreVm(program).dfaIsMatch(input, 0);
     int programCount(Array<int> program, string input) => regex::RegexCoreVm(program).count(input);
     int programGroupCount(Array<int> program) => regex::RegexCoreVm(program).groupTotal();
@@ -6209,10 +6318,18 @@ void Resolver::synthesizeStructEquality(Program& program) {
                 if (!isDataField(m.get())) continue;
                 std::string f(m->selector.text);
                 if (!body.empty()) body += " && ";
-                // Float fields deliberately compare IEEE here — bit-for-bit
-                // what today's keyEquals fallback does. packet 05 flips this
-                // to canonEq.
-                body += "this." + f + " == other." + f;
+                // struct-equality design §5.2: float fields compare through the
+                // canonical relation (§3), so a struct holding NaN is equal to
+                // itself and ±0.0 agree — via float.canonEq (each engine's ONE
+                // canon). Every other field kind keeps the scalar `==`.
+                const TypeRef* t = m->type.get();
+                bool isFloat = t && t->kind == TypeKind::Named && t->path.empty() &&
+                               t->name == "float" &&
+                               (!t->resolvedSymbol || t->resolvedSymbol->isPrimitive);
+                if (isFloat)
+                    body += "this." + f + ".canonEq(other." + f + ")";
+                else
+                    body += "this." + f + " == other." + f;
             }
             if (body.empty()) body = "true";   // zero-field struct: reflexively equal
             std::string src = "struct __eq_" + N + " {\n"
@@ -6249,8 +6366,66 @@ void Resolver::synthesizeStructEquality(Program& program) {
     walk(walk, program.items, sema_.global);
 }
 
+// Struct-equality §6 (packet 06): the `float::NaN` language constant. One
+// definition, one place — synthesized through the same synth channel the enum
+// member globals use (desugarEnums above), so it flows through gather / type
+// resolution / check / global-init exactly like hand-written source and every
+// engine reads it with zero per-engine work. Decision 1 (ratified): the bit
+// pattern is a LANGUAGE constant — 0x7FF8000000000000, the canonical positive
+// quiet NaN (§3.1) — no per-target configuration, no `#ifdef`.
+void Resolver::synthesizeFloatNaN(Program& program) {
+    if (program.floatNaNGlobal) return;   // idempotent: the two-pass resolver
+                                          // re-runs on the SAME Program.
+    // Materialize the global ONLY when the program actually references
+    // `float::NaN` — exactly the enum precedent (enum globals appear only when
+    // an `enum` is written). Unconditional injection would push a
+    // `float::fromBits(...)` initializer into every program, including the
+    // churn/expand corpora whose FROZEN ELF lane cannot lower that native and
+    // whose expand-roundtrip re-parses the printed source. `file_.text` is the
+    // whole combined source buffer (every user file concatenated); a token scan
+    // for the `float :: NaN` sequence is spacing-robust and skips comments and
+    // string bodies (the lexer already did). The one language constant, but
+    // paid for only where used.
+    DiagnosticSink scanSink;
+    std::vector<Token> toks = Lexer(file_, scanSink).tokenize();
+    bool used = false;
+    for (size_t i = 0; i + 2 < toks.size(); ++i)
+        if (toks[i].text == "float" && toks[i + 1].kind == TokenKind::ColonColon &&
+            toks[i + 2].text == "NaN") { used = true; break; }
+    if (!used) return;
+
+    // The `$` in the final mangled name is unlexable in user identifiers, so
+    // parse a lexable placeholder first, then rename to `float$NaN` (backed by
+    // synthNames for string_view stability) — exactly the desugarEnums move.
+    // 9221120237041090560 == 0x7FF8000000000000 (fits a signed int64).
+    std::string src = "float __floatnan = float::fromBits(9221120237041090560);\n";
+    program.synthFiles.push_back(SourceFile{"<float::NaN>", std::move(src)});
+    SourceFile& sf = program.synthFiles.back();
+    DiagnosticSink dummy;
+    Lexer lexer(sf, dummy);
+    Parser parser(lexer.tokenize(), sf, dummy);
+    Program sub = parser.parseProgram();
+    if (dummy.hasErrors() || sub.items.size() != 1 ||
+        sub.items[0]->kind != StmtKind::Var) {
+        sink_.error(SourceSpan{}, "internal: float::NaN constant synthesis failed to parse");
+        return;
+    }
+    StmtPtr g = std::move(sub.items[0]);
+    program.synthNames.push_back("float$NaN");
+    g->name = program.synthNames.back();
+    g->isConst = true;                    // follows the enum member globals
+    program.floatNaNGlobal = g.get();
+    // Prepend, not append: top-level global initializers run in source order,
+    // so the constant must be initialized BEFORE any user top-level statement
+    // (e.g. `main();`) that reads `float::NaN`. Enum member globals sit at their
+    // enum's source position (ahead of the call site); this one has no natural
+    // site, so it leads.
+    program.items.insert(program.items.begin(), std::move(g));
+}
+
 void Resolver::run(Program& program) {
     desugarEnums(program);                    // Track 03 §2: enum -> struct + globals + fromCode
+    synthesizeFloatNaN(program);              // struct-equality §6: the float::NaN constant
     sema_.global = sema_.newScope(nullptr);
     // `void` is the only pure primitive with no method surface; int/string/bool/
     // float are declared as value-type classes in the prelude (the object mask).
@@ -6295,20 +6470,49 @@ void Resolver::run(Program& program) {
             cls->scope->parent = sema_.fileScopeFor(cls->decl->span.offset);
     }
 
-    // Likewise re-parent each TOP-LEVEL namespace scope to its file's overlay, so
-    // a top-of-file `uses B` is visible to code inside a reopened `namespace A {
+    // Likewise make each TOP-LEVEL namespace scope see its files' overlays, so a
+    // top-of-file `uses B` is visible to code inside a reopened `namespace A {
     // ... }` block — the namespace scope chain otherwise runs straight to global,
-    // bypassing the overlay where `uses` names live (bug.md #45). The parent-==
-    // global guard re-parents each shared namespace scope once (to its first
-    // block's overlay); nested namespaces keep resolving through their encloser.
+    // bypassing the overlay where `uses` names live (bug.md #45).
+    //
+    // A namespace reopened across files (`namespace Helm` in both proc.lev and
+    // command.lev) has ONE shared scope but N blocks, each in its own file with
+    // its own top-of-file `uses`. Parenting that single scope to just the FIRST
+    // block's overlay made the whole namespace see only that one file's imports:
+    // if the first block's file lacked a `uses Sonar` that a later block relies
+    // on, every unqualified cross-dependency type in the namespace failed to
+    // resolve, order-dependently (regression floor:
+    // tests/corpus/project/reopen_ns_uses_order). So instead give each reopened
+    // namespace its OWN aggregate overlay (parent == global) and fold in the
+    // file overlays of EVERY block, making import visibility order-independent.
+    // The parent-== global guard makes one aggregate per shared namespace scope;
+    // nested namespaces keep resolving through their encloser.
+    std::unordered_map<Symbol*, Scope*> nsAgg;
+    std::unordered_map<Symbol*, std::vector<Scope*>> nsBlockOverlays;
     for (StmtPtr& item : program.items) {
         if (item->kind != StmtKind::Namespace) continue;
         Symbol* ns = findLocal(sema_.global, item->name, SymbolKind::Namespace);
-        if (ns && ns->scope && ns->scope->parent == sema_.global)
-            ns->scope->parent = sema_.fileScopeFor(item->span.offset);
+        if (!ns || !ns->scope) continue;
+        Scope* fileOv = sema_.fileScopeFor(item->span.offset);
+        std::vector<Scope*>& ovs = nsBlockOverlays[ns];
+        if (std::find(ovs.begin(), ovs.end(), fileOv) == ovs.end()) ovs.push_back(fileOv);
+        if (ns->scope->parent == sema_.global) {
+            Scope* agg = sema_.newScope(sema_.global);
+            ns->scope->parent = agg;
+            nsAgg[ns] = agg;
+        }
     }
 
     processImports(program.items, sema_.global);   // resolve `uses` before type resolution
+
+    // Populate each namespace's aggregate overlay from ALL its blocks' file
+    // overlays (which processImports has now filled). File overlays hold only
+    // imported names, so this copies imports and nothing else.
+    for (auto& [ns, agg] : nsAgg)
+        for (Scope* ov : nsBlockOverlays[ns])
+            for (auto& [name, syms] : ov->names)
+                for (Symbol* sym : syms)
+                    agg->names[name].push_back(sym);
 
     resolveTypesIn(preludeProgram_.items, sema_.global);
     resolveTypesIn(program.items, sema_.global);

@@ -1,0 +1,15 @@
+name    = "helm-editor-test"
+entry   = "Helm::main"
+sources = [
+    "editor_test.lev",
+    "../../src/editor/piece.lev",
+    "../../src/editor/lineindex.lev",
+    "../../src/editor/cursor.lev",
+    "../../src/editor/buffer.lev",
+    "../../src/editor/editorview.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

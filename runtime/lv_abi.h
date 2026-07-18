@@ -514,6 +514,13 @@ void    lvrt_map_with(LvValue* out, const LvValue* base, const LvValue* idx, con
  * lvrt_idxget/lvrt_idxset's map branch and LlvmGen's native "has" row. */
 int32_t lvrt_keyeq(const LvValue* a, const LvValue* b);
 
+/* struct-equality design §3/§8: the canonical float relation. Args are the two
+ * floats' raw bit payloads (LV_FLOAT stores bits in `payload`, §2.3); returns
+ * 1 iff canonically equal. The synthesized struct `(==)` compares float fields
+ * through this (via float.canonEq), and lvrt_keyeq's LV_FLOAT leg reuses it —
+ * both routing through lv_runtime.c's single canon (hash-consistency law). */
+int32_t lvrt_canoneq(int64_t abits, int64_t bbits);
+
 /* ============================ §2.7 Natives ================================
  *
  * Enumerated at B-M1 from `grep -n '"' src/RuntimeNatives.cpp` (free/system
@@ -712,6 +719,18 @@ void    lvrt_sysrsaencrypt(LvValue* out, const LvValue* pem, const LvValue* byte
 void    lvrt_sysrandom    (LvValue* out, const LvValue* n);    /* fresh string +1 (§8)   */
 void    lvrt_sysenv       (LvValue* out, const LvValue* key);  /* env var: string +1 | LV_NONE (bug #68) */
 
+/* Process floor (techdesign-spawn-llvm.md; oracle RuntimeNatives.cpp:1841+).
+ * lvrt_sysspawn: fresh Array<int> [pid, stdinFd, stdoutFd, stderrFd], or the
+ *   empty array on SPAWN failure (pipe/fork; empty path). Exec failure is the
+ *   child's _exit(127), collected via lvrt_sysreap. Returned array follows the
+ *   lvrt_sysargs ownership convention (rc 0; codegen retains).
+ * lvrt_syspidfdopen / lvrt_sysreap / lvrt_syskill: scalar LV_INT results,
+ *   values per the frozen F7 contract (Resolver.cpp:1479-1482).              */
+void    lvrt_sysspawn(LvValue* out, const LvValue* path, const LvValue* args);
+void    lvrt_syspidfdopen(LvValue* out, const LvValue* pid);
+void    lvrt_sysreap(LvValue* out, const LvValue* pid);
+void    lvrt_syskill(LvValue* out, const LvValue* pid, const LvValue* sig);
+
 void    lvrt_systimerstart(LvValue* out, const LvValue* delayMs,
                             const LvValue* intervalMs, const LvValue* cb);
 void    lvrt_systimercancel(const LvValue* id);
@@ -731,6 +750,32 @@ void    lvrt_loop_step(void);
  * lv_task.h), not declared here. Declaration only — implementation is a
  * SENSITIVE-GATE (S2) section awaiting model escalation; not yet defined. */
 void    lvrt_await(LvValue* dst, const LvValue* promise);
+
+/* Track W hard-03 (doc 02 §5, tier 2): the wasm capability-gate trap stub.
+ * Prints "<what>: not on the wasm-browser target" to fd 2 and exits 134.
+ * Present on every target (one archive source); only wasm codegen emits
+ * calls to it — for gated natives in prelude bodies that are emitted but
+ * not reachable from user code (reachable ones are a compile-time
+ * diagnostic instead). Never returns. */
+void    lvrt_unsupported(const char* what);
+
+/* Track W hard-05 (designs/wasm-frontend/hard-05-callclosure-seam.md): the
+ * C-callable closure-invocation seam. Invokes an LV_CLO value (§2.4 closure
+ * layout above: body word0 = fnIndex, word1 = captureHead) exactly the way
+ * generated CallValue code does — through the registered dispatch
+ * trampoline, with the closure passed as the callee's own args[0] so the
+ * body reads captures via lvrt_capture_get. A PARALLEL C entry, not a
+ * replacement: generated code keeps its own CallValue emission; only the
+ * wasm glue calls this in v1 (lv_loop.c/lv_thread.c keep their private
+ * inline copies of the same pattern). `args`/`nargs` are the real
+ * arguments only (the closure is added internally; args may be NULL when
+ * nargs is 0); inputs are borrowed. *out receives the callee's +1 result —
+ * the caller releases it. A throw inside the closure surfaces as the
+ * pending-throw flag (lvrt_throwing), checked by the caller; nothing
+ * unwinds across this boundary. *out is VOID (and nothing runs) when the
+ * value is not a closure or no dispatch is registered. */
+void    lvrt_callclosure(LvValue* out, const LvValue* clo,
+                         const LvValue* args, int nargs);
 
 /* LA-30 B2 (doc 06 §4) — the sysTask* floor (lv_loop.c). Ids, not handles,
  * cross this boundary; every result is a scalar int. run/joinAll/awaitAny2

@@ -226,6 +226,19 @@ static std::string ts(const V& v) {
     }
     return "";
 }
+// struct-equality design §3: THE one canon helper for this generated program
+// (hash-consistency law §3.3 — keyEq's float leg, the float canonEq native,
+// and any future canon_hash all normalize through THIS symbol). Integer/
+// branchless form only (§3.2): user toolchains compile this with unknown
+// -ffast-math flags, so no `x != x` / FPU compare may appear. NaN -> canonical
+// qNaN; ±0.0 -> 0; else raw bits.
+static inline unsigned long long lv_canon(double x) {
+    unsigned long long b; memcpy(&b, &x, 8);
+    unsigned long long is_nan  = ((b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull)
+                               & ((b & 0x000FFFFFFFFFFFFFull) != 0);
+    unsigned long long is_zero = (b << 1) == 0;
+    return is_nan ? 0x7FF8000000000000ull : (is_zero ? 0 : b);
+}
 // Track 05 C3: primitives by value; structs field-wise recursive (a struct IS
 // its fields, §9); classes by identity — mirrors keyEquals in RuntimeValue.hpp.
 static bool keyEq(const V& a, const V& b) {
@@ -236,7 +249,7 @@ static bool keyEq(const V& a, const V& b) {
 
         case 4: return a.s == b.s;
         case 3: return a.b == b.b;
-        case 2: return a.f == b.f;
+        case 2: return lv_canon(a.f) == lv_canon(b.f);   // Map keys canonical (§4)
         case 5:
             if (a.o && b.o && a.o->cls == b.o->cls && isValueClass(a.o->cls)) {
                 if (a.o->slots.size() != b.o->slots.size()) return false;
@@ -573,6 +586,11 @@ static V callnative(const V& self, const std::string& m, std::vector<V>& args) {
         if (m == "trunc") return vf(std::trunc(self.f));
         if (m == "sqrt")  return vf(std::sqrt(self.f));    // negative -> NaN (IEEE)
         if (m == "pow")   return vf(std::pow(self.f, args.empty() ? 0.0 : args[0].f));
+        // struct-equality design §8: raw bit access (memcpy, §3.2) + the
+        // canonEq primitive routed through the ONE lv_canon (§3.3).
+        if (m == "bits")  { long long b; memcpy(&b, &self.f, 8); return vi(b); }
+        if (m == "canonEq")
+            return vb(lv_canon(self.f) == lv_canon(args.empty() ? 0.0 : args[0].f));
         if (m == "toInt") {
             if (!std::isfinite(self.f) || self.f < -9223372036854775808.0 ||
                 self.f >= 9223372036854775808.0) {
@@ -1014,6 +1032,10 @@ std::string CGen::genFunction(int index) {
                     out += "    " + R(in.a) + " = rt_bytetostring(" + R(in.c) + ");\n";
                 else if (in.sname == "charFromCode" && in.d == 1)
                     out += "    " + R(in.a) + " = rt_charfromcode(" + R(in.c) + ");\n";
+                else if (in.sname == "floatFromBits" && in.d == 1)
+                    // struct-equality design §8: int64 bits -> float (memcpy).
+                    out += "    { double d; long long b = " + R(in.c) +
+                           ".i; memcpy(&d, &b, 8); " + R(in.a) + " = vf(d); }\n";
                 else if (in.sname == "sysArgs" && in.d == 0)
                     out += "    " + R(in.a) + " = rt_sysargs();\n";
                 else if (in.sname == "sysThreadTransfer" && in.d == 1)
@@ -1557,13 +1579,17 @@ std::string CGen::genDispatchers(const std::vector<Symbol*>& instClasses) {
     }
     getm += "  }\n  return objget(o, key);\n}\n";
     setm += "  }\n  objset(o, key, val);\n}\n";
-    // bug #77: a struct with no explicit (==) is field-wise by default
-    // (info.md §9); a class with no (==) is reference identity. keyEq already
-    // does the field-wise recursion for Map keys — reuse it here.
+    // a class with no (==) is reference identity (design §5.2). A value struct
+    // gets a synthesized field-wise (==) at resolve time
+    // (designs/struct-equality/, §5.5) and so never reaches this tail from
+    // checked code; raise rather than answer silently if it ever does.
     opm += "  }\n"
-           "  if (op == 1 || op == 2) { bool same = (l.o && isValueClass(l.o->cls)) "
-           "? keyEq(l, r) : (r.k == 5 && l.o == r.o); "
+           "  if (op == 1 || op == 2) {\n"
+           "    if (l.o && !isValueClass(l.o->cls)) { bool same = (r.k == 5 && l.o == r.o); "
            "return vb(op == 1 ? same : !same); }\n"
+           "    raise(std::string(\"no operator '\") + (op == 1 ? \"==\" : \"!=\") + \"' on '\" + "
+           "clsname(l.o->cls) + \"'\"); return V{};\n"
+           "  }\n"
            "  return V{};\n}\n";
 
     // idxget/idxset: ([]) accessor on objects; native index on arrays/maps.

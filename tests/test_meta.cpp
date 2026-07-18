@@ -30,7 +30,8 @@ struct MetaResult {
 // std::import's ordinary — throwing — body, since the intercept only fires
 // under comptime_ && importCtx_.importFn).
 static MetaResult runMeta(const std::string& src, long long budget = 0,
-                          const char* importRoot = nullptr) {
+                          const char* importRoot = nullptr,
+                          const char* targetTriple = nullptr) {
     SourceFile f{"<test>", src};
     DiagnosticSink sink;
     Lexer lexer(f, sink);
@@ -45,6 +46,7 @@ static MetaResult runMeta(const std::string& src, long long budget = 0,
         std::vector<ProjectFile> files{{f.name, 0, (uint32_t)f.text.size(), "", ""}};
         ComptimeOptions opts;
         if (budget > 0) opts.stepBudget = budget;
+        if (targetTriple) opts.targetTriple = targetTriple;
         RuleEngine engine(files, r.sema(), r.preludeProgram(), f, sink, opts);
         if (importRoot) {
             ImportContext ictx;
@@ -562,6 +564,50 @@ int main() {
 
         std::remove((root + "/fixture.txt").c_str());
         ::rmdir(root.c_str());
+    }
+
+    // --- Item Q (techdesign-target-predicate.md): the target predicate -------
+    {
+        // The uses-selection program: only the taken branch's namespace is
+        // imported, so calling the other branch's marker is the observable.
+        // A taken TrueNS branch makes tmark() resolvable; a taken FalseNS
+        // branch does not — so `tmark()` is clean iff the predicate held.
+        auto sel = [](const std::string& pred) {
+            return "namespace TrueNS { public int tmark() => 1; } "
+                   "namespace FalseNS { public int fmark() => 2; } "
+                   "comptime if (" + pred + ") { uses TrueNS; } "
+                   "else { uses FalseNS; } "
+                   "console.writeln(tmark());";
+        };
+        // Target-not-host: a windows cross triple folds the windows branch on
+        // this (non-windows) build host — the predicate reads the TARGET.
+        expect(!runMeta(sel("target::os == \"windows\""), 0, nullptr,
+                        "x86_64-pc-windows-gnu").hadError,
+               "target:: cross triple folds the windows uses branch");
+        // Host build (no triple): the windows predicate must NOT hold.
+        expect(runMeta(sel("target::os == \"windows\"")).hadError,
+               "target:: host build must not fold the windows branch");
+        // Arch normalization: arm64 spelling normalizes to aarch64.
+        expect(!runMeta(sel("target::arch == \"aarch64\""), 0, nullptr,
+                        "arm64-apple-darwin").hadError,
+               "target::arch normalizes arm64 -> aarch64");
+        // Wasm triples report os "wasm".
+        expect(!runMeta(sel("target::os == \"wasm\""), 0, nullptr,
+                        "wasm32-wasi").hadError,
+               "target::os is wasm for wasm32 triples");
+        // target::triple is the exact cross string.
+        expect(!runMeta(sel("target::triple == \"aarch64-linux-gnu\""), 0, nullptr,
+                        "aarch64-linux-gnu").hadError,
+               "target::triple carries the exact --target string");
+        // Unknown member is loud and names the three constants.
+        MetaResult bogus = runMeta("comptime if (target::bogus == \"x\") { }");
+        expect(bogus.hadError, "target::bogus is an error");
+        expect(bogus.firstError.find("target::os") != std::string::npos,
+               "the target::bogus error names the known constants");
+        // Runtime position is untouched: no comptime context, no intercept —
+        // and a plain program without meta surface never sees `target` at all.
+        expect(runMeta("console.writeln(target::os);").hadError,
+               "runtime target::os stays an ordinary unresolved name");
     }
 
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
