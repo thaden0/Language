@@ -26,6 +26,9 @@ struct ComptimeOptions {
     // chain converges in 1-2 rounds; 8 catches a runaway without masking a slow-
     // but-legitimate fixpoint. `--reentrant-budget` overrides.
     int reentrantRounds = 8;
+    // Item Q (techdesign-target-predicate.md): the `--target` cross triple.
+    // Empty = host build; sources `target::os`/`target::arch`/`target::triple`.
+    std::string targetTriple;
 };
 
 // LA-20: `std::import(path)` — a declared build input read at compile time.
@@ -242,6 +245,11 @@ private:
     bool hermetic_ = true;
     long long steps_ = 0;
     bool budgetExhausted_ = false;
+    // Item Q: the reserved comptime namespace `target` — derived once by
+    // setComptime from ComptimeOptions.targetTriple (host fallback).
+    std::string targetOs_;
+    std::string targetArch_;
+    std::string targetTriple_;
     bool spendStep();
     // Shared post-eval tail for both evalComptime overloads (budget/throw
     // reporting) — identical behavior, factored to avoid duplicating it.

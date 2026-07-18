@@ -1,0 +1,22 @@
+// Item Q (techdesign-target-predicate.md): platform-conditional `uses` — the
+// P3 §9 fold-before-imports mechanism keyed by the target predicate. The
+// corpus host is linux, so the posix branch must fold in; arch/triple are
+// host-dependent, asserted non-empty rather than pinned. The cross-triple
+// (target-not-host) leg lives in metatests, where the triple is injectable.
+namespace TargetWin { public string plat() => "win"; }
+namespace TargetPosix { public string plat() => "posix"; }
+
+comptime if (target::os == "windows") {
+    uses TargetWin;
+} else {
+    uses TargetPosix;
+}
+
+comptime string t_os = target::os;
+comptime bool archKnown = target::arch != "";
+comptime bool tripleKnown = target::triple != "";
+
+console.writeln(plat());
+console.writeln(t_os);
+console.writeln(archKnown);
+console.writeln(tripleKnown);
