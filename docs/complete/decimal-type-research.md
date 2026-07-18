@@ -431,7 +431,7 @@ type. So the checker/lowerer must, for a decimal-typed numeric literal, re-scan 
   spec/lexer work.
 
 **Known deferral precedent:** char-literal target-typing was **not** extended to call-argument
-position in v1 (`designs/deferal-track03-type-surface.md`; `src/Checker.cpp` char path notes
+position in v1 (`designs/techdesign-track03-type-surface.md`; `src/Checker.cpp` char path notes
 "call-arg position deferred"). Decimal should decide deliberately whether decimal literals
 target-type in call-arg position or only at declared-type/return/comparison sites, and log the
 choice — the same seam char left open.
@@ -617,7 +617,7 @@ struct) + §6.1 (methods table) + §1.4 (if a literal form is added); `info.md` 
 story) and §2 (the acceptance-#3 entry); and — since this is a design *for* a ticket — on
 completion move the request to `designs/requests/accepted/` (already done by this task) and the
 finished design to `designs/complete/` (`[[design-workflow-file-moves]]`). If any sub-feature is
-punted, file a deferral in `designs/` (the `deferal-track03-type-surface.md` shape) rather than
+punted, file a deferral in `designs/` (the `techdesign-track03-type-surface.md` shape) rather than
 leaving a silent gap.
 
 ---

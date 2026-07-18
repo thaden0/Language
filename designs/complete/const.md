@@ -292,22 +292,22 @@ itself the point.
 1. **Definite single assignment for locals** (`const int x; if (c) x = 1; else x = 2;`)
    — the flow-narrowing engine could carry it; deferred to keep v1 to one rule, one
    window. *Resolution designed as OQ1 in
-   [`designs/deferal-const-system-extensions.md`](../deferal-const-system-extensions.md) §2
+   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §2
    (checker-only definite-assignment analysis); not yet implemented.*
 2. **Sectional `const:`** — access modifiers have a sectional form (§2 of info.md); a
    const section for blocks of constants is plausible sugar. **Implemented** as OQ2 of
-   [`designs/deferal-const-system-extensions.md`](../deferal-const-system-extensions.md) §3
+   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §3
    — pure parser sugar over the existing access-section loop; `const:` and `public:`/
    `private:` are orthogonal sticky axes, and a per-member `var` overrides the section.
 3. **Interface const requirements** — see §4; declined in favor of get-view contracts.
    Ruling recorded at
-   [`designs/deferal-const-system-extensions.md`](../deferal-const-system-extensions.md) §4.1
+   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §4.1
    (a value-stability need is answered by a stability contract on the *view*, never by
    `const` on the backing slot — that reintroduces const-contagion).
 4. **Deep-freeze** — explicitly out of scope, likely forever: the value axis (structs,
    pure collections) is the language's answer to immutable *data*; a gated `freeze`
    would be a fourth mechanism duplicating it. Ruling recorded at
-   [`designs/deferal-const-system-extensions.md`](../deferal-const-system-extensions.md) §4.2
+   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §4.2
    (a cross-thread need routes to the concurrency design's immutable *reference* wrapper).
 5. **Naming** — `const` is an abbreviation in a full-words-trajectory language (§9 of
    info.md). Like `std` and `env`, it has crossed into term-of-art status, and the

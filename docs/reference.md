@@ -134,7 +134,7 @@ Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
 Call-argument position is **not** yet a target-typing site (a `char`-typed value
 binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/deferal-track03-type-surface.md`).
+`designs/techdesign-track03-type-surface.md`).
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
@@ -540,7 +540,7 @@ Method d;                            // bare declaration -> the first-declared m
   an enum compares by value (contract C3).
 - **`fromCode(int) -> Enum?`** returns `None` when no member carries that value.
 - **Carriers:** `: int` is the only carrier in v1 (string carriers deferred,
-  `designs/deferal-track03-type-surface.md`). Members without an explicit value auto-increment
+  `designs/techdesign-track03-type-surface.md`). Members without an explicit value auto-increment
   from the previous member's carrier (`Gap` above); **duplicate carrier values are a compile
   error**.
 - **`match` is exhaustive over the closed set** — every member covered means no `else` is
