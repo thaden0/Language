@@ -1,0 +1,22 @@
+// Regression floor for bug #82, fixed 2026-07-19: a fully-qualified read of a
+// `const` declared in a NESTED namespace (2+ segments deep, `P::K::FLAG`) used
+// to type as Unknown (typeOfMember's namespace-qualified block only walked a
+// single `NS::name` segment), so the read silently evaluated to 0/empty on
+// every engine instead of erroring or reading the real value. `uses`+bare
+// access already worked; only the fully-qualified spelling was broken.
+namespace P {
+    namespace K {
+        const int FLAG = 512;
+        namespace L {
+            const int DEEPER = 7;
+        }
+    }
+}
+void main() {
+    console.writeln((P::K::FLAG).toString());
+    console.writeln(P::K::FLAG.toString());
+    int f = P::K::FLAG;
+    console.writeln(f.toString());
+    console.writeln(P::K::L::DEEPER.toString());
+}
+main();

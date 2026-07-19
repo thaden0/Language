@@ -199,6 +199,12 @@ private:
     bool isFloatNaNConst(const Expr* e) const;
     Symbol* hygienicClass(const Expr* e) const;
     Symbol* visibleClass(std::string_view name) const;
+    // bug.md #82: resolve a `::`-qualified base made ENTIRELY of namespace
+    // segments (`NS`, `NS::Inner`, `NS::Inner::Deeper`, ...) to the innermost
+    // namespace Symbol, at any nesting depth. Null if any segment isn't a
+    // namespace. Used so `typeOfMember` can find a nested namespace's Var/
+    // Class the same way for one segment or many.
+    Symbol* resolveNamespaceExpr(const Expr* e) const;
 
     // LA-25 + F3 bound references: try to resolve `e`, a Member in VALUE
     // position, as a reference to a callable member. `::` produces an unbound

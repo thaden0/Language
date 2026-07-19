@@ -1105,21 +1105,24 @@ Type Checker::typeOfMember(const Expr* e) {
         if (isRef) return t;
     }
     // Namespace-qualified access: NS::name — type through the namespace scope.
-    if (e->a->kind == ExprKind::Name) {
-        if (Symbol* ns = scope_ ? scope_->lookup(e->a->text) : nullptr)
-            if (ns->kind == SymbolKind::Namespace && ns->scope)
-                if (const std::vector<Symbol*>* v = ns->scope->localLookup(e->text))
-                    for (Symbol* s : *v) {
-                        if (s->kind == SymbolKind::Class) return typeValue(s);
-                        if (s->kind == SymbolKind::Var && s->decl) {
-                            // Namespace-qualified globals must retain declaration
-                            // identity for evaluation/lowering. This is especially
-                            // important for nested namespaces imported from a
-                            // package (`Attr::Bold` after `uses Sonar`).
-                            const_cast<Expr*>(e)->resolved = s->decl;
-                            return fromTypeRef(s->decl->type.get());
-                        }
+    // bug.md #82: NS can itself be a `::`-qualified chain of namespaces
+    // (`P::K::FLAG`, arbitrary depth) — resolveNamespaceExpr walks it the same
+    // way for one segment or many, so a nested namespace's const isn't left
+    // unresolved (which used to silently read as 0/empty downstream).
+    if (Symbol* ns = resolveNamespaceExpr(e->a.get())) {
+        if (ns->scope)
+            if (const std::vector<Symbol*>* v = ns->scope->localLookup(e->text))
+                for (Symbol* s : *v) {
+                    if (s->kind == SymbolKind::Class) return typeValue(s);
+                    if (s->kind == SymbolKind::Var && s->decl) {
+                        // Namespace-qualified globals must retain declaration
+                        // identity for evaluation/lowering. This is especially
+                        // important for nested namespaces imported from a
+                        // package (`Attr::Bold` after `uses Sonar`).
+                        const_cast<Expr*>(e)->resolved = s->decl;
+                        return fromTypeRef(s->decl->type.get());
                     }
+                }
     }
     Type bt = typeOf(e->a.get());
     std::string_view name = e->text;
@@ -1619,6 +1622,28 @@ Symbol* Checker::visibleClass(std::string_view name) const {
         if (const std::vector<Symbol*>* syms = sc->localLookup(name))
             for (Symbol* s : *syms)
                 if (s->kind == SymbolKind::Class) return s;
+    return nullptr;
+}
+
+// bug.md #82: mirrors Resolver::resolveType's Named-path walk (§12) for
+// value-position namespace qualifiers. The first segment searches outward
+// from scope_ (an ordinary name lookup); every later segment is a
+// localLookup on the prior namespace's OWN scope, so a qualified path can't
+// leak into an enclosing scope. Returns null as soon as a segment isn't a
+// namespace (a plain name, or a class/value used as the base).
+Symbol* Checker::resolveNamespaceExpr(const Expr* e) const {
+    if (!e) return nullptr;
+    if (e->kind == ExprKind::Name) {
+        Symbol* ns = scope_ ? scope_->lookup(e->text) : nullptr;
+        return (ns && ns->kind == SymbolKind::Namespace) ? ns : nullptr;
+    }
+    if (e->kind == ExprKind::Member && e->colon) {
+        Symbol* base = resolveNamespaceExpr(e->a.get());
+        if (!base || !base->scope) return nullptr;
+        if (const std::vector<Symbol*>* v = base->scope->localLookup(e->text))
+            for (Symbol* s : *v)
+                if (s->kind == SymbolKind::Namespace) return s;
+    }
     return nullptr;
 }
 
