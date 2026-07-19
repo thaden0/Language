@@ -52,7 +52,7 @@ void dumpSite(string label, expr::Node tree, Array<string | int | float | bool |
     console.writeln(label + "site:siteId=" + site.toString());
 }
 
-expr::Expr<(User)=>int> e0 = expr::Expr((u) => u.visits = u.visits + 1,
+expr::Expr<(User)=>int> e0 = expr::Expr::<(User)=>int>((u) => u.visits = u.visits + 1,
     expr::Assign(expr::Field(["visits"]), expr::Bin("+", expr::Field(["visits"]), expr::Lit(1))),
     [], 0);
 dumpSite("s0", e0.tree, e0.binds, e0.siteId);

@@ -411,3 +411,11 @@ ruling-faithful shape was taken and is flagged here).
   `_expand` targets and four `expr_reify_reject_*` negative-diagnostic tests. emit-C++
   and ELF never compile it (posture pinned in §1); the pre-existing emit-C++ lanes stay
   green (the Checker changes are inert for any program with no `expr::Expr<F>` position).
+
+**2026-07-19 — R8 FORCED DEVIATION CLOSED.** Explicit generic call arguments landed with
+the canonical call-only spelling `callee::<T>(args)`. LA-31 now attaches its concrete `Fn`
+TypeRef to the synthesized Call and emits `expr::Expr::<(User) => bool>(...)`. The source/AST
+printers preserve that list, the five hand-authored twin tests pin byte-identical construction
+text, and expansion reparses/runs without double reification. The Stage 2 inference-only
+`expr::Expr(...)` workaround and its parser limitation are historical only; R8 is now implemented
+as originally intended, with no runtime or ABI payload.

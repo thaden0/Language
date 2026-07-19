@@ -34,6 +34,13 @@ std::string storeRoot();
 // `err` if any file cannot be read.
 bool canonicalContentHash(std::vector<StoreFile> files, std::string& hash, std::string& err);
 
+// Re-hash an existing `storeRoot()/expectedHash` entry, including its exact
+// recursive file set. This is the lock-fast-path integrity check: a warm
+// store can satisfy a build without invoking Git/proxy, while injected,
+// missing, changed, symlink, or special files are rejected loudly.
+bool verifyStoreEntry(const std::string& storeDir, const std::string& expectedHash,
+                      std::string& err);
+
 // Materialize `files` under the store, keyed by their canonical content hash.
 // Idempotent: if `storeRoot()/<hash>/` already exists, this is a no-op (the
 // fetch is skipped, `storeDir`/`contentHash` are still filled in). Writes to

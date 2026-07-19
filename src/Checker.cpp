@@ -162,6 +162,61 @@ TypeRefPtr copyTypeRef(const TypeRef* t) {
     return r;
 }
 
+// Rebuild a syntax TypeRef from a semantic type when a synthesized expression
+// needs to carry the concrete substituted spelling (notably an Inject node).
+static TypeRefPtr typeRefFromType(const Type& t, SourceSpan span) {
+    if (t.kind == TKind::Union) {
+        auto r = std::make_unique<TypeRef>(TypeKind::Union);
+        r->span = span; r->canonical = t.canonical;
+        for (const Type& m : t.unionMembers)
+            r->members.push_back(typeRefFromType(m, span));
+        return r;
+    }
+    if (t.kind == TKind::FuncRef) {
+        // Type currently retains a function's return but not its parameter
+        // tuple. This fallback is used only when no authored TypeRef survives;
+        // ordinary explicit bindings are cloned structurally below.
+        auto r = std::make_unique<TypeRef>(TypeKind::Function);
+        r->span = span; r->canonical = t.canonical;
+        if (t.ret) r->funcRet = typeRefFromType(*t.ret, span);
+        return r;
+    }
+    auto r = std::make_unique<TypeRef>(TypeKind::Named);
+    r->span = span; r->canonical = t.canonical; r->resolvedSymbol = t.sym;
+    if (t.sym) r->name = t.sym->name;
+    else {
+        // `canonical` is owned by the TypeRef, so this view remains stable.
+        r->name = r->canonical;
+    }
+    for (const Type& a : t.args) r->generics.push_back(typeRefFromType(a, span));
+    return r;
+}
+
+// Structural TypeRef substitution for synthesized AST. Unlike semantic
+// substitute(), this preserves function/union syntax and printer fidelity.
+static TypeRefPtr copyTypeRefWithSubst(
+    const TypeRef* t,
+    const std::unordered_map<std::string_view, Type>& subst) {
+    if (!t) return nullptr;
+    if (t->kind == TypeKind::Named && t->resolvedSymbol &&
+        t->resolvedSymbol->kind == SymbolKind::TypeParam && t->generics.empty()) {
+        auto it = subst.find(t->name);
+        if (it != subst.end() && it->second.kind != TKind::Unknown)
+            return typeRefFromType(it->second, t->span);
+    }
+    auto r = std::make_unique<TypeRef>(t->kind);
+    r->span = t->span; r->path = t->path; r->name = t->name;
+    r->canonical = t->canonical; r->resolvedSymbol = t->resolvedSymbol;
+    for (const TypeRefPtr& g : t->generics)
+        r->generics.push_back(copyTypeRefWithSubst(g.get(), subst));
+    for (const TypeRefPtr& m : t->members)
+        r->members.push_back(copyTypeRefWithSubst(m.get(), subst));
+    for (const TypeRefPtr& p : t->funcParams)
+        r->funcParams.push_back(copyTypeRefWithSubst(p.get(), subst));
+    r->funcRet = copyTypeRefWithSubst(t->funcRet.get(), subst);
+    return r;
+}
+
 // LA-18 concrete-body cloner. This is deliberately semantic-preserving rather
 // than source-reparsing: spans stay on the authored nodes, while all checker
 // resolution annotations are cleared and rebuilt for the concrete tuple.
@@ -234,6 +289,8 @@ struct SpecializationCloner {
         out->genericStaticParam = e->genericStaticParam;
         out->a = expr(e->a.get()); out->b = expr(e->b.get()); out->c = expr(e->c.get());
         for (const ExprPtr& x : e->list) out->list.push_back(expr(x.get()));
+        for (const TypeRefPtr& t : e->explicitTypeArgs)
+            out->explicitTypeArgs.push_back(type(t.get()));
         for (const Param& p : e->params) out->params.push_back(param(p));
         out->block = stmt(e->block.get()); out->type = type(e->type.get());
         for (const MatchArm& a : e->arms) {
@@ -877,7 +934,21 @@ Type Checker::typeOfInner(const Expr* e) {
             // globals
             if (Symbol* sym = scope_ ? scope_->lookup(e->text) : nullptr) {
                 if (sym->kind == SymbolKind::Class) return typeValue(sym);
-                if (sym->kind == SymbolKind::Function) return funcRef(sym);
+                if (sym->kind == SymbolKind::Function) {
+                    // LA-32 §4.6: a GENERIC function in value position needs a
+                    // concrete type tuple. A turbofish supplies it (pinned →
+                    // eta-expand to a concrete closure); an unpinned reference is
+                    // the LA-25 §8.6 error, now suggesting the turbofish. Non-
+                    // generic names keep the plain funcRef. This value-position
+                    // typeOf is never reached for a call callee (typeOfCallInner
+                    // resolves those), so it is exactly the reference position.
+                    if (sym->decl && !sym->decl->generics.empty() && methodRefsAllowed_) {
+                        bool isRef = false;
+                        Type t = tryResolveMethodRef(const_cast<Expr*>(e), nullptr, isRef);
+                        if (isRef) return t;
+                    }
+                    return funcRef(sym);
+                }
                 if (sym->kind == SymbolKind::Var && sym->decl) {
                     // Record the declaration so a read through a `use ... as`
                     // alias (imports.md §4: "the alias names the same slot")
@@ -1385,7 +1456,8 @@ const Stmt* Checker::pickMethodRefOverload(const std::vector<const Stmt*>& cands
 // callee (P-1 already proves that shape resolves correctly in call position).
 Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
                                  Symbol* ctorClass, const std::string& recvCanon,
-                                 const Type& retType) {
+                                 const Type& retType,
+                                 const std::unordered_map<std::string_view, Type>* subst) {
     SourceSpan sp = e->span;
     const bool bound = recvClass && !e->colon;
 
@@ -1445,7 +1517,10 @@ Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
         params.push_back(std::move(p));
         if (!first) sig += ", ";
         first = false;
-        sig += fromTypeRef(target->params[i].type.get()).canonical;
+        // LA-32 §4.6: a turbofish-pinned reference renders concrete parameter
+        // types (`int`, not `T`) through the seeded substitution.
+        sig += subst ? substitute(target->params[i].type.get(), *subst).canonical
+                     : fromTypeRef(target->params[i].type.get()).canonical;
     }
     sig += ") => " + retType.canonical;
 
@@ -1461,6 +1536,22 @@ Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
     Type ft{TKind::FuncRef, nullptr, sig, {}, nullptr, {}};
     ft.ret = std::make_shared<Type>(retType);
     return ft;
+}
+
+// LA-32 §4.6: a turbofish-pinned reference to a generic callable in value
+// position. Reuses the same explicit-arg machinery the call path uses —
+// filterExplicitCandidates for the arity check and callGenericSeed for the
+// substitution — then hands the pinned callable to the eta-expansion rewrite so
+// it becomes ONE concrete closure (the erasure posture holds: every engine
+// consumes it with no new op). The tuple LA-25 §8.6 lacked is now supplied.
+Type Checker::pinnedGenericRef(Expr* e, const Stmt* fn, Symbol* recvClass,
+                               Symbol* ctorClass, const std::string& recvCanon) {
+    std::vector<const Stmt*> one{fn};
+    if (!filterExplicitCandidates(e, one, nullptr, fn->name))
+        return Type{TKind::Error, nullptr, "", {}, nullptr, {}};   // arity already diagnosed
+    auto seed = callGenericSeed(e, fn, &fn->generics, nullptr, nullptr);
+    return rewriteAsMethodRef(e, fn, recvClass, ctorClass, recvCanon,
+                              substitute(fn->type.get(), seed), &seed);
 }
 
 Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
@@ -1492,10 +1583,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                              std::string(e->text) + "'; annotate the target function type");
             return unknown();
         }
-        if (!fn->generics.empty())
+        if (!fn->generics.empty()) {
+            if (!e->explicitTypeArgs.empty())            // LA-32 §4.6: pinned reference
+                return pinnedGenericRef(e, fn, nullptr, nullptr, "");
             return error(e->span, "cannot reference generic function '" +
                          std::string(e->text) +
-                         "' - its type parameters are unbound in value position");
+                         "' in value position — supply explicit type arguments, e.g. '" +
+                         std::string(e->text) + "::<...>'");
+        }
         return rewriteAsMethodRef(e, fn, nullptr, nullptr, "", fromTypeRef(fn->type.get()));
     }
     if (e->kind != ExprKind::Member) return unknown();
@@ -1523,10 +1618,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                         "'; annotate the target function type");
                         return unknown();
                     }
-                    if (!fn->generics.empty())
+                    if (!fn->generics.empty()) {
+                        if (!e->explicitTypeArgs.empty())   // LA-32 §4.6: pinned NS::fn::<T>
+                            return pinnedGenericRef(e, fn, nullptr, nullptr, "");
                         return error(e->span, "cannot reference generic function '" +
                                     std::string(name) +
-                                    "' - its type parameters are unbound in value position");
+                                    "' in value position — supply explicit type arguments, e.g. '" +
+                                    std::string(name) + "::<...>'");
+                    }
                     return rewriteAsMethodRef(e, fn, nullptr, nullptr, "",
                                               fromTypeRef(fn->type.get()));
                 }
@@ -1562,10 +1661,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                 "::" + std::string(name) + "'; annotate the target function type");
                 return unknown();
             }
-            if (!m->generics.empty())
+            if (!m->generics.empty()) {
+                if (!e->explicitTypeArgs.empty())   // LA-32 §4.6: pinned Type::method::<U>
+                    return pinnedGenericRef(e, m, bt.sym, nullptr, bt.canonical);
                 return error(e->span, "cannot reference generic function '" +
                             std::string(name) +
-                            "' - its type parameters are unbound in value position");
+                            "' in value position — supply explicit type arguments, e.g. '" +
+                            std::string(name) + "::<...>'");
+            }
             return rewriteAsMethodRef(e, m, bt.sym, nullptr, bt.canonical,
                                       fromTypeRef(m->type.get()));
         }
@@ -1595,10 +1698,16 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                 return unknown();
             }
             if (!m->generics.empty()) {
-                diagnosedMethodRefs_.insert(e);
-                return error(e->span, "cannot reference generic function '" +
-                            std::string(name) +
-                            "' - its type parameters are unbound in value position");
+                if (!e->explicitTypeArgs.empty()) {   // LA-32 §4.6: pinned obj.method::<U>
+                    // The bound rewrite needs its receiver check to run first, so
+                    // fall through to it below with the seed applied there.
+                } else {
+                    diagnosedMethodRefs_.insert(e);
+                    return error(e->span, "cannot reference generic function '" +
+                                std::string(name) +
+                                "' in value position — supply explicit type arguments, e.g. '" +
+                                std::string(name) + "::<...>'");
+                }
             }
 
             const bool localReceiver = e->a->kind == ExprKind::Name &&
@@ -1627,6 +1736,8 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                       "; then use r." + std::string(name));
                 return result;
             }
+            if (!m->generics.empty() && !e->explicitTypeArgs.empty())  // LA-32 §4.6: pinned
+                return pinnedGenericRef(e, m, bt.sym, nullptr, "");
             return rewriteAsMethodRef(e, m, bt.sym, nullptr, "",
                                       fromTypeRef(m->type.get()));
         }
@@ -1762,12 +1873,28 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
     // helper: choose among candidates, record it, or error if none apply. With
     // injection on (§12.5), an unfilled trailing parameter that has a `bind` in
     // scope is filled implicitly (exact-arity overloads shadow injecting ones).
-    auto resolve = [&](const std::vector<const Stmt*>& cands, const char* what,
-                       bool allowInject = true) -> const Stmt* {
+    bool explicitSelectionFailed = false;
+    bool declaredCallAttempted = false;
+    auto resolve = [&](std::vector<const Stmt*> cands, const char* what,
+                       bool allowInject = true, Symbol* constructionOwner = nullptr,
+                       Symbol* receiverClass = nullptr,
+                       const Type* receiver = nullptr) -> const Stmt* {
+        if (cands.empty() && !constructionOwner) return nullptr;
+        declaredCallAttempted = true;
+        const std::vector<std::string_view>* explicitParams =
+            constructionOwner && constructionOwner->decl
+                ? &constructionOwner->decl->generics : nullptr;
+        const std::string_view ownerName = constructionOwner
+            ? constructionOwner->name : callee->text;
+        if (!filterExplicitCandidates(call, cands, explicitParams, ownerName)) {
+            explicitSelectionFailed = true;
+            return nullptr;
+        }
         if (cands.empty()) return nullptr;
         bool ok = false, diagnosed = false;
         const Stmt* picked = allowInject
-            ? pickInjecting(cands, argTypes, call, ok, diagnosed)
+            ? pickInjecting(cands, argTypes, call, ok, diagnosed, explicitParams,
+                            receiverClass, receiver)
             : pickOverload(cands, argTypes, ok);
         if (!ok) {
             if (!diagnosed) {
@@ -1793,6 +1920,11 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
         if (bt.kind == TKind::TypeValue && bt.sym)
             for (const EnumDesugar& ed : program_->enumDesugars)
                 if (ed.name == bt.sym->name && ed.fromCode) {
+                    if (!e->explicitTypeArgs.empty()) {
+                        std::vector<const Stmt*> one{ed.fromCode};
+                        if (!filterExplicitCandidates(e, one, nullptr, callee->text))
+                            return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+                    }
                     call->resolved = ed.fromCode;
                     return fromTypeRef(ed.fromCode->type.get());   // Enum?
                 }
@@ -1811,6 +1943,11 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                 if (const std::vector<Symbol*>* v = mathNs->scope->localLookup("floatFromBits"))
                     for (Symbol* s : *v)
                         if (s->decl) {
+                            if (!e->explicitTypeArgs.empty()) {
+                                std::vector<const Stmt*> one{s->decl};
+                                if (!filterExplicitCandidates(e, one, nullptr, callee->text))
+                                    return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+                            }
                             call->resolved = s->decl;
                             return fromTypeRef(s->decl->type.get());   // float
                         }
@@ -1882,9 +2019,16 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
         // side needs no change. Exact-arity overloads still shadow injecting ones.
         std::vector<const Stmt*> ctorCands = ctorOverloads(ctorClass, label);
         const Stmt* ctor = resolve(ctorCands, "constructor",
-                                   /*allowInject=*/true);
+                                   /*allowInject=*/true, ctorClass);
+        if (explicitSelectionFailed)
+            return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+        if (!ctor && !e->explicitTypeArgs.empty() && !ctorCands.empty())
+            return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
         call->resolved = ctor;
         call->resolvedClass = ctorClass;
+        const std::vector<std::string_view>* ctorGenericParams =
+            ctorClass->decl ? &ctorClass->decl->generics : nullptr;
+        const auto ctorSeed = callGenericSeed(e, ctor, ctorGenericParams);
         // Lambda ctor args: walk each with its declared function-type param
         // types (no generic binding here — inferConstruction owns the class's
         // type args); marks them walked so the sweep doesn't re-walk.
@@ -1897,32 +2041,37 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                     // LA-31 §2.2: an `expr::Expr<Fn>` constructor parameter
                     // reifies the lambda in place, just like a function argument.
                     if (const TypeRef* fn = exprTargetFn(pt)) {
-                        reifyLambda(a, fn);
+                        reifyLambda(a, fn, e->explicitTypeArgs.empty() ? nullptr : &ctorSeed);
                         lambdaWalked[i] = 1;
                         continue;
                     }
                     std::vector<Type> ptypes;
                     if (pt && pt->kind == TypeKind::Function)
                         for (const TypeRefPtr& fp : pt->funcParams)
-                            ptypes.push_back(fromTypeRef(fp.get()));
+                            ptypes.push_back(e->explicitTypeArgs.empty()
+                                ? fromTypeRef(fp.get()) : substitute(fp.get(), ctorSeed));
                     checkLambdaBody(a, ptypes);
                     lambdaWalked[i] = 1;
                 } else if (a->kind == ExprKind::Member) {
                     // LA-25 §2.2/§6 (M3): an overloaded method reference passed
                     // as a constructor argument (the route-table shape) —
                     // disambiguate against the declared parameter's function type.
-                    Type expected = fromTypeRef(pt);
+                    Type expected = e->explicitTypeArgs.empty()
+                        ? fromTypeRef(pt) : substitute(pt, ctorSeed);
                     bool isRef = false;
                     tryResolveMethodRef(a, &expected, isRef);
                     if (isRef) lambdaWalked[i] = 1;
                 }
             }
-        return inferConstruction(ctorClass, ctor, argTypes, nullptr, e->span);
+        return inferConstruction(ctorClass, ctor, argTypes, e, nullptr, e->span);
     }
 
     // --- free function (overloaded) ---
     if (callee->kind == ExprKind::Name) {
         if (Type* loc = localLookup(callee->text)) {              // function-typed local
+            if (!e->explicitTypeArgs.empty())
+                return error(e->span,
+                    "explicit type arguments require a declared function, method, or constructor");
             for (const ExprPtr& arg : e->list)
                 if (!arg->argLabel.empty())
                     return error(e->span,
@@ -1941,12 +2090,14 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
         }
         // a method of `this` called unqualified?
         if (thisClass_ && !slotsNamed(thisClass_->shape, callee->text).empty()) {
-            if (const Stmt* m = resolve(methodOverloads(thisClass_, callee->text), "method")) {
+            Type thisType = classType(thisClass_);
+            if (const Stmt* m = resolve(methodOverloads(thisClass_, callee->text), "method",
+                                        true, nullptr, thisClass_, &thisType)) {
                 // S2 (§4.2): a bare this-call inside an inherited method — `this`
                 // flowing through a base method is not necessarily the
                 // most-derived class, so the same override-openness test applies.
                 call->resolved = resolveDispatch(thisClass_, m, e->span) ? nullptr : m;
-                return genericReturn(thisClass_, m, classType(thisClass_), argTypes, e, &lambdaWalked);
+                return genericReturn(thisClass_, m, thisType, argTypes, e, &lambdaWalked);
             }
             return unknown();
         }
@@ -1955,6 +2106,9 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
             noteBlockScopedImport(callee->text);   // S5: block-confined import hint
             return err;
         }
+        if (!e->explicitTypeArgs.empty())
+            return error(e->span,
+                "explicit type arguments require a declared function, method, or constructor");
         return unknown();
     }
 
@@ -1997,7 +2151,8 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
             return error(e->span,
                          "'None' has no members (this branch narrowed it to None)");
         if (bt.kind == TKind::Class) {
-            if (const Stmt* m = resolve(methodOverloads(bt.sym, callee->text), "method")) {
+            if (const Stmt* m = resolve(methodOverloads(bt.sym, callee->text), "method",
+                                        true, nullptr, bt.sym, &bt)) {
                 // const.md §4: a `mutating` method writes `this` — i.e. writes
                 // the value in the receiver's slot — so it needs the same
                 // write view an assignment to the receiver would need.
@@ -2043,6 +2198,11 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
             }
         }
     }
+    if (!e->explicitTypeArgs.empty() && declaredCallAttempted)
+        return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+    if (!e->explicitTypeArgs.empty())
+        return error(e->span,
+            "explicit type arguments require a declared function, method, or constructor");
     // --- value call: the callee is any other expression producing a callable
     // value — a call result (`f(x)(y)`, bug.md #47), an array/map index
     // (`fns[i]()`, bug.md #52), etc. Type the callee so the inner call RESOLVES
@@ -2415,6 +2575,65 @@ std::vector<const Stmt*> Checker::functionOverloads(std::string_view name) {
     return own;
 }
 
+bool Checker::filterExplicitCandidates(
+    const Expr* call, std::vector<const Stmt*>& cands,
+    const std::vector<std::string_view>* constructionParams,
+    std::string_view ownerName) {
+    if (!call || call->explicitTypeArgs.empty()) return true;
+    const size_t got = call->explicitTypeArgs.size();
+    auto arguments = [](size_t n) {
+        return n == 1 ? "argument" : "arguments";
+    };
+
+    if (constructionParams) {
+        const size_t expected = constructionParams->size();
+        if (got == expected) return true;
+        error(call->span, "construction of '" + std::string(ownerName) +
+              "' expects " + std::to_string(expected) + " explicit type " +
+              arguments(expected) + ", got " + std::to_string(got));
+        return false;
+    }
+
+    std::vector<const Stmt*> matching;
+    for (const Stmt* c : cands)
+        if (c && c->generics.size() == got) matching.push_back(c);
+    if (!matching.empty()) {
+        cands = std::move(matching);
+        return true;
+    }
+
+    if (cands.size() == 1) {
+        const size_t expected = cands.front()->generics.size();
+        error(call->span, "call to '" + std::string(ownerName) + "' expects " +
+              std::to_string(expected) + " explicit type " + arguments(expected) +
+              ", got " + std::to_string(got));
+    } else {
+        error(call->span, "no overload of '" + std::string(ownerName) + "' accepts " +
+              std::to_string(got) + " explicit type " + arguments(got));
+    }
+    cands.clear();
+    return false;
+}
+
+std::unordered_map<std::string_view, Type> Checker::callGenericSeed(
+    const Expr* call, const Stmt* candidate,
+    const std::vector<std::string_view>* explicitParams,
+    Symbol* receiverClass, const Type* receiver) const {
+    std::unordered_map<std::string_view, Type> seed;
+    if (receiverClass && receiverClass->decl && receiver)
+        for (size_t i = 0;
+             i < receiverClass->decl->generics.size() && i < receiver->args.size(); ++i)
+            seed[receiverClass->decl->generics[i]] = receiver->args[i];
+
+    if (!call || call->explicitTypeArgs.empty()) return seed;
+    const std::vector<std::string_view>* params = explicitParams;
+    if (!params && candidate) params = &candidate->generics;
+    if (!params) return seed;
+    for (size_t i = 0; i < params->size() && i < call->explicitTypeArgs.size(); ++i)
+        seed[(*params)[i]] = fromTypeRef(call->explicitTypeArgs[i].get());
+    return seed;
+}
+
 // ---------------------------------------------------------------------------
 //  bind / inject — dependency injection (§12.5)
 // ---------------------------------------------------------------------------
@@ -2520,23 +2739,32 @@ static ExprPtr cloneDefaultExpr(const Expr* e) {
     out->b = cloneDefaultExpr(e->b.get());
     out->c = cloneDefaultExpr(e->c.get());
     for (const ExprPtr& x : e->list) out->list.push_back(cloneDefaultExpr(x.get()));
+    for (const TypeRefPtr& t : e->explicitTypeArgs)
+        out->explicitTypeArgs.push_back(copyTypeRef(t.get()));
     if (e->type) out->type = copyTypeRef(e->type.get());
     return out;
 }
 
 const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
                                    std::vector<Type>& argTypes, Expr* call, bool& ok,
-                                   bool& diagnosed) {
+                                   bool& diagnosed,
+                                   const std::vector<std::string_view>* explicitParams,
+                                   Symbol* receiverClass, const Type* receiver) {
     diagnosed = false;
     // Re-entry sees the canonical full positional list and can use the ordinary
     // overload picker.  This is the idempotence guard for synthesized defaults
     // and injections.
-    if (call->argsNormalized) return pickOverload(cands, argTypes, ok, call);
+    // Explicit calls must rebuild their authoritative seed on every pass, so
+    // only the legacy no-list path takes the short cut.
+    if (call->argsNormalized && call->explicitTypeArgs.empty())
+        return pickOverload(cands, argTypes, ok, call);
 
     struct Binding {
         const Stmt* candidate = nullptr;
         std::vector<int> supplied;          // param index -> raw argument index
         std::vector<const Stmt*> injections;
+        std::vector<Type> paramTypes;
+        std::unordered_map<std::string_view, Type> subst;
         int score = -1;
         int omitted = 0;
     } best;
@@ -2547,13 +2775,24 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
     std::vector<CandTie> ties;
 
     std::string soleFailure;
+    SourceSpan soleFailureSpan = call->span;
+    const bool hasExplicit = !call->explicitTypeArgs.empty();
     for (const Stmt* c : cands) {
         Binding cur;
         cur.candidate = c;
         cur.supplied.assign(c->params.size(), -1);
         cur.injections.assign(c->params.size(), nullptr);
+        cur.paramTypes.reserve(c->params.size());
+        if (hasExplicit)
+            cur.subst = callGenericSeed(call, c, explicitParams,
+                                        receiverClass, receiver);
+        for (const Param& p : c->params)
+            cur.paramTypes.push_back(hasExplicit
+                ? substitute(p.type.get(), cur.subst)
+                : fromTypeRef(p.type.get()));
         bool applicable = true;
         std::string failure;
+        SourceSpan failureSpan = call->span;
         size_t positional = 0;
 
         for (size_t ai = 0; ai < call->list.size() && applicable; ++ai) {
@@ -2581,7 +2820,7 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             if (cur.supplied[pi] >= 0) continue;
             ++cur.omitted;
             if (c->params[pi].defaultValue) continue;       // explicit default wins
-            Type pt = fromTypeRef(c->params[pi].type.get());
+            const Type& pt = cur.paramTypes[pi];
             const Stmt* bind = pt.canonical.empty() ? nullptr : lookupBind(pt.canonical);
             if (bind) cur.injections[pi] = bind;
             else {
@@ -2597,8 +2836,8 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             int ai = cur.supplied[pi];
             if (ai < 0) continue;                            // omitted values do not score
             const TypeRef* p = c->params[pi].type.get();
-            if (mentionsTypeParam(p)) { score += 1; continue; }
-            Type pt = fromTypeRef(p);
+            if (!hasExplicit && mentionsTypeParam(p)) { score += 1; continue; }
+            const Type& pt = cur.paramTypes[pi];
             const Type& at = argTypes[static_cast<size_t>(ai)];
             // bug.md #34: a deferred LAMBDA LITERAL argument is Unknown only
             // because its type is inferred from whichever parameter wins
@@ -2640,10 +2879,19 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
                 score += 2; continue;
             }
             if (assignable(at, pt)) { score += 1; continue; }
+            if (hasExplicit) {
+                failure = "argument for parameter '" +
+                          std::string(c->params[pi].name) + "' has type '" +
+                          at.canonical + "', expected '" + pt.canonical + "'";
+                failureSpan = call->list[static_cast<size_t>(ai)]->span;
+            }
             applicable = false;
         }
         if (!applicable) {
-            if (cands.size() == 1) soleFailure = std::move(failure);
+            if (cands.size() == 1) {
+                soleFailure = std::move(failure);
+                soleFailureSpan = failureSpan;
+            }
             continue;
         }
         cur.score = score;
@@ -2699,7 +2947,7 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
     if (!best.candidate) {
         ok = false;
         if (!soleFailure.empty()) {
-            error(call->span, soleFailure);
+            error(soleFailureSpan, soleFailure);
             diagnosed = true;
         }
         return nullptr;
@@ -2719,19 +2967,22 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             // parameter of the chosen overload — flip it to a char value so the
             // engines emit a char, matching the retyping declarations already do.
             if (isCharLiteral(ordered[pi].get()) &&
-                expectsChar(best.candidate->params[pi].type.get())) {
+                (hasExplicit ? best.paramTypes[pi].canonical == "char"
+                             : expectsChar(best.candidate->params[pi].type.get()))) {
                 markCharLiteral(ordered[pi].get());
                 orderedTypes[pi] = primType("char");
             }
         } else if (best.candidate->params[pi].defaultValue) {
             ordered[pi] = cloneDefaultExpr(best.candidate->params[pi].defaultValue.get());
-            orderedTypes[pi] = fromTypeRef(best.candidate->params[pi].type.get());
+            orderedTypes[pi] = best.paramTypes[pi];
         } else {
             auto arg = std::make_unique<Expr>(ExprKind::Inject);
             arg->span = call->span;
-            arg->type = copyTypeRef(best.candidate->params[pi].type.get());
+            arg->type = hasExplicit
+                ? copyTypeRefWithSubst(best.candidate->params[pi].type.get(), best.subst)
+                : copyTypeRef(best.candidate->params[pi].type.get());
             arg->resolved = best.injections[pi];
-            orderedTypes[pi] = fromTypeRef(arg->type.get());
+            orderedTypes[pi] = best.paramTypes[pi];
             ordered[pi] = std::move(arg);
         }
     }
@@ -2762,13 +3013,16 @@ static const TypeRef* directBaseTypeRef(Symbol* cls, Symbol* target) {
 }
 
 Type Checker::inferConstruction(Symbol* cls, const Stmt* ctor,
-                                const std::vector<Type>& args, const TypeRef* expected,
-                                SourceSpan span) {
+                                const std::vector<Type>& args, const Expr* call,
+                                const TypeRef* expected, SourceSpan span) {
     if (!cls || !cls->decl || cls->decl->generics.empty())
         return classType(cls);
 
     const std::vector<std::string_view>& params = cls->decl->generics;
-    std::unordered_map<std::string_view, Type> map;
+    // Explicit class arguments are authoritative occupied slots. unify() is
+    // first-binding-wins, so later value/target inference can fill only gaps.
+    std::unordered_map<std::string_view, Type> map =
+        callGenericSeed(call, ctor, &params);
 
     // 1. from the chosen constructor's arguments — full structural unification
     // (the same unify() Track 05 built for lambda-last method inference), not
@@ -3144,6 +3398,8 @@ ExprPtr Checker::cloneForReify(const Expr* e) const {
     c->b = cloneForReify(e->b.get());
     c->c = cloneForReify(e->c.get());
     for (const ExprPtr& el : e->list) c->list.push_back(cloneForReify(el.get()));
+    for (const TypeRefPtr& t : e->explicitTypeArgs)
+        c->explicitTypeArgs.push_back(copyTypeRef(t.get()));
     return c;
 }
 
@@ -3605,7 +3861,8 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
         for (const StmtPtr& m : ec->decl->body)
             if (m->kind == StmtKind::Member && m->isCtor && m->params.size() == 4) { ctor = m.get(); break; }
 
-    // Rewrite `lambda` in place -> expr::Expr(<lambda>, <tree>, <binds>, <siteId>).
+    // Rewrite `lambda` in place ->
+    // expr::Expr::<Fn>(<lambda>, <tree>, <binds>, <siteId>).
     auto callee = std::make_unique<Expr>(ExprKind::Member);
     callee->span = sp; callee->colon = true; callee->text = "Expr";
     { auto ns = std::make_unique<Expr>(ExprKind::Name); ns->span = sp; ns->text = "expr";
@@ -3618,6 +3875,9 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
     lambda->block = nullptr;
     lambda->a = std::move(callee);
     lambda->list.clear();
+    lambda->explicitTypeArgs.clear();
+    lambda->explicitTypeArgs.push_back(subst
+        ? copyTypeRefWithSubst(fnRef, *subst) : copyTypeRef(fnRef));
     lambda->list.push_back(std::move(lamNode));
     lambda->list.push_back(std::move(tree));
     lambda->list.push_back(std::move(bindsArr));
@@ -3659,10 +3919,8 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
 Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
                             const std::vector<Type>& args,
                             const Expr* call, std::vector<char>* lambdaWalked) {
-    std::unordered_map<std::string_view, Type> subst;
-    if (cls && cls->decl)
-        for (size_t i = 0; i < cls->decl->generics.size() && i < receiver.args.size(); ++i)
-            subst[cls->decl->generics[i]] = receiver.args[i];
+    std::unordered_map<std::string_view, Type> subst =
+        callGenericSeed(call, fn, nullptr, cls, &receiver);
     for (size_t i = 0; i < fn->params.size() && i < args.size(); ++i)
         unify(fn->params[i].type.get(), args[i], subst);
     if (call && lambdaWalked) {
@@ -3697,8 +3955,17 @@ Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
                 for (const TypeRefPtr& fp : pt->funcParams)
                     ptypes.push_back(substitute(fp.get(), subst));
             Type ret = checkLambdaBody(a, ptypes);
-            if (pt && pt->kind == TypeKind::Function && pt->funcRet)
+            if (pt && pt->kind == TypeKind::Function && pt->funcRet) {
+                if (call && !call->explicitTypeArgs.empty()) {
+                    Type expectedRet = substitute(pt->funcRet.get(), subst);
+                    if (ret.kind != TKind::Unknown && ret.kind != TKind::Error &&
+                        expectedRet.kind != TKind::Unknown &&
+                        !assignable(ret, expectedRet))
+                        error(a->span, "lambda body has type '" + ret.canonical +
+                              "', expected '" + expectedRet.canonical + "'");
+                }
                 unify(pt->funcRet.get(), ret, subst);
+            }
             (*lambdaWalked)[i] = 1;
         }
     }
@@ -3893,12 +4160,16 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
             }
         }
         if (ctorClass) {
+            const std::vector<std::string_view>* explicitParams =
+                ctorClass->decl ? &ctorClass->decl->generics : nullptr;
             // LA-25 §2.2/§6 (M3): defer an OVERLOADED method-reference argument
             // here too (this is the var-decl/return/field-init construction
             // path, a separate arg-typing pass from typeOfCallInner's) — typed
             // unknown for overload choice, then walked below against the
             // chosen constructor's declared parameter type, same as a Lambda.
             auto cands = ctorOverloads(ctorClass, label);
+            if (!filterExplicitCandidates(e, cands, explicitParams, ctorClass->name))
+                return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
             // bug.md #43: thread the constructor parameter's declared type into
             // each argument as its TARGET type, so a nested generic construction
             // (`Foo(1, Map())`) infers its own type args from the parameter it
@@ -3907,13 +4178,17 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
             // known before the arguments are typed; with overloads the target is
             // ambiguous, so fall back to bare typing (existing behavior).
             const Stmt* soleCtor = cands.size() == 1 ? cands.front() : nullptr;
+            const auto explicitSeed = callGenericSeed(e, soleCtor, explicitParams);
             std::vector<Type> argTypes;
             for (size_t i = 0; i < e->list.size(); ++i) {
                 const Expr* a = e->list[i].get();
                 if (isDeferredMethodRefArg(a)) { argTypes.push_back(unknown()); continue; }
-                if (soleCtor && i < soleCtor->params.size())
-                    argTypes.push_back(typeInitExpr(a, soleCtor->params[i].type.get()));
-                else
+                if (soleCtor && i < soleCtor->params.size()) {
+                    TypeRefPtr target = e->explicitTypeArgs.empty()
+                        ? copyTypeRef(soleCtor->params[i].type.get())
+                        : copyTypeRefWithSubst(soleCtor->params[i].type.get(), explicitSeed);
+                    argTypes.push_back(typeInitExpr(a, target.get()));
+                } else
                     argTypes.push_back(typeOf(a));
             }
             if (cands.empty() && activeSpecialization_ && callee->colon &&
@@ -3926,9 +4201,11 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
             // Constructors use the same named/default/injection binding and
             // positional normalization path as every other call.
             const Stmt* ctor = pickInjecting(cands, argTypes, const_cast<Expr*>(e),
-                                             ok, diagnosed);
+                                             ok, diagnosed, explicitParams);
             if (!cands.empty() && !ok && !diagnosed)
                 error(e->span, "no constructor matches the arguments");
+            if (!ctor && !e->explicitTypeArgs.empty() && !cands.empty())
+                return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
             const_cast<Expr*>(e)->resolved = ctor;
             const_cast<Expr*>(e)->resolvedClass = ctorClass;
             if (ctor)
@@ -3937,11 +4214,13 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
                     // bug #55: a bare free-function name constructor argument is a
                     // callable reference too, not only a `T::m`/`obj.m` member.
                     if (a->kind != ExprKind::Member && a->kind != ExprKind::Name) continue;
-                    Type et = fromTypeRef(ctor->params[i].type.get());
+                    Type et = e->explicitTypeArgs.empty()
+                        ? fromTypeRef(ctor->params[i].type.get())
+                        : substitute(ctor->params[i].type.get(), explicitSeed);
                     bool isRef = false;
                     tryResolveMethodRef(a, &et, isRef);
                 }
-            return inferConstruction(ctorClass, ctor, argTypes, expected, e->span);
+            return inferConstruction(ctorClass, ctor, argTypes, e, expected, e->span);
         }
     }
     // LA-25 §2.2: the declared-type slot's type is the target for an

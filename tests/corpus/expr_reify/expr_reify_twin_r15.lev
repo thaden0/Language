@@ -55,7 +55,7 @@ void dumpSite(string label, expr::Node tree, Array<string | int | float | bool |
 Array<string> tags = [];
 tags = tags.add("red");
 tags = tags.add("blue");
-expr::Expr<(User)=>bool> e0 = expr::Expr((u) => tags.contains(u.tag),
+expr::Expr<(User)=>bool> e0 = expr::Expr::<(User)=>bool>((u) => tags.contains(u.tag),
     expr::Call("contains", expr::Bind(0),
         () => { Array<expr::Node> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(expr::Field(["tag"]))); return __lvReifyArr; }()),
     () => { Array<string | int | float | bool | None> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(None)); return __lvReifyArr; }(),

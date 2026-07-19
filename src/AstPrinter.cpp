@@ -1,4 +1,5 @@
 #include "AstPrinter.hpp"
+#include <cassert>
 
 namespace {
 
@@ -110,14 +111,29 @@ std::string exprStr(const Expr* e) {
         case ExprKind::FloatLit:
         case ExprKind::StringLit:
         case ExprKind::BoolLit:
-        case ExprKind::Name:     return sv(e->text);
+        case ExprKind::Name:
+            // LA-32 §4.6: a pinned generic VALUE reference (`identity::<int>`, no
+            // call) carries explicitTypeArgs on the Name/Member itself. The
+            // checker normally rewrites it to an eta-expansion lambda before
+            // printing, but render it here too so an unchecked dump round-trips.
+            if (!e->explicitTypeArgs.empty())
+                return sv(e->text) + "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return sv(e->text);
         case ExprKind::This:     return "this";
-        case ExprKind::Member:
-            return exprStr(e->a.get()) + (e->colon ? "::" : e->optChain ? "?." : ".") +
-                   sv(e->text);
-        case ExprKind::Call:
-            return exprStr(e->a.get()) + (e->isMacroCall ? "!(" : "(") +
-                   exprList(e->list) + ")";
+        case ExprKind::Member: {
+            std::string out = exprStr(e->a.get()) +
+                              (e->colon ? "::" : e->optChain ? "?." : ".") + sv(e->text);
+            if (!e->explicitTypeArgs.empty())   // LA-32 §4.6 value reference
+                out += "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return out;
+        }
+        case ExprKind::Call: {
+            assert(!(e->isMacroCall && !e->explicitTypeArgs.empty()));
+            std::string applied = e->explicitTypeArgs.empty()
+                ? "" : "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return exprStr(e->a.get()) + applied +
+                   (e->isMacroCall ? "!(" : "(") + exprList(e->list) + ")";
+        }
         case ExprKind::Index:
             return exprStr(e->a.get()) + "[" + exprStr(e->b.get()) + "]";
         case ExprKind::Unary:
@@ -496,12 +512,25 @@ std::string srcExpr(const Expr* e) {
         case ExprKind::IntLit:
         case ExprKind::FloatLit:
         case ExprKind::BoolLit:
-        case ExprKind::Name:     return sv(e->text);
+        case ExprKind::Name:
+            if (!e->explicitTypeArgs.empty())   // LA-32 §4.6 value reference
+                return sv(e->text) + "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return sv(e->text);
         case ExprKind::This:     return "this";
-        case ExprKind::Member:
-            return srcExpr(e->a.get()) + (e->colon ? "::" : e->optChain ? "?." : ".") + sv(e->text);
-        case ExprKind::Call:
-            return srcExpr(e->a.get()) + (e->isMacroCall ? "!(" : "(") + srcExprList(e->list) + ")";
+        case ExprKind::Member: {
+            std::string out = srcExpr(e->a.get()) +
+                              (e->colon ? "::" : e->optChain ? "?." : ".") + sv(e->text);
+            if (!e->explicitTypeArgs.empty())   // LA-32 §4.6 value reference
+                out += "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return out;
+        }
+        case ExprKind::Call: {
+            assert(!(e->isMacroCall && !e->explicitTypeArgs.empty()));
+            std::string applied = e->explicitTypeArgs.empty()
+                ? "" : "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return srcExpr(e->a.get()) + applied +
+                   (e->isMacroCall ? "!(" : "(") + srcExprList(e->list) + ")";
+        }
         case ExprKind::Index:
             return srcExpr(e->a.get()) + "[" + srcExpr(e->b.get()) + "]";
         case ExprKind::Unary:
@@ -673,7 +702,8 @@ struct SourcePrinter {
                     paramList(s->params) + ")";
             emitBody(n, head, s->memberBody.get());
         } else if (s->callable) {            // method / function
-            head += typeStr(s->type.get()) + " " + sv(s->name) + "(" + paramList(s->params) + ")";
+            head += typeStr(s->type.get()) + " " + sv(s->name) + generics(s) +
+                    "(" + paramList(s->params) + ")";
             emitBody(n, head, s->memberBody.get());
         } else {                             // field
             if (s->distinct) head += "distinct ";

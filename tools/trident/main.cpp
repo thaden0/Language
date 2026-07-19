@@ -173,10 +173,19 @@ void printUsage(const char* argv0) {
         "       %s lock [manifest-or-dir]\n"
         "       %s fetch [manifest-or-dir]\n"
         "       %s why <path> [manifest-or-dir]\n"
-        "       %s audit [manifest-or-dir]\n"
+        "       %s audit [manifest-or-dir] [--policy <file>]\n"
         "       %s vendor [manifest-or-dir]\n"
+        "       %s publish [manifest-or-dir] [--tag vX.Y.Z] [--path <vcs-path>]\n"
+        "          [--sign-key <private.pem> --identity <name> [--artifact <file>]\n"
+        "           [--attestation-out <file>]]\n"
+        "       %s yank <path>@<version>\n"
+        "       %s attest [manifest-or-dir] --key <private.pem> --identity <name>\n"
+        "          [--path <vcs-path>] [--artifact <file>] [--out <file>]\n"
+        "       %s audit-record <path>@<version> --auditor <name> [--file <path>]\n"
+        "          [manifest-or-dir]\n"
         "       %s --version\n",
-        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0,
+        argv0, argv0, argv0, argv0, argv0);
 }
 
 }  // namespace
@@ -186,7 +195,7 @@ int main(int argc, char** argv) {
 
     std::string sub = argv[1];
     if (sub == "--version") {
-        std::printf("trident 0.1 (techdesign-toolchain.md Phase 1)\n");
+        std::printf("trident 0.2 (package manager GT2-GT6)\n");
         std::fflush(stdout);   // ordered before the forked child's own writes
         std::string tried;
         std::string bin = findLeviathan("", &tried);
@@ -202,15 +211,38 @@ int main(int argc, char** argv) {
     // as their second; `lock`/`fetch` take only the (optional)
     // manifest-or-dir.
     if (sub == "add" || sub == "remove" || sub == "update" || sub == "lock" ||
-        sub == "fetch" || sub == "why" || sub == "audit" || sub == "vendor") {
+        sub == "fetch" || sub == "why" || sub == "audit" || sub == "vendor" ||
+        sub == "publish" || sub == "yank" || sub == "attest" ||
+        sub == "audit-record") {
         std::string posArgs[2];
         int posCount = 0;
         std::string asName;
+        std::string tag;
+        std::string modulePath;
+        std::string signKey;
+        std::string privateKey;
+        std::string identity;
+        std::string artifact;
+        std::string attestationOut;
+        std::string policyPath;
+        std::string auditor;
+        std::string outputPath;
         bool dev = false;
         for (int i = 2; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--as" && i + 1 < argc) asName = argv[++i];
             else if (a == "--dev") dev = true;
+            else if (a == "--tag" && i + 1 < argc) tag = argv[++i];
+            else if (a == "--path" && i + 1 < argc) modulePath = argv[++i];
+            else if (a == "--sign-key" && i + 1 < argc) signKey = argv[++i];
+            else if (a == "--key" && i + 1 < argc) privateKey = argv[++i];
+            else if (a == "--identity" && i + 1 < argc) identity = argv[++i];
+            else if (a == "--artifact" && i + 1 < argc) artifact = argv[++i];
+            else if (a == "--attestation-out" && i + 1 < argc) attestationOut = argv[++i];
+            else if (a == "--policy" && i + 1 < argc) policyPath = argv[++i];
+            else if (a == "--auditor" && i + 1 < argc) auditor = argv[++i];
+            else if (a == "--file" && i + 1 < argc) outputPath = argv[++i];
+            else if (a == "--out" && i + 1 < argc) outputPath = argv[++i];
             else if (!a.empty() && a[0] != '-') {
                 if (posCount < 2) posArgs[posCount++] = a;
                 else { std::fprintf(stderr, "error: too many arguments\n"); return 2; }
@@ -243,8 +275,39 @@ int main(int argc, char** argv) {
             }
             return cmdWhy(posArgs[1], posArgs[0]);
         }
-        if (sub == "audit") return cmdAudit(posArgs[0]);
+        if (sub == "audit") return cmdAudit(posArgs[0], policyPath);
         if (sub == "vendor") return cmdVendor(posArgs[0]);
+        if (sub == "publish") {
+            if (posCount > 1) {
+                std::fprintf(stderr, "error: publish accepts at most one manifest-or-dir\n");
+                return 2;
+            }
+            return cmdPublish(posArgs[0], tag, modulePath, signKey, identity,
+                              artifact, attestationOut);
+        }
+        if (sub == "yank") {
+            if (posCount != 1) {
+                std::fprintf(stderr, "usage: %s yank <path>@<version>\n", argv[0]);
+                return 2;
+            }
+            return cmdYank(posArgs[0]);
+        }
+        if (sub == "attest") {
+            if (posCount > 1) {
+                std::fprintf(stderr, "error: attest accepts at most one manifest-or-dir\n");
+                return 2;
+            }
+            return cmdAttest(posArgs[0], modulePath, privateKey, identity, artifact, outputPath);
+        }
+        if (sub == "audit-record") {
+            if (posCount < 1) {
+                std::fprintf(stderr,
+                    "usage: %s audit-record <path>@<version> --auditor <name> "
+                    "[--file <path>] [manifest-or-dir]\n", argv[0]);
+                return 2;
+            }
+            return cmdAuditRecord(posArgs[1], posArgs[0], auditor, outputPath);
+        }
     }
 
     if (sub != "build" && sub != "run" && sub != "check" && sub != "emit-llvm" &&

@@ -2306,6 +2306,8 @@ ExprPtr RuleEngine::cloneExpr(const Expr* e, Bindings& b, bool& err) {
     out->a = cloneExpr(e->a.get(), b, err);
     out->b = cloneExpr(e->b.get(), b, err);
     out->c = cloneExpr(e->c.get(), b, err);
+    for (const TypeRefPtr& t : e->explicitTypeArgs)
+        out->explicitTypeArgs.push_back(cloneType(t.get(), b, err));
     // $_args (§6) is legal only as a call-argument element; anywhere else a
     // literal "$_args" falls through to the generic unbound-hole error below.
     if (e->kind == ExprKind::Call) cloneArgList(e->list, b, err, out->list);

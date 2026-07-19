@@ -190,6 +190,9 @@ struct Expr {
 
     ExprPtr a, b, c;             // operands (meaning depends on kind)
     std::vector<ExprPtr> list;   // call args, array elems
+    // Call only: authored `callee::<T, U>(args)`. Empty means the ordinary
+    // inference-only call spelling. The parser rejects an empty `::<>()` list.
+    std::vector<TypeRefPtr> explicitTypeArgs;
     std::vector<Param> params;   // Lambda params
     StmtPtr block;               // Lambda: statement-block body (a is null then)
     std::vector<MatchArm> arms;  // Match: the arms (a = subject)

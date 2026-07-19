@@ -204,8 +204,22 @@ arrays are **values** (arrays are pure — §6.3).
 Any scope-opening entity may declare type parameters: `class C<T>`, `R f<R>(R x)`, and methods
 `U m<U>(...)`. Inference sources, in order: constructor/call argument types (including through
 containers: `Array<U>` unifies with `Array<int>`), then the target type of the enclosing
-initializer/return. Explicit `Name<T1,...>` is always available. Generics are **invariant**;
-the raw form (`Array`) is compatible with any instantiation of the same head.
+initializer/return. In a type position, an instantiation is `Name<T1,...>`. At a call site,
+explicit arguments use the unambiguous turbofish spelling `callee::<T1,...>(args)`, for example
+`Box::<int>()`, `Box::From::<string>(value)`, or `items.remap::<string>(fn)`. The same turbofish
+with **no following `(args)`** is a pinned generic **value reference** — `var f = identity::<int>;`
+supplies the concrete type tuple a bare reference to a generic callable otherwise lacks, so it
+composes with method references (§3.4) into a concrete closure; an *unpinned* generic reference
+(`var f = identity;`) is an error suggesting the turbofish. Generics are **invariant**; the raw
+form (`Array`) is compatible with any instantiation of the same head.
+
+An explicit call list is all-or-nothing and authoritative: its length must exactly equal the
+class's generic arity for construction, or the selected function/method's generic arity for a
+call. It filters overloads by generic arity before value-argument applicability, then the
+substituted types check positional/named values, lambdas, defaults, and injection. Receiver
+class arguments remain independent of a method's explicit tuple. Explicit lists require a
+declared function, method, or constructor; they cannot be applied to a closure or other dynamic
+function value. The old bare-looking `f<T>(x)` is still comparison syntax, never a generic call.
 
 Singleton scopes (namespaces, class static sides) may use type parameters in **member
 signatures** (bound per call) but may not declare **state** typed by them.
@@ -262,7 +276,7 @@ it neither overrides nor is overridden; override-dispatched specialization is de
 | 9 | `+` `-` | left |
 | 10 | `*` `/` `%` | left |
 | prefix | `!` `-` `~` | — |
-| postfix | `.name` `::name` `(args)` `[index]` | left |
+| postfix | `.name` `::name` `::<types>(args)` `(args)` `[index]` | left |
 
 ### 3.15 `match` — type/value dispatch
 `match (subject) { pattern => body; ... }` where a pattern is a **type** (`Type =>`, narrows
@@ -311,15 +325,21 @@ call on it would (§3.7).
 f(args)                    // function call; overload chosen by argument types
 f(x, label: value)         // positional arguments first; named arguments may reorder
 obj.method(args)           // method call; overload chosen by argument types
+f::<int>(args)             // explicit function type tuple (exact arity)
+obj.method::<R>(args)      // explicit method tuple; receiver class tuple is separate
 Type(args)                 // construction — NO `new` at the call site
 Type::Label(args)          // constructor selected by label
+Type::<int>(args)          // explicit class tuple for construction
+Type::Label::<int>(args)   // explicit class tuple after the complete labeled callee
 NS::Type(args)             // construction of a namespaced class, reached by qualification
 NS::Type::Label(args)      // ...combined with label selection
 Base::Ctor(args)           // inside a constructor: base constructor applied to `this`
 ```
 Constructor selection: candidates share the label; the overload is chosen by argument types
 (most-specific; first-declared breaks ties). Generic type arguments are inferred from the
-constructor arguments, then the target type.
+constructor arguments, then the target type, unless a complete explicit `::<...>` tuple pins
+them. Function/method explicit tuples bind that callable's parameters; construction tuples bind
+the class parameters. The marker follows the complete callee and must be followed by `(`.
 
 At every call site, positional arguments must precede named arguments. A named argument binds
 the parameter carrying that name; it may appear in any order among the named suffix. Functions,
@@ -335,6 +355,10 @@ reference** — a first-class function value (§3.4).
   class static sides. Inside a generic callable its left operand may also be a callable-level
   type parameter, resolved per concrete instantiation (§2.5). One operator, one meaning: "the
   non-instantiated version."
+- `::<...>` is the explicit-generic (turbofish) marker. It attaches to the completed callee
+  (`N::f::<T>()`, `this.Base::m::<T>()`). Followed by `(args)` it pins a call/construction; with
+  **no** argument list it is a pinned generic **value reference** (`var f = identity::<int>;`,
+  §2.5) — the type tuple that makes a reference to a generic callable well-defined.
 - A bare read that cannot be resolved by type — e.g. a `distinct`-collided member with no
   qualifier — is a **compile error** ("refuse to guess").
 
@@ -456,8 +480,11 @@ accessor. On a **mutable object** the set accessor mutates in place. On a **pure
 - An **unknown name or function** is a compile error (`System` excepted until
   modeled; `console` IS modeled — §6.7).
 - A generic construction whose type argument has **no inference source** is a compile error —
-  provide a target type or a type-bearing argument (§2.5: inferred when recoverable, required
-  when not).
+  provide a target type, a type-bearing argument, or an explicit construction tuple such as
+  `Box::<int>()` (§2.5: inferred when recoverable, explicit when desired, required when not).
+- Explicit call type arguments have exact arity and are authoritative. A value that conflicts
+  with a pinned parameter type is a compile error at that argument; applying the list to a
+  closure/dynamic function value is also a compile error.
 - Runtime failures **throw catchable `RuntimeException`s**: index out of bounds, `Map.at` on a
   missing key, unresolvable call targets, missing operators on a class.
 
@@ -712,21 +739,26 @@ int f(int a, int b) => a + b;           // arrow body (=> IS return)
 void g() console.writeln("x");          // any single statement is a body
 void h();                                // empty body (interface req. / native intrinsic)
 U remap<U>(U v) => v;                    // method-level type parameters
+string s = remap::<string>("value");      // explicit callable tuple
 Counter (+)(int val) => ...;            // operator: symbolic selector
 ```
 A **body is exactly one statement**. A **method** has `this` (instance side); a **function**
 does not (namespaces, class static sides). Overloading is by argument types everywhere.
 Named arguments and default parameter values apply uniformly to methods and functions.
+An explicit `::<...>` tuple is checked before ordinary value-argument binding; named/default/
+injected arguments then normalize exactly as they do for inferred calls.
 
 ### 4.5 Constructors
 ```
 new ClassName() { ... }                 // 'new' marks a constructor
 new AnyLabel(string s) { ... }          // the name is only a selection label
 new Configured(int port = 80) { ... }   // constant default parameter value
+Box<int> b = Box::From::<int>(1);       // explicit class tuple follows the label
 ```
 No `new` at the call site. Inside a constructor, `Base::Ctor(args)` runs a base constructor
 against `this` (derived class controls order). Label + argument types select among candidates.
 Constructor arguments may be named and constructor parameters may declare defaults.
+For a labeled construction, the tuple follows the complete label: `Box::From::<int>(value)`.
 
 ### 4.6 Accessors (get/set)
 ```
@@ -2602,11 +2634,10 @@ per site itself.
 Per ruling R1, `--expand` now runs the **full Checker** before printing — an ill-typed
 program fails `--expand` exactly like a normal compile (`docs/footguns.md`).
 `--ast-after-rules` stays the pre-Checker debugging view for ill-typed programs.
-`--expand` of a reified site shows the emitted construction; the emitted form omits the
-explicit generic argument the printer cannot yet round-trip on a construction callee —
-`expr::Expr((u) => u.active, expr::Field(["active"]), [], 0)`, not
-`expr::Expr<(User)=>bool>(...)` — with `F` resolved by ordinary generic inference from the
-first (closure) argument. A non-empty `binds`/`args` array prints as an immediately-invoked
+`--expand` of a reified site shows the emitted construction with its concrete function tuple:
+`expr::Expr::<(User) => bool>((u) => u.active, expr::Field(["active"]), [], 0)`.
+The call-only explicit-generic marker round-trips through the parser and pins `F`; it remains
+compile-time-only and carries no runtime payload. A non-empty `binds`/`args` array prints as an immediately-invoked
 `() => { Array<Elem> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(e0)); …; return
 __lvReifyArr; }()` (the landed `[]`+`.add` widening idiom — a bare array literal is
 invariant and cannot widen to the union/Node element type any other way); an empty array
@@ -2880,14 +2911,24 @@ trident run   [dir]   # ...compile and execute (tree-walk oracle)
 trident check [dir]   # ...parse + resolve + type-check, no execution
 trident emit-llvm [dir]   # ...emit LLVM IR
 trident plan  [dir]   # resolve + write the plan only (no leviathan invocation)
+trident add <path>[@version] [--as N] [--dev]
+trident remove <path> | update [<path>] | lock | fetch | why <path>
+trident vendor [dir]              # copy the locked graph into ./vendor
+trident audit [dir] [--policy trident.audit.toml]
+trident publish [dir] [--tag vX.Y.Z] [--path <vcs-path>]
+trident yank <path>@<version>     # existing locks remain valid
+trident attest [dir] --key private.pem --identity <name> [--artifact <file>]
+trident audit-record <path>@<version> --auditor <name> [--file <path>]
 trident --version     # trident's version, then leviathan's
 ```
 
 Common flags: `--out <path>`, `--target <triple>`, `--opt-level <0|2>` (`--release` = `-O2`),
 `--plan <path>` (override the plan location), `--leviathan <path>` (override compiler discovery).
 `trident` locates `leviathan` via `--leviathan` → `$LEVIATHAN` → its own sibling directory →
-`PATH`. Dependency-management subcommands (`add`/`remove`/`update`/`lock`/`fetch`/`why`) never
-invoke the compiler — see `designs/techdesign-package-manager.md`.
+`PATH`. Dependency-management subcommands never invoke the compiler. `attest` can sign a package's
+canonical source hash (and an optional artifact hash) with an external OpenSSL key;
+`audit-record` writes a shareable human-review record. See
+`designs/complete/techdesign-package-manager.md`.
 
 ### 8.1 The manifest (`trident.toml`)
 
@@ -2953,7 +2994,7 @@ the plan names.
   the same whole-program compilation unit — a dependency is just more source (§1). A `path` that
   is not a local directory (e.g. `github.com/thaden0/json`) is a **VCS module**, requiring a
   `version`; VCS fetch, MVS version selection, a lockfile, and the content-addressed store live in
-  `trident` per `designs/techdesign-package-manager.md`.
+  `trident` per `designs/complete/techdesign-package-manager.md`.
 - **`as`**: aliases the dependency's exported namespaces into a synthesized local namespace, so
   `uses Json;` reaches a dep declared `as = "Json"` without knowing its internal namespace name.
   trident materializes the alias as a real source file under the build dir (the plan carries only
@@ -2964,3 +3005,48 @@ the plan names.
   itself or to a **direct** `[[dep]]` — reaching a transitive dependency's namespace without
   declaring it directly is a compile error (pnpm/Cargo-style strictness). trident decides the
   adjacency (plan `edge` rows); `leviathan` enforces it.
+
+### 8.3 Versions, integrity, optional services, and trust policy
+
+VCS versions are git tags `vMAJOR.MINOR.PATCH`. Trident applies Minimal Version Selection (the
+maximum of every declared minimum for one module identity), writes the deterministic result and
+canonical source hashes to the companion lock (`trident.toml` → `trident.lock`), and stores source
+under `$TRIDENT_HOME/store/<sha256>/` (default `~/.trident/store`). A present consistent lock is
+used verbatim; editing dependency requirements without re-locking is a loud error. The checksum DB
+is an append-only hash-chained log, so a moved tag or changed source is rejected.
+
+`trident publish` validates a clean, fully tracked package source set, creates (or idempotently
+confirms) its immutable tag, and records the hash. `trident yank` appends policy metadata: fresh
+resolution rejects that version, while an existing lock keeps fetching and verifying it. This is
+yank-never-delete, not unpublish.
+
+The network remains optional and provider-shaped:
+
+- `$TRIDENT_PROXY` selects a filesystem/file/HTTPS static cache with
+  `modules/<encoded-module>/@v/{list,vX.Y.Z.toml,vX.Y.Z.tar}`. The archive contains only declared
+  sources. Hash/lock verification is identical to direct Git, so the proxy is not trusted.
+- `$TRIDENT_INDEX` selects a filesystem/file/HTTPS first-registration-wins map under
+  `names/<encoded-name>`. Only friendly names consult it; explicit VCS paths always bypass it.
+- `trident vendor` plus build flag `--vendor` reads only the committed lock and `./vendor`, with no
+  Git, proxy, or global-store dependency.
+
+An optional `trident.audit.toml` beside the manifest can require review records from named trusted
+auditors and signed provenance from configured public keys for every locked module. Audit records
+pin module, version, and source hash; attestations pin those plus commit, signer identity, and an
+optional artifact hash. Normal `trident audit` remains hash-only when no policy is present.
+
+```toml
+version = 1
+trusted_auditors = ["security-team"]
+audit_files = ["trident.audits.toml"]       # written by `trident audit-record`
+require_attestations = true
+attestation_dirs = ["attestations"]         # files written by `trident attest`/`publish --sign-key`
+
+[[key]]
+identity = "release-ci"
+public_key = "keys/release-ci.pem"
+```
+
+Every relative path is resolved beside the policy file. `[[key]]` entries come last; each binds a
+signed attestation identity to its trusted public key. Signing/verification uses the external
+`openssl` executable only when provenance is requested.
