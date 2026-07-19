@@ -446,5 +446,52 @@ when the bridge is real.
 
 ## 14. Implementation log
 
-*(implementer appends here — starting with the §9 spike result: did LLVM→wasm32 run a
-pure-computation corpus subset and differential-match the oracle?)*
+### W-M0 — the de-risking spike (2026-07-17): **PASS**
+
+LLVM→wasm32 ran a pure-computation corpus subset and differential-matched the oracle,
+byte-for-byte, with **zero compiler edits and zero runtime-ABI changes**. The §1/§2 claim
+holds empirically: the uniform tagged 16-byte `LvValue` compiles and runs on wasm32 and
+needs no monomorphization.
+
+- **Triple:** `wasm32-wasi`. `wasm32-unknown-unknown` also *emits* an object fine (the
+  first probe used it), but the runtime C (`lv_runtime.c` → `snprintf`/`strtod`/`memcpy`/
+  `fmod`) needs a libc, so the spike settled on `wasm32-wasi` + wasi-libc for the runtime
+  and linked as a WASI command module (crt1 → `_start` → `lv_entry.c`'s `main`). No
+  compiler change was needed for either triple — `emitObject(path, triple, optLevel)` took
+  it as a parameter, exactly as §5/§9 predicted.
+- **Toolchain:** clang 18.1.3, wasm-ld (LLD) 18.1.3, wasmtime 46.0.1, wasi-libc
+  `0.0~git20230113` (Ubuntu noble/universe), compiler-rt builtins
+  `libclang_rt.builtins-wasm32-wasi-24.0` (wasi-sdk-24 release — needed for `__multi3`,
+  which wasi-libc's `strtod`/`strtoll` pull in). Compiler under test: master @ `e6bec34`.
+- **Harness:** `tests/spike-wasm/run.sh` + throwaway `tests/spike-wasm/lv_plat_spike.c`
+  (the spike floor — write/map/exit real over WASI, everything else `abort()`; plus dead
+  stubs for the task scheduler and TLS provider, since `lv_task.c`/`lv_tls_none.c` aren't
+  wasm-buildable and `lv_tasks_enabled()→0` sends `lv_entry.c` down the pump path). It
+  compiles `lv_runtime.c`+`lv_loop.c`+`lv_entry.c` for wasm once, then per corpus file:
+  `--native-obj --target wasm32-wasi` → `wasm-ld` → `wasmtime run` → `diff` vs `--ir`.
+  Not wired into CTest (spike §3).
+- **Corpus (29/29 matched):** math, structs, structs_array, generics, collections, loops,
+  match, match_nested, classes, oo, floats, literals, const, sieve, strcmp, bitops,
+  optional, exceptions, cow, maps_set, namespaces, qualified, use, seq, iterator, readonly,
+  class_dispatch, method_refs, named_defaults — i.e. objects, generics, boxed structs,
+  arrays, maps, closures, strings, arithmetic, control flow, exceptions, print. Byte-
+  identical stdout on every one. (`math.ext` alone already exercises int64 min, big-hex
+  radix formatting, transcendentals, and caught exceptions.)
+- **Corroborating signal — the capability gate already works.** Two candidates I first
+  mislabeled pure-compute, `using.ext` (`File`) and `generic_iface.lev` (`Channel`), were
+  rejected by the compiler at emit time with clean `"... is not available on this target"`
+  diagnostics — the hard-03 per-target subset (§3.1) doing its job, not a spike failure.
+- **Known-inert hazards (spike §4) — verified, none bit:** the TLS-model pin
+  (`LlvmGen.cpp` hard-01) produced a linkable object; wasm-ld raised no TLS-reloc
+  complaint. The `[heap]` escaping-tier meter prints to **stderr**, so it never perturbs
+  the stdout differential (the one thing to know when reading a raw `wasmtime` run).
+- **STOP conditions (§12 / doc-00 §8): none triggered.** No LLVM-backend edit, no
+  runtime-ABI change, no runtime fork. Note the spike ran *after* the W-M1 HARD packets
+  (hard-01/02/03/05) had already landed on master, so it also serves as a regression check
+  that those edits keep pure-compute wasm green.
+
+**Verdict:** the type-system question is closed in the affirmative — proceed to W-M1
+scheduling as written. The spike deliverable lives on a throwaway branch (`tests/spike-wasm/`),
+pushed, not merged; it changes no compiler or runtime source. The only real toolchain gap a
+CI lane would need to fill is a wasm sysroot + compiler-rt builtins (both fetched here without
+root), which is the doc-02/03 `build-triple.sh --target wasm32` concern, not the spike's.

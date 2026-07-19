@@ -335,9 +335,11 @@ class string {
     // v1: allocates via toLower(); a non-allocating byte-compare is a follow-up.
     bool equalsIgnoreCase(string other) => length() == other.length() && toLower() == other.toLower();
 
-    // `reverse()` is deliberately NOT implemented here: a byte-reverse is wrong
-    // for UTF-8. Deferred to Track 03's `chars()` — once it lands, this becomes
-    // `chars().reverse().joinToString("")`. Logged so the gap isn't lost.
+    // UTF-8-correct reversal: reverses SCALARS, not bytes ("désert" -> "tréséd"
+    // with the é intact — a byte-reverse would shred every multi-byte sequence).
+    // Ill-formed bytes normalize to U+FFFD via chars() (§3.2 policy). The handoff
+    // promised in techdesign-04 §8 / techdesign-utf8-chars-string-ops.md §4.1.
+    string reverse() => chars().reverse().joinToString("");
 
     // LA-31 ruling R13: SQL LIKE semantics, byte-oriented, anchored full-string
     // match. `%` = any run of bytes incl. empty; `_` = exactly one byte; `\`
@@ -2790,16 +2792,39 @@ namespace meta {
         throw RuntimeException("meta::parseStmts() is compile-time-only");
     }
     class Param  { string name; string type; }
+    // Attribute-value reflection (LA-4 item A, P4-I): a matched attribute already
+    // binds as an instance of its own class (`match @Column(c) ... $c.name`); this
+    // gives the SAME argument values to `$for`-iteration, where only names were
+    // visible before. `args` is positional (attribute-field declaration order,
+    // the same order `evalAttrArgs` fills); each slot carries every primitive
+    // form so the typed accessors need no per-arg type tag. Attribute fields are
+    // int/float/bool/string only (validateAttributeDecl), so four slots suffice.
+    class AttrArg { string s; int i; bool b; float f; bool present; }
+    class Attr {
+        string name;                               // the attribute's name, e.g. "Column"
+        Array<meta::AttrArg> args;                  // positional argument values
+        int    argCount()   => args.length();
+        // A defaulted (not explicitly written) argument reads as None, so
+        // `attr("Column")?.argStr(0) ?? field.name` falls back cleanly.
+        string? argStr(int i)   => args.at(i).present ? args.at(i).s : None;
+        int?    argInt(int i)   => args.at(i).present ? args.at(i).i : None;
+        bool?   argBool(int i)  => args.at(i).present ? args.at(i).b : None;
+        float?  argFloat(int i) => args.at(i).present ? args.at(i).f : None;
+    }
     class Field  {
         string name; string type;
         Array<string> attrs;                       // resolved attribute names
+        Array<meta::Attr> attributes;              // names + reified argument values
         bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
     }
     class Method {
         string name; string returnType;
         Array<meta::Param> params;
         Array<string> attrs;
+        Array<meta::Attr> attributes;              // names + reified argument values
         bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
         int arity() => params.length();
     }
     class Class {
@@ -5325,6 +5350,129 @@ namespace json {
 }
 )prelude";
 
+// --- kPreludeWasm: Track W W-M3 the JS/DOM bridge surface -----------------
+// techdesign-05-dom-bridge.md §2-§6 / hard-06-hostbridge-seam.md. The
+// hand-written v1 `Dom` prelude surface (doc 05 §2): opaque JS values wrapped
+// in handle classes (an `int` slot, nothing more, §2), reached through the
+// generic `std::sysHost*` bridge natives (hard-06), with DOM events surfaced as
+// §13 stream endpoints (§6). Shipped in the SHARED prelude for now (doc 05 §1 /
+// overview §5: "ordinary prelude code until the packaging ruling" — W-M4/doc 06
+// §2 makes it a per-target segment). On native targets the bridge natives raise
+// (a wasm-gained capability); nothing in the shared corpus reaches them, so the
+// four-lane differential is unaffected. Every symbol is namespaced (`Dom`,
+// `std::sysHost*`) so it cannot collide with existing surface.
+const char* kPreludeWasm = R"prelude(
+namespace std {
+    // The JS/DOM host bridge (hard-06). op selects the operation; h0 is the
+    // primary node handle (0 = document/none), h1 a secondary handle (child /
+    // closure-table index), a/b string args ("" when unused). The three
+    // return-type-distinguished decls share one C entry (lvrt_hostcall); the
+    // result's dynamic tag is decided host-side by op. Marshaling — every
+    // Leviathan value <-> JS value conversion — is one reflective routine in
+    // lv_host.js (doc 05 §3), never one import per method.
+    int    sysHostI(string op, int h0, int h1, string a, string b);
+    string sysHostS(string op, int h0, int h1, string a, string b);
+    void   sysHostV(string op, int h0, int h1, string a, string b);
+    // Register a handler closure as a doc-05 §5 ROOT (retained host-side) ->
+    // its closure-table index. addEventListener rides sysHostV with h1 = idx;
+    // removeEventListener rides sysHostV and releases idx; the live count is
+    // sysHostI("cloCount", 0, 0, "", "") (the §5 leak pin).
+    int    sysHostCloReg((int) => void cb);
+    // The reflective round-trip probe (doc 05 §8): marshal v to JS and return a
+    // host-side rendering (exercises every tag). Not a DOM op; pins only.
+    string sysHostEcho<T>(T v);
+}
+
+// A DOM event, handle-wrapped (doc 05 §2). The bridge hands the trampoline a
+// bare int handle; this wraps it so user handlers take a typed DomEvent.
+class DomEvent {
+    int h;
+    new DomEvent(int handle) { h = handle; }
+    int handle() => h;
+    string type() => std::sysHostS("eventType", h, 0, "", "");
+    // value of a form control the event targeted ("" if none) — enough for the
+    // Atlantis demo's input handling without a full Event surface.
+    string targetValue() => std::sysHostS("eventTargetValue", h, 0, "", "");
+}
+
+// A DOM node, handle-wrapped (doc 05 §2): an int slot, nothing more. Leviathan
+// never dereferences the handle — only the JS glue does. Methods chain, mapping
+// 1:1 onto the bridge ops.
+class DomNode {
+    int h;
+    new DomNode(int handle) { h = handle; }
+    int handle() => h;
+    bool exists() => h != 0;                    // getElementById miss -> 0
+
+    DomNode setAttr(string name, string value) {
+        std::sysHostV("setAttribute", h, 0, name, value);
+        return this;
+    }
+    string attr(string name) => std::sysHostS("getAttribute", h, 0, name, "");
+    DomNode setText(string t) {
+        std::sysHostV("setText", h, 0, t, "");
+        return this;
+    }
+    string text() => std::sysHostS("getText", h, 0, "", "");
+    DomNode append(DomNode child) {
+        std::sysHostV("appendChild", h, child.h, "", "");
+        return this;
+    }
+
+    // Events as a §13 stream endpoint (doc 05 §6): one host listener per
+    // subscription feeds the trampoline, which pushes DomEvents into an ordinary
+    // StreamBuffer. The closure is a §5 root; the stream's IDisposable teardown
+    // detaches the listener AND releases the root (removeEventListener), so
+    // `using` / close() returns the closure table to size 0 (the leak pin).
+    InStream<DomEvent> events(string type) {
+        StreamBuffer<DomEvent> buf = StreamBuffer();
+        OutStream<DomEvent> w = OutStream(buf);
+        int idx = std::sysHostCloReg((int eh) => w << DomEvent(eh));
+        std::sysHostV("addEventListener", h, idx, type, "");
+        InStream<DomEvent> r = InStream(buf);
+        int node = h;
+        r.onDispose = () => std::sysHostV("removeEventListener", node, idx, type, "");
+        r.hasDispose = true;
+        return r;
+    }
+
+    // Direct handler form; returns a listener token (the closure index) so a
+    // caller can off() it — the churn-corpus "bind before holding" discipline
+    // (doc 05 §5).
+    int on(string type, (DomEvent) => void cb) {
+        var c = cb;
+        int idx = std::sysHostCloReg((int eh) => { var f = c; f(DomEvent(eh)); });
+        std::sysHostV("addEventListener", h, idx, type, "");
+        return idx;
+    }
+    void off(string type, int listener) {
+        std::sysHostV("removeEventListener", h, listener, type, "");
+    }
+
+    // Synthesize an event on this node — a real DOM dispatchEvent (in a page the
+    // user clicks; a headless harness / test self-dispatches through the same
+    // API, doc 05 §8).
+    void dispatch(string type) {
+        std::sysHostV("dispatchEvent", h, 0, type, "");
+    }
+    void click() { this.dispatch("click"); }
+
+    void release() { std::sysHostV("release", h, 0, "", ""); }
+}
+
+// The document surface (doc 05 §2): the well-known entry points. document-scoped
+// ops ignore the primary handle (h0 = 0). A getElementById miss returns a
+// DomNode with handle 0 (exists() == false).
+namespace Dom {
+    DomNode body()            => DomNode(std::sysHostI("documentBody", 0, 0, "", ""));
+    DomNode create(string t)  => DomNode(std::sysHostI("createElement", 0, 0, t, ""));
+    DomNode textNode(string s)=> DomNode(std::sysHostI("createTextNode", 0, 0, s, ""));
+    DomNode byId(string id)   => DomNode(std::sysHostI("getElementById", 0, 0, id, ""));
+    // The §5 leak-pin meter: live closure roots (0 when every listener is off).
+    int listenerCount()       => std::sysHostI("cloCount", 0, 0, "", "");
+}
+)prelude";
+
 // --- kPreludeExpr: LA-31 expression reification `expr::Expr<F>` -----------
 // The reified-tree node taxonomy. Bodies are trivial field stores only (the
 // checker never walks the prelude — prelude-not-checked rule); constructor
@@ -5507,7 +5655,7 @@ Program Resolver::parsePrelude() {
     preludeFile_.name = "<prelude>";
     preludeFile_.text = std::string(kPreludeCore) + kPreludeStd +
                         kPreludeRest + kPreludeRegexCore + kPreludeRegexApi + kPreludeWeb +
-                        kPreludeExpr;
+                        kPreludeWasm + kPreludeExpr;
     DiagnosticSink dummy;  // the prelude is trusted; ignore its diagnostics
     Lexer lexer(preludeFile_, dummy);
     Parser parser(lexer.tokenize(), preludeFile_, dummy);

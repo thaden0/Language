@@ -1,0 +1,34 @@
+// LA-4 item B (statement-position `$for`, P4 §9.2): a `$for` repeats whole
+// STATEMENTS in a generated body, so a serializer/validator writes its members
+// directly instead of building an array and interpreting it. Here the generated
+// `toRow()` body emits one `add` per @Col field (statement-position), and the
+// generated constructor tail logs one line per field (ctor-position `$for`).
+namespace Ser {
+    attribute Row { }
+    attribute Col { }
+    rule buildRow {
+        match @Row(r) on class C
+        inject `Array<string> toRow() {
+            Array<string> out = [];
+            $for f in C.fields.where((x) => x.hasAttr("Col")) : out = out.add($f.name + "=" + this.$f.toString());
+            return out;
+        }` at member of C
+    }
+    rule traceCtor {
+        match @Row(r) on class C
+        inject `$for f in C.fields.where((x) => x.hasAttr("Col")) : console.writeln("init " + $f.name);`
+               at bottom of C.constructor
+    }
+}
+uses Ser;
+
+@Row
+class Point {
+    @Col int x;
+    @Col int y;
+    string label;                 // not a column
+    new Point(int a, int b) { x = a; y = b; label = "p"; }
+}
+
+Point p = Point(3, 4);
+console.writeln(p.toRow().joinToString(", "));

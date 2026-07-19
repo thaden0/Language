@@ -1,0 +1,13 @@
+// Track W doc 04 §3.2: repeating timers on the wasm lane — the C side
+// re-arms via lv.timer_start after each fire (host setTimeout is one-shot),
+// tick numbers keep the native 1-based count, and a cancel from inside the
+// callback retires the timer (no further re-arm). Pins shape/order, not
+// wall-clock phase (host re-arm is fixed-delay; native dueNs += interval is
+// fixed-rate — the corpus never times phases).
+Promise<int> done = Promise();
+int id = std::sysTimerStart(5, 5, (n) => {
+    console.writeln("tick " + n.toString());
+    if (n == 3) { std::sysTimerCancel(id); done.resolve(n); }
+});
+int x = await done;
+console.writeln("total " + x.toString());

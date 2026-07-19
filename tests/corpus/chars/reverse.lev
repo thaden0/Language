@@ -1,0 +1,18 @@
+// techdesign-utf8-chars-string-ops.md §4.1 — string.reverse(), UTF-8-correct.
+// Reverses SCALARS, not bytes: `chars().reverse().joinToString("")`. A byte
+// reverse would shred every multi-byte sequence; this keeps each scalar intact.
+// Ill-formed bytes normalize to U+FFFD (chars() §3.2 policy), so the reverse of
+// ill-formed input is lossy by design.
+void main() {
+    console.writeln("abc".reverse());        // cba          ASCII
+    console.writeln("".reverse());           //              empty -> empty
+    console.writeln("a".reverse());          // a            single scalar
+    console.writeln("racecar".reverse());    // racecar      palindrome
+    console.writeln("désert".reverse());     // treséd       é stays intact (not byte-shredded)
+    console.writeln("café".reverse());       // éfac
+    console.writeln("𝄞x".reverse());         // x𝄞           astral scalar survives whole
+    console.writeln("a€b".reverse());        // b€a          3-byte scalar intact
+    // double reverse is identity for well-formed input
+    console.writeln("héllo wörld".reverse().reverse());   // héllo wörld
+}
+main();

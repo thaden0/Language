@@ -1480,6 +1480,25 @@ Promise<HttpResponse> sendReq(HttpClient client, string method, Url u,
 
 ---
 
+## Migration note (Sonar DOM D06, 2026-07-19): framework `TextArea` now exists
+
+The framework gained a general `Sonar::TextArea` (`sonar_v2/src/components/textarea.lev`, tech design
+`designs/sonar_v2/dom/techdesign-06-textarea.md`). It closes every gap the local
+`examples/recon/src/ui/textarea.lev` skeleton left open: cell-width cursor math (CJK/emoji-correct
+`cellAt`/`scalarAtCell`), auto-scroll on both axes, a sticky desired-column for vertical moves,
+PageUp/PageDown, word jumps, doc-home/end, an optional line-number gutter, readOnly gating, wide-glyph
+edge clipping, per-keystroke `on:change`/`on:cursor` events, an intrinsic validator, and DOM `<textarea>`
+tag/attr/`value`-channel integration.
+
+**Proposal (owner-approved change, NOT done here as a side effect):** Recon swaps its local `TextArea`
+for the framework one. Blocking difference to reconcile first: Recon's editor carries `^F` JSON
+pretty-print (`formatJson`) and a `rawLanguage`/`dirtyFlag` protocol its request/response panes read.
+The framework component has neither by design (syntax/format concerns are Recon-domain). The clean path
+is a thin `Recon` subclass over `Sonar::TextArea` that re-adds `^F` + the dirty flag via `on:change`,
+rather than keeping the parallel skeleton. Left for a dedicated change.
+
+---
+
 *End of research dossier. Everything needed to design Recon — language, framework, library,
 Postman formats, REST-client mechanics, and the footgun map — is contained above. The designer
 should not need any other file.*

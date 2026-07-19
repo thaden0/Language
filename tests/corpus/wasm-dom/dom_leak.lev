@@ -1,0 +1,25 @@
+// Track W W-M3 (doc 05 §5): the lifetime/leak pin. Register N handlers, then
+// unregister them, and assert the closure-table ROOT returns to size 0 — the
+// bridge must not invent its own leak (the closure table is retained on
+// register, released on removeEventListener; symmetric, audited in one place).
+// Wasm-lane only.
+
+DomNode n = Dom::create("div");
+console.writeln("start: " + Dom::listenerCount());
+
+int a = n.on("click", (e) => {});
+int b = n.on("mouseover", (e) => {});
+int c = n.on("click", (e) => {});
+console.writeln("after register: " + Dom::listenerCount());
+
+n.off("click", a);
+n.off("mouseover", b);
+n.off("click", c);
+console.writeln("after unregister: " + Dom::listenerCount());
+
+// events()-stream form: subscribe then dispose (the IDisposable teardown
+// detaches the listener AND releases the root).
+InStream<DomEvent> s = n.events("click");
+console.writeln("with stream sub: " + Dom::listenerCount());
+s.close();
+console.writeln("after stream close: " + Dom::listenerCount());

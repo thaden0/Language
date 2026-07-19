@@ -17,7 +17,10 @@
 #include "lv_tls.h"      /* LA-2: wrap-in-place send/recv routing + §2.3 loop queries */
 #include "lv_task.h"     /* LA-30 doc 2 §6: dispatch-on-task under the scheduler */
 
-#include <string.h>   /* memcpy — raw in-place array loads (lv_invoke1's idiom) */
+#include <string.h>   /* memcpy — raw in-place array loads (lv_invoke1's idiom).
+                       * Explicit include: glibc pulls it in transitively but
+                       * wasi-libc/mingw/clang-18-cross do not, and clang 18
+                       * makes the implicit declaration a hard error */
 #include <stdlib.h>
 
 /* Runtime-internal bridge to lv_runtime.c's registered dispatch trampoline

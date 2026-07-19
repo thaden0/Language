@@ -1,5 +1,26 @@
 # Request: Metaprogramming Phase-4 Subset — Attribute-Value Reflection First (LA-4/5/6/7)
 
+**Status (2026-07-19): (A) and (B) LANDED.** Pulled forward by the Track W wasm
+bindgen investigation (doc 06). As-built:
+- **(A) Attribute-value reflection** — `meta::Attr`/`meta::AttrArg` with positional
+  typed accessors (`argStr/argInt/argBool/argFloat`, each returning `T?`), plus
+  `Array<meta::Attr> attributes` and `meta::Attr? attr(string)` on `meta::Field`
+  and `meta::Method` (`src/Resolver.cpp` meta prelude; reified in
+  `RuleEngine::buildMetaValue`, `src/Rules.cpp`). A **defaulted** argument reads as
+  `None` — so `$for f in C.fields.where(...).map((x) => x.attr("Column")?.argStr(0) ?? x.name)`
+  renames snake_case columns and falls back to the field name for a bare `@Column`
+  (the exact acceptance case). Corpus: `tests/corpus/meta/rule_attr_values.ext`.
+- **(B) Statement-position `$for`** (P4 item J) — a `StmtKind::ForSplice` parsed in
+  statement fragments (and, as a bounded generalization the `at namespace`/`at member`
+  anchors already imply, item/member position), expanded by
+  `RuleEngine::cloneStmtInto` (the statement-list analogue of `cloneArrayElements`).
+  Generated `toRow`/validator members are now direct. Corpus:
+  `tests/corpus/meta/rule_stmt_for.ext`. Both green on `--run`, `--ir`, and
+  `--expand` round-trip; full meta suite regression-clean.
+
+Still open: (C) named attribute args, (D) Layer-D `rewrites`/`$body`, (E) inherited/
+mixin field visibility, (F) `meta::Class.attrs`, (G) memberref attribute values.
+
 **From:** Atlantis framework (Tracks 02, 03, 06). **Date:** 2026-07-06.
 **Priority:** P1 — item (A) below is wanted by AG-4 (ORM, 2026-11-10); the rest are
 ergonomics that can trail. These are all already-designed Phase-4 items

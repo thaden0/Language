@@ -1,0 +1,13 @@
+// Track W doc 04 §3.2's ordering pin: dispatch order for simultaneously-due
+// timers preserves the registry's due/creation order — B before C (equal due,
+// registration order), A first (earlier due, later registration). The host
+// fires strictly through its own event loop, whose same-due setTimeout order
+// is creation order; natively lvrt_loop_step sorts due timers by (due, id).
+// Diffed against --ir by the wasm lane (end-to-end mode).
+Promise<int> done = Promise();
+std::sysTimerStart(20, 0, (n) => { console.writeln("B"); });
+std::sysTimerStart(20, 0, (n) => { console.writeln("C"); });
+std::sysTimerStart(5, 0, (n) => { console.writeln("A"); });
+std::sysTimerStart(35, 0, (n) => { done.resolve(0); });
+int x = await done;
+console.writeln("done " + x.toString());

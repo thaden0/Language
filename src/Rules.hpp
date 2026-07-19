@@ -51,7 +51,11 @@ public:
 
     // The evaluated fields of one attribute use (Phase 2's rule input):
     // field name -> compile-time value, in the attribute's field order.
-    using AttrValue = std::vector<std::pair<std::string, Value>>;
+    // `provided` distinguishes an explicitly-written argument from one that
+    // fell back to the field's default — item A's `argStr(i)` reads as None on
+    // a defaulted arg so `attr("X")?.argStr(0) ?? fallback` works (LA-4 §2.2).
+    struct AttrArgVal { std::string field; Value val; bool provided; };
+    using AttrValue = std::vector<AttrArgVal>;
     const std::map<const AttrUse*, AttrValue>& attrValues() const { return attrValues_; }
 
     const std::vector<ExpansionRecord>& expansions() const { return expansions_; }
@@ -312,6 +316,10 @@ private:
     // clone + hole substitution (§5.5)
     void collectTemplateLocals(const Stmt* s);   // populate renames_ (hygiene)
     StmtPtr cloneStmt(const Stmt* s, Bindings& b, bool& err);
+    // Clone one template statement/decl/member into `out`, expanding a
+    // statement-position `$for` (StmtKind::ForSplice) into one clone per
+    // iterated item — the statement-list analogue of cloneArrayElements (item J).
+    void cloneStmtInto(const Stmt* s, Bindings& b, bool& err, std::vector<StmtPtr>& out);
     ExprPtr cloneExpr(const Expr* e, Bindings& b, bool& err);
     TypeRefPtr cloneType(const TypeRef* t, Bindings& b, bool& err);
     Param cloneParam(const Param& p, Bindings& b, bool& err);

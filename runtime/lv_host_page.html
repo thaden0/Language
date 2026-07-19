@@ -1,0 +1,26 @@
+<!-- Track W — manual browser loader (W-M1 doc 03 §3; async-aware since W-M2,
+     doc 04). usage: serve this directory (e.g. `python3 -m http.server`) and
+     open lv_host_page.html?m=<name>.wasm — output goes to the page, not just
+     the console, so a headless-less spot check needs nothing but a browser.
+     Async programs need JSPI (Chrome >= 137); the host fails loud naming the
+     floor when it is absent. -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Leviathan wasm-browser loader</title>
+<pre id="out"></pre>
+<script type="module">
+  import { instantiate, run } from './lv_host.js';
+  const out = document.getElementById('out');
+  const mod = new URLSearchParams(location.search).get('m') || 'a.wasm';
+  const sink = (fd, text) => {
+    out.textContent += text;
+    (fd === 2 ? console.error : console.log)(text);
+  };
+  try {
+    const handle = await instantiate(mod, { sink });
+    const code = await run(handle);          // settles when the loop is empty (doc 04 §3.4)
+    out.textContent += `\n[exit ${code}]\n`;
+  } catch (e) {
+    out.textContent += `\n[error] ${e}\n`;
+  }
+</script>

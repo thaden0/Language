@@ -45,6 +45,7 @@ namespace Sonar { namespace Dom {
         if (c is MenuItem)   { c.label(t);    return; }
         if (c is ContentBar) { c.setLeft(t);  return; }
         if (c is Input)      { c.setValue(t); return; }
+        if (c is TextArea)   { c.setText(t);  return; }
         if (c is Modal)      { c.setTitle(t); return; }
         if (c is CheckBox)   { c.setLabel(t); return; }
         // no text channel on this leaf: the text child is ignored (documented)
@@ -90,6 +91,14 @@ namespace Sonar { namespace Dom {
             if (name == "placeholder") { c.setPlaceholder(value); return; }
             if (name == "value")       { c.setValue(value); return; }
             if (name == "maxLength")   { c.setMaxLength(intAttr(name, value)); return; }
+        }
+        if (c is TextArea) {
+            // no maxLength v1 (scalar-count policy on multi-line text is app
+            // domain — a deliberate divergence from the T04 Input table, §6).
+            if (name == "value")    { c.setText(value); return; }
+            if (name == "readOnly") { c.readOnly(value == "true"); return; }
+            if (name == "tabWidth") { c.tabWidth(intAttr(name, value)); return; }
+            if (name == "gutter")   { c.gutter(value == "true"); return; }
         }
         if (c is Text) {
             if (name == "align") { c.align(alignFromName(value)); return; }

@@ -42,11 +42,12 @@ packet = one commit.
 
 | HARD packet | item | what it edits | status |
 |---|---|---|---|
-| `hard-01-tls-pin.md` | TLS-model wasm branch | `LlvmGen.cpp:3343-3355` | scheduled (W-M1) |
-| `hard-02-link-lane.md` | wasm link lane | `main.cpp:600-673` | scheduled (W-M1) |
-| `hard-03-capability-gate.md` | capability gate + `lvrt_unsupported` | `LlvmGen.cpp:2457ff` (CallNativeFn), pattern of `:2542,2565`; one new `lvrt_*` symbol | scheduled (W-M1) |
+| `hard-01-tls-pin.md` | TLS-model wasm branch | `LlvmGen.cpp:3343-3355` | LANDED |
+| `hard-02-link-lane.md` | wasm link lane | `main.cpp:600-673` | LANDED (doc 02 §6/§7 verification found the `--export=main` flag couldn't resolve wasm's mangled `main` symbol — small follow-up fix landed alongside the archive, see lv_entry.c) |
+| `hard-03-capability-gate.md` | capability gate + `lvrt_unsupported` | `LlvmGen.cpp:2457ff` (CallNativeFn), pattern of `:2542,2565`; one new `lvrt_*` symbol | LANDED |
 | `hard-04-await-routing.md` | Await → `lvrt_await` routing | `LlvmGen.cpp` Await path | CLOSED — NOT NEEDED (2026-07-17 audit) |
 | `hard-05-callclosure-seam.md` | `lvrt_callclosure` ABI addition | `lv_runtime.c` / `lv_abi.h` | LANDED (2026-07-17) |
+| `hard-06-hostbridge-seam.md` | `lvrt_hostcall`/`host_clo_reg`/`hostecho` ABI addition (W-M3 DOM bridge) | `LlvmGen.cpp` CallNativeFn (3 rows) + `lv_abi.h` | LANDED (2026-07-18) — doc 05's "no HARD" bet did not hold; four-lane differential byte-identical (native stubs raise, unreached by the corpus) |
 
 Everything else in the track is not HARD: `lv_plat_wasm.c`, `lv_task_wasm.c`, JS glue,
 `build-triple.sh`, prelude/bindgen rules, corpus, demos, docs.
@@ -127,9 +128,9 @@ pattern (`X64Gen.cpp:3859-3860`; Windows precedent inside LlvmGen itself at
 | milestone | contents | docs | gate to pass |
 |---|---|---|---|
 | **W-M0** | de-risking spike: LLVM→wasm32, pure compute, differential vs oracle | 01 | runs + matches on the pure-compute corpus subset. **No approval needed; throwaway branch.** |
-| **W-M1** | real backend column: TLS branch, link lane, `liblvrt-wasm32.a`, minimal floor (write/time/random/exit), capability gate | 02, 03 | pure-compute + console corpus green in `wasmtime` **and** a browser loader; gated natives diagnose cleanly |
+| **W-M1** | real backend column: TLS branch, link lane, `liblvrt-wasm32.a`, minimal floor (write/time/random/exit), capability gate | 02, 03 | pure-compute + console corpus green in `wasmtime` **and** a browser loader; gated natives diagnose cleanly — **LANDED (2026-07-17), gate met**: the 28-file pure-compute+console cluster + the gated-diagnostic pin are green under `tests/wasm_node_run.mjs` (Node's native `WebAssembly`, standing in for a headless `wasmtime` — plain `wasmtime run` cannot supply this target's custom `lv.*` imports, see techdesign-03-floor-wasm.md §3), wired as CTest's `corpus_wasm`; `runtime/lv_host_page.html` spot-checked in real headless Chrome (`--dump-dom`), byte-identical against `--ir` |
 | **W-M2** | async: JSPI task realization, timers, promise settle, `fetch` as a stream endpoint; Asyncify fallback lane proven once then shelved | 04 | await/timer/fetch corpus green in Chrome (JSPI); differential vs IR interp on the async corpus |
-| **W-M3** | DOM bridge: marshaler, handle table, closure trampoline, events-as-streams, `@extern` bindgen | 05, 06 | "hello DOM" demo — a Leviathan program builds a DOM tree, handles a click, round-trips strings |
+| **W-M3** | DOM bridge: marshaler, handle table, closure trampoline, events-as-streams, `@extern` bindgen | 05, 06 | "hello DOM" demo — a Leviathan program builds a DOM tree, handles a click, round-trips strings. **Doc 05 part 1 LANDED (2026-07-18, gate met)**: the marshaler + handle table + closure trampoline + events-as-streams + the `hard-06` seam are green under `tests/run_wasm_dom.sh` (hello-DOM, marshaler round-trip, string, leak, throwing-handler pins). Remaining W-M3: doc 06 §1's `@extern` bindgen (replaces the hand-written `Dom` stubs) + `fetch` (§9 item 6). |
 | **W-M4** | ship: per-target stdlib consumption, Atlantis-client demo, docs sweep | 06 | Atlantis client demo; `info.md` §20 + `docs/reference.md` matrix row landed; track moved to `designs/complete/` |
 
 **Execute strictly in order. One milestone = one review point.** W-M0 may start immediately.
