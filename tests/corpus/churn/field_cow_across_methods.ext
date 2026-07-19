@@ -1,3 +1,4 @@
+// XFAIL-ELF: frozen X64Gen has the same CallDyn consumed-receiver leak; bug #90 scoped LLVM only.
 // Churn corpus (ARC leak net): a class-field Array<T> self-appended
 // (`items = items.add(...)`/`items = items.skip(...)`) across two SEPARATE
 // method calls on the same object. `skip` is an in-language (prelude)
