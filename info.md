@@ -1477,8 +1477,10 @@ dev     = false
   resolves by MVS. VCS sources are pinned by `trident.lock`, verified against the tamper-evident
   checksum log, and deduplicated in `$TRIDENT_HOME/store/<sha256>/`. `trident vendor` + `--vendor`
   is the network-free path; `$TRIDENT_PROXY` is an optional static cache and `$TRIDENT_INDEX` an
-  optional first-wins name→VCS-path map. Neither service is mandatory. `dev = true` is a
-  development-only dep, excluded from shippable-artifact modes.
+  optional first-wins name→VCS-path map. Neither service is mandatory. The resolved external
+  require graph must be acyclic: fresh MVS and lock-verbatim reads both reject a cycle with its
+  complete selected-version chain. `dev = true` is a development-only dep, excluded from
+  shippable-artifact modes.
 - **`as`** aliases a dependency's exported namespaces into a synthesized local namespace
   (`uses Client;` reaches a dep declared `as = "Client"`), so a consumer never has to know the
   dependency's internal namespace name.
@@ -2090,9 +2092,9 @@ kind is under the ARC discipline; the one remaining asterisk is true reference c
 (§15, §19 #10). Still boxed: `Array<T>`
 elements generally — the dense/columnar layout (§9 value
 types) beyond arrays of plain structs is the next major work. The project/file system (§12.8)
-and full Trident package manager (local + VCS deps, MVS/lock/store/integrity, vendoring,
-publish/yank, optional proxy/index, and provenance policy) are also implemented and share this
-same front end.
+and full Trident package manager (local + VCS deps, acyclic MVS/lock graphs,
+store/integrity, vendoring, publish/yank, optional proxy/index, and provenance policy)
+are also implemented and share this same front end.
 
 ---
 
@@ -2122,8 +2124,8 @@ same front end.
   remaining asterisk is true reference cycles (observed via timer-callback capture; not yet
   collected — §19 #10).
 - **Project/file system + package manager** (§12.8): manifests, glob sources, function- or
-  file-shaped entry points, local/VCS deps, MVS, lock/store/integrity, publish/yank, optional
-  services, `as` aliasing, and phantom-dependency prevention — split across **`trident`**
+  file-shaped entry points, local/VCS deps, acyclic MVS/lock graphs, store/integrity,
+  publish/yank, optional services, `as` aliasing, and phantom-dependency prevention — split across **`trident`**
   (package manager, owns `trident.toml`) and **`leviathan`** (pure compiler, consumes a build
   plan); the old language-literal `project.mf` is gone.
 - **`char`, `Block`, `enum` value/reference types** (Track 03, §9): the object mask applied to a

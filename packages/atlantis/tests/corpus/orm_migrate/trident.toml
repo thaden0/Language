@@ -1,0 +1,8 @@
+name = "atlantis-orm-migrate-corpus"
+entry = "main"
+sources = ["migrate.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

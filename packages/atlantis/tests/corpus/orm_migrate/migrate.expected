@@ -1,0 +1,30 @@
+[sql] CREATE TABLE IF NOT EXISTS `schema_migrations` (`name` VARCHAR(255) PRIMARY KEY, `hash` CHAR(64) NOT NULL, `appliedAt` DATETIME(6) NOT NULL) :: []
+[sql] SELECT `name`, `hash` FROM `schema_migrations`
+[sql] CREATE TABLE `gadgets` (`id` BIGINT PRIMARY KEY AUTO_INCREMENT, `label` VARCHAR(255) NOT NULL) :: []
+[sql] INSERT INTO `schema_migrations` (`name`, `hash`, `appliedAt`) VALUES (?, ?, ?) :: ['0001_create_gadgets',<hash>,<dt>]
+[sql] ALTER TABLE `gadgets` ADD COLUMN `weight` BIGINT NULL :: []
+[sql] INSERT INTO `schema_migrations` (`name`, `hash`, `appliedAt`) VALUES (?, ?, ?) :: ['0002_add_weight',<hash>,<dt>]
+first run applied=2
+[sql] CREATE TABLE IF NOT EXISTS `schema_migrations` (`name` VARCHAR(255) PRIMARY KEY, `hash` CHAR(64) NOT NULL, `appliedAt` DATETIME(6) NOT NULL) :: []
+[sql] SELECT `name`, `hash` FROM `schema_migrations`
+second run applied=0
+[sql] CREATE TABLE IF NOT EXISTS `schema_migrations` (`name` VARCHAR(255) PRIMARY KEY, `hash` CHAR(64) NOT NULL, `appliedAt` DATETIME(6) NOT NULL) :: []
+[sql] SELECT `name`, `hash` FROM `schema_migrations`
+tamper throws: yes
+fork throws: yes
+CREATE TABLE `gadgets` (
+  `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+  `label` VARCHAR(255) NOT NULL,
+  `weight` BIGINT NULL,
+  `createdAt` DATETIME(6),
+  `updatedAt` DATETIME(6)
+);
+class M_0003_next : Migration {
+    string name() => "0003_next";
+    string parent() => "0002_add_weight";
+    Array<string> up() => [
+        // authored SQL here (suggested DDL: runner.suggestedDdl(proto))
+    ];
+}
+
+[done]

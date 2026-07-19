@@ -1,0 +1,2 @@
+id=int,name=string,maybe=int | None,when=DateTime,kind=Kind,parent=Rel<Post>,children=RelMany<Post>
+id,name,maybe,when,kind

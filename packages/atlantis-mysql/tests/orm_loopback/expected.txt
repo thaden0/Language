@@ -1,0 +1,5 @@
+[find] 7/ada new=false
+[identity] same=true
+[save] id=55 sealed=true
+[wire] prepares=2 executes=2
+[done]

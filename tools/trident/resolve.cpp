@@ -624,6 +624,20 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
         }
     }
 
+    // A trident-written lock can only contain a graph that passed the
+    // post-convergence MVS check. Recheck the verbatim path before any
+    // materialization so a hand-edited/corrupted cycle never triggers a
+    // fetch and no resolution path accepts it.
+    if (usedLock) {
+        std::string cycle = findRequireCycle(selected);
+        if (!cycle.empty()) {
+            vr.err = "trident.lock declares a require cycle (" + cycle +
+                     ") — a trident-written lock is always acyclic, so this file was "
+                     "hand-edited or corrupted — run `trident lock`";
+            return vr;
+        }
+    }
+
     // Materialize every selected entry — idempotent (store.cpp): a cache
     // hit when `usedLock` found it already fetched, a real (network) fetch
     // only on a genuinely cold cache, matching ordinary package-manager UX

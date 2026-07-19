@@ -1,0 +1,28 @@
+// Regression floor for bug #92 (attribute class shadowing ordinary types) and
+// the cross-package ORM entity flow: with BOTH `uses Atlantis::Orm` (which
+// declares the @Row ATTRIBUTE) and `uses Atlantis::Data` (which declares the
+// Row CLASS) imported, a bare `Row` must resolve to the class — construction,
+// field reads, byName, and a direct User::FromRow must all work.
+uses Atlantis::Orm;
+uses Atlantis::Data;
+
+@Table("users")
+class User : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string name;
+}
+
+void main() {
+    Array<string | int | float | bool | None> cells = [];
+    cells = cells.add(7);
+    cells = cells.add("ada");
+    Map<string, int> idx = Map();
+    idx["id"] = 0;
+    idx["name"] = 1;
+    Row r = Row(cells, idx);
+    console.writeln("cells=" + r.cells.length().toString());
+    console.writeln("has id=" + r.index.has("id").toString());
+    User u = User::FromRow(r);
+    console.writeln(u.id.toString() + "/" + u.name + " new=" + u.isNew().toString());
+}

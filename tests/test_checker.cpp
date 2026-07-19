@@ -168,6 +168,18 @@ int main() {
           "void g() { int a = N::f(1); string b = N::f(\"x\"); }");
     ERRORS("namespace N { int f(int a) => a; string f(string a) => a; } "
            "void g() { int a = N::f(\"x\"); }");                    // string overload -> string
+    // Track 03 §5 problem #1: a bare char literal argument must prefer the
+    // `string` overload over the `char` one, regardless of declaration order
+    // (back-compat: existing `f(string)` call sites with single-quoted
+    // literals must not silently start binding `f(char)`).
+    CLEAN("int f(string s) => 1; bool f(char c) => true; "
+          "void g() { int a = f('m'); }");
+    ERRORS("int f(string s) => 1; bool f(char c) => true; "
+           "void g() { bool b = f('m'); }");                        // char loses to string
+    CLEAN("bool f(char c) => true; int f(string s) => 1; "
+          "void g() { int a = f('m'); }");                          // reversed decl order
+    ERRORS("bool f(char c) => true; int f(string s) => 1; "
+           "void g() { bool b = f('m'); }");                        // char still loses
     // (!=) derives from (==) on classes (returns bool).
     CLEAN("class C { bool (==)(int v) => true; } "
           "void f() { C c = C(); bool b = c != 5; }");

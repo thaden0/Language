@@ -1,0 +1,38 @@
+// ORM M0 P3 (techdesign-06-orm.md §11): this.$f as assignment TARGET inside a
+// $for array-literal element (FromRow Shape A). Also probes
+// assignment-as-expression wrapped in a step() helper.
+// Placement: root Atlantis (P1 fallback).
+namespace Atlantis {
+    attribute Table { string name; }
+    int __ormStep(int x) => 0;
+    int __ormFromDbByName(Array<int> src, Array<string> cols, string name) {
+        int i = 0;
+        while (i < cols.length()) {
+            if (cols.at(i) == name) { return src.at(i); }
+            i = i + 1;
+        }
+        return -1;
+    }
+    rule ormCols {
+        match @Table(t) on class C
+        inject `Array<string> __ormCols() => [ $for f in C.fields : $f.name ];`
+            at member of C
+    }
+    rule ormFromRow {
+        match @Table(t) on class C
+        inject `new FromRow(Array<int> src) {
+            Array<int> _fx = [ $for f in C.fields :
+                Atlantis::__ormStep(this.$f = Atlantis::__ormFromDbByName(src, this.__ormCols(), $f.name)) ];
+        }` at member of C
+    }
+}
+uses Atlantis;
+
+@Table("users")
+class User {
+    int id = 0;
+    int age = 0;
+}
+
+User u = User::FromRow([70, 35]);
+console.writeln(u.id.toString() + "/" + u.age.toString());

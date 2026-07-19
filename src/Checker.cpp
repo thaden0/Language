@@ -1842,11 +1842,21 @@ Symbol* Checker::hygienicClass(const Expr* e) const {
 // scope hide it. Used only for the explicit `C::Label()` constructor spelling,
 // where the qualifier itself states that a type/constructor is intended.
 Symbol* Checker::visibleClass(std::string_view name) const {
+    // Attribute class symbols only name types behind `@` — prefer a real class
+    // when both are visible (e.g. @Row vs Atlantis::Data::Row), falling back
+    // to the attribute hit only when nothing else matches.
+    Symbol* attrHit = nullptr;
     for (const Scope* sc = scope_; sc; sc = sc->parent)
         if (const std::vector<Symbol*>* syms = sc->localLookup(name))
             for (Symbol* s : *syms)
-                if (s->kind == SymbolKind::Class) return s;
-    return nullptr;
+                if (s->kind == SymbolKind::Class) {
+                    if (s->decl && s->decl->isAttribute) {
+                        if (!attrHit) attrHit = s;
+                    } else {
+                        return s;
+                    }
+                }
+    return attrHit;
 }
 
 // bug.md #82: mirrors Resolver::resolveType's Named-path walk (§12) for
@@ -2901,9 +2911,16 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             // Applied here in call-argument applicability so a lone `char`
             // overload isn't rejected outright; the literal is marked below only
             // for the WINNING candidate (never during a losing candidate's scan).
+            // Scored BELOW the exact-match tier (1, not 2): a literal's default
+            // type is `string`, so an `f(string)` sibling already scores 2 here
+            // via the exact-match branch above. Track 03 §5 problem #1's
+            // back-compat rule ("`string` wins when both f(char)/f(string)
+            // exist") must hold regardless of declaration order, which a tied
+            // score would leave to first-declared-wins — scoring the char match
+            // strictly lower makes `string` win by score, not by luck of order.
             if (pt.canonical == "char" &&
                 isCharLiteral(call->list[static_cast<size_t>(ai)].get())) {
-                score += 2; continue;
+                score += 1; continue;
             }
             if (assignable(at, pt)) { score += 1; continue; }
             if (hasExplicit) {

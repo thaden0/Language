@@ -58,5 +58,28 @@ if [ $why_rc -ne 0 ] || ! grep -qF "github.com/x/json@1.1.0" <<<"$why_out"; then
     echo "FAIL vcs_app (trident why)"; cat "$work/why.err"; echo "$why_out"; fail=1
 fi
 
-if [ $fail -eq 0 ]; then echo "trident vcs_app (P2.1e/GT3) integration checked"; fi
+# G-CYC1: a lock-verbatim resolution rejects a hand-edited cycle before
+# materialization, and the named repair (`trident lock`) really repairs it.
+if [ -f trident.lock ]; then
+    sed -i '/^hash = /a requires = ["github.com/x/json@1.1.0"]' trident.lock
+    if "$trident" build . --leviathan "$leviathan" >"$work/cycle.out" 2>"$work/cycle.err"; then
+        echo "FAIL vcs_app (cyclic lock was accepted)"; fail=1
+    else
+        if ! grep -qF "require cycle" "$work/cycle.err"; then
+            echo "FAIL vcs_app (cyclic lock error omitted cycle)"; cat "$work/cycle.err"; fail=1
+        fi
+        if ! grep -qF 'run `trident lock`' "$work/cycle.err"; then
+            echo "FAIL vcs_app (cyclic lock error omitted repair)"; cat "$work/cycle.err"; fail=1
+        fi
+    fi
+
+    if ! "$trident" lock . >"$work/relock.out" 2>"$work/relock.err"; then
+        echo "FAIL vcs_app (trident lock did not repair cycle)"; cat "$work/relock.err"; fail=1
+    elif ! "$trident" build . --leviathan "$leviathan" \
+            >"$work/rebuild.out" 2>"$work/rebuild.err"; then
+        echo "FAIL vcs_app (build after cycle repair)"; cat "$work/rebuild.err"; fail=1
+    fi
+fi
+
+if [ $fail -eq 0 ]; then echo "trident vcs_app (P2.1e/GT3 + G-CYC1) integration checked"; fi
 exit $fail

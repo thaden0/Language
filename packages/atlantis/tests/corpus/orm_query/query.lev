@@ -1,0 +1,402 @@
+// Atlantis Track 06 — ORM M2 corpus (techdesign-06-orm.md §3, §6.1, §13 M2).
+// The Leviathan-lambda query surface over LA-31 trees: where/orderBy/take/
+// skip/first/firstOrNone/count/exists/toSql, renderer + binds, set/delete —
+// plus the §3.4 consistency law: every predicate is run BOTH ways (closure
+// leg vs the reified tree through the embedded expr::eval walker) and the
+// verdicts diffed, and the rendered SQL is asserted via the captured-SQL log.
+uses Atlantis::Orm;
+uses Atlantis::Data;
+
+// ---- deterministic output: redact wall-clock DATETIME params ----
+string redact(string | int | float | bool | None v) {
+    match (v) {
+        string => {
+            if (v.length() >= 19 && v.subStr(4, 1) == "-" && v.subStr(7, 1) == "-" &&
+                v.subStr(10, 1) == " ") { return "<dt>"; }
+            return "'" + v + "'";
+        }
+        int => { return v.toString(); }
+        float => { return v.toString(); }
+        bool => { if (v) { return "true"; } return "false"; }
+        None => { return "NULL"; }
+    }
+}
+
+// ---- FakeDriver ----
+class FakeTx : ITransaction {
+    new FakeTx() { console.writeln("[sql] BEGIN"); }
+    Promise<void> commit() {
+        console.writeln("[sql] COMMIT");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    Promise<void> rollback() {
+        console.writeln("[sql] ROLLBACK");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    void close() { }
+}
+class FakeConn : IDbConnection {
+    FakePool owner;
+    new FakeConn(FakePool owner) { this.owner = owner; }
+    Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) { shown = shown.add(redact(p)); }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        return Promise(this.owner.next());
+    }
+    Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) { shown = shown.add(redact(p)); }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        return Promise(ExecResult(3, 0));
+    }
+    Promise<ITransaction> begin() {
+        Promise<ITransaction> p = Promise();
+        p.resolve(FakeTx());
+        return p;
+    }
+    void close() { }
+}
+class FakePool : IDbPool {
+    Array<ResultSet> queue = [];
+    FakeConn conn;
+    new FakePool() { this.conn = FakeConn(this); }
+    Promise<IDbConnection> acquire() {
+        Promise<IDbConnection> p = Promise();
+        p.resolve(this.conn);
+        return p;
+    }
+    void release(IDbConnection c) { }
+    void push(ResultSet rs) { this.queue = this.queue.add(rs); }
+    ResultSet next() {
+        if (this.queue.length() == 0) { return ResultSet([], []); }
+        ResultSet head = this.queue.at(0);
+        this.queue = this.queue.skip(1);
+        return head;
+    }
+}
+Array<string | int | float | bool | None> dbv() {
+    Array<string | int | float | bool | None> a = [];
+    return a;
+}
+Row mkRow(Array<string> cols, Array<string | int | float | bool | None> cells) {
+    Map<string, int> idx = Map();
+    int i = 0;
+    while (i < cols.length()) {
+        idx[cols.at(i)] = i;
+        i = i + 1;
+    }
+    return Row(cells, idx);
+}
+
+// ---- entities ----
+@Table("products")
+class Product : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string name;
+    float price = 0.0;
+    int qty = 0;
+    bool active = true;
+    string? tag = None;
+}
+
+@Table("sditems")
+class SdItem : Model, SoftDelete {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string label;
+}
+
+Array<string> productCols() { return ["id", "name", "price", "qty", "active", "tag"]; }
+Row productRow(int id, string name, float price, int qty, bool active, string | int | float | bool | None tag) {
+    return mkRow(productCols(), dbv().add(id).add(name).add(price).add(qty).add(active).add(tag));
+}
+
+// ---- the §3.4 walker (canonical expr::eval, R14 — embedded verbatim) ----
+bool evalTruth(string | int | float | bool | None v) {
+    match (v) {
+        bool => { return v; }
+        else => { return false; }
+    }
+}
+string asStr(string | int | float | bool | None v) {
+    match (v) {
+        string => { return v; }
+        else   => { return ""; }
+    }
+}
+bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        None => { match (b) { None => { return true; }  else => { return false; } } }
+        int  => { match (b) { int  => { return a == b; } else => { return false; } } }
+        float=> { match (b) { float=> { return a == b; } else => { return false; } } }
+        bool => { match (b) { bool => { return a == b; } else => { return false; } } }
+        string => { match (b) { string => { return a == b; } else => { return false; } } }
+    }
+}
+string | int | float | bool | None dbNum(string op,
+        string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        int => { match (b) { int => {
+            int x = a; int y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+            if (op == "%")  return x % y;
+        } else => { } } }
+        float => { match (b) { float => {
+            float x = a; float y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+        } else => { } } }
+        string => { match (b) { string => {
+            if (op == "+") return a + b;
+        } else => { } } }
+        else => { }
+    }
+    match (a) { None => { } else => { match (b) { None => { } else => {
+        throw RuntimeException("expr::eval: bad operands for " + op); } } } }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return false;
+    return None;
+}
+string | int | float | bool | None evalNode(
+        expr::Node n,
+        (Array<string>) => string | int | float | bool | None rec,
+        Array<string | int | float | bool | None> binds,
+        Array<string | int | float | bool | None> arrayBind0) {
+    match (n) {
+        expr::Field => { return rec(n.path); }
+        expr::Lit   => { return n.v; }
+        expr::Bind  => { return binds[n.slot]; }
+        expr::Un    => {
+            expr::Un u = n;
+            string | int | float | bool | None inner = evalNode(u.e, rec, binds, arrayBind0);
+            if (u.op == "!") return !evalTruth(inner);
+            match (inner) {
+                int   => { return 0 - inner; }
+                float => { return 0.0 - inner; }
+                else  => { return None; }
+            }
+        }
+        expr::Bin   => {
+            expr::Bin b = n;
+            string | int | float | bool | None lv = evalNode(b.l, rec, binds, arrayBind0);
+            string | int | float | bool | None rv = evalNode(b.r, rec, binds, arrayBind0);
+            if (b.op == "&&") return evalTruth(lv) && evalTruth(rv);
+            if (b.op == "||") return evalTruth(lv) || evalTruth(rv);
+            if (b.op == "==") return dbEq(lv, rv);
+            if (b.op == "!=") return !dbEq(lv, rv);
+            return dbNum(b.op, lv, rv);
+        }
+        expr::Call  => {
+            expr::Call c = n;
+            if (c.name == "contains" && c.args.length() == 1) {
+                match (c.recv) {
+                    expr::Bind => {
+                        string | int | float | bool | None needle =
+                            evalNode(c.args[0], rec, binds, arrayBind0);
+                        int k = 0;
+                        while (k < arrayBind0.length()) {
+                            if (dbEq(arrayBind0[k], needle)) return true;
+                            k = k + 1;
+                        }
+                        return false;
+                    }
+                    else => { }
+                }
+            }
+            string recvS = asStr(evalNode(c.recv, rec, binds, arrayBind0));
+            string arg0S = asStr(evalNode(c.args[0], rec, binds, arrayBind0));
+            if (c.name == "like")       return recvS.like(arg0S);
+            if (c.name == "ilike")      return recvS.ilike(arg0S);
+            if (c.name == "startsWith") return recvS.startsWith(arg0S);
+            if (c.name == "endsWith")   return recvS.endsWith(arg0S);
+            if (c.name == "contains")   return recvS.contains(arg0S);
+            throw RuntimeException("expr::eval: non-whitelisted call " + c.name);
+        }
+        else => { throw RuntimeException("expr::eval: unhandled node"); }
+    }
+}
+
+// fixture accessor for the tree leg
+(Array<string>) => string | int | float | bool | None accessorFor(Product p) {
+    Product q = p;
+    return (path) => {
+        if (path[0] == "id") { return q.id; }
+        if (path[0] == "name") { return q.name; }
+        if (path[0] == "price") { return q.price; }
+        if (path[0] == "qty") { return q.qty; }
+        if (path[0] == "active") { return q.active; }
+        if (path[0] == "tag") { return q.tag; }
+        return None;
+    };
+}
+
+// run one predicate both ways over the fixtures and diff verdicts (§3.4)
+string differential(string label, expr::Expr<(Product) => bool> e,
+                    Array<Product> fixtures,
+                    Array<string | int | float | bool | None> arrayBind0) {
+    var closure = e.fn;
+    string closureLeg = "";
+    string treeLeg = "";
+    bool agree = true;
+    for (Product p in fixtures) {
+        bool c = closure(p);
+        var rec = accessorFor(p);
+        bool t = evalTruth(evalNode(e.tree, rec, e.binds, arrayBind0));
+        if (c) { closureLeg = closureLeg + "1"; } else { closureLeg = closureLeg + "0"; }
+        if (t) { treeLeg = treeLeg + "1"; } else { treeLeg = treeLeg + "0"; }
+        if (c != t) { agree = false; }
+    }
+    return label + " closure=" + closureLeg + " tree=" + treeLeg +
+           " agree=" + agree.toString();
+}
+
+class AppDb : Db {
+    Repo<Product> products;
+    Repo<SdItem> sditems;
+    new AppDb(IDbPool p) {
+        Db::Db(p);
+        this.products = this.repo(() => Product());
+        this.sditems = this.repo(() => SdItem());
+    }
+}
+
+Promise<void> run() {
+    FakePool pool = FakePool();
+    AppDb db = AppDb(pool);
+
+    // ---- fixtures (§3.4 differential) ----
+    Array<Product> fx = [];
+    Product f1 = Product();
+    f1.id = 1; f1.name = "Anchor"; f1.price = 10.0; f1.qty = 5; f1.active = true;
+    Product f2 = Product();
+    f2.id = 2; f2.name = "Bolt"; f2.price = 2.5; f2.qty = 100; f2.active = false;
+    Product f3 = Product();
+    f3.id = 3; f3.name = "amp"; f3.price = 99.0; f3.qty = 0; f3.active = true; f3.tag = "hot";
+    fx = fx.add(f1);
+    fx = fx.add(f2);
+    fx = fx.add(f3);
+    Array<string | int | float | bool | None> noArr = [];
+
+    // ---- §3.3 reifiable subset, both legs ----
+    console.writeln(differential("p1", (p) => p.active && p.name.like("A%"), fx, noArr));
+    console.writeln(differential("p2", (p) => p.name.ilike("a%"), fx, noArr));
+    int lo = 1;
+    int hi = 50;
+    console.writeln(differential("p3", (p) => p.qty >= lo && p.qty < hi, fx, noArr));
+    console.writeln(differential("p4", (p) => p.tag == None, fx, noArr));
+    console.writeln(differential("p5", (p) => !p.active || p.price > 50.0, fx, noArr));
+    console.writeln(differential("p6", (p) => p.name.startsWith("Bo"), fx, noArr));
+    console.writeln(differential("p7", (p) => p.name.endsWith("t"), fx, noArr));
+    console.writeln(differential("p8", (p) => p.name.contains("mp"), fx, noArr));
+    console.writeln(differential("p9", (p) => p.qty % 2 == 0 && p.qty / 5 >= 1, fx, noArr));
+    Array<string> wanted = [];
+    wanted = wanted.add("Anchor");
+    wanted = wanted.add("amp");
+    Array<string | int | float | bool | None> wantedCells = dbv().add("Anchor").add("amp");
+    console.writeln(differential("p10", (p) => wanted.contains(p.name), fx, wantedCells));
+
+    // ---- toSql: literals inline, captures as binds, stable text (§3.2) ----
+    SqlAndParams s1 = db.products
+        .where((p) => p.active && p.name.like("A%"))
+        .orderBy((p) => p.name)
+        .take(50)
+        .toSql();
+    console.writeln("s1=" + s1.sql);
+    SqlAndParams s2 = db.products.where((p) => p.qty >= lo && p.qty < hi).toSql();
+    Array<string> shown2 = [];
+    for (string | int | float | bool | None v in s2.params) { shown2 = shown2.add(redact(v)); }
+    console.writeln("s2=" + s2.sql + " params=[" + shown2.joinToString(",") + "]");
+    SqlAndParams s3 = db.products.where((p) => p.tag == None).toSql();
+    console.writeln("s3=" + s3.sql);
+    SqlAndParams s4 = db.products.where((p) => p.name.startsWith("50%")).toSql();
+    Array<string> shown4 = [];
+    for (string | int | float | bool | None v in s4.params) { shown4 = shown4.add(redact(v)); }
+    console.writeln("s4=" + s4.sql + " params=[" + shown4.joinToString(",") + "]");
+    SqlAndParams s5 = db.products.whereIn((p) => wanted.contains(p.name), wantedCells).toSql();
+    Array<string> shown5 = [];
+    for (string | int | float | bool | None v in s5.params) { shown5 = shown5.add(redact(v)); }
+    console.writeln("s5=" + s5.sql + " params=[" + shown5.joinToString(",") + "]");
+    SqlAndParams s6 = db.products
+        .orderByDesc((p) => p.price)
+        .thenBy((p) => p.name)
+        .skip(10)
+        .take(5)
+        .toSql();
+    console.writeln("s6=" + s6.sql);
+
+    // ---- terminals: one SQL each ----
+    pool.push(ResultSet(productCols(),
+        [productRow(1, "Anchor", 10.0, 5, true, None), productRow(3, "amp", 99.0, 0, true, "hot")]));
+    Array<Product> got = await db.products.where((p) => p.active).all();
+    console.writeln("all n=" + got.length().toString() + " first=" + got.at(0).name);
+
+    pool.push(ResultSet(productCols(), [mkRow(["c"], dbv().add(2))]));
+    // count uses its own SELECT COUNT shape; fake returns a row with column c
+    pool.queue = [];
+    pool.push(ResultSet(["c"], [mkRow(["c"], dbv().add(2))]));
+    int n = await db.products.where((p) => p.active).count();
+    console.writeln("count=" + n.toString());
+
+    pool.push(ResultSet(["e"], [mkRow(["e"], dbv().add(1))]));
+    bool ex = await db.products.where((p) => p.active).exists();
+    console.writeln("exists=" + ex.toString());
+
+    pool.push(ResultSet(productCols(), [productRow(7, "First", 1.0, 1, true, None)]));
+    Product first = await db.products.orderBy((p) => p.id).first();
+    console.writeln("first=" + first.name);
+
+    Product? maybe = await db.products.where((p) => p.name == "nope").firstOrNone();
+    if (maybe == None) { console.writeln("firstOrNone=None"); }
+    else { console.writeln("firstOrNone=some"); }
+
+    try {
+        Product missing = await db.products.where((p) => p.name == "nope").first();
+        console.writeln("first empty: NOT THROWN");
+    } catch (Atlantis::Orm::EmptyResultException e) {
+        console.writeln("first empty throws: yes");
+    }
+
+    // ---- §6.1 set-based writes ----
+    int cutoff = 10;
+    int changed = await db.products.where((p) => p.qty < cutoff).set((p) => p.active = false);
+    console.writeln("set changed=" + changed.toString());
+    int bumped = await db.products.where((p) => p.active).set((p) => p.qty = p.qty + 1);
+    console.writeln("set computed=" + bumped.toString());
+    int gone = await db.products.where((p) => p.qty == 0).delete();
+    console.writeln("deleted=" + gone.toString());
+
+    // ---- §5.5 SoftDelete scope + §6.1 tombstone delete ----
+    SqlAndParams sd1 = db.sditems.where((s) => s.label.like("x%")).toSql();
+    console.writeln("sd1=" + sd1.sql);
+    SqlAndParams sd2 = db.sditems.withDeleted().where((s) => s.label.like("x%")).toSql();
+    console.writeln("sd2=" + sd2.sql);
+    int tomb = await db.sditems.where((s) => s.label == "old").delete();
+    console.writeln("tombstoned=" + tomb.toString());
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    await run();
+    console.writeln("[done]");
+}

@@ -1,0 +1,44 @@
+// ORM M0 P2 (techdesign-06-orm.md §11): the §2.1 ormVals template shape —
+// a $for-bound meta::Field spliced in READ position (this.$f) inside an
+// array-literal $for element, with the Rel</RelMany</@Ignore filter.
+// Placement: rules/attrs/helpers at Atlantis ROOT (P1 fallback — nested-ns
+// rules never fire, see orm_p1_nested_ns_rules.lev).
+namespace Atlantis {
+    attribute Table { string name; }
+    attribute Ignore { }
+    string __ormToDb(int v) => "i:" + v.toString();
+    string __ormToDb(string v) => "s:" + v;
+    rule ormCols {
+        match @Table(t) on class C
+        inject `Array<string> __ormCols() =>
+            [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                            && !x.type.startsWith("Rel<")
+                                            && !x.type.startsWith("RelMany<")) : $f.name ];`
+            at member of C
+    }
+    rule ormVals {
+        match @Table(t) on class C
+        inject `Array<string> __ormVals() =>
+            [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                            && !x.type.startsWith("Rel<")
+                                            && !x.type.startsWith("RelMany<")) :
+                Atlantis::__ormToDb(this.$f) ];`
+            at member of C
+    }
+}
+uses Atlantis;
+
+class Rel<T> { }
+
+@Table("users")
+class User {
+    int id = 7;
+    string name = "ada";
+    Rel<User> boss;
+    @Ignore
+    int scratch = 99;
+}
+
+User u = User();
+console.writeln(u.__ormCols().joinToString(","));
+console.writeln(u.__ormVals().joinToString(","));

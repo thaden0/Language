@@ -1,0 +1,8 @@
+name = "atlantis-orm-corpus"
+entry = "main"
+sources = ["orm.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"
