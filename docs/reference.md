@@ -132,9 +132,11 @@ operand (`c == 'a'`), a `char` match arm, or a return into `char`. `char c = 'a'
 is a char; `var s = 'a';` stays `string`; double-quoted literals are never char.
 Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
-Call-argument position is **not** yet a target-typing site (a `char`-typed value
-binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/techdesign-track03-type-surface.md`).
+Call-argument position is a target-typing site too: a bare `'x'` argument to a
+`char` parameter binds as `char`, same as a `char`-typed value. Where an
+overload set has both `f(char)` and `f(string)`, a bare literal argument
+always prefers `f(string)` (back-compat), regardless of which is declared
+first — `designs/complete/techdesign-track03-type-surface.md`.
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
