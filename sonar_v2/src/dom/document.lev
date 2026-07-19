@@ -254,6 +254,25 @@ namespace Sonar { namespace Dom {
             return reg;
         }
 
+        // The node's registry WITHOUT creating one (the D04 responder walk reads
+        // this at every ancestor — creating a row per hop would defeat the walk).
+        // None when the node has no meta row or none was created.
+        ActionRegistry? __actionsForOrNone(IComponent c) {
+            int slot = c.domSlot_;
+            if (slot >= 0 && slot < nodes_.length() && alive_[slot] && this.identityEq(nodes_[slot], c))
+                return actions_[slot];
+            return None;
+        }
+
+        // True when a serializable meta attr row exists for this node (distinct
+        // from attrOf returning "" — an explicit `action=""` is present-but-empty,
+        // which D04 reads as an opt-out).
+        bool __hasAttrMeta(IComponent c, string name) {
+            int slot = c.domSlot_;
+            if (slot < 0) return false;
+            return this.attrRowFor(slot, name) >= 0;
+        }
+
         // ---- reap detached nodes (D-P10 churn flatness) --------------------
         // No detach hook exists on plain components (§2.2), so staleness is
         // collected here: every alive slot whose node no longer reaches the root
@@ -315,14 +334,19 @@ namespace Sonar { namespace Dom {
             exposeKeys_ = exposeKeys_.add(key);
             exposeGetters_ = exposeGetters_.add(getter);
         }
+        // The dynamic route (§3(2)): a store write marks the sweep dirty and
+        // schedules a frame, so a `doc.set(...)` from anywhere is picked up by
+        // the frame it arms. __scheduleSweepFrame is a no-op until the session
+        // starts, so build-time seeding stays free.
         void set(string key, string value) {
             int i = 0;
             for (string k in dataKeys_) {
-                if (k == key) { dataValues_ = dataValues_.with(i, value); return; }
+                if (k == key) { dataValues_ = dataValues_.with(i, value); this.__scheduleSweepFrame(); return; }
                 i = i + 1;
             }
             dataKeys_ = dataKeys_.add(key);
             dataValues_ = dataValues_.add(value);
+            this.__scheduleSweepFrame();
         }
         string get(string key) {
             int i = 0;
@@ -335,9 +359,86 @@ namespace Sonar { namespace Dom {
             return "";
         }
 
-        // ---- sweep hooks (D05 owns the real body) --------------------------
-        void __sweepBindings() { }        // D05 fills this; interim no-op
-        bool __sweepDirty() => false;
+        // Runtime {{key}} resolution (D05 §3): expose() first, then the store;
+        // None on a miss so the caller can log-once and render "". (`get` is the
+        // store-first public reader; this is the tier's ordered, miss-aware form.)
+        string? __resolveKey(string key) {
+            int j = 0;
+            for (string k in exposeKeys_) {
+                if (k == key) { () => string g = exposeGetters_[j]; return g(); }
+                j = j + 1;
+            }
+            int i = 0;
+            for (string k in dataKeys_) { if (k == key) return dataValues_[i]; i = i + 1; }
+            return None;
+        }
+
+        // ---- binding table + sweep (D05 §2, §4) ----------------------------
+        // Instance field (#73); dead entries are compacted at D-P10's threshold
+        // (25% dead AND ≥64 dead), so a churny UI never grows the table
+        // unbounded. `lastSweepChanged_` feeds refresh()/the D-P6 trailing-frame
+        // fallback.
+        Array<Binding> bindings_          = [];
+        int            bindingsDead_      = 0;
+        bool           lastSweepChanged_  = false;
+
+        void __registerBinding(Binding b) { bindings_ = bindings_.add(b); }
+        int  __bindingCount()     => bindings_.length();
+        int  __liveBindingCount() {
+            int n = 0;
+            for (Binding b in bindings_) if (!b.dead) n = n + 1;
+            return n;
+        }
+
+        // The frozen sweep (§4): re-evaluate each live binding, diff, apply on
+        // change. A detached node is tombstoned lazily (validation = reachesRoot,
+        // the D01 helper); a throwing getter is contained (the T03 rule) and
+        // keeps its last good value.
+        void __sweepBindings() {
+            bool changed = false;
+            for (Binding b in bindings_) {
+                if (b.dead) continue;
+                if (!this.reachesRoot(b.node)) {
+                    b.dead = true; bindingsDead_ = bindingsDead_ + 1; continue;
+                }
+                string v = "";
+                try { v = b.getter(); }
+                catch (IException ex) {
+                    Sonar::__noteHandlerError("binding getter threw (" + b.sourceText + "): " + ex.message);
+                    continue;                                 // renders last good value
+                }
+                if (v != b.last) { b.last = v; b.apply(v); changed = true; }
+            }
+            lastSweepChanged_ = changed;
+            this.__compactBindings();
+        }
+
+        // Whether the LAST sweep applied any change (§4: refresh + the D-P6
+        // trailing-frame fallback read this).
+        bool __sweepDirty() => lastSweepChanged_;
+
+        void __compactBindings() {
+            int total = bindings_.length();
+            if (bindingsDead_ < 64) return;
+            if (bindingsDead_ * 4 < total) return;
+            Array<Binding> live = [];
+            for (Binding b in bindings_) if (!b.dead) live = live.add(b);
+            bindings_ = live;
+            bindingsDead_ = 0;
+        }
+
+        // Ask the host to run a frame (which sweeps first, §4.2). A no-op before
+        // the session starts — requestFrame guards on started_ — so a build-time
+        // set() in a headless test arms nothing.
+        void __scheduleSweepFrame() { this.host().requestFrame(); }
+
+        // Public escape hatch (§4.3): sweep now, schedule a frame if anything
+        // changed. Covers exotic mutation paths that schedule no frame of their
+        // own (worker results marshalled in, etc.).
+        void refresh() {
+            this.__sweepBindings();
+            if (lastSweepChanged_) this.__scheduleSweepFrame();
+        }
 
         // ---- serializer (§5.1) ---------------------------------------------
         string outerMarkup(IComponent root) => this.markupOf(root);

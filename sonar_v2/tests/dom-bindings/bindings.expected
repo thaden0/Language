@@ -1,0 +1,48 @@
+== dom!-global ==
+notes.txt
+notes.txt
+renamed.md
+true
+false
+== typed-holes ==
+1
+42
+[]
+here
+== text-overloads ==
+str
+[]
+x
+7
+2.500000
+true
+Z
+== runtime-store ==
+Draft
+Final
+== leaf-concat ==
+Hi Ada
+Hi Bob
+== runtime-expose ==
+t0
+t1
+== runtime-miss ==
+[]
+1
+0
+== getter-throws ==
+ok
+ok
+1
+fixed
+== refresh ==
+via-refresh
+== churn ==
+64
+64
+0
+0
+== idempotent ==
+100/100
+false
+done

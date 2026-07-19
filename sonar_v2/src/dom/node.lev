@@ -38,7 +38,26 @@ namespace Sonar { namespace Dom {
 
         // ---- position / actions --------------------------------------------
         Position       position() => raw_.position();
-        ActionRegistry actions()  => doc_.__actionsFor(raw_);
+        // DOM containers expose the registry as a real field (the sketch's
+        // `fileMenu.actions.add(…)`); every other node keeps it in the Document
+        // meta row. Route both here so the responder walk and this accessor
+        // always see the SAME registry per node (D04 §2).
+        ActionRegistry actions() {
+            IComponent c = raw_;
+            if (c is FlexContainer) { FlexContainer fc = c; return fc.actions; }
+            return doc_.__actionsFor(c);
+        }
+        // The EFFECTIVE action key a markup MenuItem/Button fires (D04 §4): an
+        // explicit `action` attr verbatim (`""` = opt-out), else the slug of the
+        // label. Computed on demand — the slug is never stored, keeping the dom!
+        // and runtime serializations byte-identical (the D02 drift invariant).
+        string action() {
+            IComponent c = raw_;
+            if (doc_.__hasAttrMeta(c, "action")) return doc_.attrOf(c, "action");
+            if (c is Button)   { Button b = c;   return slug(b.label); }
+            if (c is MenuItem) { MenuItem mi = c; return slug(mi.label); }
+            return "";
+        }
 
         // ---- value: the uniform data channel (narrowing ladder) ------------
         string value() {

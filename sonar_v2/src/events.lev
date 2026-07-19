@@ -16,6 +16,16 @@ namespace Sonar {
     Array<string> logHistory() => logRing_;
     int handlerErrorCount() => handlerErrorCount_;
 
+    // Log + count a contained handler exception. A FREE function (not a method)
+    // so the bare-name write to the namespace global lowers on every engine (R3;
+    // a qualified `Sonar::handlerErrorCount_ = …` from another namespace does
+    // not). D04's ActionRegistry.fire routes through here so action-handler
+    // faults share the T03 dispatch-containment counter.
+    void __noteHandlerError(string msg) {
+        log(msg);
+        handlerErrorCount_ = handlerErrorCount_ + 1;
+    }
+
     // ---- ancestor paths & hit-testing --------------------------------------
 
     // Recursive rather than a reassigned while-loop cursor: narrowing a

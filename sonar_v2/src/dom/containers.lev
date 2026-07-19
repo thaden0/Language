@@ -102,6 +102,10 @@ namespace Sonar { namespace Dom {
             Document doc = document();                  // current Document (D-C4)
             Array<IComponent> roots = buildMarkupFragment(markup, doc);
             for (IComponent r in roots) this.add(r);
+            // Post-build action wiring: the roots now hang under this container,
+            // so a MenuItem/Button resolves its key up a connected chain to this
+            // container's `.actions` (D04 §4).
+            wireActionsInSubtree(this, doc);
         }
 
         // ---- query sugar rooted here ---------------------------------------

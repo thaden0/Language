@@ -5,7 +5,7 @@
     <bar dock="Top">
         <menubar>
             <menu title="File">
-                <menuitem action="open" hotkey="ctrl+o">Open</menuitem>
+                <menuitem action="open">Open</menuitem>
                 <separator/>
                 <menuitem action="quit">Quit</menuitem>
             </menu>
