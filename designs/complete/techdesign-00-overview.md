@@ -212,8 +212,9 @@ Start 2026-07-06. Estimates assume one implementer per track, tracks parallel wh
 | **E — web foundations** | Aug 3 – Aug 21 | 09 | JSON round-trip corpus; digest test vectors (RFC/NIST) green; HTTP keep-alive + chunked-both-ways loopback corpus; DateTime httpDate round-trip |
 | **Framework start** | ~Aug 24 | — | all gates A–E; suggested-features §15 Phase D complete |
 
-Deferred items placed explicitly on the roadmap (not implicit): labeled
-break/continue (02), generators/`yield` (07), Dictionary/O(1) maps + by-key joins
+Deferred items placed explicitly on the roadmap (not implicit): ~~labeled
+break/continue (02)~~ — resolved, see `designs/complete/techdesign-labeled-break-continue.md`;
+generators/`yield` (07), Dictionary/O(1) maps + by-key joins
 (05 follow-up), `decimal`, TLS stack (09 names the boundary), ELF DNS resolver
 over an in-language UDP client (08 phase 2), typed `@Serializable` JSON via rules
 (09 follow-up), type aliases (09 flags the decision).

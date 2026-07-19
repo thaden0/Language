@@ -2366,6 +2366,13 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
     // injection silently drops its cleanup obligation — same class of bug as
     // isRawSegment (Track 01's log) this doc's own overview flagged for us.
     out->isUsing = s->isUsing; out->usingClose = s->usingClose;
+    // techdesign-labeled-break-continue.md F2: copy the label so a rule
+    // template's labeled loop/labeled break survives injection. Deliberately
+    // do NOT copy labelTarget — it is always null here (the checker runs
+    // after rule splicing) and a future "copy every field" sweep must not
+    // "fix" this into copying a cross-node pointer that would dangle into
+    // the template tree.
+    out->label = s->label;
     // Member/field/method name may itself be a hole (`member of` templates).
     if (isHole(out->name)) {
         auto it = b.find(out->name.substr(1));

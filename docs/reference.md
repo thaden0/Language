@@ -849,11 +849,11 @@ expr;                                          // expression statement
 { stmt* }                                      // block
 return expr;    => expr;                       // return (arrow form)
 if (cond) stmt [else stmt]
-while (cond) stmt
+label: while (cond) stmt                       // labeled loop (all 4 loop kinds): §5.2
 do stmt while (cond);                          // post-test: body runs before the first check
 for (init; cond; step) stmt
 for (T x in iterable) stmt                     // ranges, arrays, maps (Pair entries), any IIterable<T> (§6.4.8)
-break;      continue;                          // loop control: §5.2
+break;      continue;                          // loop control, unlabeled or `break label;`/`continue label;`: §5.2
 throw expr;                                    // expr must implement IException
 try stmt catch (Type name?) stmt [catch ...]   // first assignable clause wins
 bind ...;   uses NS;   use NS::name (as alias)?;   // imports: §4.1
@@ -868,16 +868,44 @@ name is optional. Uncaught exceptions terminate execution with
 `Uncaught <Class>: <message>`. There is no `finally` — scope-based cleanup (`using`, §5.2) covers
 the common case; ordinary `try`/`catch` covers the rest.
 
-### 5.2 Loop control and `using` (techdesign-02)
+### 5.2 Loop control and `using` (techdesign-02, techdesign-labeled-break-continue)
 
 `break;` exits the nearest enclosing loop (`while`, `do`-`while`, C-style `for`, `for..in`).
 `continue;` skips to the next iteration: for `while`/`do`-`while`, to the condition; for `for`,
-to the step (then the condition); for `for..in`, to the next element. Both are unlabeled only —
-they always target the *innermost* enclosing loop. Using either outside any loop is a compile
-error. A lambda body is its own loop-nesting scope: a bare `break`/`continue` inside a lambda
-never reaches a loop in the *enclosing* function — it is legal only if the lambda's own body has
-a loop of its own. `match` is not a loop-nesting boundary: `break`/`continue` inside a `match`
-arm that sits inside a loop targets that loop, not the match.
+to the step (then the condition); for `for..in`, to the next element. Using either outside any
+loop is a compile error. A lambda body is its own loop-nesting scope: a bare `break`/`continue`
+inside a lambda never reaches a loop in the *enclosing* function — it is legal only if the
+lambda's own body has a loop of its own. `match` is not a loop-nesting boundary: `break`/
+`continue` inside a `match` arm that sits inside a loop targets that loop, not the match.
+
+**Labeled forms.** A loop may carry a label — `identifier :` immediately before `while`, `for`
+(both forms), or `do` — and `break label;` / `continue label;` name a label on a loop that
+lexically encloses the statement, within the same function body, to unwind/restart *that* loop
+from arbitrary nesting depth (unlabeled `break;`/`continue;` are unchanged: nearest enclosing
+loop, labeled or not). One label per loop (`a: b: while` is a parse error); a loop's label may
+shadow neither its own value/type namespace (labels are a separate namespace: `L: while (...)`
+and a variable named `L` never collide) nor an *enclosing* loop's label (a compile error — "label
+'L' is already used by an enclosing loop"), but two **sibling** loops (neither enclosing the
+other) may reuse the same label. A lambda body is a label-scope boundary exactly like it is a
+loop-nesting boundary: a labeled `break`/`continue` naming an enclosing *function's* label fails
+to resolve ("no enclosing loop is labeled 'L'"), the same error a genuinely unknown label gets.
+`match` is not a label-scope boundary either — a labeled `break`/`continue` in a match arm inside
+a labeled loop targets that loop.
+
+A labeled `break`/`continue` crossing one or more `using`-declared resources closes exactly the
+resources declared inside the *target* loop (reverse declaration order), and none declared
+outside it — the same deterministic-cleanup guarantee `using` always makes, generalized to a
+multi-level exit:
+```
+outer: for (int i = 0; i < n; i = i + 1) {
+    using File f = File(paths.get(i), std::read);
+    inner: while (more()) {
+        if (fatal())   break outer;      // closes f, exits both loops
+        if (skipRow()) continue outer;   // closes f, next i
+        if (skipCol()) continue inner;   // f stays open, next while-test
+    }
+}
+```
 
 `do stmt while (cond);` runs the body once unconditionally, then loops while `cond` holds
 (post-test, unlike `while`'s pre-test). `continue` inside a `do`-`while` body jumps to the
@@ -1356,7 +1384,11 @@ Built-ins never reroute through the protocol (the fast paths are why arrays are
 fast). `Array<T>`, `Map<K,V>`, and `Range` also *implement* `IIterable` (with
 `ArrayIterator`/`MapIterator`/`RangeIterator`) purely for **uniformity** — so an
 array or range can be passed where an `IIterable<T>` is wanted — but a `for..in`
-over one still takes its fast path.
+over one still takes its fast path. `InStream<T>` (§6.6) also implements
+`IIterable<T>` — since a stream is neither a built-in collection nor a `Range`,
+`for (T x in stream)` always takes the protocol path (§6.4.8 point 3), and
+`hasNext()` genuinely **parks** (waiter-promise `await`, oracle/IR/LLVM only —
+see §6.6).
 
 **`next()` past the end** is unspecified (iterators are driven by `hasNext()`); the
 stdlib iterators throw `RuntimeException` (loud). **Invalidation:** stdlib iterators
@@ -1364,8 +1396,7 @@ are over pure values (an `Array` snapshot) and can never be invalidated; a user
 iterator over a mutable collection is caveat-emptor, the same as any user code.
 
 **Not iterable in v1:** strings (`s.chars()` returns an `Array` — explicit, avoids
-the bytes-vs-scalars ambiguity) and `InStream<T>` (a pull on an empty live stream
-throws — a for-loop over it is a foot-gun until blocking semantics exist).
+the bytes-vs-scalars ambiguity).
 
 ### 6.4.9 `Seq<T>` — the lazy pipeline (Track 07)
 A pure library over the protocol. **Arrays are eager; `Seq` is the opt-in lazy
@@ -1405,13 +1436,16 @@ resolved promise. `await` is the one privileged operation. (Async execution: **[
 
 ### 6.6 Streams — the system boundary
 `StreamBuffer<T>` (a single-consumer **queue**; in-language, Array-backed today):
-`push(v)`, `pull()`, `count()`, `isEmpty()`, `close()`. Typed views:
-`InStream<T> : IDisposable` — `pull()`, `hasData()`, `subscribe((T) => void)`, `close()`;
+`push(v)`, `pull()`, `pullOrNone()`, `count()`, `isEmpty()`, `close()`. Typed views:
+`InStream<T> : IDisposable, IIterable<T>` — `pull()`, `pullOrNone()`, `hasData()`,
+`subscribe((T) => void)`, `iterator()`, `asSeq()`, `close()`;
 `OutStream<T>` — `(<<)` (returns the stream: chainable);
 `IOStream<T> : InStream<T>, OutStream<T>` — both ends over ONE collapsed buffer (the §13
-diamond). `reader >>` extracts (== `pull()`). `subscribe` is a **standing pull**: it claims
-the consumer end (later `pull` throws); broadcast is a library reshaping, not a stream
-property. Pull on empty throws.
+diamond). `reader >>` extracts (== `pull()`). `subscribe` and `iterator()` are both
+**standing, exclusive claims** on the consumer end — whichever runs first wins; a later
+`pull()`/`subscribe()`/`iterator()` throws naming what already claimed it (`"consumer end
+is claimed by a subscriber"` / `"...by an iterator"`); broadcast is a library reshaping,
+not a stream property. Pull on empty throws.
 
 **Dispose / unsubscribe (SU-1, `designs/complete/techdesign-stream-unsubscribe.md`).**
 `InStream<T>` is `IDisposable`, so a subscription is a resource: `using InStream<int> w =
@@ -1420,12 +1454,35 @@ throws** (the `using` contract), runs an optional producer-attached teardown (a 
 stream's `close()` calls `signal::off`), then closes the backing buffer. On a closed
 `StreamBuffer`, `push` is a **silent drop** (strict fanout cutoff — a closed consumer receives
 zero further deliveries even mid-broadcast) and `pull`/`setHandler` throw the distinct
-`"stream is closed"`. A plain in-memory `InStream` with no teardown attached still supports
-`close()` (buffer close + no-op). For an `IOStream`, `close()` disposes the read-view
-subscription and closes the shared buffer; subsequent `<<` pushes drop. Producer-side EOF
-(loud push-after-close, `pullOrNone`, stream iteration) is deferred to streams-maturity (D-B).
-Lanes: oracle/IR/LLVM full; emit-C++ compiles the in-memory surface; the signal stream itself
-stays loop-bound-rejected on emit-C++ (unchanged).
+`"stream is closed"` **unless items are still buffered** — `pull`/`pullOrNone`/iteration
+always drain whatever is already queued before recognizing end-of-stream (a producer's
+natural "here is my last item, and I'm done" — `push(v); close();` — must still deliver
+`v`). A plain in-memory `InStream` with no teardown attached still supports `close()`
+(buffer close + no-op). For an `IOStream`, `close()` disposes the read-view subscription
+and closes the shared buffer; subsequent `<<` pushes drop.
+
+**Iteration (D-B, `techdesign-http-and-streams-maturity.md`).** `InStream<T> :
+IIterable<T>`, so `for (T x in stream)` works directly, and `stream.asSeq()` joins the
+same lazy `Seq<T>` pipeline (§6.4.9) arrays get via `.asSeq()`. `iterator()` claims the
+consumer end exactly like `subscribe` (mutually exclusive with it — first claim wins).
+`hasNext()` genuinely **parks** when the buffer is empty and the stream is still open: it
+awaits an internal one-shot `Promise<bool>` that the next `push`/`close` resolves — the
+same suspension surface `await` uses (waiter-promise pull, no new native, no new IR op),
+so it requires true suspension (LA-30) and is **oracle/IR/LLVM only**; a `for..in` over a
+Timer-fed stream delivers every value as it arrives and the loop ends the moment the
+stream closes (`s.close()` from anywhere — consumer or producer — wakes a parked
+`hasNext()` with "no more data"). `pullOrNone()` is the honest **non-blocking** pull:
+`None` covers both "nothing buffered yet" and "closed and drained" (no park, ever) — for
+code that wants to poll explicitly instead of iterating. As with any live/unbounded
+source, a `for..in`/`Seq` terminal over a stream that never closes parks forever —
+`take(n)` is the caller's bound (§6.4.9's "terminals require finite sources", no runtime
+guard, same stance as `while (true)`).
+
+Lanes: oracle/IR/LLVM full (including iteration/`pullOrNone`); emit-C++ compiles the
+in-memory surface (construction, `push`/`pull`/`close`/`subscribe`) but iteration is
+unreachable there — `await` has no lane on this backend at all (no async surface,
+`designs/suspension/techdesign-04-emitcpp-leg.md`), same as every other stream feature
+that touches the loop (the signal stream stays loop-bound-rejected, unchanged).
 
 **`signal::off(int sig, int subId)`** (free function) — the unsubscribe primitive `InStream`'s
 teardown routes through; removes one subscriber from a signal's fanout and, when the **last**

@@ -130,6 +130,15 @@ private:
     // call; these are belt-and-braces).
     bool breaking_ = false;
     bool continuing_ = false;
+    // techdesign-labeled-break-continue.md F4: null = unlabeled = innermost
+    // loop (no behavior change). Non-null = the checker-resolved target loop
+    // Stmt (Stmt::labelTarget) a labeled break/continue must unwind to; each
+    // loop's consume-pair tests "is this mine?" before clearing the flag,
+    // letting a foreign target propagate outward unchanged. Frame-confined
+    // exactly like breaking_/continuing_ (checker statically prevents a
+    // labeled break/continue from crossing a call; belt-and-braces).
+    const Stmt* breakTarget_ = nullptr;
+    const Stmt* continueTarget_ = nullptr;
     // Exception signal: set by `throw`, cleared by a matching catch. Unlike
     // returning_, it is deliberately NOT restored by call frames — it bubbles.
     bool throwing_ = false;
@@ -203,6 +212,8 @@ private:
         Value primThis;
         bool hasPrimThis = false, inCtor = false;
         bool returning = false, breaking = false, continuing = false;
+        const Stmt* breakTarget = nullptr;
+        const Stmt* continueTarget = nullptr;
         Value returnValue, thrownValue;
         std::string rawField;
     };

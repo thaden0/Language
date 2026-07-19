@@ -1,0 +1,43 @@
+w 0 0
+w 0 1
+w 0 2
+w 0 3
+w 0 4
+w 1 0
+w 1 1
+w 1 2
+w 1 3
+w 1 4
+w 2 0
+w 2 1
+d 1 1
+d 1 2
+d 1 3
+d-after-inner 1
+d 2 1
+d 3 1
+d 3 2
+d 3 3
+d-after-inner 3
+f 0 0 0
+f 0 0 1
+f 0 0 2
+f 0 1 0
+f 0 2 0
+f 0 2 1
+f 0 2 2
+f 1 0 0
+f 1 0 1
+f 1 0 2
+f 1 1 0
+f 1 2 0
+f 1 2 1
+f 1 2 2
+fi 1 1
+fi 3 1
+s1 0
+s1 1
+s2 0
+s2-after 1
+u 0
+u 2

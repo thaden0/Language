@@ -558,6 +558,31 @@ void Lowerer::emitCloseCall(int slotReg, const Stmt* closeDecl) {
     last().decl = bodyless ? nullptr : closeDecl;
 }
 
+// techdesign-labeled-break-continue.md F5: find-or-create `target`'s chain.
+// A using crossed by only one target's traffic (the label-free common case,
+// and every labeled case that stays within one loop) gets exactly one entry
+// — the pre-existing single-chain shape.
+Lowerer::ExitChain& Lowerer::chainFor(std::vector<ExitChain>& chains, const Stmt* target) {
+    for (ExitChain& ch : chains)
+        if (ch.targetLoop == target) return ch;
+    chains.push_back({});
+    chains.back().targetLoop = target;
+    return chains.back();
+}
+
+// The post-order argument (F5 item 4 / problem #5): a using's cleanup group
+// emits at the end of the block that declared it, which is (transitively)
+// inside its crossing break/continue's TARGET loop's body — the checker's
+// lexical-enclosure validation guarantees it — so that loop's own case is
+// still on the C++ call stack, and its LoopCtx still on `loops_`, whenever
+// this is consulted. A miss means that argument had a hole; callers treat it
+// as an internal-error STOP condition, never a workaround.
+Lowerer::LoopCtx* Lowerer::loopCtxFor(const Stmt* target) {
+    for (LoopCtx& lc : loops_)
+        if (lc.stmt == target) return &lc;
+    return nullptr;
+}
+
 // techdesign-02 F3: the normative cleanup-group layout. For usings declared
 // directly in one block, in reverse declaration order, each gets ONE group:
 // a fallthrough head (close; Jump <next group / "out">), a landing pad
@@ -609,32 +634,39 @@ void Lowerer::lowerUsingCleanupGroups(size_t watermark) {
                 emit(Op::Ret, chainRetReg_);
             }
         }
-        // Break/Continue stubs: close, then hop to the next-outer using's
-        // stub ONLY if that using is also inside the SAME loop (index at or
-        // above its usingsFloor); otherwise this using is the outermost one
-        // this particular break/continue crosses, so land directly in the
-        // loop's own F1 jump list, where ordinary loop-end/continue-point
-        // patching takes over.
-        if (ctx.needBrk) {
+        // Break/Continue stubs (techdesign-labeled-break-continue.md F5 item
+        // 4): one stub per ExitChain actually recorded — one per DISTINCT
+        // target loop this using is crossed for, not just one per using.
+        // Each stub closes, then hops to the next-outer using's SAME-target
+        // chain only if that using is also inside the chain's own target
+        // loop (index at or above THAT target's usingsFloor — never
+        // loops_.back()'s, the one-line trap this design exists to name);
+        // otherwise this using is the outermost one that particular
+        // break/continue crosses, so land directly in the target loop's own
+        // F1 jump list, where ordinary loop-end/continue-point patching
+        // takes over.
+        for (ExitChain& ch : ctx.brkChains) {
             int brkPc = (int)F().code.size();
             emitCloseCall(ctx.slotReg, ctx.closeDecl);
-            for (int j : ctx.brkJumps) F().code[j].a = brkPc;
-            if (i > 0 && i - 1 >= loops_.back().usingsFloor) {
-                usings_[i - 1].brkJumps.push_back(emit(Op::Jump, 0));
-                usings_[i - 1].needBrk = true;
+            for (int j : ch.jumps) F().code[j].a = brkPc;
+            LoopCtx* target = loopCtxFor(ch.targetLoop);
+            if (!target) { fail(SourceSpan{}, "internal: labeled break target not on the loop stack"); continue; }
+            if (i > 0 && i - 1 >= target->usingsFloor) {
+                chainFor(usings_[i - 1].brkChains, ch.targetLoop).jumps.push_back(emit(Op::Jump, 0));
             } else {
-                loops_.back().breakJumps.push_back(emit(Op::Jump, 0));
+                target->breakJumps.push_back(emit(Op::Jump, 0));
             }
         }
-        if (ctx.needCnt) {
+        for (ExitChain& ch : ctx.cntChains) {
             int cntPc = (int)F().code.size();
             emitCloseCall(ctx.slotReg, ctx.closeDecl);
-            for (int j : ctx.cntJumps) F().code[j].a = cntPc;
-            if (i > 0 && i - 1 >= loops_.back().usingsFloor) {
-                usings_[i - 1].cntJumps.push_back(emit(Op::Jump, 0));
-                usings_[i - 1].needCnt = true;
+            for (int j : ch.jumps) F().code[j].a = cntPc;
+            LoopCtx* target = loopCtxFor(ch.targetLoop);
+            if (!target) { fail(SourceSpan{}, "internal: labeled continue target not on the loop stack"); continue; }
+            if (i > 0 && i - 1 >= target->usingsFloor) {
+                chainFor(usings_[i - 1].cntChains, ch.targetLoop).jumps.push_back(emit(Op::Jump, 0));
             } else {
-                loops_.back().continueJumps.push_back(emit(Op::Jump, 0));
+                target->continueJumps.push_back(emit(Op::Jump, 0));
             }
         }
     }
@@ -812,7 +844,7 @@ void Lowerer::lowerStmt(Stmt* s) {
             int top = (int)F().code.size();
             int c = lowerExpr(s->expr.get());
             int jEnd = emit(Op::JumpIfFalse, c, 0);
-            loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+            loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
             lowerStmt(s->thenBranch.get());
             emit(Op::Jump, top);
             int endPos = (int)F().code.size();
@@ -824,7 +856,7 @@ void Lowerer::lowerStmt(Stmt* s) {
         }
         case StmtKind::DoWhile: {
             int top = (int)F().code.size();
-            loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+            loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
             lowerStmt(s->thenBranch.get());
             int contPos = (int)F().code.size();
             for (int j : loops_.back().continueJumps) F().code[j].a = contPos;
@@ -841,7 +873,7 @@ void Lowerer::lowerStmt(Stmt* s) {
             int top = (int)F().code.size();
             int jEnd = -1;
             if (s->expr) jEnd = emit(Op::JumpIfFalse, lowerExpr(s->expr.get()), 0);
-            loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+            loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
             lowerStmt(s->thenBranch.get());
             int stepPos = (int)F().code.size();
             for (int j : loops_.back().continueJumps) F().code[j].a = stepPos;
@@ -869,7 +901,7 @@ void Lowerer::lowerStmt(Stmt* s) {
                 int cond = newReg();
                 emit(Op::Arith, cond, i, hiC); last().tk = TokenKind::Le;
                 int jEnd = emit(Op::JumpIfFalse, cond, 0);
-                loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+                loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
                 lowerStmt(s->thenBranch.get());
                 int incPos = (int)F().code.size();
                 for (int j : loops_.back().continueJumps) F().code[j].a = incPos;
@@ -906,7 +938,7 @@ void Lowerer::lowerStmt(Stmt* s) {
                 callNullary("hasNext", itReg, cond);
                 int jEnd = emit(Op::JumpIfFalse, cond, 0);
                 callNullary("next", itReg, elem);
-                loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+                loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
                 lowerStmt(s->thenBranch.get());
                 // continue re-checks hasNext (there is no separate step slot):
                 // route continue jumps straight back to the loop head.
@@ -943,7 +975,7 @@ void Lowerer::lowerStmt(Stmt* s) {
                 int jEnd = emit(Op::JumpIfFalse, cond, 0);
                 if (colElem) emit(Op::VFree, elem);   // free the prior step's gather
                 emit(Op::IterAt, elem, iter, idx);
-                loops_.push_back({}); loops_.back().usingsFloor = usings_.size();
+                loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
                 lowerStmt(s->thenBranch.get());
                 int incPos = (int)F().code.size();
                 for (int j : loops_.back().continueJumps) F().code[j].a = incPos;
@@ -972,27 +1004,45 @@ void Lowerer::lowerStmt(Stmt* s) {
             scopes_.pop_back();
             break;
         }
-        case StmtKind::Break:
-            if (loops_.empty()) { fail(s->span, "internal: 'break' outside a loop"); break; }
-            // techdesign-02 F3: a using declared inside the current loop (at
-            // or above its usingsFloor) must close before the jump — route
-            // through its cleanup-group stub instead of jumping directly.
-            if (usings_.size() > loops_.back().usingsFloor) {
-                usings_.back().brkJumps.push_back(emit(Op::Jump, 0));
-                usings_.back().needBrk = true;
+        case StmtKind::Break: {
+            // techdesign-labeled-break-continue.md F5: resolve the target
+            // LoopCtx — the checker-resolved label target if labeled,
+            // otherwise the innermost loop (loops_.back(), unchanged).
+            LoopCtx* target = nullptr;
+            if (s->labelTarget) {
+                target = loopCtxFor(s->labelTarget);
+                if (!target) { fail(s->span, "internal: labeled break target not on the loop stack"); break; }
             } else {
-                loops_.back().breakJumps.push_back(emit(Op::Jump, 0));
+                if (loops_.empty()) { fail(s->span, "internal: 'break' outside a loop"); break; }
+                target = &loops_.back();
+            }
+            // techdesign-02 F3: a using declared inside the TARGET loop (at
+            // or above ITS usingsFloor — never loops_.back()'s, the one-line
+            // trap this design exists to name) must close before the jump —
+            // route through its cleanup-group stub instead of jumping directly.
+            if (usings_.size() > target->usingsFloor) {
+                chainFor(usings_.back().brkChains, target->stmt).jumps.push_back(emit(Op::Jump, 0));
+            } else {
+                target->breakJumps.push_back(emit(Op::Jump, 0));
             }
             break;
-        case StmtKind::Continue:
-            if (loops_.empty()) { fail(s->span, "internal: 'continue' outside a loop"); break; }
-            if (usings_.size() > loops_.back().usingsFloor) {
-                usings_.back().cntJumps.push_back(emit(Op::Jump, 0));
-                usings_.back().needCnt = true;
+        }
+        case StmtKind::Continue: {
+            LoopCtx* target = nullptr;
+            if (s->labelTarget) {
+                target = loopCtxFor(s->labelTarget);
+                if (!target) { fail(s->span, "internal: labeled continue target not on the loop stack"); break; }
             } else {
-                loops_.back().continueJumps.push_back(emit(Op::Jump, 0));
+                if (loops_.empty()) { fail(s->span, "internal: 'continue' outside a loop"); break; }
+                target = &loops_.back();
+            }
+            if (usings_.size() > target->usingsFloor) {
+                chainFor(usings_.back().cntChains, target->stmt).jumps.push_back(emit(Op::Jump, 0));
+            } else {
+                target->continueJumps.push_back(emit(Op::Jump, 0));
             }
             break;
+        }
         case StmtKind::Empty:
         case StmtKind::Bind:
         case StmtKind::Use:

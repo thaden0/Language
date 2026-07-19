@@ -1,0 +1,29 @@
+// Churn corpus (ARC leak net) — a LABELED continue crossing a `using` in a
+// hot loop (techdesign-labeled-break-continue.md F5): each iteration
+// allocates a fresh escaping Res, and `continue outer` closes it via the
+// per-target ExitChain stub before the outer for..in advances. Only `sink`
+// is a program-lifetime root, so live-at-exit must stay flat as N grows —
+// same convention as using_churn.ext (factory function, not inline `Res()`).
+class Res : IDisposable {
+    Array<int> data;
+    int id = 0;
+    void close() { data = data.add(0 - id); }
+}
+Res makeRes(int seed) {
+    Res r = Res();
+    r.id = seed;
+    r.data = r.data.add(seed);
+    return r;
+}
+void run(int n) {
+    int sink = 0;
+    outer: for (int i in 1..n) {
+        using Res r = makeRes(i);
+        for (int j = 0; j < 2; j = j + 1) {
+            if (j == 1) continue outer;   // closes r, advances i
+            sink = sink + r.id;
+        }
+    }                             // unreached on every iteration (continue outer always fires)
+    console.writeln(sink);
+}
+run(@N@);

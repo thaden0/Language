@@ -928,6 +928,22 @@ StmtPtr Parser::parseStatement() {
     // in a generated method/ctor body, which the fragment-loop checks miss.
     if (at(TokenKind::Identifier) && cur().text == "$for")
         return parseForSpliceStmt(SpliceBody::Stmt);
+    // Labeled loop (techdesign-labeled-break-continue.md F1): `identifier :`
+    // immediately before a loop keyword. `Colon` has no infix binding power
+    // (parseExpr(0) stops at it), so `ident :` never begins an expression
+    // statement today — this claims otherwise-dead grammar. The three-token
+    // lookahead (peek(2) must be a loop keyword) keeps the recursion total:
+    // the recursive parseStatement() call is guaranteed to land in the
+    // While/For/DoWhile case (For covers ForIn).
+    if (at(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon &&
+        (peek(2).kind == TokenKind::KwWhile || peek(2).kind == TokenKind::KwFor ||
+         peek(2).kind == TokenKind::KwDo)) {
+        std::string_view lbl = cur().text;
+        advance(); advance();                       // ident, ':'
+        StmtPtr s = parseStatement();                // hits the loop case
+        if (s) s->label = lbl;
+        return s;
+    }
     switch (cur().kind) {
         case TokenKind::LBrace:
             return parseBlock();
@@ -1092,12 +1108,14 @@ StmtPtr Parser::parseStatement() {
         case TokenKind::KwBreak: {
             auto s = mkStmt(StmtKind::Break, cur().span);
             advance();
+            if (at(TokenKind::Identifier)) { s->label = cur().text; advance(); }
             expect(TokenKind::Semicolon, "';'");
             return s;
         }
         case TokenKind::KwContinue: {
             auto s = mkStmt(StmtKind::Continue, cur().span);
             advance();
+            if (at(TokenKind::Identifier)) { s->label = cur().text; advance(); }
             expect(TokenKind::Semicolon, "';'");
             return s;
         }

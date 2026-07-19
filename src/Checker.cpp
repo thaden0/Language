@@ -2952,6 +2952,10 @@ Type Checker::checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTyp
     // loop in the ENCLOSING function — the lambda body is its own loop scope.
     int savedLoopDepth = loopDepth_;
     loopDepth_ = 0;
+    // techdesign-labeled-break-continue.md F3 (P4): a labeled break/continue
+    // naming an ENCLOSING function's label must fail to resolve too.
+    auto savedLabelStack = std::move(labelStack_);
+    labelStack_.clear();
     std::vector<Type> rets;
     std::vector<Type>* savedLr = lambdaReturns_;
     Type ret = unknown();
@@ -2969,6 +2973,7 @@ Type Checker::checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTyp
         lambdaReturns_ = savedLr;
     }
     loopDepth_ = savedLoopDepth;
+    labelStack_ = std::move(savedLabelStack);
     returnType_ = savedRt; returnTypeRef_ = savedRtr;
     exitEnvScope();
     return ret;
@@ -3505,6 +3510,8 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
     }
     Type savedRt = returnType_; const TypeRef* savedRtr = returnTypeRef_;
     int savedLoop = loopDepth_;
+    auto savedLabelStack = std::move(labelStack_);
+    labelStack_.clear();
     std::vector<Type>* savedLr = lambdaReturns_;
     returnType_ = Type{}; returnTypeRef_ = nullptr; loopDepth_ = 0; lambdaReturns_ = nullptr;
 
@@ -3555,7 +3562,8 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
     }
 
     returnType_ = savedRt; returnTypeRef_ = savedRtr;
-    loopDepth_ = savedLoop; lambdaReturns_ = savedLr;
+    loopDepth_ = savedLoop; labelStack_ = std::move(savedLabelStack);
+    lambdaReturns_ = savedLr;
     env_.pop_back();
 
     if (!tree) return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
@@ -3942,6 +3950,34 @@ Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
 //  statement checking
 // ---------------------------------------------------------------------------
 
+// techdesign-labeled-break-continue.md F3.
+void Checker::pushLoopLabel(Stmt* s) {
+    if (s->label.empty()) return;
+    for (const LabelEntry& e : labelStack_)
+        if (e.name == s->label) {
+            error(s->span, "label '" + std::string(s->label) +
+                  "' is already used by an enclosing loop");
+            break;
+        }
+    labelStack_.push_back({s->label, s});
+}
+
+void Checker::popLoopLabel(Stmt* s) {
+    if (s->label.empty()) return;
+    labelStack_.pop_back();
+}
+
+void Checker::bindLoopLabel(Stmt* s) {
+    const char* what = s->kind == StmtKind::Break ? "break" : "continue";
+    if (s->label.empty()) {
+        if (loopDepth_ == 0) error(s->span, std::string("'") + what + "' outside a loop");
+        return;
+    }
+    for (auto it = labelStack_.rbegin(); it != labelStack_.rend(); ++it)
+        if (it->name == s->label) { s->labelTarget = it->stmt; return; }
+    error(s->span, "no enclosing loop is labeled '" + std::string(s->label) + "'");
+}
+
 void Checker::check(Stmt* s) {
     if (!s) return;
     // techdesign-02 F3: `using` is legal only as a direct statement of a block.
@@ -4011,15 +4047,17 @@ void Checker::check(Stmt* s) {
             break;
         }
         case StmtKind::Break:
-            if (loopDepth_ == 0) error(s->span, "'break' outside a loop");
+            bindLoopLabel(s);
             break;
         case StmtKind::Continue:
-            if (loopDepth_ == 0) error(s->span, "'continue' outside a loop");
+            bindLoopLabel(s);
             break;
         case StmtKind::DoWhile: {
+            pushLoopLabel(s);
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
+            popLoopLabel(s);
             typeOf(s->expr.get());
             break;
         }
@@ -4060,9 +4098,11 @@ void Checker::check(Stmt* s) {
             analyzeCond(s->expr.get(), facts, false);
             std::unordered_map<std::string, Type> saved;
             applyFacts(facts, true, saved);
+            pushLoopLabel(s);
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
+            popLoopLabel(s);
             narrow_ = saved;
             break;
         }
@@ -4071,9 +4111,11 @@ void Checker::check(Stmt* s) {
             check(s->forInit.get());
             if (s->expr) typeOf(s->expr.get());
             if (s->forStep) typeOf(s->forStep.get());
+            pushLoopLabel(s);
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
+            popLoopLabel(s);
             exitEnvScope();
             break;
         case StmtKind::ForIn: {
@@ -4117,9 +4159,11 @@ void Checker::check(Stmt* s) {
             Type bound = s->inferred ? elem : fromTypeRef(s->type.get());
             env_.emplace_back();
             env_.back()[s->name] = {bound, s->isConst};
+            pushLoopLabel(s);
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
+            popLoopLabel(s);
             exitEnvScope();
             break;
         }
@@ -4158,6 +4202,8 @@ void Checker::check(Stmt* s) {
             // same as any other function body.
             int savedLoopDepth = loopDepth_;
             loopDepth_ = 0;
+            auto savedLabelStack = std::move(labelStack_);
+            labelStack_.clear();
             if (s->memberBody && s->type) {
                 Type savedRt = returnType_;
                 const TypeRef* savedRtr = returnTypeRef_;
@@ -4170,6 +4216,7 @@ void Checker::check(Stmt* s) {
                 check(s->memberBody.get());
             }
             loopDepth_ = savedLoopDepth;
+            labelStack_ = std::move(savedLabelStack);
             if (s->init) typeOf(s->init.get());
             break;
         }
@@ -4631,6 +4678,7 @@ void Checker::checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass) {
     returnType_ = fromTypeRef(fn->type.get());
     returnTypeRef_ = fn->type.get();
     loopDepth_ = 0;   // techdesign-02 F1: a fresh function body is its own loop nesting
+    labelStack_.clear();
     env_.emplace_back();
     for (const Param& p : fn->params) {
         if (!p.defaultValue) continue;
@@ -4689,6 +4737,7 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
                     returnType_ = fromTypeRef(s->type.get());
                     returnTypeRef_ = s->type.get();
                     loopDepth_ = 0;   // techdesign-02 F1: fresh function body
+                    labelStack_.clear();
                     check(s->memberBody.get());
                     returnType_ = Type{}; returnTypeRef_ = nullptr;
                 }
@@ -4884,6 +4933,7 @@ void Checker::checkComptimeRoot(const Expr* e, Scope* scope) {
     returnType_ = Type{};
     returnTypeRef_ = nullptr;
     loopDepth_ = 0;
+    labelStack_.clear();
     lambdaReturns_ = nullptr;
     env_.clear();
     narrow_.clear();

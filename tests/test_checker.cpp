@@ -624,6 +624,30 @@ int main() {
     CLEAN("void f() { while (true) { match (1) { 1 => { break; } else => { continue; } } } }");
     ERRORS("void f() { match (1) { 1 => { break; } else => { continue; } } }");
 
+    // --- techdesign-labeled-break-continue.md F3: labeled break/continue ---
+    ERRORS("void f() { outer: while (true) { break nope; } }");           // unknown label
+    ERRORS("void f() { continue outer; }");                               // no enclosing loop at all
+    ERRORS("void f() { outer: while (true) { outer: while (true) { break; } } }");  // enclosing-shadowed dup
+    ERROR_HAS("void f() { outer: while (true) { outer: while (true) { break; } } }",
+              "already used by an enclosing loop");
+    ERROR_HAS("void f() { outer: while (true) { break nope; } }",
+              "no enclosing loop is labeled");
+    // A lambda body is its own loop-nesting scope for labels too (P4): a
+    // labeled break inside a lambda naming an ENCLOSING function's label
+    // must fail to resolve, exactly like the bare-break case above.
+    ERRORS("void f() { outer: while (true) { var g = () => { break outer; }; }; }");
+    // ...but the same lambda targeting its OWN loop's label is fine.
+    CLEAN("void f() { var g = () => { outer: while (true) { break outer; } }; }");
+    // Sibling label reuse is legal: the first loop's label pops before the
+    // second (sibling, not enclosing) loop's push.
+    CLEAN("void f() { L: while (true) { break L; } L: for (int i = 0; i < 5; i += 1) { break L; } }");
+    // Labels are a separate namespace from values — no collision with a
+    // same-spelled local variable.
+    CLEAN("void f() { int L = 5; L: while (true) { break L; } }");
+    // match is not a loop-nesting boundary for labels either: a labeled
+    // break/continue in a match arm targets the enclosing labeled loop.
+    CLEAN("void f() { outer: while (true) { match (1) { 1 => { break outer; } else => { continue outer; } } } }");
+
     // --- Track 02 F2: do-while ---
     CLEAN("void f() { do { console.writeln(1); } while (true); }");
     CLEAN("void f() { do { break; } while (true); }");

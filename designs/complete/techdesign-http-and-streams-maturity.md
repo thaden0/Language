@@ -1,9 +1,15 @@
 # Deferral Register — HTTP & Streams Maturity: Client Pooling, `InStream` Iteration, ELF DNS
 
-**Status:** reference — re-grounded 2026-07-17 (see the dated section at the end of §0;
-it supersedes the register's status text wherever they conflict). Promoted out of deferral
-2026-07-17 (was `deferal-http-and-streams-maturity.md`): **D-C's floor landed, D-B's
-triggers both fired** (it is now schedulable work), D-A remains demand-gated.
+**Status:** D-B (DM-2/DM-3) LANDED 2026-07-19 — see §10. D-A and D-C's in-language
+resolver (DM-4/DM-5) remain correctly deferred: neither trigger has fired (D-A needs
+framework Phase A, ~Aug 24; D-C's resolver needs a `sysUdp*` floor decision). This
+register is archived to `designs/complete/` with D-A/DM-5 still open by design — a
+register tracks conditional work, and "complete" means its actionable-now items
+landed, not that every trigger has fired (SU-1 precedent: landed and archived while
+explicitly handing D-B onward). Re-open/re-read this file, don't re-derive, when
+either trigger fires. Historical text below (re-grounded 2026-07-17, promoted out of
+deferral the same day) is kept as the record; §10 is authoritative for what actually
+landed.
 **Date:** 2026-07-06 (register); 2026-07-17 (re-grounded).
 **Depends on:** nothing to *read*; each resolution path names its own gate.
 **Source:** techdesign-09 §4#5 (client pooling deferral), techdesign-07 §1
@@ -510,4 +516,143 @@ pick it up.
 
 ## 10. Implementation log
 
-*(implementer appends here, per landing milestone)*
+**2026-07-19 — DM-2 deltas + DM-3 LANDED (D-B), oracle/IR/LLVM.** Scope: only the
+items whose trigger had actually fired per §0's re-grounding — DM-1 was already
+landed (Track 08), DM-4 (D-A) and DM-5 (D-C resolver) remain demand-gated with no
+new trigger event, so neither was touched (§8 STOP: "any item pulled forward
+without its trigger" — not pulled forward here).
+
+**DM-2 deltas (`pullOrNone`, drain-before-EOF).** `StreamBuffer<T>` (prelude,
+`src/Resolver.cpp`) gains `T? pullOrNone()` (the honest non-blocking pull SU-1's
+hand-off deferred — §8 of `techdesign-stream-unsubscribe.md`) and a `pullRaw()`
+internal to the new iterator path. Resolved the one real semantic question the
+hand-off left open: SU-1's `pull()` throws `"stream is closed"` **unconditionally**
+once closed, even with items still buffered (pinned by
+`tests/corpus/floor/unsub_inmem.lev`'s `IMEXP` string in
+`tests/run_terminal_floor.sh`) — that is a **consumer-abandon** contract ("the
+closer said done, drop everything") and is left **byte-for-byte unchanged**.
+`pullOrNone()`/`pullRaw()`/the new `waitForData()` are the **producer-EOF**
+siblings the hand-off predicted: they drain whatever is already queued before
+recognizing end-of-stream, because a producer's natural `push(lastItem); close();`
+must still deliver `lastItem` (found via a genuine crash in early testing — see
+below — not a hypothetical). Two different, deliberately-diverging rules on one
+`closed` flag, exactly as SU-1 §8 sanctioned ("it may split loudness/drain
+behavior by role... but must keep `close()` idempotent and never-throwing").
+`push`-after-close stays a **silent drop** (SU-1's behavior, unchanged) — loud
+push-after-close was optional per the hand-off, not required by any DM-3
+acceptance criterion, and changing it broadly risked an uncaught exception from
+inside a loop-dispatched callback (Timer/signal/DOM producers) for no concrete
+win; recorded as a deliberate scope cut, not an oversight.
+
+**DM-3 (waiter-promise blocking pull + `IIterable` flip).** `InStream<T> :
+IDisposable, IIterable<T>`. `iterator()`/`subscribe()` are mutually-exclusive
+standing claims on the consumer end (whichever runs first wins; the loser throws
+naming what claimed it). `StreamIterator<T> : IIterator<T>` holds the
+`StreamBuffer` directly (not the `InStream`) so `next()` can drain via the
+claim-bypassing `pullRaw()` while external `pull()`/`subscribe()` calls still see
+the exclusivity error. `hasNext()` awaits `StreamBuffer.waitForData()` — a
+`Promise<bool>` resolved by the next `push` (true) or `close` (false); empty
+waiters array otherwise, exactly the design's §2.3 step-2 sketch, reusing the
+`Channel.receive()` waiter-list pattern already in the prelude. Zero new native,
+zero new IR op, as promised — `for..in`/`.iterator()` dispatch through the
+existing decl-less-by-name `CallDyn` protocol path (techdesign-07 §2.1 C5),
+confirmed zero checker/Eval/Lower cost by testing (`Foo : IA, IB` — two
+interfaces on one class — compiles and dispatches correctly; no prior example of
+this shape existed in the prelude to point to). `InStream.asSeq() => StreamSeq(this)`
+additionally joins the `Seq<T>` lazy pipeline (`.map/.where/.take/...`), mirroring
+`Array.asSeq()` — not in the design's literal sketch but a one-line, free
+consequence of `Seq`'s existing generic-over-`IIterable` design, and needed to
+make the design's own "Seq over a stream inherits finite-sources" contract point
+concretely testable.
+
+**Real bug caught and fixed during implementation (not shipped).** The first cut
+of `waitForData()`/`pullRaw()` checked `closed` before `isEmpty()` (matching
+`pull()`'s order) — this **crashed** a completely ordinary producer pattern:
+`b.push(lastItem); b.close();` from the same callback, because `Promise.resolve()`
+does not resume a native-parked `await`er synchronously (resumption is deferred),
+so by the time the woken `hasNext()`→`next()` call actually ran, `closed` was
+already `true` and `pullRaw()` threw even though `lastItem` was sitting right
+there, un-consumed. Root-caused with a minimal repro
+(`iter 1 got=1`/`iter 2 got=1`/`iter 3 got=1` expected, got an uncaught
+`"stream is closed"` instead), fixed by making `pullRaw`/`pullOrNone`/
+`waitForData` check items **before** closed (§2.3's "pull on empty-and-closed"
+phrasing, taken literally) while leaving `pull()` itself on the old order. Pinned
+by `tests/corpus/floor/stream_iter.lev`'s "drainOnClose" case (§7 below).
+
+**CGen.cpp regression found and fixed (the one non-prelude touch).** Adding
+`iterator()` to `InStream` broke emit-C++ compilation of *any* program that
+merely constructs a stream and never iterates it (`tests/corpus/floor/usr1.lev`
+and `unsub_inmem.lev` both started failing with a generic "construct not
+covered" error instead of their expected diagnostics). Root cause: CGen's
+reachability walk marks **every** member of an instantiated class reachable
+unconditionally (vtable completeness for by-name dispatch), so `InStream`'s mere
+construction (e.g. via `signal::on`) pulled in `iterator()`, which constructs
+`StreamIterator`, whose `hasNext()` uses `await` — an `Op::Await` CGen has no
+case for (this backend has no async surface at all, permanently,
+`designs/suspension/techdesign-04-emitcpp-leg.md` §1) — turning provably-dead
+code into a hard compile error, the *same* failure shape SU-1 hit and fixed for
+`TaskGroup::close`/`sysTaskCancel`, but on a **different** reachability path
+(the eager per-instantiated-class member sweep, not the by-name-CallDyn one
+SU-1's `isPossibleRecv` gates). Confirmed by `git stash`-ing back to pre-D-B
+`Resolver.cpp` (leak/regression absent) and by a targeted experiment (stubbing
+`hasNext()` to skip `await` made the regression disappear, confirming
+`Op::Await` reachability as the exact trigger) before touching `src/CGen.cpp` at
+all. Fix: `iterator`/`hasNext`/`next` are, per the prelude's own existing
+comments (bug.md #27/#28), *always* dispatched via decl-less by-name `CallDyn` —
+never a resolved decl — so the already-existing, already-safe
+`markByName`/`isPossibleRecv`/`byNameSweep` machinery is a complete, correct path
+for them on its own; excluded `InStream`/`StreamSeq.iterator` and
+`StreamIterator.hasNext/next` from **both** the eager per-instantiated-class
+sweep and the `methodFns` by-name index, so they're reachable *only* when a
+program genuinely, by-name, calls them — which correctly still gets the honest
+emit-C++ rejection when a program actually tries to iterate a stream there
+(verified: `stream_iter.lev` rejects with `sysTimerStart`, not a generic error).
+Cost, documented: a hypothetical cpp program that calls `.iterator()`/`for..in`
+on a stream gets a silent no-op miss (the pre-existing `callm`-miss fallback)
+rather than a clean diagnostic — an acceptable trade given the alternative was
+breaking every unrelated stream-constructing program on this backend, and
+iteration was never going to work there regardless (no async surface).
+
+**Pre-existing, unrelated bug found (not fixed — filed).** Churn-testing the
+design's own §5#6 "park-inside-callback" contract via
+`fuzz/task_churn/park_inside_callback.lev` surfaced a real LLVM leak
+(~128B/iteration). Bisected with `git stash` to the pre-D-B tree (still leaks)
+and reduced to a repro with **no stream code at all** — a plain class field
+`Array<T>` mutated by `.add()`/`.skip()` across two separate method calls leaks
+on `--engine llvm` regardless of streams, iteration, or `await`. Filed as
+`known_bugs_2.md` **#90 [P2]** (output correct on every engine, resource-only);
+the churn file carries an `XFAIL-LLVM` marker citing it, per
+`fuzz/churn_leak.py`'s established convention, so it converges to a guarded PASS
+automatically once #90 is fixed rather than gating this design on an unrelated
+defect.
+
+**Tests.** `tests/corpus/floor/stream_iter.lev` (new): Timer-fed `for..in`
+delivers all 5 ticks then exits at `close()` (§2.3's literal contract point,
+verified the *process* also exits — no loop pinning); `iterator()`-then-`pull()`
+and `subscribe()`-then-`iterator()` exclusivity errors; producer-EOF drain
+(push 3, close, `for..in` still yields all 3); `asSeq().take(3).toArray()` over
+a live Timer stream. Wired into `tests/run_terminal_floor.sh` as a new
+deterministic (non-PTY) section: `--run`/`--ir` byte-identical, `--build-native`
+byte-identical modulo the `[heap]` line, `--build` (emit-C++) cleanly rejected
+on `sysTimerStart` (not the generic-construct regression). `fuzz/task_churn/
+park_inside_callback.lev` (new, XFAIL-LLVM per #90): real park/wake through the
+task scheduler inside a loop-dispatched Timer callback, N iterations, asserts
+(once #90 is fixed) that the waiter `Promise`, the Timer's closure, and the
+parked task's own stack all return to the allocator. Full regression sweep run:
+`terminal_floor` (all green, was 2 pre-existing-in-branch FAILs before the CGen
+fix, both now pass), `corpus_core_{treewalk,native,ir,llvm}`,
+`corpus_tasks_{treewalk,ir,llvm}`, `corpus_wasm` (covers the DOM event stream,
+a third `StreamBuffer` producer beside Timer/signal, unaffected),
+`corpus_churn_leak_tasks` — all pass (XFAIL counted as non-failing).
+
+**Reference docs.** `docs/reference.md` §6.4.8 (iterator protocol: `InStream`
+now in the `IIterable` list, "not iterable" note for `InStream` removed) and §6.6
+(streams: `pullOrNone`, `iterator`/`asSeq`, exclusivity, the drain-before-EOF
+rule, engine lanes) updated. `info.md` §13 landing-log entry added (mirroring
+SU-1's own entry style) plus a stale-text fix (pull-on-empty no longer says
+"will block once the runtime loop exists" — it exists, and does).
+
+**Not done, correctly.** D-A (`HttpConnectionPool`) and D-C's in-language
+`namespace dns` resolver (DM-5): both remain deferred behind unfired triggers
+per §0/§4 of this register. Nothing in `Resolver.cpp`'s HTTP client region or
+DNS-adjacent code was touched.
