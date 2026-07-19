@@ -1,10 +1,10 @@
 # Tech Design — Trident Package Manager (Phase 2: Dependencies)
 
-**Status:** design set, ready for implementation. **Date:** 2026-07-06. **Priority: HIGH
-(post-GT1).**
+**Status:** complete — GT2–GT6 landed; archived 2026-07-19. **Date:** 2026-07-06.
+**Priority: HIGH (post-GT1).**
 **Promotes:** `designs/proposal-package-manager.md` into an implementation-ready milestone
 doc, exactly as `designs/complete/techdesign-toolchain.md` §2 said it would ("P2 … gets its own
-milestone doc, `designs/techdesign-package-manager.md`, the promoted proposal, when
+milestone doc, `designs/complete/techdesign-package-manager.md`, the promoted proposal, when
 scheduled"). The proposal's *mechanics* — MVS, lockfile-as-hash-manifest, immutability,
 checksum DB, zero install-time code, content-addressed store — are the reference and are
 carried forward unchanged; only names, the manifest format (TOML, not the `project{}`
@@ -1003,3 +1003,76 @@ per that file's own convention ("fixed bugs are not tracked there — see git hi
   checksum DB, a Merkle transparency log backend, `publish`/`yank`, the caching proxy, the thin
   index, and audit *policy* (trusted-audit-set enforcement). None of today's work forecloses
   any of them — §9's seam claims are now proven, not just asserted.
+
+**2026-07-19 — P2.3 and P2.4 landed (GT5 and GT6 met; design complete).**
+
+- **The deliberately deferred milestones were pulled forward without changing the compiler
+  contract.** Every new implementation file remains under `tools/trident/`; `src/` and
+  `runtime/` have no diff. `process.{hpp,cpp}` centralizes external-tool lookup and captured
+  `fork`/`exec`, while `source_set.{hpp,cpp}` gives Git publication and proxy extraction one
+  canonical, sorted manifest-source expansion. It rejects absolute paths, `..`, symlink escapes,
+  directories, symlink final entries, and special files before hashing or publishing them.
+- **`trident publish` and immutable package inspection (P2.3).** New
+  `package.{hpp,cpp}` validates a package root, required name/version, a clean Git tree, and that
+  every declared source is tracked; it derives the canonical source hash, VCS identity, HEAD
+  commit, and `vX.Y.Z` tag. `vcs.{hpp,cpp}` now provides repository/tag helpers in addition to
+  fetch. Publish creates (or idempotently confirms) the immutable tag, records the source hash in
+  `checksum.db`, optionally first-wins-registers the manifest name in `$TRIDENT_INDEX`, and can
+  emit a signed attestation in the same invocation. Retrying the identical publication is clean;
+  a tag pointing at another commit, dirty/untracked source, or mismatched checksum is a loud
+  error. A newly-created tag is rolled back if the mandatory checksum step fails; optional-service
+  failures are explicitly reported as partial publication rather than hidden.
+- **Yank-never-delete is part of the integrity log.** `checksum.db` gained hash-chained `yank`
+  events alongside content records. `trident yank <path>@<version>` requires a recorded immutable
+  version and is idempotent. Fresh MVS, omitted-version `add`, and update selection filter yanked
+  versions; an existing internally consistent lock remains buildable and auditable. Content and
+  its checksum are never removed.
+- **The optional index and proxy are real, static services rather than trust roots.**
+  `endpoint.{hpp,cpp}` supports directories, `file://`, and HTTP(S) endpoints (using `curl` only
+  when a network endpoint is configured), with static GET/download and first-wins PUT semantics.
+  `index.{hpp,cpp}` maps an exact friendly name to one immutable VCS path under `names/`; explicit
+  paths always bypass it. `ProxyProvider` serves the existing `ModuleProvider` seam from
+  `modules/<encoded-module-id>/@v/{list,vX.Y.Z.toml,vX.Y.Z.tar}`. Tar entries are validated before
+  extraction and the materialized source set is rehashed, then the ordinary lock/checksum checks
+  still run. With `$TRIDENT_PROXY` absent, Git remains the provider; with `$TRIDENT_INDEX` absent,
+  explicit VCS paths remain the naming model. A complete lock plus a recursively verified warm
+  store now builds without Git, proxy, or index access.
+- **Completion exposed and closed three integrity gaps in the already-landed floor.** A present
+  lock is no longer accepted merely because its root requirements look plausible: trident reruns
+  MVS over the lock's cached edge graph and requires the exact selected module set, catching
+  bumped, lowered, removed, and orphaned entries (including removal of the last VCS dependency).
+  A stale or malformed lock now says to run `trident lock` rather than silently resolving around
+  it. Existing store entries are recursively rehashed against the pinned content hash and reject
+  injected, missing, changed, symlink, or special entries. Version discovery also respects the
+  major-≤1 identity bucket across both 0.x and 1.x, and Git remote spelling is normalized for
+  HTTPS, SSH/scp, `file://`, and local paths.
+- **Signed provenance, shared reviews, and enforceable policy (P2.4).** New
+  `provenance.{hpp,cpp}` signs a length-framed canonical statement over module path, version,
+  canonical source hash, Git commit, identity, and optional artifact hash. `trident attest` and
+  `publish --sign-key` use the system OpenSSL CLI only when this opt-in feature is requested.
+  `trident audit-record` writes shareable review records pinned to the locked version and source
+  hash. `trident audit --policy <file>` (or automatic `trident.audit.toml`) first performs the GT4
+  lock/checksum verification, then can require an audit from a configured trusted auditor and a
+  valid attestation from a configured identity/public key for every selected module. Relative
+  audit files, attestation directories, and public keys resolve beside the policy file.
+- **New automated coverage.** `indextests` covers exact lookup, first-wins registration,
+  idempotence, missing names, and explicit-path bypass. `trident_proxy` constructs a static proxy
+  from the bare Git fixture, blocks Git, resolves/builds through the proxy, then blocks every
+  provider and proves the verified warm-store path. `trident_publish_policy` creates a clean
+  package repository and RSA key, exercises publish + retry + friendly-name add, stale-lock
+  rejection, trusted audit records, valid policy/signature enforcement, untrusted-auditor and
+  tampered-signature rejection, yank, existing-lock audit, and fresh-selection rejection.
+  Checksum/store/fetch tests gained yank, injected-store-content, identity-bucket, and remote-
+  normalization cases; the vendor test now distinguishes a valid offline warm-store build from a
+  deliberately cold Git-blocked failure.
+- **Acceptance (GT5 + GT6):** the focused package-manager set (`mvstests`, `storetests`,
+  `fetchtests`, `locktests`, `checksumtests`, `indextests`, `corpus_project`, manifest errors,
+  VCS app, vendor, proxy, and publish/policy) is **12/12 green**. The full run passed 218 targets
+  directly; its sole initial failure was the optional AArch64 QEMU runtime lane because QEMU was
+  not given the host's installed cross sysroot (`/lib/ld-linux-aarch64.so.1` was therefore not
+  found). Re-running that target with `LVRT_SYSROOT=/usr/aarch64-linux-gnu` passed **1/1**, so all
+  **219/219 test targets are green**. A clean rebuild and `git diff --check` pass. The stronger
+  compiler-boundary search for manifest/provider/MVS/checksum/lock/proxy/index implementation has
+  no hits under `src/` or `runtime/`, and neither directory changed.
+- **P2 is complete.** GT2 through GT6 are implemented and tested; this design is archived at
+  `designs/complete/techdesign-package-manager.md`.

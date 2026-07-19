@@ -43,3 +43,12 @@ std::string checksumDbPath();
 bool checksumDbVerifyOrRecord(const std::string& dbPath, const ModuleId& mod,
                               const Version& version, const std::string& contentHash,
                               std::string& err);
+
+// GT5 yank metadata is another append-only event in the SAME hash-chained
+// transparency log. A yank never deletes or changes the recorded content
+// hash: it only blocks a fresh MVS selection. Builds using an existing lock
+// continue to verify and materialize the version normally.
+bool checksumDbYank(const std::string& dbPath, const ModuleId& mod,
+                    const Version& version, std::string& err);
+bool checksumDbIsYanked(const std::string& dbPath, const ModuleId& mod,
+                        const Version& version, bool& yanked, std::string& err);

@@ -92,10 +92,17 @@ add_executable(trident
   tools/trident/mvs.cpp
   tools/trident/hash.cpp
   tools/trident/store.cpp
+  tools/trident/source_set.cpp
+  tools/trident/process.cpp
+  tools/trident/endpoint.cpp
   tools/trident/vcs.cpp
   tools/trident/fetch.cpp
+  tools/trident/proxy.cpp
+  tools/trident/index.cpp
   tools/trident/lock.cpp
   tools/trident/checksum.cpp
+  tools/trident/package.cpp
+  tools/trident/provenance.cpp
   tools/trident/commands.cpp)
 target_link_libraries(trident PRIVATE levsyntax)
 
@@ -152,6 +159,8 @@ add_executable(fetchtests tests/test_trident_fetch.cpp
   tools/trident/mvs.cpp
   tools/trident/hash.cpp
   tools/trident/store.cpp
+  tools/trident/source_set.cpp
+  tools/trident/process.cpp
   tools/trident/vcs.cpp
   tools/trident/fetch.cpp)
 target_compile_definitions(fetchtests PRIVATE LANG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -172,6 +181,14 @@ add_executable(checksumtests tests/test_trident_checksum.cpp
   tools/trident/semver.cpp
   tools/trident/checksum.cpp)
 add_test(NAME checksumtests COMMAND checksumtests)
+
+# P2.3 optional thin index: exact lookup, retry-safe registration, and
+# first-registration-wins immutability (filesystem backend, no network).
+add_executable(indextests tests/test_trident_index.cpp
+  tools/trident/process.cpp
+  tools/trident/endpoint.cpp
+  tools/trident/index.cpp)
+add_test(NAME indextests COMMAND indextests)
 
 # Conformance: lexer, parser, and resolver must accept the whole demo, no errors.
 # (Full type-check is not asserted here: the demo is a loose "tour" with known
@@ -1035,6 +1052,19 @@ add_test(NAME trident_vendor
                  $<TARGET_FILE:leviathan> $<TARGET_FILE:trident>
                  "${CMAKE_SOURCE_DIR}/tests/trident/vcs_app"
                  "${CMAKE_SOURCE_DIR}/tests/trident/store/fixture_json.git")
+# P2.3/GT5: the optional static proxy is a real ModuleProvider. Git is
+# deliberately shadowed out while MVS, fetch, build, and execution succeed.
+add_test(NAME trident_proxy
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_trident_proxy.sh"
+                 $<TARGET_FILE:leviathan> $<TARGET_FILE:trident>
+                 "${CMAKE_SOURCE_DIR}/tests/trident/vcs_app"
+                 "${CMAKE_SOURCE_DIR}/tests/trident/store/fixture_json.git")
+# P2.3-P2.4 / GT5-GT6: publish + thin index + yank-never-delete, followed by
+# a trusted human audit and public-key-verified provenance policy.
+add_test(NAME trident_publish_policy
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_trident_publish_policy.sh"
+                 $<TARGET_FILE:trident>
+                 "${CMAKE_SOURCE_DIR}/tests/trident/vcs_app")
 # --- end Track B ---
 # ARC leak net (§15): churn programs allocate+drop N escaping objects per
 # iteration; the escaping-tier accounting meter's live-at-exit must stay flat

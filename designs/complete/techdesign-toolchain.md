@@ -128,7 +128,7 @@ so the *entire compiler* carries the manifest parser. That is exactly backwards.
 | **P2** | **Dependencies in `trident`** — local-path deps first, then MVS + lockfile + registry + integrity, per `designs/proposal-package-manager.md` (now living entirely in `trident`). | **GT2:** local-path deps resolve through `trident` (corpus `dep_alias`/`phantom_dep` green). **GT3:** MVS + `<name>.lvlock` + content-addressed store + checksum DB; `deps` may be non-empty from a registry. | GT2 2026-08-20; GT3 2026-10-15 |
 
 P2 is scoped by the existing package-manager proposal and gets its own milestone doc
-(`designs/techdesign-package-manager.md`, the promoted proposal) when scheduled. This design
+(`designs/complete/techdesign-package-manager.md`, the promoted proposal) when scheduled. This design
 carries P2 only as far as the roadmap and the seams P1 must leave for it (§6).
 
 ---
@@ -581,7 +581,7 @@ interleave order (Phase 0 → A-M1 → B-M1 → A-M2 → B-M2 → GT1). Full sui
 
 **2026-07-10 — completion verification on current master + reference sync; design moved to
 `designs/complete/`.** Re-verified the whole P0+P1 scope (the toolchain split proper; P2 is
-tracked in `designs/techdesign-package-manager.md` per §2) still holds on the current merged
+tracked in `designs/complete/techdesign-package-manager.md` per §2) still holds on the current merged
 tree, after the intervening bug.md/Resolver/Project.cpp churn that landed since the 2026-07-06
 pass:
 

@@ -8,7 +8,7 @@ decision tracked at `designs/deferal-trident-post-v1.md` §4.3.3 / P-B3 / STOP (
 ruling has been made (2026-07-18, §0.2 below) and is recorded in that tracker's §10; this
 design specifies the implementation. Until this doc's gate is green, the ruling is *made
 but not enforced* — there is no interim state where partial enforcement ships.
-**Builds on:** `designs/techdesign-package-manager.md` (P2 — GT2/GT3/GT4 all landed; §10
+**Builds on:** `designs/complete/techdesign-package-manager.md` (P2 — GT2–GT6 all landed; §10
 log authoritative), `designs/complete/proposal-project-system.md` §4.5 + §8 Q4 (the
 upheld text), `designs/deferal-trident-post-v1.md` (the tracker; its §4.3.3 sketched both
 candidate resolutions — this doc supersedes its *recommendation* while honoring its
@@ -61,7 +61,7 @@ successful resolution can never contain a cycle for `why`/`audit` to surface.
 
 ### 0.3 STOP protocol (model escalation)
 
-Inherits `designs/techdesign-package-manager.md` §0.3 triggers (a)–(e) verbatim — in
+Inherits `designs/complete/techdesign-package-manager.md` §0.3 triggers (a)–(e) verbatim — in
 particular **(e): MVS stays the only selection algorithm.** This design does not modify
 selection; it validates selection's *output* (§3.1). Additionally, a Sonnet-class agent
 must STOP, log in §8, and escalate to a Fable-class model before:

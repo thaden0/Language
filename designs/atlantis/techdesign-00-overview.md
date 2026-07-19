@@ -6,7 +6,7 @@ Leviathan, distributed via Trident.
 **Builds on:** `designs/proposal-web-framework.md` (the "Loom" proposal — superseded by this
 design set, see R1), `designs/proposal-metaprogramming.md` + techdesigns phases 1–4,
 `designs/complete/techdesign-09-web-foundations.md` (Track 09 — the substrate), Tracks 03/04/05/07/08,
-`designs/techdesign-package-manager.md` (Trident), `/sketch.md` (owner's direction notes).
+`designs/complete/techdesign-package-manager.md` (Trident), `/sketch.md` (owner's direction notes).
 **Owner directives:**
 - Atlantis is an enterprise-grade MVC framework in the ASP.NET family, showcasing the
   language's strengths (multiple inheritance, metaprogramming, streams, compile-time DI).

@@ -2835,14 +2835,24 @@ trident run   [dir]   # ...compile and execute (tree-walk oracle)
 trident check [dir]   # ...parse + resolve + type-check, no execution
 trident emit-llvm [dir]   # ...emit LLVM IR
 trident plan  [dir]   # resolve + write the plan only (no leviathan invocation)
+trident add <path>[@version] [--as N] [--dev]
+trident remove <path> | update [<path>] | lock | fetch | why <path>
+trident vendor [dir]              # copy the locked graph into ./vendor
+trident audit [dir] [--policy trident.audit.toml]
+trident publish [dir] [--tag vX.Y.Z] [--path <vcs-path>]
+trident yank <path>@<version>     # existing locks remain valid
+trident attest [dir] --key private.pem --identity <name> [--artifact <file>]
+trident audit-record <path>@<version> --auditor <name> [--file <path>]
 trident --version     # trident's version, then leviathan's
 ```
 
 Common flags: `--out <path>`, `--target <triple>`, `--opt-level <0|2>` (`--release` = `-O2`),
 `--plan <path>` (override the plan location), `--leviathan <path>` (override compiler discovery).
 `trident` locates `leviathan` via `--leviathan` → `$LEVIATHAN` → its own sibling directory →
-`PATH`. Dependency-management subcommands (`add`/`remove`/`update`/`lock`/`fetch`/`why`) never
-invoke the compiler — see `designs/techdesign-package-manager.md`.
+`PATH`. Dependency-management subcommands never invoke the compiler. `attest` can sign a package's
+canonical source hash (and an optional artifact hash) with an external OpenSSL key;
+`audit-record` writes a shareable human-review record. See
+`designs/complete/techdesign-package-manager.md`.
 
 ### 8.1 The manifest (`trident.toml`)
 
@@ -2908,7 +2918,7 @@ the plan names.
   the same whole-program compilation unit — a dependency is just more source (§1). A `path` that
   is not a local directory (e.g. `github.com/thaden0/json`) is a **VCS module**, requiring a
   `version`; VCS fetch, MVS version selection, a lockfile, and the content-addressed store live in
-  `trident` per `designs/techdesign-package-manager.md`.
+  `trident` per `designs/complete/techdesign-package-manager.md`.
 - **`as`**: aliases the dependency's exported namespaces into a synthesized local namespace, so
   `uses Json;` reaches a dep declared `as = "Json"` without knowing its internal namespace name.
   trident materializes the alias as a real source file under the build dir (the plan carries only
@@ -2919,3 +2929,48 @@ the plan names.
   itself or to a **direct** `[[dep]]` — reaching a transitive dependency's namespace without
   declaring it directly is a compile error (pnpm/Cargo-style strictness). trident decides the
   adjacency (plan `edge` rows); `leviathan` enforces it.
+
+### 8.3 Versions, integrity, optional services, and trust policy
+
+VCS versions are git tags `vMAJOR.MINOR.PATCH`. Trident applies Minimal Version Selection (the
+maximum of every declared minimum for one module identity), writes the deterministic result and
+canonical source hashes to the companion lock (`trident.toml` → `trident.lock`), and stores source
+under `$TRIDENT_HOME/store/<sha256>/` (default `~/.trident/store`). A present consistent lock is
+used verbatim; editing dependency requirements without re-locking is a loud error. The checksum DB
+is an append-only hash-chained log, so a moved tag or changed source is rejected.
+
+`trident publish` validates a clean, fully tracked package source set, creates (or idempotently
+confirms) its immutable tag, and records the hash. `trident yank` appends policy metadata: fresh
+resolution rejects that version, while an existing lock keeps fetching and verifying it. This is
+yank-never-delete, not unpublish.
+
+The network remains optional and provider-shaped:
+
+- `$TRIDENT_PROXY` selects a filesystem/file/HTTPS static cache with
+  `modules/<encoded-module>/@v/{list,vX.Y.Z.toml,vX.Y.Z.tar}`. The archive contains only declared
+  sources. Hash/lock verification is identical to direct Git, so the proxy is not trusted.
+- `$TRIDENT_INDEX` selects a filesystem/file/HTTPS first-registration-wins map under
+  `names/<encoded-name>`. Only friendly names consult it; explicit VCS paths always bypass it.
+- `trident vendor` plus build flag `--vendor` reads only the committed lock and `./vendor`, with no
+  Git, proxy, or global-store dependency.
+
+An optional `trident.audit.toml` beside the manifest can require review records from named trusted
+auditors and signed provenance from configured public keys for every locked module. Audit records
+pin module, version, and source hash; attestations pin those plus commit, signer identity, and an
+optional artifact hash. Normal `trident audit` remains hash-only when no policy is present.
+
+```toml
+version = 1
+trusted_auditors = ["security-team"]
+audit_files = ["trident.audits.toml"]       # written by `trident audit-record`
+require_attestations = true
+attestation_dirs = ["attestations"]         # files written by `trident attest`/`publish --sign-key`
+
+[[key]]
+identity = "release-ci"
+public_key = "keys/release-ci.pem"
+```
+
+Every relative path is resolved beside the policy file. `[[key]]` entries come last; each binds a
+signed attestation identity to its trusted public key. Signing/verification uses the external
+`openssl` executable only when provenance is requested.

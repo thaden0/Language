@@ -171,6 +171,39 @@ static void test_checksum_db_path_uses_trident_home() {
     ::unsetenv("TRIDENT_HOME");
 }
 
+static void test_yank_is_append_only_and_idempotent() {
+    std::string db = mktempPath("yank");
+    ModuleId mod{"github.com/x/json", 1};
+    Version version{1, 2, 0};
+    std::string err;
+    bool yanked = true;
+    CHECK(checksumDbVerifyOrRecord(db, mod, version, "aaaa", err));
+    CHECK(checksumDbIsYanked(db, mod, version, yanked, err));
+    CHECK(!yanked);
+    std::string before = readFile(db);
+    CHECK(checksumDbYank(db, mod, version, err));
+    CHECK(checksumDbIsYanked(db, mod, version, yanked, err));
+    CHECK(yanked);
+    std::string after = readFile(db);
+    CHECK(after.size() > before.size());
+    CHECK(after.find(" yank github.com/x/json 1 1.2.0") != std::string::npos);
+
+    // Repeating a yank is a no-op, and content verification continues to
+    // work: yank changes selection policy, never immutable availability.
+    CHECK(checksumDbYank(db, mod, version, err));
+    CHECK(readFile(db) == after);
+    CHECK(checksumDbVerifyOrRecord(db, mod, version, "aaaa", err));
+    ::remove(db.c_str());
+}
+
+static void test_yank_requires_an_existing_content_record() {
+    std::string db = mktempPath("yank_missing");
+    std::string err;
+    CHECK(!checksumDbYank(db, ModuleId{"github.com/x/missing", 1}, Version{1, 0, 0}, err));
+    CHECK(err.find("fetch or publish") != std::string::npos);
+    ::remove(db.c_str());
+}
+
 int main() {
     test_first_fetch_records_baseline();
     test_repeat_fetch_same_content_verifies_clean();
@@ -179,6 +212,8 @@ int main() {
     test_edited_content_hash_breaks_the_chain();
     test_truncated_log_breaks_the_chain();
     test_checksum_db_path_uses_trident_home();
+    test_yank_is_append_only_and_idempotent();
+    test_yank_requires_an_existing_content_record();
 
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

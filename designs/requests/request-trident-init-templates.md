@@ -8,7 +8,7 @@
 
 `designs/proposal-package-manager.md` §8.2 lists `lang init # scaffold project.ext` (owner
 pointed Atlantis at this CLI as the sanctioned home for scaffolding — ruling R3), but
-`init` was dropped when the CLI was promoted into `designs/techdesign-package-manager.md`
+`init` was dropped when the CLI was promoted into `designs/complete/techdesign-package-manager.md`
 §5.5. Meanwhile Trident's invariants (rightly) forbid the framework from shipping its own
 installable CLI: packages are source-only, fetching runs zero dependency code. Result:
 there is **no `dotnet new` equivalent anywhere in the toolchain**. This ticket asks for

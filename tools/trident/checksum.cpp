@@ -14,6 +14,7 @@ namespace {
 const char* kGenesisHash = "0000000000000000000000000000000000000000000000000000000000000";
 
 struct ChecksumEntry {
+    enum class Kind { Content, Yank } kind = Kind::Content;
     std::string path;
     int major = 0;
     std::string version;       // formatSemVer text (MAJOR.MINOR.PATCH)
@@ -24,19 +25,24 @@ struct ChecksumEntry {
 // One line: "<chainHash> <prevChainHash> <path> <major> <version> <contentHash>".
 // `path` (a VCS path like "github.com/x/json") never contains whitespace —
 // same assumption manifest.cpp/lock.cpp already make about dependency paths.
-std::string chainHashOf(const std::string& prevChainHash, const std::string& path, int major,
-                        const std::string& version, const std::string& contentHash) {
+std::string chainHashOfPayload(const std::string& prevChainHash,
+                               const std::string& payload) {
     Sha256 h;
     h.update(prevChainHash);
     h.update(" ", 1);
-    h.update(path);
-    h.update(" ", 1);
-    h.update(std::to_string(major));
-    h.update(" ", 1);
-    h.update(version);
-    h.update(" ", 1);
-    h.update(contentHash);
+    h.update(payload);
     return h.finalHex();
+}
+
+std::string contentPayload(const std::string& path, int major,
+                           const std::string& version,
+                           const std::string& contentHash) {
+    return path + " " + std::to_string(major) + " " + version + " " + contentHash;
+}
+
+std::string yankPayload(const std::string& path, int major,
+                        const std::string& version) {
+    return "yank " + path + " " + std::to_string(major) + " " + version;
 }
 
 bool ensureDirRec(const std::string& dir) {
@@ -66,11 +72,29 @@ bool loadChecksumDb(const std::string& dbPath, std::vector<ChecksumEntry>& entri
         if (line.empty()) continue;
         std::istringstream ss(line);
         ChecksumEntry e;
-        std::string prevChainHash, majorText;
-        if (!(ss >> e.chainHash >> prevChainHash >> e.path >> majorText >> e.version >>
-             e.contentHash)) {
+        std::string prevChainHash, first, majorText, extra;
+        if (!(ss >> e.chainHash >> prevChainHash >> first)) {
             err = dbPath + ":" + std::to_string(lineNo) + ": malformed checksum DB record";
             return false;
+        }
+        std::string payload;
+        if (first == "yank") {
+            e.kind = ChecksumEntry::Kind::Yank;
+            if (!(ss >> e.path >> majorText >> e.version) || (ss >> extra)) {
+                err = dbPath + ":" + std::to_string(lineNo) +
+                      ": malformed checksum DB yank record";
+                return false;
+            }
+            payload = yankPayload(e.path, std::atoi(majorText.c_str()), e.version);
+        } else {
+            e.path = first;
+            if (!(ss >> majorText >> e.version >> e.contentHash) || (ss >> extra)) {
+                err = dbPath + ":" + std::to_string(lineNo) +
+                      ": malformed checksum DB content record";
+                return false;
+            }
+            payload = contentPayload(e.path, std::atoi(majorText.c_str()), e.version,
+                                     e.contentHash);
         }
         if (prevChainHash != lastChainHash) {
             err = dbPath + ":" + std::to_string(lineNo) +
@@ -80,7 +104,7 @@ bool loadChecksumDb(const std::string& dbPath, std::vector<ChecksumEntry>& entri
             return false;
         }
         e.major = std::atoi(majorText.c_str());
-        std::string recomputed = chainHashOf(prevChainHash, e.path, e.major, e.version, e.contentHash);
+        std::string recomputed = chainHashOfPayload(prevChainHash, payload);
         if (recomputed != e.chainHash) {
             err = dbPath + ":" + std::to_string(lineNo) +
                  ": checksum DB record hash does not match its own content — the log has "
@@ -101,11 +125,28 @@ bool appendChecksumEntry(const std::string& dbPath, const std::string& prevChain
         err = "cannot create directory for '" + dbPath + "'";
         return false;
     }
-    std::string chainHash = chainHashOf(prevChainHash, path, major, version, contentHash);
+    std::string payload = contentPayload(path, major, version, contentHash);
+    std::string chainHash = chainHashOfPayload(prevChainHash, payload);
     std::ofstream out(dbPath, std::ios::binary | std::ios::app);
     if (!out) { err = "cannot write '" + dbPath + "'"; return false; }
     out << chainHash << ' ' << prevChainHash << ' ' << path << ' ' << major << ' ' << version
         << ' ' << contentHash << '\n';
+    return out.good();
+}
+
+bool appendYankEntry(const std::string& dbPath, const std::string& prevChainHash,
+                     const std::string& path, int major, const std::string& version,
+                     std::string& err) {
+    size_t slash = dbPath.find_last_of('/');
+    if (slash != std::string::npos && !ensureDirRec(dbPath.substr(0, slash))) {
+        err = "cannot create directory for '" + dbPath + "'";
+        return false;
+    }
+    std::string payload = yankPayload(path, major, version);
+    std::string chainHash = chainHashOfPayload(prevChainHash, payload);
+    std::ofstream out(dbPath, std::ios::binary | std::ios::app);
+    if (!out) { err = "cannot write '" + dbPath + "'"; return false; }
+    out << chainHash << ' ' << prevChainHash << ' ' << payload << '\n';
     return out.good();
 }
 
@@ -126,6 +167,7 @@ bool checksumDbVerifyOrRecord(const std::string& dbPath, const ModuleId& mod,
 
     std::string versionText = formatSemVer(version);
     for (const ChecksumEntry& e : entries) {
+        if (e.kind != ChecksumEntry::Kind::Content) continue;
         if (e.path != mod.path || e.major != mod.major || e.version != versionText) continue;
         if (e.contentHash == contentHash) return true;   // matches the recorded baseline
         err = "content for " + mod.path + "@" + versionText + " does not match the checksum "
@@ -139,4 +181,44 @@ bool checksumDbVerifyOrRecord(const std::string& dbPath, const ModuleId& mod,
     // the trusted baseline for every future fetch.
     return appendChecksumEntry(dbPath, lastChainHash, mod.path, mod.major, versionText,
                                contentHash, err);
+}
+
+bool checksumDbIsYanked(const std::string& dbPath, const ModuleId& mod,
+                        const Version& version, bool& yanked, std::string& err) {
+    std::vector<ChecksumEntry> entries;
+    std::string lastChainHash;
+    if (!loadChecksumDb(dbPath, entries, lastChainHash, err)) return false;
+    (void)lastChainHash;
+    const std::string versionText = formatSemVer(version);
+    yanked = false;
+    for (const ChecksumEntry& e : entries) {
+        if (e.kind == ChecksumEntry::Kind::Yank && e.path == mod.path &&
+            e.major == mod.major && e.version == versionText)
+            yanked = true;
+    }
+    return true;
+}
+
+bool checksumDbYank(const std::string& dbPath, const ModuleId& mod,
+                    const Version& version, std::string& err) {
+    std::vector<ChecksumEntry> entries;
+    std::string lastChainHash;
+    if (!loadChecksumDb(dbPath, entries, lastChainHash, err)) return false;
+
+    const std::string versionText = formatSemVer(version);
+    bool hasContent = false;
+    bool alreadyYanked = false;
+    for (const ChecksumEntry& e : entries) {
+        if (e.path != mod.path || e.major != mod.major || e.version != versionText) continue;
+        if (e.kind == ChecksumEntry::Kind::Content) hasContent = true;
+        if (e.kind == ChecksumEntry::Kind::Yank) alreadyYanked = true;
+    }
+    if (!hasContent) {
+        err = "cannot yank " + mod.path + "@" + versionText +
+              ": no immutable content hash is recorded in the checksum DB "
+              "(fetch or publish the version first)";
+        return false;
+    }
+    if (alreadyYanked) return true;  // idempotent
+    return appendYankEntry(dbPath, lastChainHash, mod.path, mod.major, versionText, err);
 }

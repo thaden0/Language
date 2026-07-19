@@ -26,3 +26,25 @@ bool gitListTags(const std::string& remote, std::vector<std::string>& out, std::
 // the checkout's absolute path in `checkoutDir` — the caller owns cleanup.
 bool gitCloneTag(const std::string& remote, const std::string& tag, const std::string& parentDir,
                  std::string& checkoutDir, std::string& err);
+
+// Publishing helpers (P2.3/GT5). All operate through `git -C <repo>` and
+// never invoke a shell. `gitTagCommit` reports a missing tag with
+// `exists == false`, not as an error, so publish can be safely retried.
+bool gitRepoRoot(const std::string& path, std::string& root, std::string& err);
+bool gitWorkingTreeClean(const std::string& repo, bool& clean, std::string& details,
+                         std::string& err);
+bool gitOriginUrl(const std::string& repo, std::string& remote, std::string& err);
+bool gitHeadCommit(const std::string& repo, std::string& commit, std::string& err);
+bool gitPathTracked(const std::string& repo, const std::string& relativePath,
+                    bool& tracked, std::string& err);
+bool gitTagCommit(const std::string& repo, const std::string& tag, bool& exists,
+                  std::string& commit, std::string& err);
+bool gitCreateTag(const std::string& repo, const std::string& tag,
+                  const std::string& commit, std::string& err);
+bool gitDeleteTag(const std::string& repo, const std::string& tag, std::string& err);
+
+// Convert an origin URL into the manifest/module identity spelling used by
+// Trident: https://github.com/u/r.git and git@github.com:u/r.git both become
+// github.com/u/r; absolute/file remotes remain filesystem paths (the offline
+// fixture case).
+std::string modulePathFromRemote(const std::string& remote);
