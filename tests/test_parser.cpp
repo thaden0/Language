@@ -123,6 +123,31 @@ int main() {
     // prematurely close the hole.
     CLEAN("void f() { console.writeln(\"${'a } b'}\"); }");
 
+    // techdesign-labeled-break-continue.md F1/F2: labeled loops + labeled
+    // break/continue, all four loop kinds, dump ` label=<x>` on both the
+    // loop's own line and the break/continue's line.
+    CONTAINS("void f() { outer: while (true) { break outer; } }", "While (true) label=outer");
+    CONTAINS("void f() { outer: while (true) { break outer; } }", "Break label=outer");
+    CONTAINS("void f() { outer: do { continue outer; } while (true); }", "DoWhile (true) label=outer");
+    CONTAINS("void f() { outer: do { continue outer; } while (true); }", "Continue label=outer");
+    CONTAINS("void f() { outer: for (int i = 0; i < 5; i += 1) { break outer; } }", "label=outer");
+    CONTAINS("void f() { outer: for (int i = 0; i < 5; i += 1) { break outer; } }", "Break label=outer");
+    CONTAINS("void f() { outer: for (int x in 1..5) { continue outer; } }", "label=outer");
+    CONTAINS("void f() { outer: for (int x in 1..5) { continue outer; } }", "Continue label=outer");
+    // Unlabeled break/continue print no label suffix at all (regression).
+    CONTAINS("void f() { while (true) { break; } }", "Break\n");
+    // A parse-error case as a golden CLEAN-negative: `foo: return;` — the
+    // label guard's three-token lookahead (Identifier, Colon, loop-kw)
+    // requires a LOOP keyword after the colon; `return` isn't one, so this
+    // claims no grammar and falls through to ordinary statement parsing,
+    // where `foo` reads as an expression and the following `:` is unexpected.
+    CONTAINS("void f() { foo: return; }", "<HAD ERRORS>");
+    // `a: b: while` — one label per loop (problem #2): the outer guard's
+    // three-token peek sees (a, :, b) — the third token is an identifier,
+    // not a loop keyword, so it isn't claimed as a label either; `a` parses
+    // as an expression statement and the `:` after it is a parse error.
+    CONTAINS("void f() { a: b: while (true) { } }", "<HAD ERRORS>");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

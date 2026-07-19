@@ -406,6 +406,7 @@ void Evaluator::runCtor(Symbol* cls, const std::string& label, std::vector<Value
     auto savedThis = thisObj_; Symbol* savedCls = thisClass_;
     bool savedInCtor = inCtor_; bool savedRet = returning_; Value savedRv = returnValue_;
     bool savedBrk = breaking_; bool savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
     // bug.md #32 M2: a ctor body is never itself a namespace-level free
     // function (it's gathered via gatherClass, so Stmt::enclosingNs is never
     // set on it) — don't let a caller's curNamespace_ leak into it.
@@ -421,11 +422,13 @@ void Evaluator::runCtor(Symbol* cls, const std::string& label, std::vector<Value
     for (size_t i = 0; i < ctor->params.size(); ++i) env_.back()[ctor->params[i].name] = copyValue(args[i]);
     thisObj_ = self; thisClass_ = cls; inCtor_ = true; returning_ = false;
     breaking_ = false; continuing_ = false;
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     exec(ctor->memberBody.get());
     env_ = std::move(savedEnv);
     thisObj_ = savedThis; thisClass_ = savedCls; inCtor_ = savedInCtor;
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     curNamespace_ = savedNs;
 }
 
@@ -600,6 +603,7 @@ Value Evaluator::evalComptimeBody(
     err.clear();
     auto savedEnv = std::move(env_);
     bool savedRet = returning_, savedBrk = breaking_, savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
     Value savedRv = returnValue_;
     SourceSpan savedReturnSpan = lastReturnSpan_;
     std::string_view savedMacro = comptimeMacroName_, savedParam = comptimeMacroParam_;
@@ -611,6 +615,7 @@ Value Evaluator::evalComptimeBody(
     for (const auto& [name, val] : locals)
         env_.back()[std::string_view(name)] = copyValue(val);
     returning_ = breaking_ = continuing_ = false;
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     returnValue_ = vvoid();
     lastReturnSpan_ = {};
     exec(body);
@@ -619,6 +624,7 @@ Value Evaluator::evalComptimeBody(
     env_ = std::move(savedEnv);
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     lastReturnSpan_ = savedReturnSpan;
     comptimeMacroName_ = savedMacro; comptimeMacroParam_ = savedParam;
     comptimeMacroBody_ = savedBody;
@@ -628,15 +634,18 @@ Value Evaluator::evalComptimeBody(
 Value Evaluator::callComptimeMacro(const Value& arg) {
     auto savedEnv = std::move(env_);
     bool savedRet = returning_, savedBrk = breaking_, savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
     Value savedRv = returnValue_;
     env_.clear(); env_.emplace_back();
     env_.back()[comptimeMacroParam_] = copyValue(arg);
     returning_ = breaking_ = continuing_ = false; returnValue_ = vvoid();
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     exec(comptimeMacroBody_);
     Value result = (returning_ && !throwing_) ? returnValue_ : vvoid();
     env_ = std::move(savedEnv);
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     return result;
 }
 
@@ -846,6 +855,7 @@ Value Evaluator::callFunction(const Stmt* fn, std::vector<Value>& args,
     auto savedThis = thisObj_; Symbol* savedCls = thisClass_;
     bool savedInCtor = inCtor_; bool savedRet = returning_; Value savedRv = returnValue_;
     bool savedBrk = breaking_; bool savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
     // bug.md #32 M2: a free (non-method) function's enclosing namespace, so an
     // unchecked prelude body can resolve a bare same-namespace `Class(...)`
     // construction (ctorTarget) the same way it already resolves a bare
@@ -860,6 +870,7 @@ Value Evaluator::callFunction(const Stmt* fn, std::vector<Value>& args,
         env_.back()[fn->params[i].name] = copyValue(args[i]);
     thisObj_ = self; thisClass_ = selfClass; inCtor_ = false; returning_ = false;
     breaking_ = false; continuing_ = false;
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     returnValue_ = vvoid();
     exec(fn->memberBody.get());
     Value result = (returning_ && !throwing_) ? returnValue_ : vvoid();
@@ -867,6 +878,7 @@ Value Evaluator::callFunction(const Stmt* fn, std::vector<Value>& args,
     thisObj_ = savedThis; thisClass_ = savedCls; inCtor_ = savedInCtor;
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     curNamespace_ = savedNs;
     return result;
 }
@@ -876,6 +888,7 @@ Value Evaluator::callClosure(std::shared_ptr<Closure> cl, std::vector<Value>& ar
     auto savedThis = thisObj_; Symbol* savedCls = thisClass_;
     bool savedRet = returning_; Value savedRv = returnValue_;
     bool savedBrk = breaking_; bool savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
 
     env_ = cl->env;                       // the captured environment
     env_.emplace_back();
@@ -884,6 +897,7 @@ Value Evaluator::callClosure(std::shared_ptr<Closure> cl, std::vector<Value>& ar
     thisObj_ = cl->thisObj; thisClass_ = cl->thisClass;
     returning_ = false; returnValue_ = vvoid();
     breaking_ = false; continuing_ = false;
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     Value r;
     if (cl->lambda->block) {                 // statement-block body
         exec(cl->lambda->block.get());
@@ -896,6 +910,7 @@ Value Evaluator::callClosure(std::shared_ptr<Closure> cl, std::vector<Value>& ar
     thisObj_ = savedThis; thisClass_ = savedCls;
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     return r;
 }
 
@@ -913,6 +928,7 @@ Value Evaluator::callPrimMethod(const Stmt* fn, const Value& self,
     Value savedPrim = primThis_; bool savedHas = hasPrimThis_;
     bool savedRet = returning_; Value savedRv = returnValue_;
     bool savedBrk = breaking_; bool savedCnt = continuing_;
+    const Stmt* savedBrkT = breakTarget_; const Stmt* savedCntT = continueTarget_;
     // Bug 21: isolated stack — see runCtor.
     auto savedEnv = std::move(env_);
     env_.clear();
@@ -922,6 +938,7 @@ Value Evaluator::callPrimMethod(const Stmt* fn, const Value& self,
     thisObj_ = nullptr; thisClass_ = sema_.global->lookup(className);
     primThis_ = self; hasPrimThis_ = true; returning_ = false;
     breaking_ = false; continuing_ = false;
+    breakTarget_ = nullptr; continueTarget_ = nullptr;
     exec(fn->memberBody.get());
     Value result = returning_ ? returnValue_ : vvoid();
     env_ = std::move(savedEnv);
@@ -929,6 +946,7 @@ Value Evaluator::callPrimMethod(const Stmt* fn, const Value& self,
     primThis_ = savedPrim; hasPrimThis_ = savedHas;
     returning_ = savedRet; returnValue_ = savedRv;
     breaking_ = savedBrk; continuing_ = savedCnt;
+    breakTarget_ = savedBrkT; continueTarget_ = savedCntT;
     return result;
 }
 
@@ -1656,9 +1674,11 @@ void Evaluator::exec(Stmt* s) {
                     // as it was. If it throws, that new exception REPLACES
                     // the pending one — the uniform "close-throw wins" rule.
                     bool sRet = returning_, sBrk = breaking_, sCnt = continuing_;
+                    const Stmt* sBrkT = breakTarget_; const Stmt* sCntT = continueTarget_;
                     bool sThr = throwing_;
                     Value sRv = returnValue_, sTv = thrownValue_;
                     returning_ = breaking_ = continuing_ = throwing_ = false;
+                    breakTarget_ = nullptr; continueTarget_ = nullptr;
                     if (v.kind == VKind::Object && v.obj && closeDecl) {
                         std::vector<Value> noArgs;
                         // Dispatch close() on the RUNTIME class. For an
@@ -1673,6 +1693,7 @@ void Evaluator::exec(Stmt* s) {
                     }
                     if (!throwing_) {
                         returning_ = sRet; breaking_ = sBrk; continuing_ = sCnt;
+                        breakTarget_ = sBrkT; continueTarget_ = sCntT;
                         throwing_ = sThr; returnValue_ = sRv; thrownValue_ = sTv;
                     }
                 }
@@ -1682,9 +1703,11 @@ void Evaluator::exec(Stmt* s) {
         }
         case StmtKind::Break:
             breaking_ = true;
+            breakTarget_ = s->labelTarget;
             break;
         case StmtKind::Continue:
             continuing_ = true;
+            continueTarget_ = s->labelTarget;
             break;
         case StmtKind::Var: {
             Value v;
@@ -1728,15 +1751,27 @@ void Evaluator::exec(Stmt* s) {
             while (!returning_ && !throwing_) {
                 if (!eval(s->expr.get()).b || throwing_) break;
                 exec(s->thenBranch.get());
-                if (continuing_) continuing_ = false;
-                if (breaking_) { breaking_ = false; break; }
+                if (continuing_) {
+                    if (continueTarget_ && continueTarget_ != s) break;
+                    continuing_ = false; continueTarget_ = nullptr;
+                }
+                if (breaking_) {
+                    if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                    break;
+                }
             }
             break;
         case StmtKind::DoWhile:
             do {
                 exec(s->thenBranch.get());
-                if (continuing_) continuing_ = false;
-                if (breaking_) { breaking_ = false; break; }
+                if (continuing_) {
+                    if (continueTarget_ && continueTarget_ != s) break;
+                    continuing_ = false; continueTarget_ = nullptr;
+                }
+                if (breaking_) {
+                    if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                    break;
+                }
             } while (!returning_ && !throwing_ && eval(s->expr.get()).b);
             break;
         case StmtKind::ForIn: {
@@ -1749,16 +1784,28 @@ void Evaluator::exec(Stmt* s) {
                 for (long long k = lo; k <= hi && !returning_ && !throwing_; ++k) {
                     env_.back()[s->name] = vint(k);
                     exec(s->thenBranch.get());
-                    if (continuing_) continuing_ = false;
-                    if (breaking_) { breaking_ = false; break; }
+                    if (continuing_) {
+                        if (continueTarget_ && continueTarget_ != s) break;
+                        continuing_ = false; continueTarget_ = nullptr;
+                    }
+                    if (breaking_) {
+                        if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                        break;
+                    }
                 }
             } else if (iter.kind == VKind::Array && iter.arr) {
                 for (const Value& el : *iter.arr) {
                     if (returning_ || throwing_) break;
                     env_.back()[s->name] = el;
                     exec(s->thenBranch.get());
-                    if (continuing_) continuing_ = false;
-                    if (breaking_) { breaking_ = false; break; }
+                    if (continuing_) {
+                        if (continueTarget_ && continueTarget_ != s) break;
+                        continuing_ = false; continueTarget_ = nullptr;
+                    }
+                    if (breaking_) {
+                        if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                        break;
+                    }
                 }
             } else if (iter.kind == VKind::Map && iter.map) {
                 // iterate entries as Pair<K, V>
@@ -1768,8 +1815,14 @@ void Evaluator::exec(Stmt* s) {
                     std::vector<Value> pargs{k, v};
                     env_.back()[s->name] = pairSym ? construct(pairSym, "Of", pargs) : vvoid();
                     exec(s->thenBranch.get());
-                    if (continuing_) continuing_ = false;
-                    if (breaking_) { breaking_ = false; break; }
+                    if (continuing_) {
+                        if (continueTarget_ && continueTarget_ != s) break;
+                        continuing_ = false; continueTarget_ = nullptr;
+                    }
+                    if (breaking_) {
+                        if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                        break;
+                    }
                 }
             } else if (s->forInProtocol && iter.kind == VKind::Object && iter.obj &&
                        iter.obj->cls) {
@@ -1796,8 +1849,14 @@ void Evaluator::exec(Stmt* s) {
                         if (throwing_) break;
                         env_.back()[s->name] = nx;
                         exec(s->thenBranch.get());
-                        if (continuing_) continuing_ = false;
-                        if (breaking_) { breaking_ = false; break; }
+                        if (continuing_) {
+                            if (continueTarget_ && continueTarget_ != s) break;
+                            continuing_ = false; continueTarget_ = nullptr;
+                        }
+                        if (breaking_) {
+                            if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                            break;
+                        }
                     }
                 }
             }
@@ -1810,8 +1869,14 @@ void Evaluator::exec(Stmt* s) {
                  !returning_ && !throwing_ && (!s->expr || eval(s->expr.get()).b);
                  eval(s->forStep.get())) {
                 exec(s->thenBranch.get());
-                if (continuing_) continuing_ = false;
-                if (breaking_) { breaking_ = false; break; }
+                if (continuing_) {
+                    if (continueTarget_ && continueTarget_ != s) break;
+                    continuing_ = false; continueTarget_ = nullptr;
+                }
+                if (breaking_) {
+                    if (!breakTarget_ || breakTarget_ == s) { breaking_ = false; breakTarget_ = nullptr; }
+                    break;
+                }
             }
             env_.pop_back();
             break;
@@ -2078,6 +2143,8 @@ Evaluator::TaskState Evaluator::saveTaskState() {
     s.returning = returning_;                returning_ = false;
     s.breaking = breaking_;                  breaking_ = false;
     s.continuing = continuing_;              continuing_ = false;
+    s.breakTarget = breakTarget_;            breakTarget_ = nullptr;
+    s.continueTarget = continueTarget_;      continueTarget_ = nullptr;
     s.returnValue = std::move(returnValue_); returnValue_ = Value{};
     s.thrownValue = std::move(thrownValue_); thrownValue_ = Value{};
     s.rawField = std::move(rawField_);       rawField_.clear();
@@ -2095,6 +2162,8 @@ void Evaluator::restoreTaskState(TaskState&& s) {
     returning_ = s.returning;
     breaking_ = s.breaking;
     continuing_ = s.continuing;
+    breakTarget_ = s.breakTarget;
+    continueTarget_ = s.continueTarget;
     returnValue_ = std::move(s.returnValue);
     thrownValue_ = std::move(s.thrownValue);
     rawField_ = std::move(s.rawField);

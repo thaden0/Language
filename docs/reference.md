@@ -849,11 +849,11 @@ expr;                                          // expression statement
 { stmt* }                                      // block
 return expr;    => expr;                       // return (arrow form)
 if (cond) stmt [else stmt]
-while (cond) stmt
+label: while (cond) stmt                       // labeled loop (all 4 loop kinds): §5.2
 do stmt while (cond);                          // post-test: body runs before the first check
 for (init; cond; step) stmt
 for (T x in iterable) stmt                     // ranges, arrays, maps (Pair entries), any IIterable<T> (§6.4.8)
-break;      continue;                          // loop control: §5.2
+break;      continue;                          // loop control, unlabeled or `break label;`/`continue label;`: §5.2
 throw expr;                                    // expr must implement IException
 try stmt catch (Type name?) stmt [catch ...]   // first assignable clause wins
 bind ...;   uses NS;   use NS::name (as alias)?;   // imports: §4.1
@@ -868,16 +868,44 @@ name is optional. Uncaught exceptions terminate execution with
 `Uncaught <Class>: <message>`. There is no `finally` — scope-based cleanup (`using`, §5.2) covers
 the common case; ordinary `try`/`catch` covers the rest.
 
-### 5.2 Loop control and `using` (techdesign-02)
+### 5.2 Loop control and `using` (techdesign-02, techdesign-labeled-break-continue)
 
 `break;` exits the nearest enclosing loop (`while`, `do`-`while`, C-style `for`, `for..in`).
 `continue;` skips to the next iteration: for `while`/`do`-`while`, to the condition; for `for`,
-to the step (then the condition); for `for..in`, to the next element. Both are unlabeled only —
-they always target the *innermost* enclosing loop. Using either outside any loop is a compile
-error. A lambda body is its own loop-nesting scope: a bare `break`/`continue` inside a lambda
-never reaches a loop in the *enclosing* function — it is legal only if the lambda's own body has
-a loop of its own. `match` is not a loop-nesting boundary: `break`/`continue` inside a `match`
-arm that sits inside a loop targets that loop, not the match.
+to the step (then the condition); for `for..in`, to the next element. Using either outside any
+loop is a compile error. A lambda body is its own loop-nesting scope: a bare `break`/`continue`
+inside a lambda never reaches a loop in the *enclosing* function — it is legal only if the
+lambda's own body has a loop of its own. `match` is not a loop-nesting boundary: `break`/
+`continue` inside a `match` arm that sits inside a loop targets that loop, not the match.
+
+**Labeled forms.** A loop may carry a label — `identifier :` immediately before `while`, `for`
+(both forms), or `do` — and `break label;` / `continue label;` name a label on a loop that
+lexically encloses the statement, within the same function body, to unwind/restart *that* loop
+from arbitrary nesting depth (unlabeled `break;`/`continue;` are unchanged: nearest enclosing
+loop, labeled or not). One label per loop (`a: b: while` is a parse error); a loop's label may
+shadow neither its own value/type namespace (labels are a separate namespace: `L: while (...)`
+and a variable named `L` never collide) nor an *enclosing* loop's label (a compile error — "label
+'L' is already used by an enclosing loop"), but two **sibling** loops (neither enclosing the
+other) may reuse the same label. A lambda body is a label-scope boundary exactly like it is a
+loop-nesting boundary: a labeled `break`/`continue` naming an enclosing *function's* label fails
+to resolve ("no enclosing loop is labeled 'L'"), the same error a genuinely unknown label gets.
+`match` is not a label-scope boundary either — a labeled `break`/`continue` in a match arm inside
+a labeled loop targets that loop.
+
+A labeled `break`/`continue` crossing one or more `using`-declared resources closes exactly the
+resources declared inside the *target* loop (reverse declaration order), and none declared
+outside it — the same deterministic-cleanup guarantee `using` always makes, generalized to a
+multi-level exit:
+```
+outer: for (int i = 0; i < n; i = i + 1) {
+    using File f = File(paths.get(i), std::read);
+    inner: while (more()) {
+        if (fatal())   break outer;      // closes f, exits both loops
+        if (skipRow()) continue outer;   // closes f, next i
+        if (skipCol()) continue inner;   // f stays open, next while-test
+    }
+}
+```
 
 `do stmt while (cond);` runs the body once unconditionally, then loops while `cond` holds
 (post-test, unlike `while`'s pre-test). `continue` inside a `do`-`while` body jumps to the
