@@ -108,6 +108,27 @@ private:
     // Flow-narrowing overlay: path ("x", "req.host") -> narrowed type. Consulted
     // before declared types; erased when the path (or a prefix) is assigned.
     std::unordered_map<std::string, Type> narrow_;
+    // const.md OQ1 — definite single assignment (the dual of narrowing). A
+    // `const` local declared without an initializer is "write-open": recorded
+    // here (name -> the loop/try nesting depth at its declaration) until it is
+    // definitely assigned. The first plain assignment on a path closes the
+    // window (erases the entry); every later write hits the ordinary const
+    // write-error. A read while still open is "read before definitely
+    // assigned". An if/else or match join UNIONS the arms' still-open sets (a
+    // const closes only if it closed on every arm — set intersection of the
+    // assigned sets). Assigning inside a deeper loop/try than the declaration
+    // cannot be the single init (§2.3) and is an error. Saved/restored around
+    // branches exactly like narrow_; a frame's names are dropped from it at
+    // scope exit (exitEnvScope) so a still-open const never leaks past its
+    // scope or into the next function.
+    struct PendingConst { int loopDepth = 0; int tryDepth = 0; };
+    std::unordered_map<std::string, PendingConst> constPending_;
+    // Depth of `try` bodies currently open (catch bodies excluded) — the `try`
+    // analogue of loopDepth_, for the §2.3 "the window can't span a try" rule.
+    int tryDepth_ = 0;
+    // Set only while typing an assignment's bare-Name LHS, so the write target
+    // itself isn't mis-flagged as a read-before-definite-assignment (OQ1).
+    bool typingLhs_ = false;
     // bind/inject DI (§12.5): the per-block lexical stack. Factory bindings are
     // registered by the Resolver into each scope's type-keyed `binds` table
     // (designs/complete/techdesign-block-scoped-use.md §3.2); this stack just walks the
@@ -296,7 +317,7 @@ private:
         }
         ~BlockScopeGuard() {
             c.popLexicalScope();
-            c.env_.pop_back();
+            c.exitEnvScope();
             c.scope_ = savedScope;
         }
         BlockScopeGuard(const BlockScopeGuard&) = delete;
@@ -330,6 +351,10 @@ private:
     void applyFacts(const std::vector<Fact>& facts, bool thenSide,
                     std::unordered_map<std::string, Type>& saved);
     void invalidatePath(const std::string& path);
+    // OQ1: pop the top env_ frame, first dropping its names from constPending_
+    // so a write-open const that reached end of scope (permitted, §2.2 step 5)
+    // doesn't linger and mis-flag a later same-named binding.
+    void exitEnvScope();
 
     // helpers
     Type primType(const char* name) const;   // int/string/bool/float class type

@@ -47,7 +47,7 @@ Excluded:
 | `designs/complete/terminal-raw-mode.md` | 2 | Local platform feature, but terminal restoration and pty tests raise the bar above a simple native wrapper. |
 | `designs/deferal-transcendental-math.md` | 2 | Focused backend/runtime completion for math functions. The main risk is consistent coverage across native paths, not design ambiguity. |
 | `designs/signals.md` | 2 | Small API, but signal delivery has platform and event-loop sharp edges. The design keeps handlers out of user space, which limits scope. |
-| `designs/techdesign-const-system-extensions.md` | 3 | Still front-end-only, but definite single assignment is flow-sensitive and must compose with existing narrowing/invalidation rules. |
+| `designs/complete/techdesign-const-system-extensions.md` | 3 | Still front-end-only, but definite single assignment is flow-sensitive and must compose with existing narrowing/invalidation rules. (Landed 2026-07-18.) |
 | `designs/techdesign-labeled-break-continue.md` | 3 | Requires parser, AST, checker, and lowering changes for nested control flow, but the feature is bounded and testable. |
 | `designs/deferal-char-block-abi.md` | 3 | Short design, but ABI tags are contract-governed. Small implementation footprint with high compatibility sensitivity. |
 | `designs/complete/techdesign-04-stdlib-strings.md` | 3 | Mostly prelude/library expansion plus a `toInt` migration. Broad surface, moderate implementation complexity. |

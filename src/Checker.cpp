@@ -707,6 +707,17 @@ void Checker::invalidatePath(const std::string& path) {
     }
 }
 
+// OQ1: leaving a scope drops any of its locals still recorded as write-open
+// consts. A const that reaches end of scope still open is simply dead, not
+// wrong (§2.2 step 5); dropping it here also keeps constPending_ from leaking a
+// stale name into an outer/shadowing binding or the next function body.
+void Checker::exitEnvScope() {
+    if (!env_.empty() && !constPending_.empty())
+        for (const auto& kv : env_.back())
+            constPending_.erase(std::string(kv.first));
+    env_.pop_back();
+}
+
 // ---------------------------------------------------------------------------
 //  expression typing
 // ---------------------------------------------------------------------------
@@ -822,7 +833,18 @@ Type Checker::typeOfInner(const Expr* e) {
                 auto n = narrow_.find(std::string(e->text));
                 if (n != narrow_.end()) return n->second;
             }
-            if (Type* local = localLookup(e->text)) return *local;
+            if (LocalBinding* lb = localBinding(e->text)) {
+                // OQ1: reading a write-open const before it is definitely
+                // assigned is an error — the safety property that makes
+                // suppressing its default-construction sound (no path observes
+                // the un-assigned slot). Suppressed while typing the write
+                // target of the assignment that is about to close the window.
+                if (lb->isConst && !typingLhs_ &&
+                    constPending_.count(std::string(e->text)))
+                    return error(e->span, "const '" + std::string(e->text) +
+                                 "' is read before it is definitely assigned");
+                return lb->type;
+            }
             // implicit member of `this`
             if (thisClass_) {
                 auto fields = slotsNamed(thisClass_->shape, e->text);
@@ -1006,8 +1028,17 @@ Type Checker::typeOfInner(const Expr* e) {
             bool hasElse = false;
             bool sawNaNArm = false;       // struct-equality §6 (packet 07): dup check
             Type result; bool haveResult = false, uniform = true;
+            // OQ1: definite assignment across the arms — the match analogue of
+            // the if/else join (§2.3). Each arm starts from the pre-match open
+            // set; a const is definitely assigned after the match iff it closed
+            // on EVERY arm, so the post-join open set is the UNION of the arms'
+            // still-open sets. A non-exhaustive match (no `else`) has an implicit
+            // fall-through arm that assigns nothing, so `pendingBefore` joins in.
+            std::unordered_map<std::string, PendingConst> pendingBefore = constPending_;
+            std::unordered_map<std::string, PendingConst> pendingJoin;
             for (const MatchArm& arm : e->arms) {
                 std::unordered_map<std::string, Type> saved = narrow_;
+                constPending_ = pendingBefore;
                 if (arm.isElse) {
                     hasElse = true;
                 } else if (arm.type) {            // TYPE pattern: narrow the subject
@@ -1045,11 +1076,15 @@ Type Checker::typeOfInner(const Expr* e) {
                     ? (check(const_cast<Stmt*>(arm.bodyBlock.get())), unknown())
                     : typeOf(arm.bodyExpr.get());
                 narrow_ = saved;
+                for (const auto& kv : constPending_) pendingJoin.insert(kv);
                 if (arm.bodyExpr) {
                     if (!haveResult) { result = bt; haveResult = true; }
                     else if (bt.canonical != result.canonical) uniform = false;
                 }
             }
+            if (!hasElse)
+                for (const auto& kv : pendingBefore) pendingJoin.insert(kv);
+            constPending_ = std::move(pendingJoin);
             // Exhaustiveness: a closed union must be fully covered; otherwise an
             // `else` is required (an open hierarchy / scalar can't be exhaustive).
             if (!hasElse) {
@@ -2018,7 +2053,14 @@ Type Checker::typeOfBinary(const Expr* e) {
             narrow_.erase(it);
         }
     }
+    // OQ1: a bare-Name assignment target is a write position, so suppress the
+    // read-before-definite-assignment check while typing it — the DA block below
+    // is the single place that decides a pending const's fate for BOTH `x = ...`
+    // (closes the window) and `x += ...` (reads first, so it reports the
+    // read-before-assign there, not here — this avoids a duplicate diagnostic).
+    typingLhs_ = assignment && e->a->kind == ExprKind::Name;
     Type lt = typeOf(e->a.get());
+    typingLhs_ = false;
     if (restoreNarrowLhs) narrow_ = savedNarrowLhs;
     methodRefsAllowed_ = savedMethodRefsAllowed;
 
@@ -2077,6 +2119,39 @@ Type Checker::typeOfBinary(const Expr* e) {
         error(e->span, "cannot mutate field '" + fieldNameOf(e->a.get()) +
               "' in a non-mutating method of value type '" +
               std::string(thisClass_->name) + "'; mark the method `mutating`");
+
+    // const.md OQ1: definite single assignment. A write to a still-open const
+    // local (declared without an initializer, §2.2) is handled here BEFORE the
+    // ordinary const write-error below, because the FIRST plain assignment on a
+    // path is the permitted initialization that closes the window. Everything
+    // after it — a second write, a compound write (which reads first), or a
+    // write from inside a deeper loop/try than the declaration (§2.3) — is an
+    // error; once closed, the name leaves constPending_ and falls through to the
+    // ordinary "cannot assign to const" path.
+    if ((e->op == TokenKind::Eq || isCompoundAssign(e->op)) &&
+        e->a->kind == ExprKind::Name) {
+        auto pc = constPending_.find(std::string(e->a->text));
+        if (pc != constPending_.end()) {
+            std::string nm(e->a->text);
+            if (isCompoundAssign(e->op))
+                return error(e->a->span, "const '" + nm +
+                             "' is read before it is definitely assigned");
+            if (loopDepth_ > pc->second.loopDepth)
+                return error(e->a->span, "cannot assign to const '" + nm +
+                             "' inside a loop body; a const's single-assignment "
+                             "window cannot span a loop (const.md §2.3)");
+            if (tryDepth_ > pc->second.tryDepth)
+                return error(e->a->span, "cannot assign to const '" + nm +
+                             "' inside a 'try' body; a const's single-assignment "
+                             "window cannot span a 'try' (const.md §2.3)");
+            if (!assignable(rt, lt))
+                return error(e->span, "cannot assign '" + rt.canonical + "' to '" +
+                             lt.canonical + "'");
+            constPending_.erase(pc);            // the window closes on this path
+            invalidatePath(pathOf(e->a.get()));
+            return lt;
+        }
+    }
 
     // const.md: reject a write to a const slot up front, for both plain
     // (`x = v`) and compound (`x += v`) assignment — supersedes Bug 7's ad
@@ -2805,7 +2880,7 @@ Type Checker::checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTyp
     }
     loopDepth_ = savedLoopDepth;
     returnType_ = savedRt; returnTypeRef_ = savedRtr;
-    env_.pop_back();
+    exitEnvScope();
     return ret;
 }
 
@@ -3116,10 +3191,24 @@ void Checker::check(Stmt* s) {
         }
         case StmtKind::Var: {
             invalidatePath(std::string(s->name));
-            if (s->isConst && !s->init)
-                error(s->span, "const '" + std::string(s->name) +
-                      "' needs an initializer (its write view is the declaration, "
-                      "once)");
+            // OQ1: a bare `const T x;` LOCAL with a declared type is no longer a
+            // hard error — its write view stays open until the flow engine proves
+            // a single definite assignment (constPending_). Two things still
+            // error: an inferred `const x;` (no type, no init — nothing to infer),
+            // and any bare const outside a function body (globals/fields keep the
+            // "needs an initializer" rule, enforced on their own decl paths).
+            bool writeOpenConst = false;
+            if (s->isConst && !s->init) {
+                // A `using` decl is `const` too (Parser), but it manages a
+                // block-scoped resource — a deferred definite assignment makes no
+                // sense for it, so it keeps requiring an initializer outright.
+                if (s->inferred || env_.empty() || s->isUsing)
+                    error(s->span, "const '" + std::string(s->name) +
+                          "' needs an initializer (its write view is the declaration, "
+                          "once)");
+                else
+                    writeOpenConst = true;
+            }
             Type initT = s->init
                 ? typeInitExpr(s->init.get(), s->inferred ? nullptr : s->type.get())
                 : unknown();
@@ -3146,6 +3235,8 @@ void Checker::check(Stmt* s) {
                 }
             }
             if (!env_.empty()) env_.back()[s->name] = {declared, s->isConst};
+            if (writeOpenConst)
+                constPending_[std::string(s->name)] = {loopDepth_, tryDepth_};
             break;
         }
         case StmtKind::Break:
@@ -3176,10 +3267,19 @@ void Checker::check(Stmt* s) {
             analyzeCond(s->expr.get(), facts, false);
             std::unordered_map<std::string, Type> saved;
             applyFacts(facts, true, saved);
+            // OQ1: definite assignment across the branch. Each arm starts from
+            // the pre-`if` open set; a const is definitely assigned after the
+            // `if` iff it closed on BOTH arms, i.e. the post-join open set is the
+            // UNION of the two arms' still-open sets. A missing `else` arm assigns
+            // nothing, so `pendingBefore` stands in for it — nothing closes.
+            std::unordered_map<std::string, PendingConst> pendingBefore = constPending_;
             check(s->thenBranch.get());
+            std::unordered_map<std::string, PendingConst> pendingThen = constPending_;
             narrow_ = saved;
+            constPending_ = pendingBefore;
             applyFacts(facts, false, saved);
             check(s->elseBranch.get());
+            for (const auto& kv : pendingThen) constPending_.insert(kv);
             narrow_ = saved;
             break;
         }
@@ -3203,7 +3303,7 @@ void Checker::check(Stmt* s) {
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
-            env_.pop_back();
+            exitEnvScope();
             break;
         case StmtKind::ForIn: {
             Type iter = typeOf(s->expr.get());
@@ -3249,7 +3349,7 @@ void Checker::check(Stmt* s) {
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
-            env_.pop_back();
+            exitEnvScope();
             break;
         }
         case StmtKind::ExprStmt:
@@ -3264,12 +3364,19 @@ void Checker::check(Stmt* s) {
             break;
         }
         case StmtKind::Try:
+            // OQ1 §2.3: a `try` body cannot host a const's single definite
+            // assignment — a throw may precede the write, so the `catch`/post-
+            // `try` join treats the try arm as NOT definitely-assigning. Marking
+            // the body's try-depth makes an in-`try` write to an outer write-open
+            // const an error (typeOfBinary), keeping the window from spanning it.
+            ++tryDepth_;
             check(s->thenBranch.get());
+            --tryDepth_;
             for (const CatchClause& c : s->catches) {
                 env_.emplace_back();
                 if (!c.name.empty()) env_.back()[c.name] = fromTypeRef(c.type.get());
                 check(c.body.get());
-                env_.pop_back();
+                exitEnvScope();
             }
             break;
         case StmtKind::Bind: {
@@ -3782,7 +3889,7 @@ void Checker::checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass) {
     for (const Param& p : fn->params)
         env_.back()[p.name] = {fromTypeRef(p.type.get()), p.isConst};
     check(fn->memberBody.get());
-    env_.pop_back();
+    exitEnvScope();
     thisClass_ = nullptr;
     curMember_ = nullptr;
 }
@@ -3834,7 +3941,7 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
                             error(m->init->span, "cannot initialize field '" +
                                   std::string(m->name) + " : " + ft.canonical +
                                   "' with '" + it.canonical + "'");
-                        env_.pop_back();
+                        exitEnvScope();
                         thisClass_ = nullptr;
                     }
                 }
@@ -4008,6 +4115,8 @@ void Checker::checkComptimeRoot(const Expr* e, Scope* scope) {
     lambdaReturns_ = nullptr;
     env_.clear();
     narrow_.clear();
+    constPending_.clear();
+    tryDepth_ = 0;
     comptimeRoot_ = true;   // item Q: `target::` is live in comptime roots
     typeOf(e);
     comptimeRoot_ = false;

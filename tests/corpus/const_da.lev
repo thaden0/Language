@@ -1,0 +1,57 @@
+// OQ1 (const.md §2): definite single assignment for write-open const locals.
+// A `const T x;` with no initializer keeps its write view open until the flow
+// engine proves a single definite assignment; then it is frozen, exactly as if
+// it had been initialized. This is a pure front-end feature — the point is that
+// each case compiles AND runs identically to the equivalent initializer/`var`
+// form (the §5 invariant: `const` is erased after the checker, so `--run` and
+// `--ir` agree with the desugared shape).
+
+// The if/else-init pattern: assigned exactly once on every path, then read.
+int classify(int c) {
+    const int band;
+    if (c < 0)       { band = -1; }
+    else if (c == 0) { band = 0; }
+    else             { band = 1; }
+    return band;
+}
+
+// A match whose every arm (including `else`) assigns definitely-assigns.
+string name(int day) {
+    const string label;
+    match (day) {
+        1 => { label = "mon"; }
+        2 => { label = "tue"; }
+        else => { label = "other"; }
+    }
+    return label;
+}
+
+// Straight-line: declare, then assign once, then read.
+int twice(int n) {
+    const int doubled;
+    doubled = n + n;
+    return doubled;
+}
+
+// A write-open const optional, assigned on both arms, then narrowed — DA close
+// and flow-narrowing compose on the same slot (problem #3).
+string describe(bool present) {
+    const string? host;
+    if (present) { host = "internal.example.com"; }
+    else         { host = "none"; }
+    if (host != None) return host + " (" + host.length().toString() + ")";
+    return "?";
+}
+
+void run() {
+    console.writeln(classify(-5).toString());   // -1
+    console.writeln(classify(0).toString());    // 0
+    console.writeln(classify(9).toString());    // 1
+    console.writeln(name(1));                    // mon
+    console.writeln(name(2));                    // tue
+    console.writeln(name(5));                    // other
+    console.writeln(twice(21).toString());       // 42
+    console.writeln(describe(true));             // internal.example.com (20)
+    console.writeln(describe(false));            // none (4)
+}
+run();

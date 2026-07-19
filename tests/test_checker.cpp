@@ -417,9 +417,15 @@ int main() {
     CLEAN("string t = \"a\"; void f() { t = \"b\"; }");
 
     // --- const.md: a slot's write view scopes to its initialization window ---
-    // Locals: fine with an initializer; a bare `const T x;` is provably useless.
+    // Locals: fine with an initializer.
     CLEAN("void f() { const int x = 1; }");
-    ERRORS("void f() { const int x; }");
+    // A bare typed `const T x;` LOCAL is no longer an error on its own — OQ1
+    // opens its write view until a single definite assignment (see the DA suite
+    // below). Declared-but-never-used is dead, but permitted (§2.2 step 5).
+    CLEAN("void f() { const int x; }");
+    // A bare `const x;` with no type AND no initializer stays an error: there is
+    // nothing to infer, and DA needs the declared type.
+    ERRORS("void f() { const x; }");
     ERRORS("void f() { const int x = 1; x = 2; }");
     ERRORS("void f() { const int x = 1; x += 2; }");
     CLEAN("void f() { const var x = 5; }");
@@ -432,6 +438,49 @@ int main() {
     // for-in: each iteration is a fresh binding; reassigning it is an error.
     CLEAN("void f(Array<int> xs) { for (const int x in xs) { console.writeln(x); } }");
     ERRORS("void f(Array<int> xs) { for (const int x in xs) { x = 5; } }");
+    // --- const.md OQ1: definite single assignment for write-open const locals ---
+    // The if/else-init pattern: assigned exactly once on every path, then frozen.
+    CLEAN("void f(int c) { const int x; if (c>0) { x = 1; } else { x = 2; } "
+          "console.writeln(x.toString()); }");
+    // Assigned then read on a straight-line path is fine.
+    CLEAN("void f() { const int x; x = 7; console.writeln(x.toString()); }");
+    // Read before any assignment — the DA safety property (problem #2).
+    ERRORS("void f() { const int x; console.writeln(x.toString()); }");
+    // One-armed `if` cannot definitely-assign (the fall-through assigns nothing).
+    ERRORS("void f(int c) { const int x; if (c>0) { x = 1; } "
+           "console.writeln(x.toString()); }");
+    // Assigned in only one arm, read after the join → not definitely assigned.
+    ERRORS("void f(int c) { const int x; if (c>0) { x = 1; } else {} "
+           "console.writeln(x.toString()); }");
+    // The window closes at the definite assignment: a SECOND write is the
+    // ordinary const write-error.
+    ERRORS("void f(int c) { const int x; if (c>0){x=1;}else{x=2;} x = 3; }");
+    // Compound assignment reads first, so it can never be the single init.
+    ERRORS("void f() { const int x; x += 1; }");
+    // §2.3 loops: assigning an outer write-open const inside a loop body — the
+    // window would reopen per iteration; an error.
+    ERRORS("void f(Array<int> xs) { const int x; for (const int v in xs) { x = v; } }");
+    ERRORS("void f() { const int x; var int i = 0; while (i < 1) { x = 1; i = i + 1; } }");
+    // §2.3 try: a throw may precede the write, so a `try` body can't host the
+    // single init.
+    ERRORS("void f() { const int x; try { x = 1; } catch (IException e) {} "
+           "console.writeln(x.toString()); }");
+    // §2.3 match: definitely assigned iff every arm (incl. `else`) assigns.
+    CLEAN("void f(int c) { const int x; match (c) { 1 => { x = 1; } else => { x = 2; } } "
+          "console.writeln(x.toString()); }");
+    ERRORS("void f(int c) { const int x; match (c) { 1 => { x = 1; } "
+           "else => {} } console.writeln(x.toString()); }");
+    // Problem #3: a write-open const optional, assigned on both arms, then
+    // narrowed — DA close and narrowing compose on the same slot.
+    CLEAN("void f(int c) { const string? h; if (c>0){h=\"a\";}else{h=\"b\";} "
+          "if (h != None) { console.writeln(h.length().toString()); } }");
+    // Nesting: a write-open const declared inside a block doesn't leak its
+    // pending state out to a later same-named binding (exitEnvScope).
+    CLEAN("void f() { { const int x; x = 1; console.writeln(x.toString()); } "
+          "const int x = 2; console.writeln(x.toString()); }");
+    // A `using` decl is `const` but still requires an initializer (no DA).
+    ERRORS("void f() { using File f; }");
+
     // Namespace/top-level globals: only the initializer's window (generalizes
     // Bug 7's ad hoc "no namespace-global writes at all" ban — see above).
     CLEAN("const int G = 1; void f() { console.writeln(G); }");
