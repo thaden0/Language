@@ -161,3 +161,32 @@ oracle/IR/LLVM; determinism via pumpOnce only (no timers in any test).
 ## 10. Implementation log
 
 - 2026-07-15 — design written; not started.
+- 2026-07-18 — implemented. `binding.lev` filled in: the `Binding` record, the
+  `text` overload family (incl. `string | None` — **D-P3 GREEN**: `text(maybeName)`
+  over a `string | None` resolves to the union member, None→`""`, verified on all
+  three run engines), the generic registration (named `bindNode` — `bind` is a
+  reserved word), `bindText`, and the runtime tier's `bindRuntimeText`/`bindLeafText`
+  (key resolution expose→store→miss, log-once). `document.lev`: the `bindings_`
+  table, `__sweepBindings` (frozen §4 contract — diff/apply, lazy tombstoning via
+  `reachesRoot`, T03 exception containment), `__sweepDirty`, `__compactBindings`
+  (D-P10 threshold: 25% dead AND ≥64 dead), `__resolveKey`, `__scheduleSweepFrame`,
+  `refresh()`, and `set()` now schedules a sweep frame. `builder.lev`: the runtime
+  string tier registers live bindings instead of one-shot `doc.get`.
+- **Tier asymmetry recorded (a landed D02 fact, not a D05 change):** the dom!
+  emitter binds only holes that are *fragment children of a container* (each
+  becomes its own bound `span` Text). A hole that is the whole text CONTENT of a
+  leaf element (`<span>{{x}}</span>`, span→Text) is one-shot at the dom! tier
+  (`emitLeafText`, "D05 binds Text nodes only"). The runtime tier DOES bind leaf
+  content (`bindLeafText`). So the headline sketch's live update comes from the
+  fragment-text form (`<flex>{{filename}}</flex>` / a bare `{{filename}}` run in a
+  container); the corpus pins both tiers.
+- **D-P6 (async same-frame visibility):** the scheduling contract is in place —
+  `set()`/async resolutions call `__scheduleSweepFrame()` (= `host().requestFrame()`),
+  a no-op before the session starts so headless build-time seeding arms nothing.
+  The dialog-shaped async probe is deferred to D07 (dialogs unlanded); the
+  determinism corpus drives `__sweepBindings()`/`refresh()` directly (the exact
+  calls `renderFrame` makes), pumpOnce-free, no timers.
+- Corpus: `sonar/tests/dom-bindings/` — dom!-global write, typed holes, overload
+  matrix, runtime store/expose/miss, leaf concat, exception containment, refresh,
+  tombstone+compaction churn, diff no-op idempotence (the T11-overlap mechanism).
+  Passes oracle+IR+LLVM byte-identical; emit-C++ SKIP (async/native gap).

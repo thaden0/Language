@@ -148,27 +148,43 @@ inline std::string utf8Encode(long long cp) {
     return out;
 }
 
-// Decode the scalar starting at byte offset `i` of `s`. On success returns the
-// scalar and sets `len` to its byte length. On an invalid/truncated sequence
-// returns U+FFFD with len=1 (replacement policy — data is never a crash, Track
-// 03 §5 problem #2). `boundary` is set false when byte `i` is a continuation
-// byte (mid-sequence): `string.at` uses it to throw, `chars()` never does.
+// Decode the scalar starting at byte offset `i` of `s`, strictly per RFC 3629 /
+// Unicode (techdesign-utf8-chars-string-ops.md §3.2): overlongs, surrogates
+// (U+D800..DFFF) and values > U+10FFFF are all rejected via the tightened
+// second-byte bounds. Ill-formed input decodes to U+FFFD, never a throw (data
+// is not a programming error, Track 03 §5 #2). `len` advances by the maximal
+// valid subpart, so exactly ONE U+FFFD is emitted per WHATWG maximal-subpart
+// replacement and decoding resumes at the first byte that broke the sequence.
+// `boundary` is set false when byte `i` is a continuation byte (mid-sequence):
+// `string.at` uses it to throw, `chars()` never does.
 inline long long utf8DecodeAt(const std::string& s, size_t i, size_t& len, bool& boundary) {
     len = 1; boundary = true;
     if (i >= s.size()) return 0xFFFD;
-    unsigned char c = (unsigned char)s[i];
-    if (c < 0x80) return c;
-    if ((c & 0xC0) == 0x80) { boundary = false; return 0xFFFD; }   // continuation byte
-    int need; long long cp;
-    if ((c & 0xE0) == 0xC0) { need = 1; cp = c & 0x1F; }
-    else if ((c & 0xF0) == 0xE0) { need = 2; cp = c & 0x0F; }
-    else if ((c & 0xF8) == 0xF0) { need = 3; cp = c & 0x07; }
-    else return 0xFFFD;                                            // invalid lead byte
-    for (int k = 1; k <= need; ++k) {
-        if (i + k >= s.size() || ((unsigned char)s[i + k] & 0xC0) != 0x80) return 0xFFFD;
-        cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3F);
+    unsigned char b0 = (unsigned char)s[i];
+    if (b0 <= 0x7F) return b0;                                       // ASCII fast path
+    if (b0 <= 0xBF) { boundary = false; return 0xFFFD; }             // 80..BF: lone continuation
+    int need; unsigned lo, hi; long long cp;                         // seq length + valid 2nd-byte range
+    if      (b0 <= 0xC1) return 0xFFFD;                              // C0/C1: overlong lead, never valid
+    else if (b0 <= 0xDF) { need = 1; lo = 0x80; hi = 0xBF; cp = b0 & 0x1F; }
+    else if (b0 == 0xE0) { need = 2; lo = 0xA0; hi = 0xBF; cp = b0 & 0x0F; }  // low bound kills overlongs
+    else if (b0 <= 0xEC) { need = 2; lo = 0x80; hi = 0xBF; cp = b0 & 0x0F; }
+    else if (b0 == 0xED) { need = 2; lo = 0x80; hi = 0x9F; cp = b0 & 0x0F; }  // high bound kills surrogates
+    else if (b0 <= 0xEF) { need = 2; lo = 0x80; hi = 0xBF; cp = b0 & 0x0F; }
+    else if (b0 == 0xF0) { need = 3; lo = 0x90; hi = 0xBF; cp = b0 & 0x07; }  // low bound kills overlongs
+    else if (b0 <= 0xF3) { need = 3; lo = 0x80; hi = 0xBF; cp = b0 & 0x07; }
+    else if (b0 == 0xF4) { need = 3; lo = 0x80; hi = 0x8F; cp = b0 & 0x07; }  // high bound kills > U+10FFFF
+    else return 0xFFFD;                                              // F5..FF: never a valid lead
+    if (i + 1 >= s.size()) return 0xFFFD;                            // truncated at lead: consume 1
+    unsigned char b1 = (unsigned char)s[i + 1];
+    if (b1 < lo || b1 > hi) return 0xFFFD;                           // 2nd byte breaks it: consume lead only
+    cp = (cp << 6) | (b1 & 0x3F);
+    for (int k = 2; k <= need; ++k) {                               // trailing continuation bytes (80..BF)
+        if (i + (size_t)k >= s.size()) { len = (size_t)k; return 0xFFFD; }        // truncated: consume valid prefix
+        unsigned char bk = (unsigned char)s[i + (size_t)k];
+        if (bk < 0x80 || bk > 0xBF) { len = (size_t)k; return 0xFFFD; }           // breaks: consume valid prefix
+        cp = (cp << 6) | (bk & 0x3F);
     }
-    len = need + 1;
+    len = (size_t)need + 1;
     return cp;
 }
 

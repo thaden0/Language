@@ -1,0 +1,5 @@
+s0:Bin(!=,Lit(none),Field(nick))
+s0binds:binds=[]
+s0site:siteId=0
+fn0=false
+fn1=true

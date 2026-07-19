@@ -1,0 +1,4 @@
+// LA-31 Stage 3 §3 — block-bodied lambda is rejected outright (E2, R9).
+class User { int age; new User(int g) { age = g; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => { return u.age > 0; }));

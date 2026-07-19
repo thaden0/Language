@@ -1,0 +1,1011 @@
+namespace Sonar { namespace Dom {
+    // ======================================================================
+    // Sonar DOM D02 M4 — `expandDom(payload) -> string`, the dom! tier engine.
+    //
+    // A pure string->string expansion engine (the T06 de-risking shape: fully
+    // unit-testable at runtime, goldens against expansion strings) adapted
+    // from the landed `SonarParser`/`SonarEmitter` (templates/expander.lev —
+    // adapted, never imported; the landed sonar! expander stays frozen).
+    // Upgrades over T06 (techdesign-02 §4):
+    //   * line:col + caret on every error (the runtime DomParser's exact
+    //     format — one T08 taxonomy across both tiers),
+    //   * fragment roots (multi-root payloads auto-wrap in a vertical
+    //     FlexContainer; single-root payloads return the root itself),
+    //   * lowercase tags resolve through the D-C1 registry mirror
+    //     (`<menuitem>` -> `MenuItem()`); Capitalized tags pass through
+    //     (user classes; a dom!-tier-only feature, E-D3 at runtime),
+    //   * `{{expr}}` text holes emit a Text child + a BINDING registration
+    //     (`Sonar::Dom::bindText`, D05 §3) instead of a one-shot concat;
+    //     `${expr}` (T06's one-shot interpolation) is also accepted and
+    //     splices into the enclosing text segment — never a binding,
+    //   * emission mirrors the runtime builder row for row: every element
+    //     emits `__doc.__recordBuild(...)` with its literal attrs (id/class
+    //     route through it exactly as at runtime — registerId/addClass), then
+    //     typed setter statements in attribute order (the applyAttr mirror).
+    //
+    // Comptime-resolution discipline (the T06 rules, verified against F4):
+    //   * the macro's ONE call into this file is namespace-qualified
+    //     (`Sonar::Dom::expandDom`); everything below is reached through
+    //     class methods, which dispatch on the receiver at comptime;
+    //   * CHARACTER TESTS never use char literals (a single-quoted literal
+    //     does not retype to `char` on the comptime call graph) — every test
+    //     goes through `ceq(c, "<")` / `.code()`;
+    //   * errors `throw SonarException(...)` — surfaces as the F4
+    //     "macro 'dom' body threw: <message>" diagnostic at comptime and is
+    //     catchable with `.message` at runtime for the goldens.
+    //
+    // Emission conventions shared with the landed sonar! emitter:
+    // `__sonar_<n>` locals, setter statements (never fluent chains), and the
+    // `__sonarBuild` thunk wrapper (bug #57 is fixed at source so a bare IIFE
+    // is legal, but the thunk is retained for --expand uniformity with
+    // `sonar!` — design §4 open question 1).
+    // ======================================================================
+
+    // A parse node (class, not struct — reference semantics through the
+    // emitter, the T06 TplNode precedent). kinds:
+    //   0 = element, 1 = text segment (concat expr incl ${} splices),
+    //   2 = $for, 3 = $if, 4 = {{binding hole}}
+    class DomXNode {
+        int kind = 0;
+        string tag = "";                  // element: registry tag or Capitalized class
+        Array<DomXAttr> attrs = [];       // element: attributes
+        Array<DomXNode> kids = [];        // element/for/if(then): children
+        string textExpr = "";             // text segment: built concat expression
+        bool textEmpty = true;            // text segment: collapsed to nothing
+        string holeExpr = "";             // hole: the captured expression source
+        string forVar = "";               // for: loop variable
+        string forExpr = "";              // for: iterable expression
+        string ifCond = "";               // if: condition expression
+        Array<DomXNode> elseKids = [];    // if: $else content
+        bool hasElse = false;             // if: $else present
+        int at = 0;                       // payload offset (line:col errors)
+        new DomXNode(int k) { kind = k; }
+    }
+
+    // One parsed attribute (class — same reference/staleness reasons).
+    class DomXAttr {
+        string name = "";
+        bool isExpr = false;              // {expr} value (dom!-tier only)
+        string value = "";
+        bool isEvent = false;             // on:<event>= form
+        string eventName = "";
+        int at = 0;                       // payload offset of the name
+        new DomXAttr(string n, bool ie, string v) { name = n; isExpr = ie; value = v; }
+    }
+
+    // ---------------------------------------------------------------------
+    // Parser — recursive descent, T06's algorithm + fragments/holes/offsets.
+    // All state instance-local (one parser per parse, #73 discipline).
+    // ---------------------------------------------------------------------
+    class DomXParser {
+        string src = "";
+        Array<char> s = [];
+        int pos = 0;
+        int n = 0;
+        new DomXParser(string source) { src = source; s = source.chars(); pos = 0; n = s.length(); }
+
+        // line:col + caret from a payload offset — byte-compatible with the
+        // runtime DomParser's error format (one taxonomy across tiers).
+        void fail(int at, string msg) {
+            int line = 1; int col = 1; int lineStart = 0;
+            int i = 0;
+            while (i < at && i < n) {
+                if (s[i].code() == 10) { line = line + 1; col = 1; lineStart = i + 1; }
+                else col = col + 1;
+                i = i + 1;
+            }
+            string lineText = "";
+            int k = lineStart;
+            while (k < n && s[k].code() != 10) { lineText = lineText + s[k].toString(); k = k + 1; }
+            string caret = "";
+            int c = 1;
+            while (c < col) { caret = caret + " "; c = c + 1; }
+            caret = caret + "^";
+            throw SonarException("markup:" + line.toString() + ":" + col.toString()
+                + ": " + msg + "\n" + lineText + "\n" + caret);
+        }
+
+        // comptime-safe char equality (class header note).
+        bool ceq(char c, string lit) { return c == lit.chars()[0]; }
+
+        bool atEnd() { return pos >= n; }
+        char cur() { return s[pos]; }
+        void adv() { pos = pos + 1; }
+
+        bool isDigit(char c) { return c.code() >= 48 && c.code() <= 57; }
+        bool isIdentStart(char c) { return c.isAlpha() || this.ceq(c, "_"); }
+        bool isIdentChar(char c) { return c.isAlpha() || this.ceq(c, "_") || this.isDigit(c); }
+        bool isWs(char c) {
+            return this.ceq(c, " ") || this.ceq(c, "\t") || this.ceq(c, "\n") || this.ceq(c, "\r");
+        }
+        void skipWs() { while (!this.atEnd() && this.isWs(this.cur())) this.adv(); }
+
+        // s[pos..] begins with `lit` (no advance).
+        bool lookingAt(string lit) {
+            Array<char> lc = lit.chars();
+            int m = lc.length();
+            if (pos + m > n) return false;
+            for (int i in 0..m - 1) if (s[pos + i] != lc[i]) return false;
+            return true;
+        }
+
+        // `${` one-shot splice opener (spelled two-char — never a literal
+        // "${", the lexer would interpolate it).
+        bool holeAhead() {
+            return this.ceq(this.cur(), "$") && pos + 1 < n && this.ceq(s[pos + 1], "{");
+        }
+        // `{{` binding-hole opener.
+        bool bindAhead() {
+            return this.ceq(this.cur(), "{") && pos + 1 < n && this.ceq(s[pos + 1], "{");
+        }
+        // `$kw` followed by whitespace or `{` (so `$format` stays text).
+        bool controlAhead(string kw) {
+            string full = "$" + kw;
+            if (!this.lookingAt(full)) return false;
+            int after = pos + full.length();
+            if (after >= n) return true;
+            char c = s[after];
+            return this.isWs(c) || this.ceq(c, "{");
+        }
+
+        string readIdent() {
+            string r = "";
+            if (this.atEnd() || !this.isIdentStart(this.cur())) return r;
+            r = r + this.cur().toString(); this.adv();
+            while (!this.atEnd() && this.isIdentChar(this.cur())) {
+                r = r + this.cur().toString(); this.adv();
+            }
+            return r;
+        }
+
+        // Tags: lowercase registry names, or Capitalized user classes which
+        // may be qualified (`Views::Panel`) — `:` passes through verbatim.
+        string readTag() {
+            string r = "";
+            while (!this.atEnd()) {
+                char c = this.cur();
+                if (c.isAlpha() || this.ceq(c, "_") || this.isDigit(c) || this.ceq(c, ":")) {
+                    r = r + c.toString(); this.adv();
+                } else break;
+            }
+            return r;
+        }
+
+        // ---- entry: a fragment (0+ roots; E-D12 is the caller's) ----------
+        Array<DomXNode> parseFragment() {
+            Array<DomXNode> roots = this.parseContent(2, "", 0);
+            return roots;
+        }
+
+        // Content list. mode 0: element body (ends `</tag>`); mode 1: block
+        // body ($for/$if, ends `}`); mode 2: top level (ends at EOF).
+        Array<DomXNode> parseContent(int mode, string tag, int open) {
+            Array<DomXNode> kids = [];
+            bool done = false;
+            while (!done) {
+                if (mode == 1) {
+                    if (this.atEnd())
+                        this.fail(open, "unclosed '{ }' block (missing '}')");
+                    if (this.ceq(this.cur(), "}")) { this.adv(); done = true; }
+                    else if (this.lookingAt("</"))
+                        this.fail(pos, "unexpected '</' inside a '{ }' block (missing '}')");
+                } else if (mode == 0) {
+                    if (this.atEnd())
+                        this.fail(open, "'<" + tag + ">' was never closed (E-D1)");
+                    if (this.lookingAt("</")) {
+                        this.adv(); this.adv();
+                        this.skipWs();
+                        string close = this.readTag();
+                        this.skipWs();
+                        if (this.atEnd() || !this.ceq(this.cur(), ">"))
+                            this.fail(pos, "malformed '</" + close + ">' (E-D1)");
+                        this.adv();
+                        if (close != tag)
+                            this.fail(open, "'<" + tag + ">' opened here is closed by '</" + close + ">' (E-D1)");
+                        done = true;
+                    }
+                } else {
+                    if (this.atEnd()) done = true;
+                    else if (this.lookingAt("</"))
+                        this.fail(pos, "unexpected '</' with no open tag (E-D1)");
+                }
+                if (!done) {
+                    char c = this.cur();
+                    if (this.ceq(c, "<")) {
+                        if (this.lookingAt("<!--")) { this.skipComment(); }
+                        else kids = kids.add(this.parseNode());
+                    }
+                    else if (this.ceq(c, "$") && this.controlAhead("for")) {
+                        if (mode == 2)
+                            this.fail(pos, "'$for' needs an enclosing element at the dom! tier");
+                        kids = kids.add(this.parseFor());
+                    }
+                    else if (this.ceq(c, "$") && this.controlAhead("if")) {
+                        if (mode == 2)
+                            this.fail(pos, "'$if' needs an enclosing element at the dom! tier");
+                        kids = kids.add(this.parseIf());
+                    }
+                    else if (this.ceq(c, "$") && this.controlAhead("else"))
+                        this.fail(pos, "unexpected '$else' with no matching '$if'");
+                    else kids = kids.concat(this.parseTextRun(mode));
+                }
+            }
+            return kids;
+        }
+
+        void skipComment() {
+            int open = pos;
+            pos = pos + 4;                              // consume "<!--"
+            while (!this.lookingAt("-->")) {
+                if (this.atEnd()) this.fail(open, "unterminated comment (E-D2)");
+                this.adv();
+            }
+            pos = pos + 3;                              // consume "-->"
+        }
+
+        // '<' known current: one element node.
+        DomXNode parseNode() {
+            int open = pos;
+            this.adv();                                 // consume '<'
+            string tag = this.readTag();
+            if (tag.isEmpty())
+                this.fail(pos, "expected a tag name after '<' (E-D2)");
+            DomXNode node = DomXNode(0);
+            node.tag = tag;
+            node.at = open;
+            node.attrs = this.parseAttrs(tag, open);
+            this.skipWs();
+            if (this.atEnd())
+                this.fail(open, "'<" + tag + ">' was never closed (E-D1)");
+            if (this.lookingAt("/>")) { this.adv(); this.adv(); return node; }
+            if (this.ceq(this.cur(), ">")) {
+                this.adv();
+                node.kids = this.parseContent(0, tag, open);
+                return node;
+            }
+            this.fail(pos, "malformed '<" + tag + ">': expected '>' or '/>' (E-D2)");
+            return node;                                // unreachable (fail throws)
+        }
+
+        Array<DomXAttr> parseAttrs(string tag, int open) {
+            Array<DomXAttr> attrs = [];
+            bool loop = true;
+            while (loop) {
+                this.skipWs();
+                if (this.atEnd())
+                    this.fail(open, "'<" + tag + ">' was never closed (E-D1)");
+                char c = this.cur();
+                if (this.ceq(c, "/") || this.ceq(c, ">")) { loop = false; }
+                else attrs = attrs.add(this.parseAttr(tag));
+            }
+            return attrs;
+        }
+
+        DomXAttr parseAttr(string tag) {
+            int at = pos;
+            string name = this.readIdent();
+            if (name.isEmpty())
+                this.fail(at, "malformed attribute (E-D2)");
+            bool isEvent = false;
+            string eventName = "";
+            if (name == "on" && !this.atEnd() && this.ceq(this.cur(), ":")) {
+                this.adv();
+                eventName = this.readIdent();
+                if (eventName.isEmpty())
+                    this.fail(pos, "'on:' handler is missing an event name (E-D2)");
+                isEvent = true;
+                name = "on:" + eventName;
+            }
+            this.skipWs();
+            if (this.atEnd() || !this.ceq(this.cur(), "="))
+                this.fail(at, "attribute '" + name + "' is missing '=' (E-D2)");
+            this.adv();                                 // consume '='
+            this.skipWs();
+            if (this.atEnd())
+                this.fail(at, "attribute '" + name + "' has no value (E-D2)");
+            bool isExpr = false;
+            string value = "";
+            char v = this.cur();
+            if (this.ceq(v, "\"")) { this.adv(); value = this.readLiteral(name); isExpr = false; }
+            else if (this.ceq(v, "{")) { this.adv(); value = this.parseBalanced("}"); isExpr = true; }
+            else this.fail(pos, "attribute '" + name + "' value must be \"literal\" or {expr} (E-D2)");
+            DomXAttr a = DomXAttr(name, isExpr, value);
+            a.isEvent = isEvent;
+            a.eventName = eventName;
+            a.at = at;
+            return a;
+        }
+
+        // Double-quoted literal body (opening quote consumed). v1: no
+        // in-literal escaping — the closing quote ends it (T06 rule). The D01
+        // meta-blob separator bytes (US/RS, codes 31/30) are rejected (E-D2).
+        string readLiteral(string name) {
+            string r = "";
+            while (true) {
+                if (this.atEnd())
+                    this.fail(pos, "unterminated \"...\" for attribute '" + name + "' (E-D2)");
+                char c = this.cur();
+                if (this.ceq(c, "\"")) { this.adv(); return r; }
+                if (c.code() == 30 || c.code() == 31)
+                    this.fail(pos, "reserved separator byte in attribute literal (E-D2)");
+                r = r + c.toString(); this.adv();
+            }
+            return r;
+        }
+
+        // Balanced-expression capture (T06): raw text to the matching close,
+        // counting `{}` and skipping "..."/'...' literals. `closeStr` is "}"
+        // (holes/attrs — consumed) or "{" ($for/$if header — left in place).
+        string parseBalanced(string closeStr) {
+            char close = closeStr.at(0);
+            char sq = std::charFromCode(39);
+            char dq = std::charFromCode(34);
+            string buf = "";
+            int depth = 0;
+            int open = pos;
+            while (true) {
+                if (this.atEnd())
+                    this.fail(open, "unbalanced '{' in an expression (E-D2)");
+                char c = this.cur();
+                if (depth == 0 && c == close) {
+                    if (this.ceq(close, "}")) this.adv();
+                    return buf;
+                }
+                if (c == sq || c == dq) { buf = buf + this.readInlineString(c); }
+                else if (this.ceq(c, "{")) { depth = depth + 1; buf = buf + "{"; this.adv(); }
+                else if (this.ceq(c, "}")) { depth = depth - 1; buf = buf + "}"; this.adv(); }
+                else { buf = buf + c.toString(); this.adv(); }
+            }
+            return buf;
+        }
+
+        // A "..."/'...' literal verbatim (quote current), honouring backslash
+        // escapes; returns full text incl. quotes.
+        string readInlineString(char q) {
+            string r = "";
+            r = r + this.cur().toString(); this.adv();
+            while (true) {
+                if (this.atEnd())
+                    this.fail(pos, "unterminated string literal inside an expression (E-D2)");
+                char c = this.cur();
+                r = r + c.toString(); this.adv();
+                if (this.ceq(c, "\\") && !this.atEnd()) { r = r + this.cur().toString(); this.adv(); }
+                else if (c == q) return r;
+            }
+            return r;
+        }
+
+        // `{{expr}}` body to the first `}}` (the runtime splitHoles rule —
+        // mirrored, not balanced; holes are expressions without bare braces).
+        string readToDoubleClose(int holeAt) {
+            string buf = "";
+            while (true) {
+                if (this.atEnd())
+                    this.fail(holeAt, "unterminated '{{' binding hole (E-D2)");
+                if (this.ceq(this.cur(), "}") && pos + 1 < n && this.ceq(s[pos + 1], "}")) {
+                    this.adv(); this.adv();
+                    return buf;
+                }
+                buf = buf + this.cur().toString(); this.adv();
+            }
+            return buf;
+        }
+
+        // A text run: literal segments (with `${expr}` one-shot splices,
+        // T06 whitespace rule per segment) split at `{{hole}}` boundaries —
+        // each hole is its OWN node (one Text per hole, D05 §7.4 v1 rule,
+        // mirroring the runtime splitHoles).
+        Array<DomXNode> parseTextRun(int mode) {
+            Array<DomXNode> out = [];
+            Array<string> parts = [];
+            string pending = "";
+            bool loop = true;
+            while (loop) {
+                if (this.atEnd()) loop = false;
+                else {
+                    char c = this.cur();
+                    if (this.ceq(c, "<")) loop = false;
+                    else if (mode == 1 && this.ceq(c, "}")) loop = false;
+                    else if (this.bindAhead()) {
+                        string col = this.collapseWs(pending); pending = "";
+                        if (!col.isEmpty()) parts = parts.add("\"" + this.escapeStr(col) + "\"");
+                        if (parts.length() > 0) {
+                            DomXNode seg = DomXNode(1);
+                            seg.textEmpty = false;
+                            seg.textExpr = parts.joinToString(" + ");
+                            out = out.add(seg);
+                            parts = [];
+                        }
+                        int holeAt = pos;
+                        this.adv(); this.adv();             // consume "{{"
+                        string expr = this.readToDoubleClose(holeAt);
+                        DomXNode h = DomXNode(4);
+                        h.holeExpr = expr.trim();
+                        h.at = holeAt;
+                        if (h.holeExpr.isEmpty())
+                            this.fail(holeAt, "empty '{{ }}' binding hole (E-D2)");
+                        out = out.add(h);
+                    }
+                    else if (this.ceq(c, "$")) {
+                        if (this.holeAhead()) {
+                            string col = this.collapseWs(pending); pending = "";
+                            if (!col.isEmpty()) parts = parts.add("\"" + this.escapeStr(col) + "\"");
+                            this.adv(); this.adv();         // consume "${"
+                            string expr = this.parseBalanced("}");
+                            parts = parts.add("(" + expr + ")");
+                        } else if (this.controlAhead("for") || this.controlAhead("if") || this.controlAhead("else")) {
+                            loop = false;
+                        } else { pending = pending + "$"; this.adv(); }
+                    }
+                    else if (this.ceq(c, "\\")) {
+                        if (pos + 1 < n) {
+                            char nc = s[pos + 1];
+                            if (this.ceq(nc, "{") || this.ceq(nc, "<") || this.ceq(nc, "$")
+                                    || nc.code() == 96 || this.ceq(nc, "}")) {
+                                pending = pending + nc.toString(); pos = pos + 2;
+                            } else { pending = pending + "\\"; this.adv(); }
+                        } else { pending = pending + "\\"; this.adv(); }
+                    }
+                    else { pending = pending + c.toString(); this.adv(); }
+                }
+            }
+            string col = this.collapseWs(pending);
+            if (!col.isEmpty()) parts = parts.add("\"" + this.escapeStr(col) + "\"");
+            if (parts.length() > 0) {
+                DomXNode seg = DomXNode(1);
+                seg.textEmpty = false;
+                seg.textExpr = parts.joinToString(" + ");
+                out = out.add(seg);
+            }
+            return out;
+        }
+
+        // $for Name in <balanced> { content* }
+        DomXNode parseFor() {
+            int at = pos;
+            this.adv(); this.adv(); this.adv(); this.adv();     // "$for"
+            this.skipWs();
+            string v = this.readIdent();
+            if (v.isEmpty())
+                this.fail(at, "'$for' is missing a loop variable");
+            this.skipWs();
+            string kw = this.readIdent();
+            if (kw != "in")
+                this.fail(pos, "'$for " + v + "' expected 'in'");
+            string expr = this.parseBalanced("{");
+            if (this.atEnd() || !this.ceq(this.cur(), "{"))
+                this.fail(at, "'$for' is missing its '{' body");
+            this.adv();                                         // consume '{'
+            DomXNode node = DomXNode(2);
+            node.forVar = v;
+            node.forExpr = expr.trim();
+            node.at = at;
+            node.kids = this.parseContent(1, "", at);
+            return node;
+        }
+
+        // $if <balanced> { content* } ($else { content* })?
+        DomXNode parseIf() {
+            int at = pos;
+            this.adv(); this.adv(); this.adv();                 // "$if"
+            string cond = this.parseBalanced("{");
+            if (this.atEnd() || !this.ceq(this.cur(), "{"))
+                this.fail(at, "'$if' is missing its '{' body");
+            this.adv();
+            DomXNode node = DomXNode(3);
+            node.ifCond = cond.trim();
+            node.at = at;
+            node.kids = this.parseContent(1, "", at);
+            int save = pos;
+            this.skipWs();
+            if (this.controlAhead("else")) {
+                this.adv(); this.adv(); this.adv(); this.adv(); this.adv();  // "$else"
+                this.skipWs();
+                if (this.atEnd() || !this.ceq(this.cur(), "{"))
+                    this.fail(pos, "'$else' is missing its '{' body");
+                this.adv();
+                node.elseKids = this.parseContent(1, "", at);
+                node.hasElse = true;
+            } else pos = save;
+            return node;
+        }
+
+        // T06 whitespace rule: per line trim, drop empties, join with ' '.
+        string collapseWs(string raw) {
+            Array<string> kept = [];
+            for (string ln in raw.splitLines()) {
+                string t = ln.trim();
+                if (!t.isEmpty()) kept = kept.add(t);
+            }
+            return kept.joinToString(" ");
+        }
+
+        // Escape a text segment for emission as a Leviathan "literal".
+        string escapeStr(string x) {
+            string r = "";
+            for (char c in x.chars()) {
+                if (this.ceq(c, "\\")) r = r + "\\\\";
+                else if (this.ceq(c, "\"")) r = r + "\\\"";
+                else r = r + c.toString();
+            }
+            return r;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Emitter — walks the fragment into typed construction code. Mirrors the
+    // runtime builder statement for statement (the drift discipline, §7.1):
+    // construct -> __recordBuild(literal attrs) -> setters in attr order ->
+    // children (parents first, so attach fires with live parent links).
+    // ---------------------------------------------------------------------
+    class DomXEmitter {
+        string src = "";
+        Array<char> s = [];
+        int n = 0;
+        Array<string> out = [];
+        int counter = 0;
+
+        new DomXEmitter(string source) { src = source; s = source.chars(); n = s.length(); }
+
+        // same error format as the parser (duplicated — both classes stay
+        // self-contained, all state instance-local).
+        void fail(int at, string msg) {
+            int line = 1; int col = 1; int lineStart = 0;
+            int i = 0;
+            while (i < at && i < n) {
+                if (s[i].code() == 10) { line = line + 1; col = 1; lineStart = i + 1; }
+                else col = col + 1;
+                i = i + 1;
+            }
+            string lineText = "";
+            int k = lineStart;
+            while (k < n && s[k].code() != 10) { lineText = lineText + s[k].toString(); k = k + 1; }
+            string caret = "";
+            int c = 1;
+            while (c < col) { caret = caret + " "; c = c + 1; }
+            caret = caret + "^";
+            throw SonarException("markup:" + line.toString() + ":" + col.toString()
+                + ": " + msg + "\n" + lineText + "\n" + caret);
+        }
+
+        void line(string indent, string text) { out = out.add(indent + text); }
+        bool ceq(char c, string lit) { return c == lit.chars()[0]; }
+        bool isDigit(char c) { return c.code() >= 48 && c.code() <= 57; }
+        bool isUpperC(char c) { return c.code() >= 65 && c.code() <= 90; }
+        bool isIdentStart(char c) { return c.isAlpha() || c.code() == 95; }
+        bool isIdentChar(char c) { return c.isAlpha() || c.code() == 95 || this.isDigit(c); }
+
+        string cap(string x) {
+            if (x.isEmpty()) return x;
+            Array<char> c = x.chars();
+            string r = c[0].toUpper().toString();
+            for (int i in 1..c.length() - 1) r = r + c[i].toString();
+            return r;
+        }
+
+        string escapeStr(string x) {
+            string r = "";
+            for (char c in x.chars()) {
+                if (this.ceq(c, "\\")) r = r + "\\\\";
+                else if (this.ceq(c, "\"")) r = r + "\\\"";
+                else r = r + c.toString();
+            }
+            return r;
+        }
+
+        // ---- the D-C1 registry mirror (one row per DomRegistry.preload row;
+        // the M5 drift corpus holds the two tables equal) -------------------
+        string classFor(string tag) {
+            if (tag == "span") return "Text";
+            if (tag == "text") return "Text";
+            if (tag == "input") return "Input";
+            if (tag == "button") return "Button";
+            if (tag == "checkbox") return "CheckBox";
+            if (tag == "radiogroup") return "RadioGroup";
+            if (tag == "progress") return "ProgressBar";
+            if (tag == "spinner") return "Spinner";
+            if (tag == "statusbar") return "ContentBar";
+            if (tag == "menuitem") return "MenuItem";
+            if (tag == "separator") return "MenuSeparator";
+            if (tag == "box") return "ContentBox";
+            if (tag == "split") return "SplitBox";
+            if (tag == "tabs") return "Tabs";
+            if (tag == "table") return "TableView";
+            if (tag == "tree") return "TreeView";
+            if (tag == "menu") return "Menu";
+            if (tag == "menubar") return "BarMenu";
+            if (tag == "modal") return "Modal";
+            if (tag == "flex") return "FlexContainer";
+            if (tag == "bar") return "Bar";
+            if (tag == "contentbar") return "Bar";
+            return "";
+        }
+        // container rows build children as subtrees; leaf rows take text/hole
+        // children as display text (the builder's `is Container` partition).
+        bool isContainerTag(string tag) {
+            return tag == "box" || tag == "split" || tag == "tabs" || tag == "menu"
+                || tag == "menubar" || tag == "modal" || tag == "flex" || tag == "bar"
+                || tag == "contentbar";
+        }
+        // rows whose class is Bordered (the `title` attr channel).
+        bool isBorderedTag(string tag) {
+            return tag == "box" || tag == "split" || tag == "table" || tag == "tree"
+                || tag == "menu" || tag == "modal";
+        }
+        // the builder's setNodeText ladder as an emission column ("" = no
+        // text channel: the text child is ignored, documented).
+        string leafSetter(string tag) {
+            if (tag == "span" || tag == "text") return "text";
+            if (tag == "button" || tag == "checkbox") return "setLabel";
+            if (tag == "menuitem") return "label";
+            if (tag == "statusbar") return "setLeft";
+            if (tag == "input") return "setValue";
+            return "";
+        }
+        // per-tag attribute rows (EXACTLY the runtime applyAttr ladder — the
+        // T04/T05 common shapes; rows enter both tables together).
+        Array<string> perTagAttrs(string tag) {
+            if (tag == "input") return ["placeholder", "value", "maxLength"];
+            if (tag == "span" || tag == "text") return ["align", "wrap"];
+            if (tag == "checkbox") return ["checked", "label"];
+            return [];
+        }
+
+        // ---- typed-literal validation (E-D5, comptime — the tier's win) ----
+        string intLit(DomXAttr a) {
+            if (a.isExpr) return a.value;
+            Array<char> c = a.value.chars();
+            int m = c.length();
+            bool ok = m > 0;
+            int i = 0;
+            if (m > 1 && this.ceq(c[0], "-")) i = 1;
+            if (i >= m) ok = false;
+            while (ok && i < m) { if (!this.isDigit(c[i])) ok = false; i = i + 1; }
+            if (!ok)
+                this.fail(a.at, "attribute '" + a.name + "=\"" + a.value + "\"' must be an integer (E-D5)");
+            return a.value;
+        }
+        void boolLit(DomXAttr a) {
+            if (a.isExpr) return;
+            if (a.value != "true" && a.value != "false")
+                this.fail(a.at, "attribute '" + a.name + "=\"" + a.value + "\"' must be \"true\" or \"false\" (E-D5)");
+        }
+        string enumLit(DomXAttr a, string enumName, Array<string> members) {
+            if (a.isExpr) return a.value;
+            for (string m in members) if (m == a.value) return enumName + "::" + a.value;
+            this.fail(a.at, a.name + "=\"" + a.value + "\" is not one of " + members.joinToString("/") + " (E-D5)");
+            return "";
+        }
+        string strLit(DomXAttr a) {
+            if (a.isExpr) return a.value;
+            return "\"" + this.escapeStr(a.value) + "\"";
+        }
+
+        // ---- program ------------------------------------------------------
+        string emitProgram(Array<DomXNode> roots) {
+            out = ["__sonarBuild(() => {"];
+            this.line("    ", "var __doc = Sonar::Dom::document();");
+            Array<string> vs = [];
+            for (DomXNode r in roots) vs = vs.add(this.emitRoot(r, "    "));
+            if (vs.length() == 1) {
+                this.line("    ", "return " + vs[0] + ";");
+            } else {
+                // fragment auto-wrap (§2): a vertical FlexContainer — visible
+                // here in --expand; single-root payloads return the root.
+                string w = "__sonar_" + counter.toString();
+                counter = counter + 1;
+                this.line("    ", "var " + w + " = FlexContainer();");
+                for (string v in vs) this.line("    ", w + ".add(" + v + ");");
+                this.line("    ", "return " + w + ";");
+            }
+            out = out.add("})");
+            return out.joinToString("\n");
+        }
+
+        // A fragment root: element, text segment, or binding hole (the
+        // runtime buildFragment's three cases). $for/$if cannot reach here
+        // (the parser rejects them at top level).
+        string emitRoot(DomXNode node, string indent) {
+            if (node.kind == 0) return this.emitElement(node, indent, false);
+            if (node.kind == 4) return this.emitHoleText(node, indent, false);
+            return this.emitSegText(node, indent);
+        }
+
+        // A text segment -> a recorded `span` Text (the runtime mirror).
+        string emitSegText(DomXNode seg, string indent) {
+            string v = "__sonar_" + counter.toString();
+            counter = counter + 1;
+            this.line(indent, "var " + v + " = Text();");
+            this.line(indent, v + ".text(" + seg.textExpr + ");");
+            this.line(indent, "__doc.__recordBuild(" + v + ", \"span\", [], []);");
+            return v;
+        }
+
+        // A `{{hole}}` -> a recorded `span` Text + binding registration
+        // (D05 §3: the closure captures whatever the expression names — the
+        // full-fidelity path). Inside a $for body the registration is a
+        // one-shot instead: a loop-local node reference would be a stale-node
+        // hazard (the T06/T11 emitInLoop rule).
+        string emitHoleText(DomXNode hole, string indent, bool inLoop) {
+            string v = "__sonar_" + counter.toString();
+            counter = counter + 1;
+            this.line(indent, "var " + v + " = Text();");
+            if (inLoop) {
+                this.line(indent, v + ".text(Sonar::Dom::text(" + hole.holeExpr + "));");
+            } else {
+                this.line(indent, "Sonar::Dom::bindText(__doc, " + v + ", \"{{"
+                    + this.escapeStr(hole.holeExpr) + "}}\", () => Sonar::Dom::text(" + hole.holeExpr + "));");
+            }
+            this.line(indent, "__doc.__recordBuild(" + v + ", \"span\", [], []);");
+            return v;
+        }
+
+        // One element: construct, record, setters in attr order, children.
+        string emitElement(DomXNode node, string indent, bool inLoop) {
+            string tag = node.tag;
+            bool userTag = this.isUpperC(tag.chars()[0]);
+            string cls = tag;
+            if (!userTag) {
+                cls = this.classFor(tag);
+                if (cls == "")
+                    this.fail(node.at, "unknown tag '<" + tag + ">' (E-D3) — lowercase tags come from"
+                        + " the registry; a user class is Capitalized at the dom! tier");
+            }
+            string v = "__sonar_" + counter.toString();
+            counter = counter + 1;
+            this.line(indent, "var " + v + " = " + cls + "();");
+
+            // meta recording mirrors the runtime builder: LITERAL attrs only
+            // ({expr}/on: forms have no runtime-tier spelling). id/class run
+            // their side effects inside __recordBuild (registerId/addClass)
+            // exactly as at runtime.
+            string names = "";
+            string values = "";
+            bool first = true;
+            for (DomXAttr a in node.attrs) {
+                if (!a.isEvent && !a.isExpr) {
+                    string sep = first ? "" : ", ";
+                    names = names + sep + "\"" + this.escapeStr(a.name) + "\"";
+                    values = values + sep + "\"" + this.escapeStr(a.value) + "\"";
+                    first = false;
+                }
+            }
+            this.line(indent, "__doc.__recordBuild(" + v + ", \"" + this.escapeStr(tag)
+                + "\", [" + names + "], [" + values + "]);");
+
+            // setters in attribute order (the applyAttr mirror — sequential,
+            // last write wins, no T06 constraint folding: the runtime applier
+            // is the row source and it is sequential).
+            string idName = "";
+            for (DomXAttr a in node.attrs) {
+                if (!a.isEvent && a.name == "id") {
+                    if (a.isExpr) this.fail(a.at, "'id' takes a \"name\", not {expr} (E-D2)");
+                    if (inLoop) this.fail(a.at, "'id' is not allowed inside a $for body");
+                    this.checkIdent(a);
+                    idName = a.value;
+                } else {
+                    this.emitAttrStmt(tag, userTag, a, v, indent);
+                }
+            }
+            // the T06 field-binding rule: `this.<id>` alongside the
+            // registerId that __recordBuild already performed. Requires an
+            // enclosing `this` (id-carrying dom! belongs inside a class;
+            // elsewhere the splice is an honest compile error at the site).
+            if (idName != "") this.line(indent, "this." + idName + " = " + v + ";");
+
+            if (userTag || this.isContainerTag(tag)) {
+                for (DomXNode kid in node.kids) this.emitChild(kid, v, indent, inLoop);
+            } else {
+                this.emitLeafText(node, v, indent);
+            }
+            return v;
+        }
+
+        void checkIdent(DomXAttr a) {
+            Array<char> c = a.value.chars();
+            bool ok = c.length() > 0 && this.isIdentStart(c[0]);
+            if (ok) for (int i in 1..c.length() - 1) if (!this.isIdentChar(c[i])) ok = false;
+            if (!ok) this.fail(a.at, "'id=\"" + a.value + "\"' is not a valid identifier (E-D2)");
+        }
+
+        // One attribute -> its setter statement(s). The common set first
+        // (every tag), then the per-tag registry rows, then the Capitalized
+        // pass-through; an unknown attribute on a registry tag is E-D4.
+        void emitAttrStmt(string tag, bool userTag, DomXAttr a, string v, string indent) {
+            if (a.isEvent) {
+                if (!a.isExpr)
+                    this.fail(a.at, "'on:" + a.eventName + "' handler must be {expr} (E-D2)");
+                this.line(indent, v + ".on" + this.cap(a.eventName) + "(" + a.value + ");");
+                return;
+            }
+            string name = a.name;
+            if (name == "class") {
+                if (a.isExpr) this.fail(a.at, "'class' takes a \"literal\" at the dom! tier (E-D2)");
+                return;                       // __recordBuild already addClass'd each token
+            }
+            if (name == "action" || name == "hotkey") {
+                if (a.isExpr) this.fail(a.at, "'" + name + "' takes a \"literal\" (E-D2)");
+                return;                       // recorded as meta; D04 wires the registration
+            }
+            if (name == "theme")
+                this.fail(a.at, "theme=\"" + a.value + "\" is not supported yet (E-D6)");
+            if (name == "width") {
+                if (a.isExpr) this.line(indent, v + ".setWidth(" + a.value + ");");
+                else this.line(indent, v + ".setWidth(Constraint::Fixed(" + this.intLit(a) + "));");
+                return;
+            }
+            if (name == "height") {
+                if (a.isExpr) this.line(indent, v + ".setHeight(" + a.value + ");");
+                else this.line(indent, v + ".setHeight(Constraint::Fixed(" + this.intLit(a) + "));");
+                return;
+            }
+            if (name == "flex") {
+                string f = this.intLit(a);
+                this.line(indent, v + ".setWidth(Constraint::Flex(" + f + "));");
+                this.line(indent, v + ".setHeight(Constraint::Flex(" + f + "));");
+                return;
+            }
+            if (name == "dock") {
+                string e = a.isExpr ? a.value
+                    : this.enumLit(a, "Dock", ["Top", "Bottom", "Left", "Right", "Fill"]);
+                this.line(indent, v + ".dock = " + e + ";");
+                return;
+            }
+            if (name == "padding") {
+                if (a.isExpr) this.line(indent, v + ".padding = " + a.value + ";");
+                else this.line(indent, v + ".padding = Insets::Uniform(" + this.intLit(a) + ");");
+                return;
+            }
+            if (name == "row")     { this.line(indent, v + ".gridRow = " + this.intLit(a) + ";"); return; }
+            if (name == "col")     { this.line(indent, v + ".gridCol = " + this.intLit(a) + ";"); return; }
+            if (name == "rowSpan") { this.line(indent, v + ".gridRowSpan = " + this.intLit(a) + ";"); return; }
+            if (name == "colSpan") { this.line(indent, v + ".gridColSpan = " + this.intLit(a) + ";"); return; }
+            if (name == "hidden") {
+                // the D-C6 semantic class (couples visibility via D03)
+                if (a.isExpr) this.line(indent, "if (" + a.value + ") " + v + ".addClass(\"hidden\");");
+                else {
+                    this.boolLit(a);
+                    if (a.value == "true") this.line(indent, v + ".addClass(\"hidden\");");
+                }
+                return;
+            }
+            if (name == "title") {
+                // runtime: `if (c is Bordered) c.setTitle(...)`. Statically
+                // known for registry rows; user classes get the same dynamic
+                // narrowing the runtime uses.
+                if (userTag)
+                    this.line(indent, "if (" + v + " is Bordered) " + v + ".setTitle(" + this.strLit(a) + ");");
+                else if (this.isBorderedTag(tag))
+                    this.line(indent, v + ".setTitle(" + this.strLit(a) + ");");
+                return;                       // non-Bordered: meta only (runtime mirror)
+            }
+
+            // per-tag registry rows (the applyAttr ladder, typed)
+            if (tag == "input") {
+                if (name == "placeholder") { this.line(indent, v + ".setPlaceholder(" + this.strLit(a) + ");"); return; }
+                if (name == "value")       { this.line(indent, v + ".setValue(" + this.strLit(a) + ");"); return; }
+                if (name == "maxLength")   { this.line(indent, v + ".setMaxLength(" + this.intLit(a) + ");"); return; }
+            }
+            if (tag == "span" || tag == "text") {
+                if (name == "align") {
+                    string e = a.isExpr ? a.value
+                        : this.enumLit(a, "Align", ["Start", "Center", "End", "Stretch"]);
+                    this.line(indent, v + ".align(" + e + ");");
+                    return;
+                }
+                if (name == "wrap") {
+                    string e = a.isExpr ? a.value
+                        : this.enumLit(a, "Overflow", ["Clip", "Scroll", "Wrap"]);
+                    this.line(indent, v + ".wrap(" + e + ");");
+                    return;
+                }
+            }
+            if (tag == "checkbox") {
+                if (name == "checked") {
+                    this.boolLit(a);
+                    this.line(indent, v + ".setChecked(" + a.value + ");");
+                    return;
+                }
+                if (name == "label") { this.line(indent, v + ".setLabel(" + this.strLit(a) + ");"); return; }
+            }
+
+            if (userTag) {
+                // unknown-tag pass-through setter (user components work for
+                // free — the T06 rule); the field splices bare on {expr}.
+                this.line(indent, v + ".set" + this.cap(name) + "(" + this.strLit(a) + ");");
+                return;
+            }
+            this.fail(a.at, "'<" + tag + ">' has no attribute '" + name + "'"
+                + this.suggest(tag, name) + " (E-D4)");
+        }
+
+        // ---- children -------------------------------------------------------
+        void emitChild(DomXNode kid, string parentVar, string indent, bool inLoop) {
+            if (kid.kind == 0) {
+                string cv = this.emitElement(kid, indent, inLoop);
+                this.line(indent, parentVar + ".add(" + cv + ");");
+            } else if (kid.kind == 1) {
+                string cv = this.emitSegText(kid, indent);
+                this.line(indent, parentVar + ".add(" + cv + ");");
+            } else if (kid.kind == 4) {
+                string cv = this.emitHoleText(kid, indent, inLoop);
+                this.line(indent, parentVar + ".add(" + cv + ");");
+            } else if (kid.kind == 2) {
+                this.line(indent, "for (var " + kid.forVar + " in " + kid.forExpr + ") {");
+                for (DomXNode k in kid.kids) this.emitChild(k, parentVar, indent + "    ", true);
+                this.line(indent, "}");
+            } else if (kid.kind == 3) {
+                this.line(indent, "if (" + kid.ifCond + ") {");
+                for (DomXNode k in kid.kids) this.emitChild(k, parentVar, indent + "    ", inLoop);
+                if (kid.hasElse) {
+                    this.line(indent, "} else {");
+                    for (DomXNode k in kid.elseKids) this.emitChild(k, parentVar, indent + "    ", inLoop);
+                }
+                this.line(indent, "}");
+            }
+        }
+
+        // Leaf tags: text/hole children join (single-space, the joinLabel
+        // mirror) into the leaf's display-text channel; holes are one-shot
+        // (`Sonar::Dom::text(expr)`) — the leaf channel is not a binding
+        // target (D05 binds Text nodes only). Element/$-block children on a
+        // leaf are errors (the runtime builder's rule).
+        void emitLeafText(DomXNode node, string v, string indent) {
+            Array<string> parts = [];
+            for (DomXNode kid in node.kids) {
+                if (kid.kind == 1) parts = parts.add(kid.textExpr);
+                else if (kid.kind == 4) parts = parts.add("Sonar::Dom::text(" + kid.holeExpr + ")");
+                else if (kid.kind == 0)
+                    this.fail(kid.at, "<" + node.tag + "> is a leaf and cannot hold element children");
+                else
+                    this.fail(kid.at, "'$for'/'$if' need a container tag, not leaf <" + node.tag + ">");
+            }
+            if (parts.length() == 0) return;
+            string setter = this.leafSetter(node.tag);
+            if (setter == "") return;         // no text channel: ignored (documented)
+            this.line(indent, v + "." + setter + "(" + parts.joinToString(" + \" \" + ") + ");");
+        }
+
+        // E-D4 "did you mean" — first common/per-tag attribute within edit
+        // distance 1 (the T06 E3 mechanic).
+        string suggest(string tag, string bad) {
+            Array<string> cands = ["id", "class", "width", "height", "flex", "dock", "padding",
+                "row", "col", "rowSpan", "colSpan", "hidden", "title", "action", "hotkey", "theme"];
+            cands = cands.concat(this.perTagAttrs(tag));
+            for (string c in cands) if (this.editDistance1(bad, c)) return " (did you mean '" + c + "'?)";
+            return "";
+        }
+
+        bool editDistance1(string a, string b) {
+            Array<char> ca = a.chars(); Array<char> cb = b.chars();
+            int la = ca.length(); int lb = cb.length();
+            int diff = la - lb; if (diff < 0) diff = 0 - diff;
+            if (diff > 1) return false;
+            if (la == lb) {
+                int mis = 0;
+                for (int i in 0..la - 1) if (ca[i] != cb[i]) mis = mis + 1;
+                return mis <= 1;
+            }
+            Array<char> lo = la < lb ? ca : cb;
+            Array<char> hi = la < lb ? cb : ca;
+            int i = 0; int j = 0; int skips = 0;
+            while (i < lo.length() && j < hi.length()) {
+                if (lo[i] == hi[j]) { i = i + 1; j = j + 1; }
+                else { j = j + 1; skips = skips + 1; if (skips > 1) return false; }
+            }
+            return true;
+        }
+    }
+
+    // The public engine entry — the ONE symbol the `dom!` macro calls
+    // (namespace-qualified, per the comptime discipline note above). Also the
+    // exact function the runtime golden harness drives.
+    string expandDom(string payload) {
+        DomXParser parser = DomXParser(payload);
+        Array<DomXNode> roots = parser.parseFragment();
+        if (roots.length() == 0)
+            throw SonarException("markup is empty (E-D12: a node is required)");
+        DomXEmitter emitter = DomXEmitter(payload);
+        return emitter.emitProgram(roots);
+    }
+}}

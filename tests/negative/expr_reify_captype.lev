@@ -1,0 +1,7 @@
+// LA-31 Stage 3 §3 — captured object used directly as an operand (E2, R17):
+// a class-typed capture is only legal as an Array<T>.contains receiver.
+class Boss { int rank; new Boss(int r) { rank = r; } }
+class User { Boss owner; new User(Boss o) { owner = o; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+Boss boss = Boss(1);
+console.writeln(useIt((u) => u.owner == boss));

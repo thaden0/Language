@@ -1,0 +1,43 @@
+== position/absolute ==
+0
+0
+1
+10
+4
+5
+3
+0
+1
+== bar ==
+0
+1
+1
+== markup ctor ==
+2
+Go
+== classes ==
+true
+false
+true
+input.error
+input.error.focused.text
+true
+true
+== z-order ==
+z2 z3 z1 
+== anchors ==
+below 10,7
+above 10,4
+leftof 7,5
+rightof 14,5
+over 10,5
+below2 20,10
+rightof2 24,8
+cleared 1,2
+== popover ==
+0
+1
+true
+true
+0
+== done ==

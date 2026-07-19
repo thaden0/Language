@@ -55,7 +55,12 @@ std::string typeStr(const TypeRef* t) {
         case TypeKind::Function:
             return "(" + typeList(t->funcParams, ", ") + ") => " + typeStr(t->funcRet.get());
         case TypeKind::Named: {
-            std::string out = sv(t->name);
+            // R5 (005): emit the `path::` qualifier prefix so a qualified type
+            // round-trips through `--ast`/`--expand` (`std::RuntimeException`,
+            // and — once R2 produces them — qualified `match`-arm type patterns).
+            std::string out;
+            for (std::string_view seg : t->path) { out += sv(seg); out += "::"; }
+            out += sv(t->name);
             if (!t->generics.empty()) out += "<" + typeList(t->generics, ", ") + ">";
             return out;
         }

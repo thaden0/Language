@@ -787,7 +787,10 @@ is the scalar. It deliberately carries **no arithmetic** (use `code()`), so it n
 C's integer-promotion special cases; comparisons are by scalar value. Its one wrinkle is the
 literal: single-quoted literals are strings by default and **re-type to `char` by expected
 type** (the same resolution-by-type rule as everywhere else), rather than adding a second
-literal syntax.
+literal syntax. Strings stay **byte-indexed by design** (the primary, O(1) index world);
+`s.chars() -> Array<char>` is the explicit scalar door — a strict RFC 3629 decode (ill-formed
+bytes → U+FFFD) that unblocks scalar iteration, scalar counting, and UTF-8-correct
+`s.reverse()`.
 
 ```
 (-7).abs()            // 7   — int method, this = the value

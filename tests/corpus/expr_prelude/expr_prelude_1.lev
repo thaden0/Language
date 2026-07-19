@@ -1,0 +1,79 @@
+// LA-31 Stage 1 §3.3 — node-construction smoke.
+// Constructs one of each expr:: node class, stores each behind an expr::Node
+// variable, reads its fields back through match-narrowing (no cast operator
+// exists — the `as`->match-narrowing substitution logged in techdesign-01 §5),
+// and prints a fixed dump. Also pins that the Lit.v union round-trips all five
+// member types (string|int|float|bool|None) and that a mixed
+// Array<string|int|float|bool|None> literal stores and reads back. Earliest
+// tripwire for union-in-class-field trouble on LLVM.
+
+// Render a DbValue union member with a type tag.
+string dbStr(string | int | float | bool | None v) {
+    match (v) {
+        string => { return "s:" + v; }
+        int    => { return "i:" + v.toString(); }
+        float  => { return "f:" + v.toString(); }
+        bool   => { return "b:" + v.toString(); }
+        None   => { return "none"; }
+    }
+}
+
+// Render a mixed Array<union> into one pipe-joined dump line (loops live in a
+// function body — top-level control flow is not part of the surface grammar).
+string mixedDump(Array<string | int | float | bool | None> xs) {
+    int k = 0;
+    string acc = "mixed:";
+    while (k < xs.length()) {
+        acc = acc + dbStr(xs[k]);
+        if (k + 1 < xs.length()) acc = acc + "|";
+        k = k + 1;
+    }
+    return acc;
+}
+
+// Render any node shape by walking one level via match-narrowing.
+string nodeDump(expr::Node n) {
+    match (n) {
+        expr::Field  => { return "Field(" + n.path[0] + ")"; }
+        expr::Lit    => { return "Lit(" + dbStr(n.v) + ")"; }
+        expr::Bind   => { return "Bind(" + n.slot.toString() + ")"; }
+        expr::Bin    => { return "Bin(" + n.op + "," + nodeDump(n.l) + "," + nodeDump(n.r) + ")"; }
+        expr::Un     => { return "Un(" + n.op + "," + nodeDump(n.e) + ")"; }
+        expr::Call   => { return "Call(" + n.name + "," + nodeDump(n.recv) + ",#" + n.args.length().toString() + ")"; }
+        expr::Assign => { return "Assign(" + n.target.path[0] + "," + nodeDump(n.value) + ")"; }
+        else         => { return "Node"; }
+    }
+}
+
+// --- one of each node class, each stored behind an expr::Node variable ---
+expr::Node arg0    = expr::Lit("A%");
+Array<expr::Node> callArgs = [arg0];
+
+expr::Node nField  = expr::Field(["active"]);
+expr::Node nLit    = expr::Lit("A%");
+expr::Node nBind   = expr::Bind(3);
+expr::Node nBin    = expr::Bin("&&", expr::Field(["active"]), expr::Bind(0));
+expr::Node nUn     = expr::Un("!", expr::Field(["hidden"]));
+expr::Node nCall   = expr::Call("like", expr::Field(["name"]), callArgs);
+expr::Node nAssign = expr::Assign(expr::Field(["age"]), expr::Lit(40));
+expr::Node nBare   = expr::Node();
+
+console.writeln(nodeDump(nField));
+console.writeln(nodeDump(nLit));
+console.writeln(nodeDump(nBind));
+console.writeln(nodeDump(nBin));
+console.writeln(nodeDump(nUn));
+console.writeln(nodeDump(nCall));
+console.writeln(nodeDump(nAssign));
+console.writeln(nodeDump(nBare));
+
+// --- Lit.v union round-trips all five member types ---
+console.writeln(nodeDump(expr::Lit("txt")));
+console.writeln(nodeDump(expr::Lit(7)));
+console.writeln(nodeDump(expr::Lit(2.5)));
+console.writeln(nodeDump(expr::Lit(true)));
+console.writeln(nodeDump(expr::Lit(None)));
+
+// --- mixed Array<string|int|float|bool|None> literal stores and reads back ---
+Array<string | int | float | bool | None> mixed = ["x", 1, 2.5, false, None];
+console.writeln(mixedDump(mixed));

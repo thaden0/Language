@@ -34,7 +34,10 @@ namespace Sonar { namespace Dom {
     }
 
     class DomParser {
-        string      src;
+        // All scanning is over the scalar array (`chars()`, code points) —
+        // NEVER through byte-indexed string ops (`subStr`/`indexOfFrom`):
+        // positions here are char indexes, and one multibyte scalar in the
+        // payload would shift every byte-indexed read after it.
         Array<char> cs;
         int         n;
         int         pos = 0;
@@ -43,7 +46,6 @@ namespace Sonar { namespace Dom {
         char cRBrace; char cColon; char cBang;
 
         new DomParser(string source) {
-            src = source;
             cs  = source.chars();
             n   = cs.length();
             cLt = '<'; cGt = '>'; cSlash = '/'; cEq = '='; cQuote = '"';
@@ -59,9 +61,9 @@ namespace Sonar { namespace Dom {
                 else col = col + 1;
                 i = i + 1;
             }
-            int lineEnd = lineStart;
-            while (lineEnd < n && cs[lineEnd].code() != 10) lineEnd = lineEnd + 1;
-            string lineText = src.subStr(lineStart, lineEnd - lineStart);
+            string lineText = "";
+            int k = lineStart;
+            while (k < n && cs[k].code() != 10) { lineText = lineText + cs[k].toString(); k = k + 1; }
             string caret = "";
             int c = 1;
             while (c < col) { caret = caret + " "; c = c + 1; }
@@ -108,12 +110,25 @@ namespace Sonar { namespace Dom {
             return out;
         }
 
+        // cs[at..] begins with `lit` (char-wise, no advance).
+        bool lookingAt(int at, string lit) {
+            Array<char> lc = lit.chars();
+            int m = lc.length();
+            if (at + m > n) return false;
+            for (int i in 0..m - 1) if (cs[at + i] != lc[i]) return false;
+            return true;
+        }
+
         Array<DomTplNode> parseMaybeElement() {
             // `<!-- ... -->` comments are skipped (best-effort)
             if (pos + 3 < n && cs[pos + 1] == cBang) {
-                int close = src.indexOfFrom("-->", pos);
-                if (close < 0) this.fail(pos, "unterminated comment");
-                pos = close + 3;
+                int open = pos;
+                pos = pos + 2;
+                while (!this.lookingAt(pos, "-->")) {
+                    if (this.eof()) this.fail(open, "unterminated comment");
+                    pos = pos + 1;
+                }
+                pos = pos + 3;
                 return [];
             }
             DomTplNode el = this.parseElement();
@@ -173,9 +188,9 @@ namespace Sonar { namespace Dom {
                 if (cs[pos] != cQuote) this.fail(pos, "attribute '" + name + "' value must be quoted");
                 pos = pos + 1;                    // consume opening quote
                 int valStart = pos;
-                while (pos < n && cs[pos] != cQuote) pos = pos + 1;
+                string value = "";
+                while (pos < n && cs[pos] != cQuote) { value = value + cs[pos].toString(); pos = pos + 1; }
                 if (this.eof()) this.fail(valStart, "unterminated attribute value for '" + name + "'");
-                string value = src.subStr(valStart, pos - valStart);
                 pos = pos + 1;                    // consume closing quote
                 node.attrNames  = node.attrNames.add(name);
                 node.attrValues = node.attrValues.add(value);
@@ -183,9 +198,9 @@ namespace Sonar { namespace Dom {
         }
 
         string readName() {
-            int start = pos;
-            while (pos < n && isNameCh(cs[pos])) pos = pos + 1;
-            return src.subStr(start, pos - start);
+            string r = "";
+            while (pos < n && isNameCh(cs[pos])) { r = r + cs[pos].toString(); pos = pos + 1; }
+            return r;
         }
 
         // Text run up to the next '<': split into text literals + {{hole}}s.
@@ -193,28 +208,34 @@ namespace Sonar { namespace Dom {
         // pure-whitespace runs between elements are dropped.
         Array<DomTplNode> parseTextRun() {
             int start = pos;
-            while (pos < n && cs[pos] != cLt) pos = pos + 1;
-            string raw = src.subStr(start, pos - start);
+            string raw = "";
+            while (pos < n && cs[pos] != cLt) { raw = raw + cs[pos].toString(); pos = pos + 1; }
             return this.splitHoles(raw, start);
         }
 
         Array<DomTplNode> splitHoles(string raw, int base) {
             Array<DomTplNode> out = [];
+            Array<char> rc = raw.chars();
+            int m = rc.length();
             int i = 0;
-            int m = raw.length();
             string lit = "";
             while (i < m) {
-                if (i + 1 < m && raw.subStr(i, 2) == "{{") {
+                if (i + 1 < m && rc[i] == cLBrace && rc[i + 1] == cLBrace) {
                     string trimmed = lit.trim();
                     if (trimmed != "") { DomTplNode t = DomTplNode(DOM_TEXT); t.text = trimmed; out = out.add(t); }
                     lit = "";
-                    int close = raw.indexOfFrom("}}", i + 2);
-                    if (close < 0) this.fail(base + i, "unterminated '{{' binding hole");
-                    string expr = raw.subStr(i + 2, close - (i + 2)).trim();
-                    DomTplNode h = DomTplNode(DOM_HOLE); h.holeExpr = expr; out = out.add(h);
-                    i = close + 2;
+                    int j = i + 2;
+                    string expr = "";
+                    bool closed = false;
+                    while (j < m && !closed) {
+                        if (j + 1 < m && rc[j] == cRBrace && rc[j + 1] == cRBrace) closed = true;
+                        else { expr = expr + rc[j].toString(); j = j + 1; }
+                    }
+                    if (!closed) this.fail(base + i, "unterminated '{{' binding hole");
+                    DomTplNode h = DomTplNode(DOM_HOLE); h.holeExpr = expr.trim(); out = out.add(h);
+                    i = j + 2;
                 } else {
-                    lit = lit + raw.subStr(i, 1);
+                    lit = lit + rc[i].toString();
                     i = i + 1;
                 }
             }

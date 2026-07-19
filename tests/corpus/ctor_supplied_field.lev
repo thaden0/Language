@@ -1,0 +1,35 @@
+// A bare reference-class field that a constructor definite-first-assigns must
+// NOT auto-construct a throwaway default (§3): the discarded default's own ctor
+// can have side effects or throw before the real value is ever bound — the
+// footgun that made a Sonar `class W { App app; new W(App a){ app = a; } }`
+// wrapper trip the single-app rule at construction time. A ctor-supplied field
+// skips §3 and takes the plain default; the ctor supplies the value.
+
+// A guarded type: a second bare construction throws (Sonar's single-App shape).
+Guard? live = None;
+void arm(Guard g) { live = g; }          // bare-global write via a free fn (lowerable)
+class Guard {
+    int tag = 0;
+    new Guard(int t) {
+        if (live != None) throw Exception("single-guard rule: one already live");
+        tag = t;
+        arm(this);
+    }
+}
+
+// The wrapper: a bare `Guard` field the ctor assigns first thing. Pre-fix this
+// eager-constructed a SECOND Guard() and threw; post-fix it never runs one.
+class Wrapper {
+    Guard g;
+    new Wrapper(Guard given) { g = given; }
+}
+
+// Also proves a field type with NO nullary ctor is fine when ctor-supplied:
+// Guard only has Guard(int), so §3 auto-construction had nothing to call.
+void run() {
+    Guard only = Guard(7);
+    console.writeln("guard armed: " + only.tag.toString());
+    Wrapper w = Wrapper(only);
+    console.writeln("wrapper built: " + w.g.tag.toString());
+}
+run();

@@ -326,12 +326,14 @@ struct Stmt {
     // Namespace / Class / Block bodies
     std::vector<StmtPtr> body;
 
-    // Block: the lexical import overlay scope for this block, when it contains
-    // `uses` statements (bug.md #8). Created by the Resolver (a child of the
-    // enclosing scope holding the block's imports) and consulted by the Checker
-    // so a block-level `uses` is visible for exactly that block. Null when the
-    // block imports nothing (the common case).
-    Scope* importScope = nullptr;
+    // Block: the block's own lexical scope, when it directly contains any
+    // `use`/`uses` import OR a factory `bind` (designs/complete/techdesign-block-scoped-use.md
+    // §3.1). Created lazily by the Resolver (a child of the enclosing scope),
+    // it carries BOTH the block's imported names and its type-keyed bind table
+    // (Scope::binds), and is consulted by the Checker and Lowerer so a
+    // block-scoped `use`/`uses`/`bind` is visible for exactly that block. Null
+    // when the block introduces neither (the common case).
+    Scope* blockScope = nullptr;
 
     // Member (free function, i.e. a namespace-level callable, not a method):
     // the innermost `namespace` this decl was gathered directly inside, or
@@ -354,11 +356,11 @@ struct Stmt {
 
     // Use only (system-binds.md §5.3, Channel 1): set by the Resolver's
     // useOne only when this `use NS::T;` resolves to a class/interface —
-    // the namespace T was found in, and T's own name (the same key
-    // pushBindScope registers a same-spelled `bind T => ...;` under). Read
-    // once, by Checker::pushBindScope, to activate NS's exported bind for T
-    // in the use's scope. Null ns = not a type import (function/var/nested-
-    // namespace `use`, or a bare `use name;` with no `::`): activates nothing.
+    // the namespace T was found in, and T's own name (the same key a
+    // same-spelled `bind T => ...;` registers under). Read once, by
+    // Checker::pushLexicalScope, to activate NS's exported bind for T in the
+    // use's scope. Null ns = not a type import (function/var/nested-namespace
+    // `use`, or a bare `use name;` with no `::`): activates nothing.
     Symbol* useResolvedNs = nullptr;
     std::string_view useResolvedTypeKey;
 

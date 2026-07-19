@@ -64,6 +64,15 @@ namespace Sonar {
     class Styleable : Component {
         Map<string, Style> styleOverrides_ = Map();
 
+        // D03 §6 (sonar-bugs.md #4): the unconditional box-clear opt-out. True
+        // for every ordinary leaf (the fix); the two deliberate-transparency
+        // sites — DebugOverlay (paints over the live tree) and OverlayHost
+        // non-scrim mode — set it false. Both already fully override paint() and
+        // never reach paintBackground here, so this flag is declarative today;
+        // it exists so a future Styleable leaf that WANTS transparency has the
+        // sanctioned switch rather than reintroducing the #4 bug.
+        bool paintsBackground_ = true;
+
         void setStyle(string key, Style style) {
             styleOverrides_[key] = style;
             invalidate();
@@ -81,13 +90,25 @@ namespace Sonar {
         //   3. theme key minus state   "input.text"
         //   2. theme exact key         "input.focused.text"
         //   1. instance override       exact key               — top
+        // D03 §4.2 folds two NEW class-qualified layers into the landed chain
+        // (the class segment inserts after the component segment): after the
+        // component base, `component.class` per class; after the exact key,
+        // `component.class.state.part` per class — most specific before the
+        // instance override. Later classes in the list layer over earlier
+        // (last-added wins ties). A theme with no class keys resolves
+        // byte-identically (misses are transparent no-op layers).
         Style resolve(string key, ITheme theme) {
-            Style acc;                                         // step 6
-            acc = theme.style("default").over(acc);            // step 5
-            acc = theme.style(componentBase(key)).over(acc);   // step 4
-            acc = theme.style(keyMinusState(key)).over(acc);   // step 3
-            acc = theme.style(key).over(acc);                  // step 2
-            Style? local = styleOverrides_.atOrNone(key);      // step 1
+            Array<string> classes = this.classList();
+            Style acc;                                            // base
+            acc = theme.style("default").over(acc);
+            acc = theme.style(componentBase(key)).over(acc);
+            for (string cls in classes)                           // NEW step 4
+                acc = theme.style(Dom::classBaseKey(key, cls)).over(acc);
+            acc = theme.style(keyMinusState(key)).over(acc);
+            acc = theme.style(key).over(acc);
+            for (string cls in classes)                           // NEW step 7
+                acc = theme.style(Dom::classFullKey(key, cls)).over(acc);
+            Style? local = styleOverrides_.atOrNone(key);         // instance override
             if (local != None) acc = local.over(acc);
             return acc;
         }
@@ -104,6 +125,7 @@ namespace Sonar {
             // space, identical to the App root's own full-surface clear — and
             // under a concrete theme it is that theme's background. Either way
             // the box is reset before paintContent draws on top.
+            if (!paintsBackground_) return;                    // D03 §6 opt-out
             Style fillStyle;                                   // default: Default/Default/0
             if (activeTheme_ != None) {
                 fillStyle = resolve("background", activeTheme_);

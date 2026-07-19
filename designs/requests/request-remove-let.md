@@ -102,9 +102,9 @@ inferred binding."** That is inaccurate. `let` is not single-assignment; it is
 exactly once, possibly deferred past the declaration) is precisely the semantics of
 **`readonly`** ([techdesign-readonly.md:34](../complete/techdesign-readonly.md#L34):
 "its initializer **or** any declaring-class constructor, **exactly once**"), and for
-`const` locals it is the still-unimplemented OQ1 in
-[techdesign-const-system-extensions.md §2](../techdesign-const-system-extensions.md) ("Definite
-single assignment for `const` locals", M-OQ1, *not started*).
+`const` locals it is OQ1 in
+[techdesign-const-system-extensions.md §2](../complete/techdesign-const-system-extensions.md) ("Definite
+single assignment for `const` locals", M-OQ1, *landed 2026-07-18*).
 
 So the docs currently attach `readonly`'s meaning to `let`'s name, describing a
 distinction the implementation does not have and a semantics that lives elsewhere. That

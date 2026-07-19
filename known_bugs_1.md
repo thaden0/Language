@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | — |
+| P0       | #87 |
 | P1       | — |
 | P2       | — |
 | P3       | — |
@@ -97,3 +97,57 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
+
+---
+
+## #87 [P0] — relational comparison (`<`/`<=`/`>`/`>=`) of a `None`-valued optional against a literal produces a `bool` whose `.toString()` prints empty
+
+**Markers:** P0.1 (all four actively-maintained engines — oracle, IR, emit-C++,
+LLVM — unanimously print the wrong output for ordinary, checker-accepted user
+code; wrong per the language reference regardless of cross-engine agreement,
+since `bool.toString()` must yield `"true"`/`"false"`, never empty).
+
+Found implementing `designs/expr-reification/techdesign-03-verification.md`
+§4 (the differential corpus wants a None-operand `<` row, per doc 01 §3.1's
+pinned semantics that any `None` operand makes a relational comparison
+`false`). Repro (no `expr::` surface involved — ordinary optional-typed field
+comparison):
+```
+class Rec { int? maybeAge; new Rec(int? a) { maybeAge = a; } }
+void probe() {
+    Rec r1 = Rec(None);
+    bool a = r1.maybeAge < 10;
+    bool b = r1.maybeAge <= 10;
+    bool c = r1.maybeAge > 10;
+    bool d = r1.maybeAge >= 10;
+    bool e = r1.maybeAge == 10;
+    console.writeln("lt=" + a.toString() + " le=" + b.toString() + " gt=" +
+                     c.toString() + " ge=" + d.toString() + " eq=" + e.toString());
+}
+probe();
+```
+Prints `lt= le= gt= ge= eq=false` on `--run`, `--ir`, `--emit-cpp` (g++), and
+`--native-obj`/LLVM alike — the `<`/`<=`/`>`/`>=` results are empty strings,
+while the sibling `==` on the same optional prints correctly. Control flow
+over the same value is unaffected: `if (r1.maybeAge < 10) { … } else { … }`
+correctly takes the else branch — only the *stringified* value is wrong, and
+only for the four ordering operators (not `==`/`!=`). This is a symptom
+surfacing away from a different expression than the value's origin (the
+comparison computes a real, correctly-branching bool, but something about its
+runtime representation confuses `.toString()`'s dispatch) — consistent with
+the "operand mis-tagged/mis-encoded on the None-arm of an optional relational
+compare" family, not a simple wrong-value bug.
+
+**Root cause pointer:** not yet isolated to a file/line (out of this stage's
+`src/`-touching scope — verification-only, per
+`designs/expr-reification/techdesign-03-verification.md`'s header rule). Likely
+in the relational-operator codegen/eval path for `T?`-typed operands (`Checker.cpp`'s
+comparison typing or `Eval.cpp`/`Lower.cpp`'s runtime union comparison lowering) —
+the four ordering operators share a code path distinct from `==`/`!=`'s
+`dbEq`-style union comparison, and only that shared path is affected.
+**Workaround:** avoid relational (`<`/`<=`/`>`/`>=`) comparisons directly on an
+optional-typed operand; narrow first (e.g. via `match`) before comparing. LA-31
+Stage 3's differential corpus therefore pins only the `==`/`!=` None-operand
+rows (doc 01 §3.1's semantics for those two operators, which are unaffected)
+and excludes a `<`-against-None row pending this fix
+(`designs/expr-reification/techdesign-03-verification.md` §10 implementation log).

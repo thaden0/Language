@@ -221,6 +221,11 @@ implementation prerequisites, in order:
    see imports.md §9 and bug.md #9's shared-substrate note. Channel 1/2 activation at
    *file* grain can proceed on v1 imports; scoping a bind or import to an inner block
    waits on the shared substrate.
+   **RESOLVED** by `designs/complete/techdesign-block-scoped-use.md`: the substrate is
+   built once — `Scope` now carries both tables (`names` + `binds`), the Resolver fills
+   them, and a single `LexicalStack`/`BlockScopeGuard` drives the per-block push/pop that
+   both `use`/`uses` and `bind` ride. Block-level scoping of both is available; Channel-1
+   activation stays this design's call (that design owns the tables, not the semantics).
 3. **argv.md** — needed only for `IEnv` specifically (its system impl wraps
    `env::args()`/`variable()`); `IConsole`/`IClock` shims could precede it.
 

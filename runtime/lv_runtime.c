@@ -1559,24 +1559,40 @@ static int lv_utf8_encode(int64_t cp, char out[4]) {
     return 4;
 }
 
-/* decode the scalar starting at byte `i`; sets *plen to its byte length and
- * *pboundary=0 iff byte i is a continuation byte. Invalid/truncated -> U+FFFD
- * with len=1 (replacement policy — data is never a crash). */
+/* Strict RFC 3629 / Unicode decode (techdesign-utf8-chars-string-ops.md §3.2):
+ * tightened 2nd-byte bounds reject overlongs, surrogates (U+D800..DFFF) and
+ * > U+10FFFF; ill-formed -> U+FFFD (never a crash — data is not an error);
+ * *plen advances by the maximal valid subpart, so ONE U+FFFD is emitted per
+ * WHATWG maximal-subpart rule and decoding resumes at the breaking byte.
+ * *pboundary=0 iff byte i is a continuation byte. Transliteration of the
+ * oracle's utf8DecodeAt (src/RuntimeValue.hpp) — kept byte-identical. */
 static int64_t lv_utf8_decode_at(const unsigned char* s, int64_t slen, int64_t i,
                                  int64_t* plen, int* pboundary) {
     *plen = 1; *pboundary = 1;
     if (i >= slen) return 0xFFFD;
-    unsigned char c = s[i];
-    if (c < 0x80) return c;
-    if ((c & 0xC0) == 0x80) { *pboundary = 0; return 0xFFFD; }   /* continuation byte */
-    int need; int64_t cp;
-    if ((c & 0xE0) == 0xC0) { need = 1; cp = c & 0x1F; }
-    else if ((c & 0xF0) == 0xE0) { need = 2; cp = c & 0x0F; }
-    else if ((c & 0xF8) == 0xF0) { need = 3; cp = c & 0x07; }
-    else return 0xFFFD;                                          /* invalid lead byte */
-    for (int k = 1; k <= need; k++) {
-        if (i + k >= slen || (s[i + k] & 0xC0) != 0x80) return 0xFFFD;
-        cp = (cp << 6) | (s[i + k] & 0x3F);
+    unsigned char b0 = s[i];
+    if (b0 <= 0x7F) return b0;
+    if (b0 <= 0xBF) { *pboundary = 0; return 0xFFFD; }           /* lone continuation */
+    int need; unsigned lo, hi; int64_t cp;
+    if      (b0 <= 0xC1) return 0xFFFD;                          /* C0/C1 overlong lead */
+    else if (b0 <= 0xDF) { need = 1; lo = 0x80; hi = 0xBF; cp = b0 & 0x1F; }
+    else if (b0 == 0xE0) { need = 2; lo = 0xA0; hi = 0xBF; cp = b0 & 0x0F; }
+    else if (b0 <= 0xEC) { need = 2; lo = 0x80; hi = 0xBF; cp = b0 & 0x0F; }
+    else if (b0 == 0xED) { need = 2; lo = 0x80; hi = 0x9F; cp = b0 & 0x0F; }
+    else if (b0 <= 0xEF) { need = 2; lo = 0x80; hi = 0xBF; cp = b0 & 0x0F; }
+    else if (b0 == 0xF0) { need = 3; lo = 0x90; hi = 0xBF; cp = b0 & 0x07; }
+    else if (b0 <= 0xF3) { need = 3; lo = 0x80; hi = 0xBF; cp = b0 & 0x07; }
+    else if (b0 == 0xF4) { need = 3; lo = 0x80; hi = 0x8F; cp = b0 & 0x07; }
+    else return 0xFFFD;                                          /* F5..FF never a lead */
+    if (i + 1 >= slen) return 0xFFFD;
+    unsigned char b1 = s[i + 1];
+    if (b1 < lo || b1 > hi) return 0xFFFD;                       /* 2nd byte breaks it */
+    cp = (cp << 6) | (b1 & 0x3F);
+    for (int k = 2; k <= need; k++) {
+        if (i + k >= slen) { *plen = k; return 0xFFFD; }
+        unsigned char bk = s[i + k];
+        if (bk < 0x80 || bk > 0xBF) { *plen = k; return 0xFFFD; }
+        cp = (cp << 6) | (bk & 0x3F);
     }
     *plen = need + 1;
     return cp;
