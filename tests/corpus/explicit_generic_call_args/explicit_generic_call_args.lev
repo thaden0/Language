@@ -1,0 +1,87 @@
+// Explicit generic call arguments are compile-time-only checker input. This
+// corpus keeps their runtime behavior identical across every active engine.
+
+class Box<T> {
+    T value;
+    new Box(T v) { value = v; }
+    new From(T v) { value = v; }
+}
+
+class Token<T> {
+    string label;
+    new Token() { label = "token"; }
+}
+
+namespace Helpers {
+    T identity<T>(T value) => value;
+}
+
+class Holder<T> {
+    T seed;
+    new Holder(T value) { seed = value; }
+    U remap<U>(T witness, U value) => value;
+}
+
+int select(int value) => value + 100;
+T select<T>(T value) => value;
+
+T first<T>(T left, T right) => left;
+string withDefault<T>(T witness, string value = "default") => value;
+
+interface IService {
+    string name();
+}
+
+class Service : IService {
+    string name() => "injected";
+}
+
+bind IService => Service();
+T supplied<T>(T value) => value;
+
+R apply<A, R>(A value, (A) => R fn) => fn(value);
+
+class RefNum {
+    int value;
+    new RefNum() { value = 0; }
+    new FromInt(int value) { this.value = value + 10; }
+}
+
+T inner<T>(int value) => T::FromInt(value);
+T outer<T>(int value) => inner::<T>(value);
+
+class Base {
+    U echo<U>(U value) => value;
+}
+
+class Derived : Base {
+    string baseEcho() => this.Base::echo::<string>("base");
+}
+
+class User {
+    bool active;
+    new User(bool value) { active = value; }
+}
+
+bool eval(expr::Expr<(User) => bool> predicate, User user) => predicate.fn(user);
+
+Token<int> token = Token::<int>();
+Box<string> labeled = Box::From::<string>("labeled");
+Box<Array<int>> nested = Box::<Array<int>>([1, 2, 3]);
+Holder<int> holder = Holder::<int>(4);
+IService service = supplied::<IService>();
+Derived derived = Derived();
+
+console.writeln(token.label);
+console.writeln(labeled.value);
+console.writeln(nested.value.length());
+console.writeln(Helpers::identity::<string>("namespace"));
+console.writeln(holder.remap::<string>(4, "method"));
+console.writeln(select::<int>(7));
+console.writeln(first::<string>(right: "right", left: "named"));
+console.writeln(withDefault::<int>(1));
+console.writeln(service.name());
+console.writeln(apply::<int, string>(5, (value) => "lambda-" + value.toString()));
+console.writeln(outer::<RefNum>(6).value);
+console.writeln(derived.baseEcho());
+console.writeln(eval((user) => user.active, User(true)));

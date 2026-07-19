@@ -952,6 +952,87 @@ int main() {
     CLEAN("string g(float x) => match (x) { 0.0 => \"z\"; float::NaN => \"n\"; "
           "else => \"o\"; };");
 
+    // --- Explicit generic type arguments at call sites ----------------------
+    CLEAN("class Box<T> { } void f() { var x = Box::<int>(); Box<int> y = x; }");
+    CLEAN("class Box<T> { T value; new From(T value) { this.value = value; } } "
+          "void f() { Box<string> b = Box::From::<string>(\"x\"); }");
+    CLEAN("Array<T> empty<T>() => []; void f() { Array<int> xs = empty::<int>(); }");
+    CLEAN("T identity<T>(T value) => value; "
+          "void f() { int i = identity::<int>(1); }");
+    CLEAN("namespace N { T identity<T>(T value) => value; } "
+          "void f() { string s = N::identity::<string>(\"x\"); }");
+    CLEAN("class Box<T> { U remap<U>(T witness, U value) => value; } "
+          "void f() { Box<int> b = Box::<int>(); "
+          "string s = b.remap::<string>(1, \"x\"); }");
+    CLEAN("int choose(int value) => value; T choose<T>(T value) => value; "
+          "void f() { int x = choose::<int>(1); }");
+    CLEAN("T first<T>(T left, T right) => left; "
+          "void f() { string s = first::<string>(right: \"r\", left: \"l\"); }");
+    CLEAN("string withDefault<T>(T witness, string value = \"d\") => value; "
+          "void f() { string s = withDefault::<int>(1); }");
+    CLEAN("interface I { } class C : I { } bind I => C(); "
+          "T supplied<T>(T value) => value; void f() { I x = supplied::<I>(); }");
+    CLEAN("R apply<A, R>(A value, (A) => R fn) => fn(value); "
+          "void f() { string s = apply::<int, string>(1, (x) => x.toString()); }");
+    CLEAN("class Base { U echo<U>(U value) => value; } class Derived : Base { "
+          "string f() => this.Base::echo::<string>(\"x\"); }");
+    CLEAN("class Box<T> { U map<U>(U value) => value; } void f() { "
+          "Box<int>? b = Box::<int>(); string? s = b?.map::<string>(\"x\"); }");
+    // LA-18: the outer specialization clone must substitute the authored
+    // `inner::<T>` vector before it records the transitive concrete demand.
+    CLEAN("class R { new R() { } new FromInt(int value) { } } "
+          "T inner<T>(int value) => T::FromInt(value); "
+          "T outer<T>(int value) => inner::<T>(value); "
+          "void f() { R value = outer::<R>(1); }");
+
+    ERROR_HAS("class Pair<A, B> { } void f() { Pair::<int>(); }",
+              "construction of 'Pair' expects 2 explicit type arguments, got 1");
+    ERROR_HAS("class Box<T> { } void f() { Box::<int, string>(); }",
+              "construction of 'Box' expects 1 explicit type argument, got 2");
+    ERROR_HAS("R choose<R, S>(R x, S y) => x; "
+              "void f() { choose::<int>(1, \"x\"); }",
+              "call to 'choose' expects 2 explicit type arguments, got 1");
+    ERROR_HAS("T identity<T>(T value) => value; "
+              "void f() { identity::<int, string>(1); }",
+              "call to 'identity' expects 1 explicit type argument, got 2");
+    ERROR_HAS("int plain(int value) => value; void f() { plain::<int>(1); }",
+              "call to 'plain' expects 0 explicit type arguments, got 1");
+    ERROR_HAS("int pick(int value) => value; T pick<T>(T value) => value; "
+              "void f() { pick::<int, string>(1); }",
+              "no overload of 'pick' accepts 2 explicit type arguments");
+    ERROR_HAS("T identity<T>(T value) => value; "
+              "void f() { identity::<string>(1); }",
+              "argument for parameter 'value' has type 'int', expected 'string'");
+    ERROR_HAS("T head<T>(Array<T> values) => values[0]; "
+              "void f() { head::<string>([1]); }",
+              "expected 'Array<string>'");
+    ERROR_HAS("class Box<T> { new Box(T value) { } } "
+              "void f() { Box::<string>(1); }",
+              "argument for parameter 'value' has type 'int', expected 'string'");
+    ERRORS("T identity<T>(T value) => value; "
+           "void f() { string s = identity::<int>(1); }");
+    ERRORS("class Box<T> { } void f() { Box<string> b = Box::<int>(); }");
+    ERROR_HAS("void f() { (int) => int fn = (x) => x; fn::<int>(1); }",
+              "explicit type arguments require a declared function, method, or constructor");
+    ERROR_HAS("(int) => int maker() => (x) => x; "
+              "void f() { maker()::<int>(1); }",
+              "explicit type arguments require a declared function, method, or constructor");
+    ERROR_HAS("void f() { Array<(int) => int> fs = [(x) => x]; fs[0]::<int>(1); }",
+              "explicit type arguments require a declared function, method, or constructor");
+    ERROR_HAS("void f() { ((x) => x)::<int>(1); }",
+              "explicit type arguments require a declared function, method, or constructor");
+    ERROR_HAS("T identity<T>(T value) => value; "
+              "void f() { identity::<Missing>(1); }", "unknown type 'Missing'");
+    ERROR_HAS("int value = 1; T identity<T>(T item) => item; "
+              "void f() { identity::<value>(1); }", "'value' is not a type");
+    ERROR_HAS("namespace N { int value = 1; } T identity<T>(T item) => item; "
+              "void f() { identity::<N::value>(1); }", "unknown type 'N::value'");
+    ERROR_HAS("void f() { float::fromBits::<int>(0); }",
+              "call to 'fromBits' expects 0 explicit type arguments, got 1");
+    ERROR_HAS("R apply<A, R>(A value, (A) => R fn) => fn(value); "
+              "void f() { apply::<int, string>(1, (x) => 2); }",
+              "lambda body has type 'int', expected 'string'");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

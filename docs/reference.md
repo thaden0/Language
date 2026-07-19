@@ -204,8 +204,18 @@ arrays are **values** (arrays are pure — §6.3).
 Any scope-opening entity may declare type parameters: `class C<T>`, `R f<R>(R x)`, and methods
 `U m<U>(...)`. Inference sources, in order: constructor/call argument types (including through
 containers: `Array<U>` unifies with `Array<int>`), then the target type of the enclosing
-initializer/return. Explicit `Name<T1,...>` is always available. Generics are **invariant**;
-the raw form (`Array`) is compatible with any instantiation of the same head.
+initializer/return. In a type position, an instantiation is `Name<T1,...>`. At a call site,
+explicit arguments use the unambiguous call-only spelling `callee::<T1,...>(args)`, for example
+`Box::<int>()`, `Box::From::<string>(value)`, or `items.remap::<string>(fn)`. Generics are
+**invariant**; the raw form (`Array`) is compatible with any instantiation of the same head.
+
+An explicit call list is all-or-nothing and authoritative: its length must exactly equal the
+class's generic arity for construction, or the selected function/method's generic arity for a
+call. It filters overloads by generic arity before value-argument applicability, then the
+substituted types check positional/named values, lambdas, defaults, and injection. Receiver
+class arguments remain independent of a method's explicit tuple. Explicit lists require a
+declared function, method, or constructor; they cannot be applied to a closure or other dynamic
+function value. The old bare-looking `f<T>(x)` is still comparison syntax, never a generic call.
 
 Singleton scopes (namespaces, class static sides) may use type parameters in **member
 signatures** (bound per call) but may not declare **state** typed by them.
@@ -262,7 +272,7 @@ it neither overrides nor is overridden; override-dispatched specialization is de
 | 9 | `+` `-` | left |
 | 10 | `*` `/` `%` | left |
 | prefix | `!` `-` `~` | — |
-| postfix | `.name` `::name` `(args)` `[index]` | left |
+| postfix | `.name` `::name` `::<types>(args)` `(args)` `[index]` | left |
 
 ### 3.15 `match` — type/value dispatch
 `match (subject) { pattern => body; ... }` where a pattern is a **type** (`Type =>`, narrows
@@ -311,15 +321,21 @@ call on it would (§3.7).
 f(args)                    // function call; overload chosen by argument types
 f(x, label: value)         // positional arguments first; named arguments may reorder
 obj.method(args)           // method call; overload chosen by argument types
+f::<int>(args)             // explicit function type tuple (exact arity)
+obj.method::<R>(args)      // explicit method tuple; receiver class tuple is separate
 Type(args)                 // construction — NO `new` at the call site
 Type::Label(args)          // constructor selected by label
+Type::<int>(args)          // explicit class tuple for construction
+Type::Label::<int>(args)   // explicit class tuple after the complete labeled callee
 NS::Type(args)             // construction of a namespaced class, reached by qualification
 NS::Type::Label(args)      // ...combined with label selection
 Base::Ctor(args)           // inside a constructor: base constructor applied to `this`
 ```
 Constructor selection: candidates share the label; the overload is chosen by argument types
 (most-specific; first-declared breaks ties). Generic type arguments are inferred from the
-constructor arguments, then the target type.
+constructor arguments, then the target type, unless a complete explicit `::<...>` tuple pins
+them. Function/method explicit tuples bind that callable's parameters; construction tuples bind
+the class parameters. The marker follows the complete callee and must be followed by `(`.
 
 At every call site, positional arguments must precede named arguments. A named argument binds
 the parameter carrying that name; it may appear in any order among the named suffix. Functions,
@@ -335,6 +351,9 @@ reference** — a first-class function value (§3.4).
   class static sides. Inside a generic callable its left operand may also be a callable-level
   type parameter, resolved per concrete instantiation (§2.5). One operator, one meaning: "the
   non-instantiated version."
+- `::<...>(...)` is the call-only explicit-generic marker. It attaches to the completed callee
+  (`N::f::<T>()`, `this.Base::m::<T>()`); without the following argument list it is a parse
+  error, not a generic function reference.
 - A bare read that cannot be resolved by type — e.g. a `distinct`-collided member with no
   qualifier — is a **compile error** ("refuse to guess").
 
@@ -456,8 +475,11 @@ accessor. On a **mutable object** the set accessor mutates in place. On a **pure
 - An **unknown name or function** is a compile error (`System` excepted until
   modeled; `console` IS modeled — §6.7).
 - A generic construction whose type argument has **no inference source** is a compile error —
-  provide a target type or a type-bearing argument (§2.5: inferred when recoverable, required
-  when not).
+  provide a target type, a type-bearing argument, or an explicit construction tuple such as
+  `Box::<int>()` (§2.5: inferred when recoverable, explicit when desired, required when not).
+- Explicit call type arguments have exact arity and are authoritative. A value that conflicts
+  with a pinned parameter type is a compile error at that argument; applying the list to a
+  closure/dynamic function value is also a compile error.
 - Runtime failures **throw catchable `RuntimeException`s**: index out of bounds, `Map.at` on a
   missing key, unresolvable call targets, missing operators on a class.
 
@@ -712,21 +734,26 @@ int f(int a, int b) => a + b;           // arrow body (=> IS return)
 void g() console.writeln("x");          // any single statement is a body
 void h();                                // empty body (interface req. / native intrinsic)
 U remap<U>(U v) => v;                    // method-level type parameters
+string s = remap::<string>("value");      // explicit callable tuple
 Counter (+)(int val) => ...;            // operator: symbolic selector
 ```
 A **body is exactly one statement**. A **method** has `this` (instance side); a **function**
 does not (namespaces, class static sides). Overloading is by argument types everywhere.
 Named arguments and default parameter values apply uniformly to methods and functions.
+An explicit `::<...>` tuple is checked before ordinary value-argument binding; named/default/
+injected arguments then normalize exactly as they do for inferred calls.
 
 ### 4.5 Constructors
 ```
 new ClassName() { ... }                 // 'new' marks a constructor
 new AnyLabel(string s) { ... }          // the name is only a selection label
 new Configured(int port = 80) { ... }   // constant default parameter value
+Box<int> b = Box::From::<int>(1);       // explicit class tuple follows the label
 ```
 No `new` at the call site. Inside a constructor, `Base::Ctor(args)` runs a base constructor
 against `this` (derived class controls order). Label + argument types select among candidates.
 Constructor arguments may be named and constructor parameters may declare defaults.
+For a labeled construction, the tuple follows the complete label: `Box::From::<int>(value)`.
 
 ### 4.6 Accessors (get/set)
 ```
@@ -2557,11 +2584,10 @@ per site itself.
 Per ruling R1, `--expand` now runs the **full Checker** before printing — an ill-typed
 program fails `--expand` exactly like a normal compile (`docs/footguns.md`).
 `--ast-after-rules` stays the pre-Checker debugging view for ill-typed programs.
-`--expand` of a reified site shows the emitted construction; the emitted form omits the
-explicit generic argument the printer cannot yet round-trip on a construction callee —
-`expr::Expr((u) => u.active, expr::Field(["active"]), [], 0)`, not
-`expr::Expr<(User)=>bool>(...)` — with `F` resolved by ordinary generic inference from the
-first (closure) argument. A non-empty `binds`/`args` array prints as an immediately-invoked
+`--expand` of a reified site shows the emitted construction with its concrete function tuple:
+`expr::Expr::<(User) => bool>((u) => u.active, expr::Field(["active"]), [], 0)`.
+The call-only explicit-generic marker round-trips through the parser and pins `F`; it remains
+compile-time-only and carries no runtime payload. A non-empty `binds`/`args` array prints as an immediately-invoked
 `() => { Array<Elem> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(e0)); …; return
 __lvReifyArr; }()` (the landed `[]`+`.add` widening idiom — a bare array literal is
 invariant and cannot widen to the union/Node element type any other way); an empty array

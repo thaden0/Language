@@ -19,12 +19,19 @@ convention; the dangerous surface is opt-in and visible.
 
 ## 0. Last Updated
 
-**Audited against the implementation on 2026-07-12.** This section is the running log of
+**Audited against the implementation on 2026-07-19.** This section is the running log of
 what has landed and what has changed; the numbered sections below carry the detail.
 
 **Landed since the last full pass** (all cross-checked against `docs/reference.md`, the
 as-implemented reference, and the git history):
 
+- **Explicit generic type arguments at call sites** (2026-07-19) — the canonical,
+  unambiguous spelling is `callee::<T, U>(args)`, after the complete callee (including
+  namespace, constructor label, or receiver method). Exact arity is required; explicit
+  bindings are authoritative and filter overloads before substituted value checking. The
+  list is checker-only, preserved by rules/specialization/reifier clones and `--expand`, and
+  adds no runtime or ABI payload. Tree-walk/IR/emit-C++/LLVM are covered; no ELF gate
+  (`docs/reference.md` §2.5/§3.3).
 - **Harpoon — the standard unit test library, COMPLETE** (`designs/complete/techdesign-unit-test-library.md`,
   2026-07-15) — the assertion vocabulary (`assertEqual`/`assertNotEqual`/`assertSame`/
   `assertTrue`/`assertFalse`/`assertNone`/`assertSome`/`assertThrows`/`fail`, all
@@ -978,7 +985,10 @@ class Array<T> {
 
 Type arguments are **inferred when recoverable** (from the target type, from constructor
 arguments, from argument types — including through containers, `Array<U>` from `Array<Tag>`)
-and **required when not**. Explicit `<...>` remains available. Generics are **invariant**
+and **required when not**. Type positions use `Name<T, U>`; call positions use the distinct
+call-only spelling `callee::<T, U>(args)`. The explicit tuple is exact-arity and authoritative:
+it binds class parameters for construction, callable parameters for functions/methods, and
+filters overloads before substituted value checking. Generics are **invariant**
 (`Array<int>` is not `Array<string>`); the raw (unparameterized) form is compatible with any
 instantiation.
 
@@ -986,6 +996,8 @@ instantiation.
 MyClass<int, string> myClass = MyClass();   // inferred from the target type
 Promise<int> p = Promise(n * n);            // T inferred from the constructor argument
 string s = identity("hi");                  // R inferred from the call argument
+var empty = Box::<int>();                    // T explicitly pinned at construction
+string t = identity::<string>("hi");         // R explicitly pinned for this call
 ```
 
 ### Higher-kinded types (implemented, gated)

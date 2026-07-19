@@ -1,4 +1,5 @@
 #include "AstPrinter.hpp"
+#include <cassert>
 
 namespace {
 
@@ -115,9 +116,13 @@ std::string exprStr(const Expr* e) {
         case ExprKind::Member:
             return exprStr(e->a.get()) + (e->colon ? "::" : e->optChain ? "?." : ".") +
                    sv(e->text);
-        case ExprKind::Call:
-            return exprStr(e->a.get()) + (e->isMacroCall ? "!(" : "(") +
-                   exprList(e->list) + ")";
+        case ExprKind::Call: {
+            assert(!(e->isMacroCall && !e->explicitTypeArgs.empty()));
+            std::string applied = e->explicitTypeArgs.empty()
+                ? "" : "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return exprStr(e->a.get()) + applied +
+                   (e->isMacroCall ? "!(" : "(") + exprList(e->list) + ")";
+        }
         case ExprKind::Index:
             return exprStr(e->a.get()) + "[" + exprStr(e->b.get()) + "]";
         case ExprKind::Unary:
@@ -500,8 +505,13 @@ std::string srcExpr(const Expr* e) {
         case ExprKind::This:     return "this";
         case ExprKind::Member:
             return srcExpr(e->a.get()) + (e->colon ? "::" : e->optChain ? "?." : ".") + sv(e->text);
-        case ExprKind::Call:
-            return srcExpr(e->a.get()) + (e->isMacroCall ? "!(" : "(") + srcExprList(e->list) + ")";
+        case ExprKind::Call: {
+            assert(!(e->isMacroCall && !e->explicitTypeArgs.empty()));
+            std::string applied = e->explicitTypeArgs.empty()
+                ? "" : "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
+            return srcExpr(e->a.get()) + applied +
+                   (e->isMacroCall ? "!(" : "(") + srcExprList(e->list) + ")";
+        }
         case ExprKind::Index:
             return srcExpr(e->a.get()) + "[" + srcExpr(e->b.get()) + "]";
         case ExprKind::Unary:
@@ -673,7 +683,8 @@ struct SourcePrinter {
                     paramList(s->params) + ")";
             emitBody(n, head, s->memberBody.get());
         } else if (s->callable) {            // method / function
-            head += typeStr(s->type.get()) + " " + sv(s->name) + "(" + paramList(s->params) + ")";
+            head += typeStr(s->type.get()) + " " + sv(s->name) + generics(s) +
+                    "(" + paramList(s->params) + ")";
             emitBody(n, head, s->memberBody.get());
         } else {                             // field
             if (s->distinct) head += "distinct ";

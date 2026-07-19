@@ -839,12 +839,31 @@ add_test(NAME corpus_bound_method_refs_expand
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/bound_method_refs")
-# LA-31 Stage 2 §8.5: --expand shows the expr::Expr(...) construction and the
+# LA-31 Stage 2 §8.5: --expand shows the expr::Expr::<Fn>(...) construction and the
 # emitted source recompiles byte-identically (no double reification, R1).
 add_test(NAME corpus_expr_reify_expand
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
+# Explicit generic call arguments are erased after checker resolution. Pin the
+# authored/printed syntax plus byte-identical behavior on every active engine;
+# frozen ELF is intentionally outside this feature's acceptance set.
+add_test(NAME corpus_explicit_generic_call_args_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/explicit_generic_call_args")
+add_test(NAME corpus_explicit_generic_call_args_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/explicit_generic_call_args")
+add_test(NAME corpus_explicit_generic_call_args_cpp
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/explicit_generic_call_args")
+add_test(NAME corpus_explicit_generic_call_args_expand
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/explicit_generic_call_args")
 # bug.md #88 fix: was unwired because two expr::Call construction sites
 # sharing a whitelisted name with different receiver kinds (expr_diff_calls.lev's
 # string- and Array-receiver "contains") silently corrupted the Array-receiver
@@ -1229,6 +1248,11 @@ if (LLVM_FOUND)
   add_test(NAME corpus_generic_static_members_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/generic_static_members"
+                   ${LANG_LVRT_SOURCES})
+  add_test(NAME corpus_explicit_generic_call_args_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan>
+                   "${CMAKE_SOURCE_DIR}/tests/corpus/explicit_generic_call_args"
                    ${LANG_LVRT_SOURCES})
   # --- Composition corpus LLVM leg + red lane (see the treewalk/ir/cpp block
   # above) — the red runner needs LANG_LVRT_SOURCES for any repro whose

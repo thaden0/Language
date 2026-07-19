@@ -20,6 +20,20 @@ static std::string ast(const std::string& src) {
     return out;
 }
 
+static std::string parseErrors(const std::string& src) {
+    SourceFile f{"<test>", src};
+    DiagnosticSink sink;
+    Lexer lexer(f, sink);
+    Parser parser(lexer.tokenize(), f, sink);
+    parser.parseProgram();
+    std::string out;
+    for (const Diagnostic& d : sink.all()) {
+        if (!out.empty()) out += "\n";
+        out += d.message;
+    }
+    return out;
+}
+
 #define CONTAINS(src, needle)                                                  \
     do {                                                                       \
         ++g_checks;                                                            \
@@ -39,6 +53,17 @@ static std::string ast(const std::string& src) {
             ++g_failures;                                                      \
             std::printf("  FAIL %s:%d: unexpected parse error in: %s\n",      \
                         __FILE__, __LINE__, src);                            \
+        }                                                                      \
+    } while (0)
+
+#define ERROR_CONTAINS(src, needle)                                           \
+    do {                                                                       \
+        ++g_checks;                                                            \
+        std::string errors = parseErrors(src);                                 \
+        if (errors.find(needle) == std::string::npos) {                        \
+            ++g_failures;                                                      \
+            std::printf("  FAIL %s:%d\n    wanted error: %s\n    in:\n%s\n",  \
+                        __FILE__, __LINE__, needle, errors.c_str());            \
         }                                                                      \
     } while (0)
 
@@ -147,6 +172,30 @@ int main() {
     // not a loop keyword, so it isn't claimed as a label either; `a` parses
     // as an expression statement and the `:` after it is a parse error.
     CONTAINS("void f() { a: b: while (true) { } }", "<HAD ERRORS>");
+
+    // Explicit generic call arguments: the marker belongs to the Call, after
+    // the complete callee. Type parsing retains qualified, function, and
+    // nested `>>` forms without changing the callee tree.
+    CONTAINS("void f() { Box::<int>(); }", "Box::<int>()");
+    CONTAINS("void f() { N::Box::From::<Array<int>>(xs); }",
+             "N::Box::From::<Array<int>>(xs)");
+    CONTAINS("void f() { identity::<(User) => bool>(pred); }",
+             "identity::<(User) => bool>(pred)");
+    CONTAINS("void f() { obj.remap::<string>(\"x\"); }",
+             "obj.remap::<string>(x)");
+    CONTAINS("void f() { outer::<Array<Array<int>>>(); }",
+             "outer::<Array<Array<int>>>()");
+    // The deliberately ambiguous bare spelling remains comparison syntax.
+    CONTAINS("void f() { identity<int>(5); }", "((identity < int) > 5)");
+    // Ordinary calls and macro calls retain their established spelling.
+    CONTAINS("void f() { NS::f(1); macro!(2); }", "NS::f(1)");
+    CONTAINS("void f() { NS::f(1); macro!(2); }", "macro!(2)");
+    // Seeing `::<` commits to the call-only grammar.
+    ERROR_CONTAINS("void f() { f::<>(); }", "expected type argument after '<'");
+    ERROR_CONTAINS("void f() { f::<int>; }",
+                   "expected '(' after explicit type arguments");
+    ERROR_CONTAINS("void f() { f::<int>!(1); }",
+                   "expected '(' after explicit type arguments");
 
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
