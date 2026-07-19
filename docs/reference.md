@@ -3008,7 +3008,9 @@ maximum of every declared minimum for one module identity), writes the determini
 canonical source hashes to the companion lock (`trident.toml` → `trident.lock`), and stores source
 under `$TRIDENT_HOME/store/<sha256>/` (default `~/.trident/store`). A present consistent lock is
 used verbatim; editing dependency requirements without re-locking is a loud error. The checksum DB
-is an append-only hash-chained log, so a moved tag or changed source is rejected.
+is an append-only hash-chained log, so a moved tag or changed source is rejected. The resolved
+external require graph must be acyclic: both fresh MVS and lock-verbatim resolution reject a cycle
+before materialization and name its complete selected-version chain.
 
 `trident publish` validates a clean, fully tracked package source set, creates (or idempotently
 confirms) its immutable tag, and records the hash. `trident yank` appends policy metadata: fresh

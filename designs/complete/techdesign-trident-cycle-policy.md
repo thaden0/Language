@@ -1,18 +1,20 @@
 # Tech Design — Trident Cycle Policy (Acyclic External Dependency Graph)
 
-**Status:** design, ready for implementation. **Date:** 2026-07-18. **Priority: MEDIUM —
-small and self-contained, but must land before the self-host freeze window opens (~2026-11;
-`designs/deferal-trident-post-v1.md` §8 freezes all trident scope during the bootstrap).**
+**Status:** complete — G-CYC1 landed 2026-07-19. **Date:** 2026-07-18.
+**Priority: MEDIUM — landed before the self-host freeze window (~2026-11;
+`designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` §8 freezes Trident scope
+during the bootstrap).**
 **Records and implements an owner ruling.** This doc is the promotion of the cycle-policy
-decision tracked at `designs/deferal-trident-post-v1.md` §4.3.3 / P-B3 / STOP (j): the
-ruling has been made (2026-07-18, §0.2 below) and is recorded in that tracker's §10; this
-design specifies the implementation. Until this doc's gate is green, the ruling is *made
-but not enforced* — there is no interim state where partial enforcement ships.
+decision tracked at `designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` §4.3.3 /
+P-B3 / STOP (j): the ruling was made (2026-07-18, §0.2 below) and is recorded in that
+tracker's §10; this design specifies the implementation. The ruling is now enforced on both fresh MVS and
+lock-verbatim resolution paths; no partial-enforcement state shipped.
 **Builds on:** `designs/complete/techdesign-package-manager.md` (P2 — GT2–GT6 all landed; §10
 log authoritative), `designs/complete/proposal-project-system.md` §4.5 + §8 Q4 (the
-upheld text), `designs/deferal-trident-post-v1.md` (the tracker; its §4.3.3 sketched both
-candidate resolutions — this doc supersedes its *recommendation* while honoring its
-*protocol*). **Everything in this design lives inside `tools/trident/` + its tests.**
+upheld text), `designs/waiting/trident-post-v1--waits-on-selfhost-g5.md` (the tracker;
+its §4.3.3 sketched both candidate resolutions — this doc supersedes its
+*recommendation* while honoring its *protocol*). **Everything in this design lives
+inside `tools/trident/` + its tests.**
 
 ---
 
@@ -20,11 +22,11 @@ candidate resolutions — this doc supersedes its *recommendation* while honorin
 
 ### 0.1 The one-line change
 
-`trident`'s Minimal Version Selection currently *tolerates* require-cycles in the external
-(VCS) dependency graph — a cycle terminates the worklist naturally and produces a valid
-build list. After this design, **a require-cycle is a hard error naming the full chain**,
-enforced on every resolution path (MVS runs and lock-verbatim reads), so that no trident
-code path ever accepts a cyclic external dependency graph.
+Before this design, `trident`'s Minimal Version Selection *tolerated* require-cycles in
+the external (VCS) dependency graph — a cycle terminated the worklist naturally and
+produced a valid build list. After this design, **a require-cycle is a hard error naming
+the full chain**, enforced on every resolution path (MVS runs and lock-verbatim reads),
+so that no trident code path ever accepts a cyclic external dependency graph.
 
 ### 0.2 The ruling (owner, 2026-07-18 — recorded in the tracker's §10)
 
@@ -290,5 +292,36 @@ D-items land or cancel.
 
 ## 8. Implementation log (append-only)
 
-*(empty — filled by the implementing session; do not start before reading §0.3/§0.4 and
-the tracker's §9.)*
+**2026-07-19 — implemented; G-CYC1 closed.** Added the shared iterative three-color
+`findRequireCycle()` DFS beside the MVS graph types. It walks build-list order and each
+entry's recorded require order, renders selected versions, closes the repeated head, and
+treats missing targets as leaves. `selectVersions()` invokes it only after convergence and
+the ModuleId-sorted flatten; `resolveVcsDeps()` invokes it only for a lock-verbatim build,
+after lock reconstruction and before materialization. The fresh-resolution and tampered-
+lock messages are the design's frozen actionable wording. MVS selection, ModuleId bucketing,
+local dependencies, `why`/`audit`, the build plan, and `src/` are untouched.
+
+Coverage now pins every §2 row: deterministic direct cycle, same-identity self-cycle
+(including the 0.x/1.x bucket), legal one-way cross-major migration, rejected mutual
+cross-major cycle, dangling leaf, and transitive dev-edge cycle. The offline VCS app test
+also edits a generated lock into a self-cycle, proves build rejection and both diagnostic
+fragments, then proves the named `trident lock` repair restores a green build. The work was
+merged with current `origin/master` (`5ba1fe7`, including GT5/GT6 proxy/index/yank policy)
+before final validation; the lock check remains before every materialization path and fresh
+selection still passes through MVS before the newer yank-policy check.
+
+Acceptance evidence on the merged tree: all targets build (with only pre-existing warnings
+in untouched `master` compiler/runtime code); `mvstests` is **55 checks, 0 failures**;
+the expanded Trident group is **6/6 green** (`check_demo_trident`, manifest
+errors, VCS app including cycle tamper/repair, vendor, proxy, publish policy); and the
+separation grep returns exactly the two documented benign matches
+(`src/Project.hpp:226`, `src/Eval.cpp:685`). The full sequential pre-merge matrix ran
+239 tests: 237 passed. Its two red results are the exact baseline-only exceptions already
+proved before/after current master by
+`designs/complete/techdesign-explicit-generic-call-args.md` §8: frozen-ELF
+`field_cow_across_methods.ext` debt and a missing aarch64 loader when `LVRT_SYSROOT` is
+unset. Post-merge, the aarch64 lane passes **1/1** with
+`LVRT_SYSROOT=/usr/aarch64-linux-gnu`; the isolated frozen-ELF rerun reproduces the same
+N=100 16640B → N=800 128640B (+112000B) baseline while its active LLVM churn twin is
+green. No Trident or active-engine regression remains, so the repository's documented
+baseline-exception precedent permits closure and archival.
