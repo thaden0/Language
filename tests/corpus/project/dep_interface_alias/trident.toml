@@ -1,0 +1,7 @@
+name = "dep_interface_alias"
+entry = "main"
+sources = ["main.ext"]
+
+[[dep]]
+path = "depa"
+as = "A"
