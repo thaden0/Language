@@ -51,7 +51,7 @@ Excluded:
 | `designs/techdesign-labeled-break-continue.md` | 3 | Requires parser, AST, checker, and lowering changes for nested control flow, but the feature is bounded and testable. |
 | `designs/deferal-char-block-abi.md` | 3 | Short design, but ABI tags are contract-governed. Small implementation footprint with high compatibility sensitivity. |
 | `designs/complete/techdesign-04-stdlib-strings.md` | 3 | Mostly prelude/library expansion plus a `toInt` migration. Broad surface, moderate implementation complexity. |
-| `designs/techdesign-utf8-chars-string-ops.md` | 3 | Unicode correctness and string API behavior make this harder than ordinary string helpers, but the ownership is narrow. |
+| `designs/complete/techdesign-utf8-chars-string-ops.md` | 3 | Unicode correctness and string API behavior make this harder than ordinary string helpers, but the ownership is narrow. (Landed 2026-07-19.) |
 | `designs/techdesign-block-scoped-use.md` | 4 | Requires unifying per-block lexical scope machinery across resolver/checker/lowerer behavior. Medium-sized compiler architecture cleanup. |
 | `designs/complete/imports.md` | 4 | Alias semantics, lexical scoping, resolver/checker/lowerer integration, and runtime alias blind spots make this more than parser sugar. |
 | `designs/complete/techdesign-01-literals-operators.md` | 4 | Several language-surface features at once: literals, shifts, escapes, compound assignment. Broad parser/checker/backend testing. |

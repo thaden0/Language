@@ -1,6 +1,6 @@
 # Tech Design — Deterministic Step-Counter Gate for Regex Linearity
 
-**Status:** design, ready for implementation. **Date:** 2026-07-16.
+**Status:** COMPLETE — landed 2026-07-16 (see §6 log; re-verified green 2026-07-19). **Date:** 2026-07-16.
 **Scope:** replace the wall-clock assertion in the `regex_pathological_linear` CTest gate with a
 deterministic engine step counter, so the linearity property is proven independent of host speed
 and CI load. Prelude + test change only — no backend, no ABI, no public-surface change.

@@ -335,9 +335,11 @@ class string {
     // v1: allocates via toLower(); a non-allocating byte-compare is a follow-up.
     bool equalsIgnoreCase(string other) => length() == other.length() && toLower() == other.toLower();
 
-    // `reverse()` is deliberately NOT implemented here: a byte-reverse is wrong
-    // for UTF-8. Deferred to Track 03's `chars()` — once it lands, this becomes
-    // `chars().reverse().joinToString("")`. Logged so the gap isn't lost.
+    // UTF-8-correct reversal: reverses SCALARS, not bytes ("désert" -> "tréséd"
+    // with the é intact — a byte-reverse would shred every multi-byte sequence).
+    // Ill-formed bytes normalize to U+FFFD via chars() (§3.2 policy). The handoff
+    // promised in techdesign-04 §8 / techdesign-utf8-chars-string-ops.md §4.1.
+    string reverse() => chars().reverse().joinToString("");
 
     // LA-31 ruling R13: SQL LIKE semantics, byte-oriented, anchored full-string
     // match. `%` = any run of bytes incl. empty; `_` = exactly one byte; `\`
