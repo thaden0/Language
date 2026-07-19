@@ -383,17 +383,17 @@ add_test(NAME exit_codes
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus")
 # Track 08 system natives (designs/techdesign-08-system-natives.md §10): the
 # environment-dependent halves the golden corpus file omits — env PATH, DNS
-# localhost, and a filesystem round-trip — asserted identical on both
-# interpreters, plus comptime hermeticity (sys* denied) and clean deferral on
-# the compiled backends. A dedicated script because the fs round-trip needs a
-# temp dir and the checks are property-based, not golden.
+# localhost, and a filesystem round-trip. Filesystem behavior is asserted on
+# oracle/IR/LLVM; other checks keep their actual per-backend matrix, plus
+# comptime hermeticity and clean unsupported diagnostics. A dedicated script
+# is needed because the fs round-trip uses a temp dir and property assertions.
 add_test(NAME sys_natives
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_sysnatives.sh"
                  $<TARGET_FILE:leviathan>)
 # The Track 08 golden property-check file lives in its OWN directory (not the
-# shared top-level corpus): its natives defer with a clean coverage-error on the
-# compiled backends, so the LLVM/ELF-scanned `corpus_llvm_full` lane must not
-# compile it. Interpreter-only lanes, the same split as corpus_strings_native_*.
+# shared top-level corpus): it includes natives such as sysIsTty/sysResolve
+# that remain interpreter-only, so the LLVM/ELF-scanned `corpus_llvm_full` lane
+# must not compile it. The environment-dependent LLVM filesystem lane is above.
 add_test(NAME corpus_sys_natives_treewalk
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_natives")

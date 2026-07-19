@@ -1654,13 +1654,14 @@ Optional returns carry the three-state fact (§9): `None` is distinct from `""` 
   over a UDP floor is roadmap.
 
 **Engine coverage.** All of the above run on the tree-walk (oracle) and IR interpreters — the
-design's semantic reference, and the interpreter-first landing the track mandates.
-`sysMonotonic` additionally runs on LLVM-native binaries (wired with the F5 socket floor —
-deadline flows measure elapsed with it). The remaining natives on the compiled backends
-(emit-C++, LLVM) and the frozen pure-ELF backend keep **clean coverage-errors** naming the
-native (emit-C++ skips the system layer by design; LLVM's floor follows the `sysNow`
-precedent when a consumer needs it; ELF/X64Gen is frozen). Using one of these natives on a
-compiled backend is a clean compile-time diagnostic, never a miscompile.
+design's semantic reference. LLVM-native binaries cover `sysMonotonic`, `sysRandom`,
+`env::get`/`sysEnv`, and the complete filesystem quartet (`sysMkdir`, `sysRemove`,
+`sysRename`, `sysListDir`). The directory result is a fresh `Array<string>` or `None`, with
+the same ownership and failure behavior as the interpreters. Browser-wasm rejects the
+filesystem family at compile time through the `File` capability gate. `sysIsTty` and
+`sysResolve` remain interpreter-only. emit-C++ still excludes the system layer (apart from
+its older `sysNow` clock path), and the pure-ELF backend is frozen; unsupported uses produce
+a clean coverage diagnostic naming the native, never a miscompile.
 
 ### 6.6.59 Process — child processes (Track 08 F7)
 `Process(path, args)` spawns a child by **explicit path** (no PATH search — the honest v1

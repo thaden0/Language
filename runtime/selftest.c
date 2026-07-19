@@ -32,6 +32,22 @@ static int64_t lv_test_rc(int64_t payload) {
 static const char* lv_test_bytes(int64_t strPayload) {
     return (const char*)(intptr_t)(strPayload + 8);
 }
+static int lv_test_arr_has_string(const LvValue* arr, const char* wanted) {
+    if (!arr || arr->tag != LV_ARR) return 0;
+    int64_t n = lv_test_len(arr->payload);
+    if (n < 0) return 0;   /* directory listings are always boxed arrays */
+    size_t wantedLen = strlen(wanted);
+    for (int64_t i = 0; i < n; i++) {
+        LvValue elem;
+        memcpy(&elem, (const void*)(intptr_t)(arr->payload + 8 + 16 * i),
+               sizeof elem);
+        if (elem.tag == LV_STR &&
+            lv_test_len(elem.payload) == (int64_t)wantedLen &&
+            memcmp(lv_test_bytes(elem.payload), wanted, wantedLen) == 0)
+            return 1;
+    }
+    return 0;
+}
 
 /* ------------------------------------------------------------------------
  * A tiny fake program: classes + a dispatch trampoline, registered exactly
@@ -1123,7 +1139,93 @@ static void test_sys_file_natives(void) {
     LvValue sizeOut2; lvrt_sysstat(&sizeOut2, &badPath, &sizeField);
     CHECK(sizeOut2.payload == -1);
 
-    fprintf(stderr, "OK: sys file natives (open/close/stat/read)\n");
+    /* LLVM filesystem parity: the floor stages names once; the runtime turns
+     * them into a fresh boxed Array<string> or None. Use a pid-specific tree so
+     * runtime_selftest and its optional Valgrind twin may run concurrently. */
+    char dir[128], fileA[160], fileB[160];
+    snprintf(dir, sizeof dir, "/tmp/lv_selftest_fs_%ld", (long)getpid());
+    snprintf(fileA, sizeof fileA, "%s/a.txt", dir);
+    snprintf(fileB, sizeof fileB, "%s/b.txt", dir);
+    (void)remove(fileA); (void)remove(fileB); (void)remove(dir);
+
+    LvValue dirVal, fileAVal, fileBVal;
+    lvrt_str_new(&dirVal, dir, (int64_t)strlen(dir));
+    lvrt_str_new(&fileAVal, fileA, (int64_t)strlen(fileA));
+    lvrt_str_new(&fileBVal, fileB, (int64_t)strlen(fileB));
+
+    LvValue mkdirOut;
+    lvrt_sysmkdir(&mkdirOut, &dirVal);
+    CHECK(mkdirOut.tag == LV_INT && mkdirOut.payload == 0);
+
+    LvValue listing;
+    lvrt_syslistdir(&listing, &dirVal);
+    CHECK(listing.tag == LV_ARR && lv_test_len(listing.payload) == 0);
+    lvrt_retain(&listing); lvrt_release(&listing);
+
+    LvValue fileFd;
+    lvrt_sysopen(&fileFd, &fileAVal, &flagsWrite);
+    CHECK(fileFd.tag == LV_INT && fileFd.payload >= 0);
+    if (fileFd.payload >= 0) lvrt_sysclose(&fileFd);
+
+    lvrt_syslistdir(&listing, &dirVal);
+    CHECK(listing.tag == LV_ARR && lv_test_len(listing.payload) == 1);
+    CHECK(lv_test_arr_has_string(&listing, "a.txt"));
+    lvrt_retain(&listing); lvrt_release(&listing);
+
+    LvValue renameOut;
+    lvrt_sysrename(&renameOut, &fileAVal, &fileBVal);
+    CHECK(renameOut.tag == LV_INT && renameOut.payload == 0);
+    lvrt_syslistdir(&listing, &dirVal);
+    CHECK(listing.tag == LV_ARR && lv_test_len(listing.payload) == 1);
+    CHECK(!lv_test_arr_has_string(&listing, "a.txt"));
+    CHECK(lv_test_arr_has_string(&listing, "b.txt"));
+    lvrt_retain(&listing); lvrt_release(&listing);
+
+    LvValue removeOut;
+    lvrt_sysremove(&removeOut, &fileBVal);
+    CHECK(removeOut.tag == LV_INT && removeOut.payload == 0);
+    lvrt_sysremove(&removeOut, &dirVal);
+    CHECK(removeOut.tag == LV_INT && removeOut.payload == 0);
+    lvrt_syslistdir(&listing, &dirVal);
+    CHECK(listing.tag == LV_NONE && listing.payload == 0);
+    lvrt_sysremove(&removeOut, &dirVal);
+    CHECK(removeOut.tag == LV_INT && removeOut.payload == -1);
+    lvrt_sysrename(&renameOut, &fileAVal, &fileBVal);
+    CHECK(renameOut.tag == LV_INT && renameOut.payload == -1);
+
+    /* A non-empty directory is never removed recursively, and the failed call
+     * leaves its child observable. Keep that tree for the ARC churn below. */
+    lvrt_sysmkdir(&mkdirOut, &dirVal);
+    CHECK(mkdirOut.payload == 0);
+    lvrt_sysopen(&fileFd, &fileAVal, &flagsWrite);
+    CHECK(fileFd.payload >= 0);
+    if (fileFd.payload >= 0) lvrt_sysclose(&fileFd);
+    lvrt_sysremove(&removeOut, &dirVal);
+    CHECK(removeOut.payload == -1);
+    lvrt_syslistdir(&listing, &dirVal);
+    CHECK(listing.tag == LV_ARR && lv_test_arr_has_string(&listing, "a.txt"));
+    lvrt_retain(&listing); lvrt_release(&listing);
+
+    int64_t listMark = lvrt_live_bytes();
+    for (int i = 0; i < 128; i++) {
+        LvValue success;
+        lvrt_syslistdir(&success, &dirVal);
+        CHECK(success.tag == LV_ARR && lv_test_arr_has_string(&success, "a.txt"));
+        lvrt_retain(&success); lvrt_release(&success);
+
+        LvValue failure;
+        lvrt_syslistdir(&failure, &fileBVal);   /* absent path -> None */
+        CHECK(failure.tag == LV_NONE && failure.payload == 0);
+        lvrt_retain(&failure); lvrt_release(&failure); /* None retain is a no-op */
+    }
+    CHECK(lvrt_live_bytes() == listMark);
+
+    lvrt_sysremove(&removeOut, &fileAVal);
+    CHECK(removeOut.payload == 0);
+    lvrt_sysremove(&removeOut, &dirVal);
+    CHECK(removeOut.payload == 0);
+
+    fprintf(stderr, "OK: sys file natives (open/close/stat/read/mkdir/list/rename/remove + ARC churn)\n");
 }
 
 static void test_sockets(void) {

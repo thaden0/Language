@@ -2,10 +2,10 @@
 # Track 08 system-natives differential (designs/techdesign-08-system-natives.md
 # §10, M3/M4/M7). The environment-dependent halves that the golden corpus file
 # (corpus/sys_natives.lev) deliberately leaves out: env PATH, DNS localhost, and
-# a filesystem round-trip — each asserted identical on the two interpreters
-# (oracle + IR, the design's semantic reference). Plus the two invariants the
-# design calls for: comptime hermeticity (every sys* native denied) and clean
-# deferral on the compiled backends (never a miscompile).
+# a filesystem round-trip — asserted identical on oracle, IR, and LLVM-native
+# now that the F3 directory floor is complete. Plus the two invariants the
+# design calls for: comptime hermeticity (every sys* native denied) and honest
+# per-backend coverage (emit-C++ still defers the system layer cleanly).
 #
 # usage: run_sysnatives.sh <leviathan-binary>
 set -u
@@ -66,6 +66,12 @@ d1="$work/run"; mkdir -p "$d1"
 check "fs   --run" "$FS_EXPECT" "$(LEV_FS_BASE="$d1" "$bin" --run "$work/fs.lev" 2>&1)"
 d2="$work/ir"; mkdir -p "$d2"
 check "fs   --ir"  "$FS_EXPECT" "$(LEV_FS_BASE="$d2" "$bin" --ir  "$work/fs.lev" 2>&1)"
+dllvm="$work/llvm"; mkdir -p "$dllvm"
+if "$bin" --build-native "$work/fs_llvm" "$work/fs.lev" >/dev/null 2>&1; then
+  check "fs   llvm-native" "$FS_EXPECT" "$(LEV_FS_BASE="$dllvm" "$work/fs_llvm" 2>/dev/null)"
+else
+  echo "FAIL fs llvm-native (build failed)"; fail=1
+fi
 
 # --- 3b. isDir (request-stat-isdir.md): dir vs file vs missing, and the edge
 # the request was filed for — an unreadable (mode 000) directory is still
@@ -78,7 +84,7 @@ check "fs   --ir"  "$FS_EXPECT" "$(LEV_FS_BASE="$d2" "$bin" --ir  "$work/fs.lev"
 if [ "$(id -u)" != "0" ]; then
   d3="$work/isdir"; mkdir -p "$d3/sub"; : > "$d3/f.txt"; mkdir -p "$d3/locked"
   chmod 000 "$d3/locked"
-  # isDir alone (LLVM-coverable: sysStat is on the LLVM floor, sysListDir is not).
+  # isDir remains independently pinned through sysStat on all three engines.
   cat > "$work/isdir.lev" <<'EOF'
 void run(string base) {
     console.writeln("dir=" + std::isDir(base + "/sub").toString());
@@ -98,8 +104,7 @@ EOF
     echo "FAIL llvm (expected isDir to compile natively)"; fail=1
   fi
   # The actual regression the request cites: sysListDir(locked)!=None
-  # misclassifies an unreadable directory as a file. Interpreters only
-  # (sysListDir is not on the LLVM/emit-C++ floor).
+  # distinguishes an unreadable directory from a successful empty listing.
   cat > "$work/isdir_list.lev" <<'EOF'
 void run(string base) {
     console.writeln("locked_list=" + (std::sysListDir(base + "/locked") == None).toString());
@@ -110,6 +115,11 @@ EOF
   LOCKLIST_EXPECT='locked_list=true'
   check "isDir locked-list --run" "$LOCKLIST_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --run "$work/isdir_list.lev" 2>&1)"
   check "isDir locked-list --ir"  "$LOCKLIST_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$bin" --ir  "$work/isdir_list.lev" 2>&1)"
+  if "$bin" --build-native "$work/isdir_list_llvm" "$work/isdir_list.lev" >/dev/null 2>&1; then
+    check "isDir locked-list llvm" "$LOCKLIST_EXPECT" "$(LEV_ISDIR_BASE="$d3" "$work/isdir_list_llvm" 2>/dev/null)"
+  else
+    echo "FAIL isDir locked-list llvm (build failed)"; fail=1
+  fi
   chmod 755 "$d3/locked"   # restore so the EXIT trap's rm -rf can't be blocked
 fi
 
@@ -122,9 +132,9 @@ else
   echo "FAIL comptime hermeticity (expected denial, got rc=$ct_rc): $ct_out"; fail=1
 fi
 
-# --- 5. compiled backends defer cleanly (never miscompile) -------------------
-# emit-C++ and LLVM keep clean coverage-errors for these floor natives (the
-# design's stated policy); assert the diagnostic names the native, non-zero rc.
+# --- 5. compiled backend coverage is explicit (never miscompile) -------------
+# emit-C++ keeps its clean system-layer coverage error. LLVM covers the clock
+# and F3 filesystem family; the focused filesystem executable above pins F3.
 printf 'console.writeln((std::sysMonotonic() >= 0).toString());\n' > "$work/mc.lev"
 cpp_out=$("$bin" --build "$work/mc_cpp" "$work/mc.lev" 2>&1); cpp_rc=$?
 if [ $cpp_rc -ne 0 ] && echo "$cpp_out" | grep -q "sysMonotonic"; then
@@ -271,9 +281,9 @@ check "spawn-churn --run" "$CH_EXPECT" "$("$bin" --run "$work/churn.lev" 2>&1)"
 check "spawn-churn --ir"  "$CH_EXPECT" "$("$bin" --ir  "$work/churn.lev" 2>&1)"
 
 # LLVM legs (G-LANG-2, techdesign-spawn-llvm.md §7.3): kill -> 143 on the
-# compiled runtime, and fd-table churn hygiene probed via sysOpen's
-# lowest-available fd number (sysListDir is not on the LLVM floor). Stdout
-# compared alone — the LLVM binary's [heap] meter is stderr.
+# compiled runtime, and fd-table churn hygiene probed directly through
+# sysOpen's lowest-available fd number. sysListDir is covered independently
+# by the F3 differential above. Stdout alone is compared; [heap] is stderr.
 if "$bin" --build-native "$work/kill_llvm" "$work/kill.lev" >/dev/null 2>&1; then
   check "kill llvm-native" "$K_EXPECT" "$("$work/kill_llvm" 2>/dev/null)"
 else

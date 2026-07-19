@@ -86,6 +86,12 @@ int64_t lv_plat_stat_size(const char* p){ (void)p; return -1; }
 int64_t lv_plat_stat_mtime(const char* p){ (void)p; return -1; }
 int     lv_plat_stat_isdir(const char* p){ (void)p; return -1; }
 int     lv_plat_mkdir(const char* p){ (void)p; spike_unreached("mkdir"); return -1; }
+int     lv_plat_remove(const char* p){ (void)p; spike_unreached("remove"); return -1; }
+int     lv_plat_rename(const char* a,const char* b){ (void)a;(void)b; spike_unreached("rename"); return -1; }
+int     lv_plat_listdir(const char* p,LvDirEntries* out){
+    (void)p; if(out){out->names=NULL;out->count=0;} spike_unreached("listdir"); return -1;
+}
+void    lv_plat_listdir_free(LvDirEntries* e){ if(e){e->names=NULL;e->count=0;} }
 int     lv_plat_tcp_connect(const char* ip,int port){ (void)ip;(void)port; spike_unreached("tcp_connect"); return -1; }
 int     lv_plat_tcp_listen(const char* ip,int port,int bk,int rp){ (void)ip;(void)port;(void)bk;(void)rp; spike_unreached("tcp_listen"); return -1; }
 int     lv_plat_cpu_count(void){ return 1; }

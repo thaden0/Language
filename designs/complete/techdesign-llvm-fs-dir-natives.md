@@ -1,6 +1,6 @@
 # Tech Design: LLVM Filesystem and Directory Native Parity
 
-**Status:** ACCEPTED DESIGN — ready for implementation; not yet landed.
+**Status:** IMPLEMENTED AND VERIFIED — archived after the active acceptance gates.
 **Date:** 2026-07-19.
 **Request:** `designs/requests/accepted/request-llvm-fs-dir-natives.md`.
 **Research:** `designs/requests/research-llvm-fs-dir-natives.md`.
@@ -22,6 +22,42 @@ floor stubs. The emit-C++ backend and the frozen pure-ELF backend are not
 extended. In command terms, `leviathan --build-native` and package-level
 `trident build` are in scope; `leviathan --build` is the emit-C++ path and is
 not.
+
+## Implementation record (2026-07-19)
+
+The implementation landed as designed across the platform floor, runtime ABI,
+LLVM dispatch, wasm capability gates, focused differential coverage, runtime
+ownership tests, and reference documentation. There were no language-surface,
+IR, emit-C++, pure-ELF, or Sonar source/test/runner changes. One stale Sonar
+design-log paragraph was updated after the unchanged consumer test became
+green.
+
+As-built verification:
+
+- baseline failures were reproduced first: the filesystem differential and
+  `sonar_v2/tests/dom-dialogs` stopped specifically at LLVM `sysRemove`;
+- `runtime_selftest`, its Valgrind lane, the platform audit, `sys_natives`, and
+  the complete wasm corpus passed; the three new wasm fixtures also passed in
+  isolation with the exact `File` capability diagnostic;
+- the focused Sonar project passed oracle + IR + LLVM with its documented
+  emit-C++ async/native-gap skip, and `trident build sonar_v2/tests/dom-dialogs`
+  produced the package executable;
+- the sanitizer-enabled runtime selftest passed from an out-of-tree build;
+- AArch64 and Win32 runtime archives compiled; the cross corpus passed under
+  QEMU and Wine, and a Win32 filesystem round trip executed successfully under
+  Wine;
+- the full 247-test CTest run plus a clean target-specific Windows rerun left
+  every one of the 246 active tests green. The sole remaining failure is
+  `corpus_churn_leak`'s frozen-ELF `field_cow_across_methods.ext` case. An
+  isolated build of untouched `origin/master` at `4d4bcad` reproduced the exact
+  `16640 -> 128640` byte result (`+160` bytes per iteration), proving it is
+  pre-existing. `info.md` explicitly excludes frozen ELF from project targets
+  and states that no design or task is gated on an ELF finding.
+
+No required active test was skipped. The only as-built verification nuance was
+that the AArch64 and Windows cross tests had to be invoked with target-specific
+environments; exporting the AArch64 sysroot into the Wine test hides MinGW's
+standard headers, while the clean Wine invocation passes.
 
 ---
 
@@ -675,6 +711,7 @@ existing heap meter/debug modes. Verification logs must distinguish:
 | `tests/corpus/wasm/gated_fs_listdir.lev` + `.expected` | Pin `sysListDir`'s wasm `File` diagnostic. |
 | `CMakeLists.txt` | Update stale sys-native test comments; existing targets discover the extended runtime, sys-native, and wasm cases. |
 | `docs/reference.md` | Replace the stale Track 08 coverage paragraph with the actual per-backend matrix. |
+| `designs/sonar_v2/dom/techdesign-07-dialogs.md` | Replace the resolved LLVM-blocker note with the verified oracle/IR/LLVM result. |
 
 No Sonar source, test, or runner change is expected. Its existing auto-
 discovered `dom-dialogs` project is the consumer acceptance test.
