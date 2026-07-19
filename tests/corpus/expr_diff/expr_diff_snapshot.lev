@@ -1,0 +1,184 @@
+// LA-31 Stage 3 §4 — R5 snapshot contract: binds[k] is snapshotted ONCE at
+// construction, in first-reference order; the tree never reads the live
+// closure environment. snap_ref pins reference-type snapshot (mutating a
+// captured Array's CONTENTS afterward is visible to BOTH legs equally —
+// "snapshot of the reference, not a deep copy").
+//
+// FINDING (logged in techdesign-03-verification.md §10, escalated — not a
+// reifier defect, not filed as a compiler bug): doc 00 R5's literal text
+// promises snap_value holds for BOTH legs ("post-construction mutation of a
+// captured variable affects neither leg"). Verified against a plain,
+// non-reified lambda (no expr:: involved) that this language's ordinary
+// closures capture local variables LIVE (by reference to the variable slot),
+// not by value at creation — e.g. `var f = () => lo >= 50;` then `lo = 99;`
+// then `f()` reads the CURRENT lo (99), not the value at closure-creation
+// (18). Leg 1 (the closure/.fn) is explicitly "the lambda, unchanged" (doc 00
+// §2 diagram) — reification does not wrap or alter it — so it inherits this
+// live-capture semantics unconditionally. Only leg 2 (the tree's `binds`
+// array, built from a separate construction-argument literal evaluated once)
+// is actually snapshotted. This row therefore pins the VERIFIED real
+// behavior: `.fn` reflects the live (mutated) value, `evalNode` reflects the
+// frozen `binds[0]`, and the two legs correctly DISAGREE after a
+// post-construction mutation — the opposite of what R5's literal text
+// promises for the closure leg. This is a premise correction (same class as
+// Stage 2's logged R8 deviation), not a hand-waved mismatch: the two legs are
+// asserted to actually disagree here, not asserted equal by fiat.
+class User { int age; new User(int a) { age = a; } }
+class Tagged { string tag; new Tagged(string t) { tag = t; } }
+
+// ---- expr::eval — reference tree interpreter (doc 01 §3.1, verbatim copy) ----
+bool evalTruth(string | int | float | bool | None v) {
+    match (v) {
+        bool => { return v; }
+        else => { return false; }
+    }
+}
+
+string asStr(string | int | float | bool | None v) {
+    match (v) {
+        string => { return v; }
+        else   => { return ""; }
+    }
+}
+
+bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        None => { match (b) { None => { return true; }  else => { return false; } } }
+        int  => { match (b) { int  => { return a == b; } else => { return false; } } }
+        float=> { match (b) { float=> { return a == b; } else => { return false; } } }
+        bool => { match (b) { bool => { return a == b; } else => { return false; } } }
+        string => { match (b) { string => { return a == b; } else => { return false; } } }
+    }
+}
+
+string | int | float | bool | None dbNum(string op,
+        string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        int => { match (b) { int => {
+            int x = a; int y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+            if (op == "%")  return x % y;
+        } else => { } } }
+        float => { match (b) { float => {
+            float x = a; float y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+        } else => { } } }
+        string => { match (b) { string => {
+            if (op == "+") return a + b;
+        } else => { } } }
+        else => { }
+    }
+    match (a) { None => { } else => { match (b) { None => { } else => {
+        throw RuntimeException("expr::eval: bad operands for " + op); } } } }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return false;
+    return None;
+}
+
+string | int | float | bool | None evalNode(
+        expr::Node n,
+        (Array<string>) => string | int | float | bool | None rec,
+        Array<string | int | float | bool | None> binds,
+        Array<string | int | float | bool | None> arrayBind0) {
+    match (n) {
+        expr::Field => { return rec(n.path); }
+        expr::Lit   => { return n.v; }
+        expr::Bind  => { return binds[n.slot]; }
+        expr::Un    => {
+            expr::Un u = n;
+            string | int | float | bool | None inner = evalNode(u.e, rec, binds, arrayBind0);
+            if (u.op == "!") return !evalTruth(inner);
+            match (inner) {
+                int   => { return 0 - inner; }
+                float => { return 0.0 - inner; }
+                else  => { return None; }
+            }
+        }
+        expr::Bin   => {
+            expr::Bin b = n;
+            string | int | float | bool | None lv = evalNode(b.l, rec, binds, arrayBind0);
+            string | int | float | bool | None rv = evalNode(b.r, rec, binds, arrayBind0);
+            if (b.op == "&&") return evalTruth(lv) && evalTruth(rv);
+            if (b.op == "||") return evalTruth(lv) || evalTruth(rv);
+            if (b.op == "==") return dbEq(lv, rv);
+            if (b.op == "!=") return !dbEq(lv, rv);
+            return dbNum(b.op, lv, rv);
+        }
+        expr::Call  => {
+            expr::Call c = n;
+            if (c.name == "contains" && c.args.length() == 1) {
+                match (c.recv) {
+                    expr::Bind => {
+                        string | int | float | bool | None needle =
+                            evalNode(c.args[0], rec, binds, arrayBind0);
+                        int k = 0;
+                        while (k < arrayBind0.length()) {
+                            if (dbEq(arrayBind0[k], needle)) return true;
+                            k = k + 1;
+                        }
+                        return false;
+                    }
+                    else => { }
+                }
+            }
+            string recvS = asStr(evalNode(c.recv, rec, binds, arrayBind0));
+            string arg0S = asStr(evalNode(c.args[0], rec, binds, arrayBind0));
+            if (c.name == "like")       return recvS.like(arg0S);
+            if (c.name == "ilike")      return recvS.ilike(arg0S);
+            if (c.name == "startsWith") return recvS.startsWith(arg0S);
+            if (c.name == "endsWith")   return recvS.endsWith(arg0S);
+            if (c.name == "contains")   return recvS.contains(arg0S);
+            throw RuntimeException("expr::eval: non-whitelisted call " + c.name);
+        }
+        else => { throw RuntimeException("expr::eval: unhandled node"); }
+    }
+}
+// ---- end expr::eval ----
+
+(Array<string>) => string | int | float | bool | None recOfUser(User u) {
+    return (path) => { if (path[0] == "age") return u.age; return None; };
+}
+(Array<string>) => string | int | float | bool | None recOfTagged(Tagged r) {
+    return (path) => { if (path[0] == "tag") return r.tag; return None; };
+}
+Array<string | int | float | bool | None> noArr = [];
+
+// --- snap_value ---
+// u20.age (20) vs lo: eval leg must see the frozen binds[0]=18 (20>=18=true);
+// the closure leg (verified: ordinary language closures capture live, not by
+// value — see the FINDING above) sees the post-mutation lo=99 (20>=99=false).
+// The two legs are EXPECTED to disagree here — that disagreement is the
+// pinned, verified behavior, not a bug in this row.
+int lo = 18;
+expr::Expr<(User)=>bool> eSnap = (u) => u.age >= lo;
+lo = 99;   // mutate AFTER construction — binds[0] must not see this
+User u20 = User(20);
+bool fnVal = eSnap.fn(u20);
+bool evVal = evalTruth(evalNode(eSnap.tree, recOfUser(u20), eSnap.binds, noArr));
+console.writeln("snap_value:fn=" + fnVal.toString() + ":eval=" + evVal.toString());
+
+// --- snap_ref ---
+Array<string> tags = [];
+tags = tags.add("red");
+Array<string | int | float | bool | None> tagArr = [];
+tagArr = tagArr.add("red");
+expr::Expr<(Tagged)=>bool> eArr = (u) => tags.contains(u.tag);
+tags = tags.add("green");     // mutate the array's CONTENTS after construction
+tagArr = tagArr.add("green"); // eval leg's own arrayBind0 handle, mutated the same way
+Tagged tGreen = Tagged("green");
+bool fnRef = eArr.fn(tGreen);
+bool evRef = evalTruth(evalNode(eArr.tree, recOfTagged(tGreen), eArr.binds, tagArr));
+console.writeln("snap_ref:fn=" + fnRef.toString() + ":eval=" + evRef.toString());

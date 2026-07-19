@@ -1,0 +1,4 @@
+s0:Assign(Field(visits),Bin(+,Field(visits),Lit(int:1)))
+s0binds:binds=[]
+s0site:siteId=0
+fn0=6

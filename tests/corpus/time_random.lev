@@ -1,0 +1,21 @@
+// Track W (techdesign-03-floor-wasm.md §5): time/random SHAPE pins for the
+// wasm floor's now_ms/now_ns/random imports — property checks only, no golden
+// values (the sys_natives.lev convention for nondeterminism), so the same
+// file is byte-identical on every lane that runs it (house rule, doc 00 §6:
+// portable pins simply gain the wasm lane). The environment-dependent
+// natives sys_natives.lev also exercises (env/tty/fs) are wasm-gated and
+// stay out of this file on purpose.
+
+// monotonic: a later read never precedes an earlier one.
+int a = std::sysMonotonic();
+int b = std::sysMonotonic();
+console.writeln((b >= a).toString());
+
+// wall clock: epoch ms, and the clock is actually set (any instant this
+// pin can run at is after 2020-01-01; Date.now() on the wasm host,
+// CLOCK_REALTIME elsewhere).
+console.writeln((std::sysNow() > 1577836800000).toString());
+
+// random: requested length is honoured; n<=0 is the empty string.
+console.writeln(std::sysRandom(0).length().toString());
+console.writeln(std::sysRandom(24).length().toString());

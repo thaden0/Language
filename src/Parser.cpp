@@ -601,6 +601,31 @@ ExprPtr Parser::parseArrayElement() {
     return parseExpr(0);
 }
 
+// Statement/decl/member-position `$for` splice (LA-4 item J + the item-position
+// generalization the DOM bindgen's `at namespace`/`at member` templates need):
+// `$for <id> in <iter> : <body>`, where <body> is ONE statement, top-level item,
+// or class member depending on the fragment. Only reachable inside a quasiquote
+// (holes on), so `$for` can never lex in ordinary code. Bounded on purpose: the
+// body is a single element (a `{ }` block groups several) — no `$if`/`$while`
+// (P4 §9.2's "keep it bounded" line).
+StmtPtr Parser::parseForSpliceStmt(SpliceBody body) {
+    SourceSpan sp = cur().span;
+    advance();                                   // '$for'
+    auto fs = std::make_unique<Stmt>(StmtKind::ForSplice);
+    fs->span = sp;
+    if (at(TokenKind::Identifier)) { fs->name = cur().text; advance(); }
+    else error("a loop variable name");
+    expect(TokenKind::KwIn, "'in'");
+    fs->expr = parseExpr(0);
+    expect(TokenKind::Colon, "':'");
+    switch (body) {
+        case SpliceBody::Stmt:   fs->thenBranch = parseStatement(); break;
+        case SpliceBody::Item:   fs->thenBranch = parseTopLevelItem(); break;
+        case SpliceBody::Member: fs->thenBranch = parseClassMember(Access::Public); break;
+    }
+    return fs;
+}
+
 ExprPtr Parser::parsePostfix(ExprPtr base) {
     for (;;) {
         if (at(TokenKind::Dot) || at(TokenKind::ColonColon) ||
@@ -897,6 +922,12 @@ StmtPtr Parser::parseUse() {
 }
 
 StmtPtr Parser::parseStatement() {
+    // Statement-position `$for` splice (item J). `$for` only lexes with holes
+    // enabled (inside a quasiquote fragment), so this can never fire in ordinary
+    // code; it catches a `$for` anywhere a statement is legal — including nested
+    // in a generated method/ctor body, which the fragment-loop checks miss.
+    if (at(TokenKind::Identifier) && cur().text == "$for")
+        return parseForSpliceStmt(SpliceBody::Stmt);
     switch (cur().kind) {
         case TokenKind::LBrace:
             return parseBlock();
@@ -1618,7 +1649,9 @@ std::vector<StmtPtr> Parser::parseStmtsFragment(SourceSpan quasi) {
     Parser sub(std::move(toks), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = sub.parseStatement();
+        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
+                        ? sub.parseForSpliceStmt(SpliceBody::Stmt)
+                        : sub.parseStatement();
         if (s && s->kind != StmtKind::Empty) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("statement in template"); break; }
     }
@@ -1630,6 +1663,8 @@ StmtPtr Parser::parseMemberFragment(SourceSpan quasi) {
     Lexer lex(file_, sink_, /*allowHoles=*/true);
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     if (sub.atEnd()) { sub.error("a member in template"); return nullptr; }
+    if (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
+        return sub.parseForSpliceStmt(SpliceBody::Member);   // `$for m ... : <member>`
     return sub.parseClassMember(Access::Public);
 }
 
@@ -1785,7 +1820,9 @@ std::vector<StmtPtr> Parser::parseItemsFragment(SourceSpan quasi) {
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = sub.parseTopLevelItem();
+        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
+                        ? sub.parseForSpliceStmt(SpliceBody::Item)
+                        : sub.parseTopLevelItem();
         if (s) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("declaration in template"); break; }
     }

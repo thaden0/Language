@@ -476,6 +476,7 @@ namespace Sonar { namespace Dom {
             if (c is Text)       return c.text;
             if (c is Button)     return c.label;
             if (c is Input)      return c.value;
+            if (c is TextArea)   return c.text();
             if (c is ContentBar) return c.left();
             return "";
         }

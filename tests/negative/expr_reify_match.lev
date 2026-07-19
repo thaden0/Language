@@ -1,0 +1,8 @@
+// LA-31 Stage 3 §3 — 'match' expression is unsupported (E2).
+enum RelationType { Stranger, Friend }
+class User { RelationType role; new User(RelationType r) { role = r; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => match (u.role) {
+    RelationType::Friend => true;
+    else => false;
+}));

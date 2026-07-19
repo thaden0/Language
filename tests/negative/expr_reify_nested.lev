@@ -1,0 +1,4 @@
+// LA-31 Stage 3 §3 — nested lambda inside a reified body (E2).
+class User { Array<string> tags; new User(Array<string> t) { tags = t; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => u.tags.contains((t) => t == "x")));

@@ -1,0 +1,6 @@
+// LA-31 Stage 3 §3 — mutation of a capture (E2, R10): the assignment target
+// must be parameter-rooted; a captured root is a named reject.
+class User { int age; new User(int g) { age = g; } }
+int cnt = 0;
+expr::Expr<(User)=>int> useIt(expr::Expr<(User)=>int> e) { return e; }
+expr::Expr<(User)=>int> e0 = useIt((u) => cnt = cnt + 1);

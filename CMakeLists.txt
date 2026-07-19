@@ -504,6 +504,17 @@ add_test(NAME corpus_expr_reify_treewalk
 add_test(NAME corpus_expr_reify_ir
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
+# LA-31 Stage 3 §4 (techdesign-03-verification.md): the differential corpus —
+# closure leg (.fn) vs expr::eval leg agreement per whitelisted op, None-operand
+# semantics, the like/ilike escape/fold edge pins re-run through reified trees,
+# and the two R5 snapshot rows. Own dir, same posture as expr_reify (oracle +
+# IR + LLVM; no emit-C++/ELF lanes).
+add_test(NAME corpus_expr_diff_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/expr_diff")
+add_test(NAME corpus_expr_diff_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_diff")
 # The four reification-reject smokes (§8.3/§8.4): each is a hard compile error
 # carrying the exact named diagnostic the negative corpus greps.
 add_test(NAME expr_reify_reject_block
@@ -526,6 +537,110 @@ add_test(NAME expr_reify_reject_ambig
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_smoke_ambig.lev"
                  "ambiguous lambda argument: matches both a function parameter and an expr::Expr parameter")
+# LA-31 Stage 3 §3 (techdesign-03-verification.md): the full 14-row negative
+# corpus — every reject construct in the ask's taxonomy, substring-checked.
+# `interp` asserts the actual diagnostic (non-whitelisted call 'toString'),
+# not the doc's literal "string interpolation" — logged as a finding in the
+# design doc's §10: interpolation desugars to a +/.toString() chain at parse
+# time (Parser.cpp:1709 parseInterpolatedString), so no distinct ExprKind
+# survives to the reifier for a dedicated named rejection.
+add_test(NAME expr_reify_row_call
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_call.lev"
+                 "non-whitelisted call 'toUpper'")
+add_test(NAME expr_reify_row_await
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_await.lev"
+                 "cannot reify await")
+add_test(NAME expr_reify_row_nested
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_nested.lev"
+                 "nested lambda")
+add_test(NAME expr_reify_row_block
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_block.lev"
+                 "block body")
+add_test(NAME expr_reify_row_assign_pos
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_assign_pos.lev"
+                 "assignment outside a set-shaped lambda")
+add_test(NAME expr_reify_row_capmut
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_capmut.lev"
+                 "mutation of a capture")
+add_test(NAME expr_reify_row_is
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_is.lev"
+                 "'is' expression")
+add_test(NAME expr_reify_row_match
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_match.lev"
+                 "'match' expression")
+add_test(NAME expr_reify_row_interp
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_interp.lev"
+                 "non-whitelisted call 'toString'")
+add_test(NAME expr_reify_row_index
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_index.lev"
+                 "indexing")
+add_test(NAME expr_reify_row_ternary
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_ternary.lev"
+                 "conditional expression")
+add_test(NAME expr_reify_row_captype
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_captype.lev"
+                 "capture of a non-value type")
+add_test(NAME expr_reify_row_value
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_value.lev"
+                 "only a lambda literal can be reified")
+add_test(NAME expr_reify_row_ambig
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_ambig.lev"
+                 "ambiguous lambda argument")
+# LA-31 Stage 3 §2: hand-written-twin byte-equivalence — --expand of a reified
+# corpus file's site must print byte-identically to its hand-authored twin.
+add_test(NAME expr_reify_twin_r01
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_twin.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_r01_field.lev"
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_twin_r01.lev")
+add_test(NAME expr_reify_twin_r04
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_twin.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_r04_range.lev"
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_twin_r04.lev")
+add_test(NAME expr_reify_twin_r12
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_twin.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_r12_like.lev"
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_twin_r12.lev")
+add_test(NAME expr_reify_twin_r15
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_twin.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_r15_arraycapture.lev"
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_twin_r15.lev")
+add_test(NAME expr_reify_twin_r18
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_twin.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_r18_assign.lev"
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify/expr_reify_twin_r18.lev")
 # Track 03 §2 — enum: value struct + members + code()/toString()/==/fromCode +
 # exhaustive match. Desugar-only (no VKind, no ABI, no X64Gen edits), so it is
 # FULL-COVERAGE on all four non-frozen engines; enums.lev runs byte-identical on
@@ -1222,6 +1337,11 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify"
                    ${LANG_LVRT_SOURCES})
+  # LA-31 Stage 3 §4 — the differential corpus's LLVM leg.
+  add_test(NAME corpus_expr_diff_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_diff"
+                   ${LANG_LVRT_SOURCES})
   # http/async/sockets/stale_stream bind fixed loopback ports (8092/8093/8095);
   # serialize the net-binding LLVM lanes with the other engines' full-corpus
   # runs so `ctest -j` never double-binds a port (CMakeLists.txt:149-151).
@@ -1414,12 +1534,45 @@ add_test(NAME rt_platform_audit
 # Track W (techdesign-02-backend-column.md §7): the wasm corpus lane.
 # gated_*.lev files are NEGATIVE pins for the hard-03 capability-gate
 # diagnostic (compile must fail with the pinned text — needs only the LLVM
-# wasm backend, no archive). Non-gated files run end-to-end under wasmtime
-# and are skipped inside the script until the §6 wasm runtime archive,
-# wasm-ld, and wasmtime are all present.
+# wasm backend, no archive). Non-gated files run end-to-end under a headless
+# Node host (tests/wasm_node_run.mjs) and are skipped inside the script until
+# the §6 wasm runtime archive, wasm-ld, or node are missing.
+#
+# The pure-compute + console cluster below is the same curated subset the
+# W-M0 spike differential already validated end-to-end (tests/spike-wasm/
+# run.sh's default_corpus) — house rule (doc 00 §6): portable pins "simply
+# gain the wasm lane" rather than being duplicated under tests/corpus/wasm/.
+# time_random is doc 03 §5's time/random cluster (shape pins, not golden
+# values — the only corpus file whose output crosses the floor's
+# now_ms/now_ns/random imports).
+set(LVRT_WASM_PURE_COMPUTE_CORPUS
+    math structs structs_array generics collections loops match match_nested
+    classes oo floats literals const sieve strcmp bitops optional exceptions
+    cow maps_set namespaces qualified use seq iterator readonly
+    class_dispatch method_refs named_defaults time_random
+    # Track W W-M2 (techdesign-04-async-jspi.md §6): the async cluster —
+    # await/then-chains/timers/interleaving/throw-across-await through the
+    # JSPI lane, diffed against --ir. The LA-30 doc-5 pins reused verbatim:
+    # C1 completion order (order_two_awaits), C2 failure routing
+    # (throw_uncaught_callback), C3 loud drain (drained_await_throws), C4
+    # ready-no-yield, plus the B2 cancellation set. The tasks files that use
+    # std::spawn/Channel stay off this lane (gated on wasm, doc 04 §7).
+    tasks/drained_await_throws tasks/throw_uncaught_callback
+    tasks/ready_no_yield tasks/cancelled_exception tasks/order_two_awaits
+    tasks/b2_group_cancel_timeout tasks/b2_group_exit_edges
+    tasks/b2_nested_group_shield)
+set(LVRT_WASM_CORPUS_FILES "")
+foreach(name ${LVRT_WASM_PURE_COMPUTE_CORPUS})
+  foreach(ext ext lev)
+    if (EXISTS "${CMAKE_SOURCE_DIR}/tests/corpus/${name}.${ext}")
+      list(APPEND LVRT_WASM_CORPUS_FILES "${CMAKE_SOURCE_DIR}/tests/corpus/${name}.${ext}")
+    endif()
+  endforeach()
+endforeach()
 add_test(NAME corpus_wasm
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_wasm.sh"
-                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm")
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/wasm"
+                 ${LVRT_WASM_CORPUS_FILES})
 
 # B-M4: aarch64-linux cross corpus lane under qemu-user (doc-2 §6 item 4).
 # Feature-detected: it materializes ONLY when the full cross chain is present

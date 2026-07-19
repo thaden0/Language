@@ -1,9 +1,17 @@
 # Track W — doc 5 of 6: the JS/DOM bridge (W-M3, part 1)
 
-**Status:** PROPOSED. **Depends on:** W-M2 (doc 04 — event handlers await; the bridge
-assumes suspension works).
-**HARD content:** none *by design bet* — §4's trampoline is runtime-side; its contingency
-is its own packet, `hard-05-callclosure-seam.md`. Everything else is JS + prelude + corpus.
+**Status:** LANDED (2026-07-18) — see §9 for the as-built shape. **Depends on:** W-M2 (doc
+04 — event handlers await; the bridge assumes suspension works).
+**HARD content:** the design bet below did NOT hold — reaching a JS host import from a
+hand-written prelude method needs a native seam, and every new native is a `CallNativeFn`
+row in `LlvmGen.cpp` (a HARD edit). Landed as the minimal packet
+**`hard-06-hostbridge-seam.md`** (three C entries, three rows, four-lane differential
+green). §4's trampoline rides `hard-05-callclosure-seam.md` (LANDED), as designed.
+
+> **Original bet (kept for the record):** "HARD content: none *by design bet* — §4's
+> trampoline is runtime-side; its contingency is its own packet,
+> `hard-05-callclosure-seam.md`. Everything else is JS + prelude + corpus." The trampoline
+> half held; the marshaler/DOM-op half did not — see §9 item 1.
 
 ## 1. Deliverables
 
@@ -122,3 +130,69 @@ click handler that awaits a timer then mutates text — asserted via a headless-
 harness (the `lv_host_page.html` loader + playwright-or-equivalent, whatever is already on
 the box; keep it out of default CTest, one script `tests/run_wasm_dom.sh`). Marshaler
 round-trip pins for every tag; the §5 leak pin; the §7 string pins.
+
+## 9. As-built (2026-07-18) — what shipped and where it diverged
+
+1. **The "no HARD" bet was falsified → `hard-06-hostbridge-seam.md`.** A hand-written
+   `Dom` prelude method cannot reach a JS host import without a native seam, and every
+   native is a `CallNativeFn` row in `LlvmGen.cpp` — a HARD edit by overview §0. The dossier
+   §8's "DOM APIs are imported functions" assumed the doc-06 bindgen would emit one wasm
+   import per method; the §3 "written once" marshaler instead funnels every op through a
+   fixed generic seam. Landed minimal: **three C entries** (`lvrt_hostcall` generic sync
+   call, `lvrt_host_clo_reg` closure-root register, `lvrt_hostecho` reflective probe) +
+   **three rows**, NOT gated (DOM is a wasm-*gained* capability; native stubs raise). The
+   four-lane differential is byte-identical (no existing program calls them).
+2. **The marshaler lives in JS (`lv_host.js`), off tag+shape — exactly §3.** One `marshal()`
+   routine; the header-gate footgun is honored by construction (it reads only tag/payload
+   and the payload body, never `payload-16`). Object slot walk reads `slotNames` through the
+   new host-facing accessor `lvrt_class_field_name` (paired with the existing
+   `lvrt_fieldcount`) rather than JS parsing the `LvClassInfo` struct layout — the §3 "tiny
+   runtime getter", realized as a typed accessor. Handle-wrapper short-circuit is the
+   `{h}`-single-int-slot heuristic. Boxed arrays only (dense/columnar deferred, §3).
+3. **The closure-table ROOT is C-side (`lv_bridge_wasm.c`), not JS.** §4/§5 sketched the JS
+   glue holding the table; putting it C-side keeps the closure `LvValue` off the JS boundary
+   entirely (JS only ever sees the integer index), so retain/release are direct C calls and
+   the leak audit is one file. The event crosses to the handler as a bare `int` handle; the
+   `Dom` prelude wraps it in a `DomEvent` (no C-side object construction). `removeEventListener`
+   releases the root; `Dom::listenerCount()` (op `cloCount`) is the §5 leak meter.
+4. **The trampoline (`lv_dom_dispatch`) runs on its own promising activation** via
+   `lv_wasm_dispatch_run` — the same per-activation pooled-stack wrapper timer dispatch uses,
+   so an awaiting handler suspends on its own shadow stack (lv_task_wasm.c rule 1). A throwing
+   handler surfaces through the same C2 throw gate a throwing timer callback gets
+   (`dom_throw` pin: Uncaught banner + exit 1), satisfying hard-05's verification.
+5. **Self-dispatch (`node.click()` / `dispatch(type)`) is DEFERRED to its own host turn**,
+   not fired re-entrantly. Firing synchronously would run the handler while the caller's
+   wasm activation is still on the stack; a handler that *completes* there (throws or
+   returns) leaks its pending-throw flag into the caller (the native model runs every
+   dispatched callback in its own turn, doc 04 §3.2). A real user event already fires in its
+   own turn from the browser loop and never hits this path. The `dom_throw` pin keeps main
+   alive (parked on `await`, C2's shape) so the handler's throw is reported while task 0 is
+   still live.
+6. **Events-as-streams (§6) landed; `fetch`/WebSocket did NOT** — the W-M3 gate (overview
+   §4, §8) awaits a *timer*, not a fetch, so the sync bridge is the gate-critical surface.
+   `node.events("click")` returns an `InStream<DomEvent>` whose `IDisposable` teardown
+   detaches the listener AND releases the root (the leak pin exercises it). `fetch` over a
+   `Suspending lv.fetch` import is a follow-up (its result-string marshaling needs the
+   resume-then-allocate shadow-stack dance; noted for W-M4 / the Atlantis demo). WebSocket
+   stays deferred to first consumer, as §6 allows.
+7. **JS→string results go through the exported `lvrt_str_new` + a 64 KiB bounce buffer**
+   (`lv_host_scratch`), never raw memory (§3). Larger-than-64 KiB string results are a
+   future grow (guarded loud). The marshaler-support exports (`lvrt_str_new`,
+   `lvrt_fieldcount`, `lvrt_class_field_name`, `lv_host_scratch`, `lv_dom_dispatch`) are
+   `export_name` wrappers pulled into the link only when a program references the bridge
+   (uses `Dom`), so non-DOM wasm programs carry none of them.
+8. **The `Dom` surface ships in the SHARED prelude (`kPreludeWasm`)** for all targets now,
+   per overview §5 ("ordinary prelude code until the packaging ruling"); native builds never
+   reach the raising stubs from the existing corpus, so the differential is unaffected.
+   Doc 06 §2 makes it a per-target segment when the packaging ruling lands.
+9. **Verification (the §8 gate), as run:** `tests/run_wasm_dom.sh` (out of default CTest,
+   node DOM-stub host in `tests/wasm_node_run.mjs`) — `dom_hello` (the gate: build subtree +
+   attributes + click handler that awaits a timer then mutates text), `dom_marshal` (every
+   tag round-trip), `dom_strings` (§7 ASCII/multibyte/astral, echo + a full
+   setAttribute/getAttribute boundary round-trip), `dom_leak` (§5: register/unregister N and
+   the events-stream close, closure table back to 0), `dom_throw` (throwing handler → exit
+   1). All 5 green under Node 24 + `--experimental-wasm-jspi`; `corpus_wasm` and the native
+   four-lane differential unaffected.
+10. **The §7 encoding ruling** (info.md §9/§10, what `subStr` counts) is filed as still-open;
+    the marshaler is ruling-neutral (moves bytes + lens), and the string pins pass whatever
+    the ruling decides — they assert UTF-8↔UTF-16 round-trip fidelity, not a `subStr` count.

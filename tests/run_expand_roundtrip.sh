@@ -7,7 +7,12 @@
 # Programs whose comptime code writes to STDOUT are skipped (marked
 # `@no-roundtrip`): --expand interleaves that compile-time output with the
 # source dump, so the captured file is not pure source — orthogonal to the
-# printer's fidelity.
+# printer's fidelity. Any enum-using program is also `@no-roundtrip` for an
+# unrelated, pre-existing reason: known_bugs_2.md #69 (enum member globals'
+# synthesized `$`-joined name re-lexes as a quasiquote hole on the printed
+# round-trip source) — see LA-31 Stage 3
+# (designs/expr-reification/techdesign-03-verification.md §5) for the row
+# that first hit this while unrelated to expr:: reification itself.
 # usage: run_expand_roundtrip.sh <leviathan-binary> <corpus-dir>
 bin="$1"; dir="$2"; fail=0; n=0; skip=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT

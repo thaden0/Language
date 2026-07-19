@@ -1,0 +1,5 @@
+s0:Bin(==,Field(name),Bind(0))
+s0binds:binds=[str:Ada]
+s0site:siteId=0
+fn0=true
+fn1=false

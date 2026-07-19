@@ -1,9 +1,16 @@
 # Track W — doc 3 of 6: the floor retarget — `runtime/lv_plat_wasm.c` (W-M1, part 2)
 
-**Status:** PROPOSED. **Depends on:** doc 02 (archive + link lane land together with this).
-**HARD content:** none. This is a new `.c` file behind the enforced seam
-(`lv_plat.h:1-4`: "a new target is a new lv_plat_*.c file, nothing else") plus a JS host
-file. Zero compiler edits, zero `lv_runtime.c` edits.
+**Status:** LANDED (2026-07-17), together with doc 02 as planned. **HARD content:** none —
+true to plan: zero compiler edits, zero `lv_runtime.c` edits. **As-built vs this doc's §2
+substitution table:** one addition, `getenv` (not in the ~40-symbol `lv_plat.h` interface
+this doc scopes to) — doc 02's as-built note explains why: the archive links wasi-libc,
+whose real `getenv` pulls in WASI environ syscalls that `lv_runtime.c`/`lv_task.c` would
+otherwise trigger on every run via internal debug-env-var checks (`LANG_ARC_TRACE` etc.),
+regardless of user-program content. `lv_host.js` also carries three dead
+`wasi_snapshot_preview1` stub imports (`fd_write`/`fd_close`/`fd_seek`, all
+"bad file descriptor") for the same wasi-libc reason: `snprintf`'s musl implementation
+shares code with real file I/O, so linking it pulls those symbols in even though nothing
+here ever calls them.
 
 ## 1. Shape
 
@@ -83,3 +90,16 @@ file, three hosts.
 - Absent-capability behavior pinned twice: compile-time (doc 02 §7 gated pin) and, for the
   trap-stub tier, one contrived pin that reaches `lvrt_unsupported` at runtime and asserts
   the message + nonzero exit.
+
+**As-built (2026-07-17):** all three bullets landed; the `corpus_wasm` CTest lane is 32
+files, 0 skipped. The time/random cluster is `tests/corpus/time_random.lev` — top-level
+per the house rule (portable pins gain the wasm lane), so it also runs on the
+treewalk/IR/mem-verify/LLVM-native lanes (emit-C++ skips on its declared coverage error);
+it is the one corpus file whose output crosses the floor's `now_ms`/`now_ns`/`random`
+imports. The runtime trap pin is `tests/corpus/wasm/trap_env.lev`, exercised by
+`run_wasm.sh`'s `trap_*` mode (compile must succeed, run must exit 134, stderr must carry
+the pinned message): it reaches tier 2 through the gate's deliberate `@ginit` seam — a
+gated native called only from a namespace-global initializer is invisible to the tier-1
+user-reachability walk (`@ginit` is not a root), so it compiles and traps at runtime,
+which is exactly the "contrived" path this bullet asks to pin. Browser check per doc 02
+§7: headless Chrome via `lv_host_page.html`, byte-identical against `--ir`.

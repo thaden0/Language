@@ -1,0 +1,56 @@
+// LA-31 Stage 3 §2 row 18 — set-shape body, R10: `u.visits = u.visits + 1`.
+class User { int visits; new User(int v) { visits = v; } }
+
+string dv(string | int | float | bool | None v) {
+    match (v) {
+        string => { return "str:" + v; }
+        int    => { return "int:" + v.toString(); }
+        float  => { return "float:" + v.toString(); }
+        bool   => { return "bool:" + v.toString(); }
+        else   => { return "none"; }
+    }
+}
+
+string joinPath(Array<string> p) {
+    string s = "";
+    int i = 0;
+    while (i < p.length()) { if (i > 0) { s = s + "."; } s = s + p[i]; i = i + 1; }
+    return s;
+}
+
+string dumpArgs(Array<expr::Node> a) {
+    string s = "";
+    int i = 0;
+    while (i < a.length()) { if (i > 0) { s = s + ","; } s = s + dump(a[i]); i = i + 1; }
+    return s;
+}
+
+string dump(expr::Node n) {
+    match (n) {
+        expr::Bin    => { return "Bin(" + n.op + "," + dump(n.l) + "," + dump(n.r) + ")"; }
+        expr::Un     => { return "Un(" + n.op + "," + dump(n.e) + ")"; }
+        expr::Field  => { return "Field(" + joinPath(n.path) + ")"; }
+        expr::Lit    => { return "Lit(" + dv(n.v) + ")"; }
+        expr::Bind   => { return "Bind(" + n.slot.toString() + ")"; }
+        expr::Call   => { return "Call(" + n.name + "," + dump(n.recv) + ",[" + dumpArgs(n.args) + "])"; }
+        expr::Assign => { return "Assign(" + dump(n.target) + "," + dump(n.value) + ")"; }
+        else         => { return "Node"; }
+    }
+}
+
+string dumpBinds(Array<string | int | float | bool | None> b) {
+    string s = "";
+    int i = 0;
+    while (i < b.length()) { if (i > 0) { s = s + ","; } s = s + dv(b[i]); i = i + 1; }
+    return s;
+}
+
+void dumpSite(string label, expr::Node tree, Array<string | int | float | bool | None> binds, int site) {
+    console.writeln(label + ":" + dump(tree));
+    console.writeln(label + "binds:binds=[" + dumpBinds(binds) + "]");
+    console.writeln(label + "site:siteId=" + site.toString());
+}
+
+expr::Expr<(User)=>int> e0 = (u) => u.visits = u.visits + 1;
+dumpSite("s0", e0.tree, e0.binds, e0.siteId);
+console.writeln("fn0=" + e0.fn(User(5)).toString());

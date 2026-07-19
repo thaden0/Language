@@ -1,0 +1,29 @@
+// Track W doc 04 §6: then-chains and throw-across-await on the wasm lane —
+// the async.ext shape minus its HTTP half (sockets are gated on this
+// target). Timer-as-stream (std::after + subscribe resolving a promise),
+// two sequential awaits, and an exception thrown past a suspension point
+// caught by the awaiting caller. Also pins the hard-03 gate refinement:
+// Timer's stream machinery must COMPILE for wasm (its generic `close()`
+// dispatch used to false-positive into the Channel gate).
+Promise<int> later(int ms, int result) {
+    Promise<int> p = Promise();
+    Timer t = std::after(ms);
+    t.subscribe((n) => p.resolve(result));
+    return p;
+}
+int throwsAcross(int ms) {
+    Promise<int> p = Promise();
+    Timer t = std::after(ms);
+    t.subscribe((n) => p.resolve(1));
+    int v = await p;
+    throw RuntimeException("crossed " + v.toString());
+}
+void run() {
+    int a = await later(10, 7);
+    int b = await later(5, 35);
+    console.writeln("sum " + (a + b).toString());
+    try { int c = throwsAcross(8); } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+}
+run();

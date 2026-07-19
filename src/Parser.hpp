@@ -70,6 +70,10 @@ private:
     std::vector<ExprPtr> parseMacroArgs();     // adds scoped `...` raw strings
     bool looksLikeLambda() const;
     ExprPtr parseArrayElement();               // an array literal element, incl. $for (§5)
+    // A statement/decl/member-position `$for` splice inside a quasiquote
+    // fragment (LA-4 item J). `body` selects how the per-iteration body parses.
+    enum class SpliceBody { Stmt, Item, Member };
+    StmtPtr parseForSpliceStmt(SpliceBody body);
 
     // --- statements ---
     StmtPtr parseStatement();                  // also the "body is one statement" routine

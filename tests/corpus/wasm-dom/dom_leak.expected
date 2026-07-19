@@ -1,0 +1,5 @@
+start: 0
+after register: 3
+after unregister: 0
+with stream sub: 1
+after stream close: 0

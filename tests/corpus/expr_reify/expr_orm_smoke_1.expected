@@ -1,0 +1,3 @@
+where=Bin(>,Field(age),Lit(int:18)) AND Bin(==,Field(name),Lit(str:Ada))
+sites=0,1
+set=Bin(+,Field(age),Lit(int:1))

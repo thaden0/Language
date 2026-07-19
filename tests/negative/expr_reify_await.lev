@@ -1,0 +1,7 @@
+// LA-31 Stage 3 §3 — await in a reified body (E2).
+class User { int age; new User(int g) { age = g; } }
+Promise<int> slow() { return Promise(1); }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+void run() {
+    console.writeln(useIt((u) => u.age > await slow()));
+}

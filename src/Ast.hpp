@@ -249,6 +249,11 @@ enum class StmtKind {
     Var, Block, ExprStmt, Return, If, While, For, ForIn, Use, UsesImport,
     Try, Throw, Empty,
     Break, Continue, DoWhile,
+    ForSplice,   // template-only (LA-4 item J + item-position): `$for <id> in
+                 // <iter> : <body>` repeating a whole statement/decl/member per
+                 // iteration. name=loop var, expr=iterator, thenBranch=body.
+                 // Parses only inside quasiquote fragments; expanded by the
+                 // rule engine's statement-list clone (Rules.cpp), never lowered.
 };
 
 // One `catch (Type name?) body` clause. Selection is resolution by type: the

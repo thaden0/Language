@@ -777,6 +777,59 @@ void    lvrt_unsupported(const char* what);
 void    lvrt_callclosure(LvValue* out, const LvValue* clo,
                          const LvValue* args, int nargs);
 
+/* Track W hard-06 (designs/wasm-frontend/hard-06-hostbridge-seam.md): the
+ * JS/DOM host-bridge seam. THREE emitted-against entry points the hand-written
+ * `Dom` prelude surface (doc 05 §2) funnels every DOM/host operation through —
+ * one reflective JS marshaler (doc 05 §3) behind them, never one wasm import
+ * per method. Built for ALL targets (one archive source): on wasm they cross to
+ * the `lv.dom_call` host import (lv_bridge_wasm.c); on every native target they
+ * RAISE ("host bridge: available on the wasm-browser target only") — a
+ * wasm-*gained* capability, so unlike the hard-03 gate there is no compile-time
+ * diagnostic, just a loud runtime error if native code reaches one (the
+ * existing corpus never does, so the four-lane differential is unaffected).
+ * All args cross as LvValue* per the boundary rule (§2.1). Results that can be
+ * a fresh counted value are retained +1 into the register by generated code:
+ * lvrt_hostcall (a string/handle result transfers +1; retain is a no-op on its
+ * int/void results via the immediate gate) and lvrt_hostecho (a fresh string).
+ * lvrt_host_clo_reg's result is ALWAYS an int index, so it takes no retain.
+ *
+ * lvrt_hostcall: the generic sync host call. `op` (string) selects the
+ *   operation; `h0` is the primary node handle (INT; 0 = document/none), `h1`
+ *   a secondary handle (INT; child for appendChild, closure-table index for
+ *   add/removeEventListener), `a`/`b` string args ("" when unused). Result tag
+ *   depends on `op` — handle (INT), string (LV_STR), or VOID. Arity 5 covers
+ *   every DOM v1 op with a fixed signature.
+ * lvrt_host_clo_reg: the one closure-taking entry. Retains `cb` (an LV_CLO,
+ *   `(int) => void`) into the bridge's closure-table ROOT (doc 05 §5) and
+ *   returns its index (INT). addEventListener then rides lvrt_hostcall with
+ *   h1 = that index; removeEventListener rides it and RELEASES index h1;
+ *   "cloCount" rides it and returns the live root count (the §5 leak pin).
+ * lvrt_hostecho: the reflective round-trip probe (doc 05 §8). Marshals its one
+ *   LvValue arg to JS through the §3 marshaler and returns a host-side string
+ *   rendering — exercises every tag path. Not a DOM op; pins only. */
+void    lvrt_hostcall(LvValue* out, const LvValue* op,
+                      const LvValue* h0, const LvValue* h1,
+                      const LvValue* a,  const LvValue* b);
+void    lvrt_host_clo_reg(LvValue* out, const LvValue* cb);
+void    lvrt_hostecho(LvValue* out, const LvValue* v);
+
+/* Track W hard-06 companion (NOT emitted-against — called by the JS marshaler
+ * through the wasm EXPORT table, never by generated code; same host-facing
+ * accessor discipline as lv_park_poll). Returns the interned slot-name pointer
+ * for field `i` of `classId` (NUL-terminated C string in linear memory), or
+ * NULL when out of range. The JS LV_OBJ marshaler pairs it with the existing
+ * lvrt_fieldcount to walk an object's slots (doc 05 §3's "read slotNames
+ * through linear memory", realized as a typed accessor rather than JS parsing
+ * the LvClassInfo struct layout). */
+const char* lvrt_class_field_name(int64_t classId, int64_t i);
+
+/* Track W hard-06 companion (NOT emitted-against — host-accessor discipline as
+ * above). Returns the interned class-name pointer for `classId` (NUL-terminated
+ * C string in linear memory), or NULL when unknown. The JS marshaler reads it
+ * to identify the handle-wrapper classes (DomNode/DomEvent) by name rather than
+ * by an ambiguous slot-shape heuristic (doc 05 §3). */
+const char* lvrt_class_name(int64_t classId);
+
 /* LA-30 B2 (doc 06 §4) — the sysTask* floor (lv_loop.c). Ids, not handles,
  * cross this boundary; every result is a scalar int. run/joinAll/awaitAny2
  * raise under LANG_PUMP=1 (B2 requires the scheduler); joinAll and awaitAny2

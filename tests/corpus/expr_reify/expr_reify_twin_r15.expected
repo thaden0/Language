@@ -1,0 +1,5 @@
+s0:Call(contains,Bind(0),[Field(tag)])
+s0binds:binds=[none]
+s0site:siteId=0
+fn0=true
+fn1=false
