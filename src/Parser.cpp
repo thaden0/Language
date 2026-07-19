@@ -645,15 +645,23 @@ StmtPtr Parser::parseForSpliceStmt(SpliceBody body) {
 ExprPtr Parser::parsePostfix(ExprPtr base) {
     for (;;) {
         if (at(TokenKind::ColonColon) && peek(1).kind == TokenKind::Lt) {
-            auto c = mkExpr(ExprKind::Call, base->span);
-            c->a = std::move(base);
-            c->explicitTypeArgs = parseExplicitTypeArgs();
-            if (!at(TokenKind::LParen)) {
-                error("'(' after explicit type arguments");
-            } else {
+            std::vector<TypeRefPtr> targs = parseExplicitTypeArgs();
+            if (at(TokenKind::LParen)) {
+                auto c = mkExpr(ExprKind::Call, base->span);
+                c->a = std::move(base);
+                c->explicitTypeArgs = std::move(targs);
                 c->list = parseArgs();
+                base = std::move(c);
+            } else {
+                // LA-32 §4.6: a turbofish with NO following `(args)` is a pinned
+                // generic VALUE reference (`var f = identity::<int>;`). The type
+                // tuple LA-25 §8.6 needs to build the eta-expansion is supplied
+                // here, so the reference is well-defined. The args ride on the
+                // callee node itself (a Name/Member); the checker resolves it as
+                // a concrete closure. An UNPINNED reference (`identity`) stays the
+                // LA-25 §8.6 error, upgraded to suggest the turbofish.
+                base->explicitTypeArgs = std::move(targs);
             }
-            base = std::move(c);
         } else if (at(TokenKind::Dot) || at(TokenKind::ColonColon) ||
             at(TokenKind::QuestionDot)) {
             bool colon = at(TokenKind::ColonColon);
@@ -679,7 +687,8 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             c->list = parseArgs();
             base = std::move(c);
         } else if (at(TokenKind::Bang) && peek(1).kind == TokenKind::LParen &&
-                   (base->kind == ExprKind::Name || base->kind == ExprKind::Member)) {
+                   (base->kind == ExprKind::Name || base->kind == ExprKind::Member) &&
+                   base->explicitTypeArgs.empty()) {   // LA-32: a turbofish value ref is not macro-callable
             // `name!(args)` / `NS::name!(args)` — an expression macro call
             // (Phase 3 §7). `Bang` here was a parse error before this feature
             // (postfix `!` doesn't otherwise exist), so the grammar slot is

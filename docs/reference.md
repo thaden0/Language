@@ -132,9 +132,11 @@ operand (`c == 'a'`), a `char` match arm, or a return into `char`. `char c = 'a'
 is a char; `var s = 'a';` stays `string`; double-quoted literals are never char.
 Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
-Call-argument position is **not** yet a target-typing site (a `char`-typed value
-binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/techdesign-track03-type-surface.md`).
+Call-argument position is a target-typing site too: a bare `'x'` argument to a
+`char` parameter binds as `char`, same as a `char`-typed value. Where an
+overload set has both `f(char)` and `f(string)`, a bare literal argument
+always prefers `f(string)` (back-compat), regardless of which is declared
+first — `designs/complete/techdesign-track03-type-surface.md`.
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
@@ -205,9 +207,13 @@ Any scope-opening entity may declare type parameters: `class C<T>`, `R f<R>(R x)
 `U m<U>(...)`. Inference sources, in order: constructor/call argument types (including through
 containers: `Array<U>` unifies with `Array<int>`), then the target type of the enclosing
 initializer/return. In a type position, an instantiation is `Name<T1,...>`. At a call site,
-explicit arguments use the unambiguous call-only spelling `callee::<T1,...>(args)`, for example
-`Box::<int>()`, `Box::From::<string>(value)`, or `items.remap::<string>(fn)`. Generics are
-**invariant**; the raw form (`Array`) is compatible with any instantiation of the same head.
+explicit arguments use the unambiguous turbofish spelling `callee::<T1,...>(args)`, for example
+`Box::<int>()`, `Box::From::<string>(value)`, or `items.remap::<string>(fn)`. The same turbofish
+with **no following `(args)`** is a pinned generic **value reference** — `var f = identity::<int>;`
+supplies the concrete type tuple a bare reference to a generic callable otherwise lacks, so it
+composes with method references (§3.4) into a concrete closure; an *unpinned* generic reference
+(`var f = identity;`) is an error suggesting the turbofish. Generics are **invariant**; the raw
+form (`Array`) is compatible with any instantiation of the same head.
 
 An explicit call list is all-or-nothing and authoritative: its length must exactly equal the
 class's generic arity for construction, or the selected function/method's generic arity for a
@@ -351,9 +357,10 @@ reference** — a first-class function value (§3.4).
   class static sides. Inside a generic callable its left operand may also be a callable-level
   type parameter, resolved per concrete instantiation (§2.5). One operator, one meaning: "the
   non-instantiated version."
-- `::<...>(...)` is the call-only explicit-generic marker. It attaches to the completed callee
-  (`N::f::<T>()`, `this.Base::m::<T>()`); without the following argument list it is a parse
-  error, not a generic function reference.
+- `::<...>` is the explicit-generic (turbofish) marker. It attaches to the completed callee
+  (`N::f::<T>()`, `this.Base::m::<T>()`). Followed by `(args)` it pins a call/construction; with
+  **no** argument list it is a pinned generic **value reference** (`var f = identity::<int>;`,
+  §2.5) — the type tuple that makes a reference to a generic callable well-defined.
 - A bare read that cannot be resolved by type — e.g. a `distinct`-collided member with no
   qualifier — is a **compile error** ("refuse to guess").
 

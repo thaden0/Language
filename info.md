@@ -26,12 +26,14 @@ what has landed and what has changed; the numbered sections below carry the deta
 as-implemented reference, and the git history):
 
 - **Explicit generic type arguments at call sites** (2026-07-19) — the canonical,
-  unambiguous spelling is `callee::<T, U>(args)`, after the complete callee (including
+  unambiguous turbofish spelling is `callee::<T, U>(args)`, after the complete callee (including
   namespace, constructor label, or receiver method). Exact arity is required; explicit
-  bindings are authoritative and filter overloads before substituted value checking. The
-  list is checker-only, preserved by rules/specialization/reifier clones and `--expand`, and
-  adds no runtime or ABI payload. Tree-walk/IR/emit-C++/LLVM are covered; no ELF gate
-  (`docs/reference.md` §2.5/§3.3).
+  bindings are authoritative and filter overloads before substituted value checking. The same
+  turbofish with no `(args)` is a pinned generic **value reference** (`var f = identity::<int>;`)
+  that composes with method references (LA-25) into a concrete closure; an unpinned generic
+  reference is an error suggesting the turbofish. The list is checker-only, preserved by
+  rules/specialization/reifier clones and `--expand`, and adds no runtime or ABI payload.
+  Tree-walk/IR/emit-C++/LLVM are covered (`docs/reference.md` §2.5/§3.3).
 - **Harpoon — the standard unit test library, COMPLETE** (`designs/complete/techdesign-unit-test-library.md`,
   2026-07-15) — the assertion vocabulary (`assertEqual`/`assertNotEqual`/`assertSame`/
   `assertTrue`/`assertFalse`/`assertNone`/`assertSome`/`assertThrows`/`fail`, all
@@ -986,11 +988,14 @@ class Array<T> {
 Type arguments are **inferred when recoverable** (from the target type, from constructor
 arguments, from argument types — including through containers, `Array<U>` from `Array<Tag>`)
 and **required when not**. Type positions use `Name<T, U>`; call positions use the distinct
-call-only spelling `callee::<T, U>(args)`. The explicit tuple is exact-arity and authoritative:
+turbofish spelling `callee::<T, U>(args)`. The explicit tuple is exact-arity and authoritative:
 it binds class parameters for construction, callable parameters for functions/methods, and
-filters overloads before substituted value checking. Generics are **invariant**
-(`Array<int>` is not `Array<string>`); the raw (unparameterized) form is compatible with any
-instantiation.
+filters overloads before substituted value checking. The same turbofish with **no `(args)`** is a
+pinned generic **value reference** (`var f = identity::<int>;`) — it supplies the concrete tuple a
+bare reference to a generic callable lacks, composing with method references (LA-25) into one
+concrete closure; an *unpinned* generic reference (`var f = identity;`) is an error suggesting the
+turbofish. Generics are **invariant** (`Array<int>` is not `Array<string>`); the raw
+(unparameterized) form is compatible with any instantiation.
 
 ```
 MyClass<int, string> myClass = MyClass();   // inferred from the target type
@@ -998,6 +1003,7 @@ Promise<int> p = Promise(n * n);            // T inferred from the constructor a
 string s = identity("hi");                  // R inferred from the call argument
 var empty = Box::<int>();                    // T explicitly pinned at construction
 string t = identity::<string>("hi");         // R explicitly pinned for this call
+var f = identity::<int>;                      // pinned generic value reference (a closure)
 ```
 
 ### Higher-kinded types (implemented, gated)

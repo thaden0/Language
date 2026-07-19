@@ -190,12 +190,14 @@ int main() {
     // Ordinary calls and macro calls retain their established spelling.
     CONTAINS("void f() { NS::f(1); macro!(2); }", "NS::f(1)");
     CONTAINS("void f() { NS::f(1); macro!(2); }", "macro!(2)");
-    // Seeing `::<` commits to the call-only grammar.
+    // Seeing `::<` commits to the turbofish grammar (empty list still rejected).
     ERROR_CONTAINS("void f() { f::<>(); }", "expected type argument after '<'");
-    ERROR_CONTAINS("void f() { f::<int>; }",
-                   "expected '(' after explicit type arguments");
-    ERROR_CONTAINS("void f() { f::<int>!(1); }",
-                   "expected '(' after explicit type arguments");
+    // LA-32 §4.6: `::<T>` with no following `(args)` is a legal pinned generic
+    // VALUE reference (`var f = identity::<int>;`), not a parse error.
+    CONTAINS("void f() { f::<int>; }", "f::<int>");
+    // A turbofish value reference is not macro-callable — `!(...)` after it is a
+    // clean parse error (the trailing `!` is unexpected).
+    ERROR_CONTAINS("void f() { f::<int>!(1); }", "expected ';'");
 
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
