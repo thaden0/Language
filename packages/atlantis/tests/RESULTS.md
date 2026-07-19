@@ -217,3 +217,70 @@ own `Command`-handler idiom); **#56 [P2]** a block-scope `bind IFace => localVar
 reference) yields an injection value whose method dispatch fails (the `=> Ctor()` factory form and top-level
 `=> globalVar` singleton form both work — so the mandated test-shadow and singleton patterns are unaffected).
 Repros kept at `packages/atlantis/tests/probes/di_p2_fnfield_named_ref.lev` and `di_p3_localvar_bind.lev`.
+
+---
+
+# Atlantis Track 06 — ORM results (2026-07-19)
+
+Executed with `build/leviathan` / `build/trident` at head. Every corpus case
+below is verified byte-identical across oracle / IR / LLVM via the new
+generic runner:
+
+```
+./packages/atlantis/tests/runtests.sh          # all corpus dirs, 3 engines
+./packages/atlantis-mysql/tests/runtests.sh    # incl. the new orm_loopback
+```
+
+## M0 probes (design §11)
+
+| # | probe file | result |
+|---|---|---|
+| P1 | `orm_p1_nested_ns_rules.lev` | FAILED as the design feared (rules/attrs in a NESTED namespace never fired — three distinct failure spellings), filed as **#91**, then **fixed at source the same day (owner-directed)**: `Rules.cpp` now keys rule/attribute namespaces by full qualified path. Probe is the regression floor; amended-C1 placement (`Atlantis::Orm` owns its rules) ships as designed, **no fallback relocation needed** |
+| P2 | `orm_p2_ormvals_read_splice.lev` | GREEN (3 engines) — `this.$f` read splice + `$for` filters. Correction to the design's §2.1 template: string reification is the BARE hole (`$f.name`), never `"$f.name"` (a quoted hole is a literal) |
+| P3 | `orm_p3_assign_target_splice.lev` | GREEN (3 engines) — **Shape A holds**: `this.$f` as assignment target inside a `$for` element + assignment-as-expression. Shape B's scratch machinery was never built |
+| P4 | `orm_p4_perfield_member_inject.lev` | GREEN — both the per-field member injection and the single-element-`$for` form |
+| P5 | `orm_p5_encloser_base_class.lev` | GREEN — `in class C : Model` matches through a base CLASS |
+| P6 | `orm_p6_generic_tail_fromdb_enum.lev` | GREEN — witness overload specificity + generic tail `T::fromCode` (LA-18), unknown carrier handling |
+| P7 | `orm_p7_field_type_spellings.lev` | GREEN — `$f.type` spellings pinned: `int`, `int | None`, `DateTime`, bare enum name (`Kind`), `Rel<Post>`, `RelMany<Post>` |
+| P8 | `orm_p8_identity_repo_generics.lev` | GREEN — identity aliasing through `Array<E>`/`Map<int,E>`; `E::Label` inside a generic METHOD and inside a lambda within it. **Finding:** explicit generic call args (`repo<User>(...)`) do not exist in the language — `E` rides inference (factory closures / witness parameters); `db.rows(sql, params, witness)` is the shipping spelling of the design's `rows<T>` |
+| — | `miniorm/` | regression floor for **#92** (attribute class shadowing bare type names — found here, fixed at source same day) |
+
+## Corpus (M1–M4)
+
+| case | what it proves | oracle | IR | LLVM |
+|---|---|---|---|---|
+| corpus/orm | M1: generated members (path/pk/cols/vals/colTypes/notNull/entity/autoPk), Shape-A FromRow + mixin apply + seal, identity map (same pk ⇒ same instance, no re-query), multi-row INSERT + consecutive-id write-back + `@@innodb_autoinc_lock_mode` probe, dirty-cols-only UPDATE, SoftDelete tombstone remove, noTrack lane, raw/repo.sql (column-set check), `@Row` dense lane via `rows(sql, ps, witness)`, transact commit/rollback/nested-guard, §8 boot validation vs DESCRIBE, converter refusals (NULL-into-non-optional, unknown enum carrier), Orphan throwing defaults | green | green | green |
+| corpus/orm_query | M2: LA-31 lambda queries — where/whereIn/orderBy(+Desc/thenBy)/take/skip/first/firstOrNone/count/exists/toSql, literals inline + captures as binds (stable SQL text), `== None` → IS NULL, composed wildcard-escaped LIKE binds, IN from Array.contains, `set()` (constant + computed), `delete()` (hard + SoftDelete tombstone + scope + withDeleted), **and the §3.4 differential: 10 predicates run on both legs (closure vs embedded `expr::eval` over tree+binds) — all verdicts agree** | green | green | green |
+| corpus/orm_rel | M3: Rel/RelMany (unloaded touch throws with the fix; loaded-empty orNone), `.with((u) => u.posts)` = parent SELECT + ONE child IN-query, `db.load(collection, path)` batch @BelongsTo, @ManyToMany-through with the owner's self-join pipe projection, identity of loaded targets, empty-collection no-op | green | green | green |
+| corpus/orm_migrate | M4: chain-ordered apply (stateful fake bookkeeping table), second run applies 0, content-hash chain (`sha256(parentHash+name+upSQL)`) tamper error, two-children fork error with merge recipe, scaffolder (suggested DDL from generated members + head-parented source) | green | green | green |
+| atlantis-mysql/tests/orm_loopback | M1 acceptance's second leg: the ORM over the REAL Track 05 driver (Pool + prepared statements + binary rows) against an in-language wire-protocol fake server on a loopback socket — find→FromRow, identity map short-circuit (2 PREPAREs/2 EXECUTEs total for two finds + one save), INSERT lastInsertId write-back | green | green | green |
+
+## Findings / deviations from the design text (each logged in techdesign-06-orm.md §16)
+
+- **Compiler bugs found:** #91 (nested-ns rules; FIXED), #92 (attribute class
+  shadowing bare types; FIXED), #93 (punctuation-only template string literals
+  corrupted; OPEN, worked around via `ctx()`/`ctxRow()` helpers), #94
+  (field-closure dot-call silent no-op on LLVM; OPEN, worked around via
+  local-copy-then-call throughout `db.lev`), #95 (pre-existing routing corpus
+  LLVM segfault, unrelated to this track — verified against clean `src/`).
+- **Real MySQL 8 acceptance** (M4/AG-4's live job): environment-gated, same
+  posture as Track 05's landing (a MySQL server is present on this host but no
+  test credentials exist; the Docker job in techdesign-05 §7.2 stands ready).
+  The FakeDriver + loopback-fake legs cover the seam; the live job runs when
+  credentials/Docker are available.
+- `transact()` passes the SAME `Db` (pinned to one connection) to the body
+  rather than a child object — a typed child (`tx.users`) can't be constructed
+  generically; identity-map sharing and nested-guard semantics are exactly
+  §4.5's.
+- Timestamps discipline: `updatedAt = now` is applied to entities that are
+  already otherwise dirty (then dirtyCols() recomputed) — the literal
+  "before computing dirtyCols()" reading would mark EVERY tracked Timestamps
+  entity dirty on every save and defeat the dirty-only lever.
+- `Array<T>.contains` in a predicate needs `.whereIn(p, contents)` — LA-31
+  R17 marks Array captures with `None` in `binds` ("the consumer keeps its own
+  reference"); the ORM cannot reach the captured array any other way.
+- Migration bookkeeping INSERT rides plain execution (no wrapping tx): MySQL
+  DDL auto-commits around it and the bookkeeping is a single atomic statement.
+- Boot validation is `await db.validate()` (dev flag = calling it at boot):
+  repos register in the AppDb constructor AFTER `Db`'s own constructor runs,
+  and constructors cannot await.

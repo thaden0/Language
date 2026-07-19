@@ -1,0 +1,162 @@
+// Atlantis Track 06 — ORM migrations (techdesign-06-orm.md §10).
+//
+// `migrations/*.lev` classes (name()/parent()/up() — authored SQL, up-only
+// v1) + an explicit registry the app owns; the runner ensures
+// `schema_migrations(name, hash, appliedAt)`, applies pending migrations in
+// chain order, and enforces the content-hash chain:
+//     hash = sha256(parentHash + name + up-SQL)
+// Two migrations claiming one parent = hard error with the merge recipe;
+// an applied-hash mismatch = tamper error. Suggested DDL comes from the
+// generated allCols()/__ormColTypes() (§7 table) — suggested only, the human
+// owns the SQL.
+//
+// App wiring (`./myapp migrate`, Track 04 command layer): the app registers
+//     App::Command("migrate", "apply pending migrations", (cfg, argv) => …)
+// and constructs its Db + MigrationRunner(db, registry) inside — Db
+// construction is app-owned (config → pool), so the command lives app-side.
+namespace Atlantis {
+    namespace Orm {
+
+        class Migration {
+            string name() {
+                throw OrmLogicException("Migration.name() not overridden");
+            }
+            string parent() => "";           // "" = the chain root
+            Array<string> up() {
+                throw OrmLogicException("Migration.up() not overridden");
+            }
+        }
+
+        class MigrationRunner {
+            Db db;
+            Array<Migration> registry;
+
+            new MigrationRunner(Db db, Array<Migration> registry) {
+                this.db = db;
+                this.registry = registry;
+            }
+
+            // chain order from the parent() linkage; forks and orphans are
+            // hard errors (§10).
+            Array<Migration> chainOrder() {
+                Array<Migration> chain = [];
+                string cur = "";
+                bool more = true;
+                while (more) {
+                    Array<Migration> kids = [];
+                    for (Migration m in this.registry) {
+                        if (m.parent() == cur) { kids = kids.add(m); }
+                    }
+                    if (kids.length() == 0) { more = false; }
+                    else {
+                        if (kids.length() > 1) {
+                            Array<string> names = [];
+                            for (Migration k in kids) { names = names.add(k.name()); }
+                            throw OrmLogicException("migrations " + names.joinToString(" and ") +
+                                " both claim parent '" + cur + "' — merge recipe: pick an " +
+                                "order, set the later one's parent() to the earlier one's " +
+                                "name(), and re-run");
+                        }
+                        chain = chain.add(kids.at(0));
+                        cur = kids.at(0).name();
+                    }
+                }
+                if (chain.length() != this.registry.length()) {
+                    throw OrmLogicException("migration registry is not one connected chain (" +
+                        chain.length().toString() + " reachable of " +
+                        this.registry.length().toString() + ") — check parent() names");
+                }
+                return chain;
+            }
+
+            string hashOf(Migration m, string parentHash) {
+                string joined = "";
+                for (string s in m.up()) { joined = joined + s + "\n"; }
+                return encoding::hexEncode(digest::sha256(parentHash + m.name() + joined));
+            }
+
+            // applies pending migrations, returns how many ran. Bookkeeping is
+            // one INSERT per migration (MySQL DDL auto-commits around it —
+            // documented §10 bound).
+            Promise<int> migrate() {
+                await this.db.__x("CREATE TABLE IF NOT EXISTS `schema_migrations` " +
+                    "(`name` VARCHAR(255) PRIMARY KEY, `hash` CHAR(64) NOT NULL, " +
+                    "`appliedAt` DATETIME(6) NOT NULL)", []);
+                Atlantis::Data::ResultSet rs = await this.db.__q(
+                    "SELECT `name`, `hash` FROM `schema_migrations`", []);
+                Map<string, string> appliedHash = Map();
+                for (Atlantis::Data::Row r in rs.rows) {
+                    string? n = r.strAt("name");
+                    string? h = r.strAt("hash");
+                    if (n != None && h != None) { appliedHash[n] = h; }
+                }
+                Array<Migration> chain = this.chainOrder();
+                string parentHash = "";
+                int count = 0;
+                for (Migration m in chain) {
+                    string h = this.hashOf(m, parentHash);
+                    if (appliedHash.has(m.name())) {
+                        if (appliedHash.at(m.name()) != h) {
+                            throw OrmLogicException("migration '" + m.name() + "' was applied " +
+                                "with a different hash — its SQL (or an ancestor's) changed " +
+                                "after being applied; never edit an applied migration, add a " +
+                                "new one");
+                        }
+                    } else {
+                        for (string stmt in m.up()) {
+                            await this.db.__x(stmt, []);
+                        }
+                        Array<string | int | float | bool | None> ps = [];
+                        ps = ps.add(m.name());
+                        ps = ps.add(h);
+                        ps = ps.add(Atlantis::Orm::fmtDateTime(DateTime::now()));
+                        await this.db.__x("INSERT INTO `schema_migrations` " +
+                            "(`name`, `hash`, `appliedAt`) VALUES (?, ?, ?)", ps);
+                        count = count + 1;
+                    }
+                    parentHash = h;
+                }
+                return Promise(count);
+            }
+
+            // §10 scaffolder support: suggested CREATE TABLE from the generated
+            // members (§7 mapping). Suggested only — the human owns the DDL.
+            string suggestedDdl(Model proto) {
+                Array<string> cols = proto.allCols();
+                Array<string> types = proto.allColTypes();
+                string pk = proto.__ormPk();
+                bool auto = proto.__ormAutoPk();
+                Array<string> notNull = proto.__ormNotNullCols();
+                Array<string> lines = [];
+                int i = 0;
+                while (i < cols.length()) {
+                    string line = "  " + Atlantis::Orm::qcol(cols.at(i)) + " " + types.at(i);
+                    if (notNull.contains(cols.at(i))) { line = line + " NOT NULL"; }
+                    if (cols.at(i) == pk) {
+                        line = line + " PRIMARY KEY";
+                        if (auto) { line = line + " AUTO_INCREMENT"; }
+                    }
+                    lines = lines.add(line);
+                    i = i + 1;
+                }
+                return "CREATE TABLE " + Atlantis::Orm::qpath(proto.__ormPath()) + " (\n" +
+                       lines.joinToString(",\n") + "\n);";
+            }
+
+            // `migrate new <slug>`: a migration source with parent() = the
+            // current chain head.
+            string scaffoldSource(string slug) {
+                Array<Migration> chain = this.chainOrder();
+                string head = "";
+                if (chain.length() > 0) { head = chain.at(chain.length() - 1).name(); }
+                return "class M_" + slug + " : Migration {\n" +
+                       "    string name() => \"" + slug + "\";\n" +
+                       "    string parent() => \"" + head + "\";\n" +
+                       "    Array<string> up() => [\n" +
+                       "        // authored SQL here (suggested DDL: runner.suggestedDdl(proto))\n" +
+                       "    ];\n" +
+                       "}\n";
+            }
+        }
+    }
+}

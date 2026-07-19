@@ -1371,7 +1371,11 @@ int Lowerer::lowerCall(Expr* e) {
         if (ctorClass->decl && !ctorClass->decl->isInterface && !ctorClass->isPrimitive)
             initFn = synthesizeInit(ctorClass);
         emit(Op::NewObject, obj, initFn);
-        last().sym = ctorClass;
+        // techdesign-generic-value-struct-columnar: stamp the monomorphized class
+        // symbol (its own classId) for an eligible generic value-struct instantiation
+        // so `Array<Pair<int,int>>` flips columnar; `valueClass` is `ctorClass`
+        // itself for non-generic / ineligible structs, so this is a no-op there.
+        last().sym = (e->valueClass && e->valueClass->isValue) ? e->valueClass : ctorClass;
         if (ctor) {
             auto it = mod_->byDecl.find(ctor);
             if (it == mod_->byDecl.end()) { fail(e->span, "constructor body"); return obj; }

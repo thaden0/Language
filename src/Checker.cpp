@@ -842,8 +842,20 @@ Type Checker::typeOf(const Expr* e) {
             t.kind == TKind::Class && t.sym && !t.sym->isPrimitive &&
             !t.sym->isInterface() && t.sym->isValue;
         // techdesign-columnar: carry the concrete struct symbol for the lowerer.
-        const_cast<Expr*>(e)->valueClass =
-            const_cast<Expr*>(e)->definiteValueStruct ? t.sym : nullptr;
+        // techdesign-generic-value-struct-columnar: for an eligible instantiation
+        // of a generic value struct (`Pair<int,int>`), carry the MONOMORPHIZED
+        // symbol instead of the shared generic one, so the lowerer stamps the
+        // instantiation's own classId (→ columnar) and reads its concrete-scalar
+        // shape. Ineligible/non-generic value structs keep `t.sym`, unchanged.
+        // `valueClass` is a native-codegen-only channel (the oracle never reads
+        // it), which is what keeps engine neutrality (§5) automatic.
+        Symbol* vc = nullptr;
+        if (const_cast<Expr*>(e)->definiteValueStruct) {
+            vc = t.sym;
+            if (!t.args.empty())
+                if (Symbol* spec = specializeValueStruct(t.sym, t.args)) vc = spec;
+        }
+        const_cast<Expr*>(e)->valueClass = vc;
     }
     return t;
 }
@@ -1277,21 +1289,24 @@ Type Checker::typeOfMember(const Expr* e) {
         if (isRef) return t;
     }
     // Namespace-qualified access: NS::name — type through the namespace scope.
-    if (e->a->kind == ExprKind::Name) {
-        if (Symbol* ns = scope_ ? scope_->lookup(e->a->text) : nullptr)
-            if (ns->kind == SymbolKind::Namespace && ns->scope)
-                if (const std::vector<Symbol*>* v = ns->scope->localLookup(e->text))
-                    for (Symbol* s : *v) {
-                        if (s->kind == SymbolKind::Class) return typeValue(s);
-                        if (s->kind == SymbolKind::Var && s->decl) {
-                            // Namespace-qualified globals must retain declaration
-                            // identity for evaluation/lowering. This is especially
-                            // important for nested namespaces imported from a
-                            // package (`Attr::Bold` after `uses Sonar`).
-                            const_cast<Expr*>(e)->resolved = s->decl;
-                            return fromTypeRef(s->decl->type.get());
-                        }
+    // bug.md #82: NS can itself be a `::`-qualified chain of namespaces
+    // (`P::K::FLAG`, arbitrary depth) — resolveNamespaceExpr walks it the same
+    // way for one segment or many, so a nested namespace's const isn't left
+    // unresolved (which used to silently read as 0/empty downstream).
+    if (Symbol* ns = resolveNamespaceExpr(e->a.get())) {
+        if (ns->scope)
+            if (const std::vector<Symbol*>* v = ns->scope->localLookup(e->text))
+                for (Symbol* s : *v) {
+                    if (s->kind == SymbolKind::Class) return typeValue(s);
+                    if (s->kind == SymbolKind::Var && s->decl) {
+                        // Namespace-qualified globals must retain declaration
+                        // identity for evaluation/lowering. This is especially
+                        // important for nested namespaces imported from a
+                        // package (`Attr::Bold` after `uses Sonar`).
+                        const_cast<Expr*>(e)->resolved = s->decl;
+                        return fromTypeRef(s->decl->type.get());
                     }
+                }
     }
     Type bt = typeOf(e->a.get());
     std::string_view name = e->text;
@@ -1827,10 +1842,42 @@ Symbol* Checker::hygienicClass(const Expr* e) const {
 // scope hide it. Used only for the explicit `C::Label()` constructor spelling,
 // where the qualifier itself states that a type/constructor is intended.
 Symbol* Checker::visibleClass(std::string_view name) const {
+    // Attribute class symbols only name types behind `@` — prefer a real class
+    // when both are visible (e.g. @Row vs Atlantis::Data::Row), falling back
+    // to the attribute hit only when nothing else matches.
+    Symbol* attrHit = nullptr;
     for (const Scope* sc = scope_; sc; sc = sc->parent)
         if (const std::vector<Symbol*>* syms = sc->localLookup(name))
             for (Symbol* s : *syms)
-                if (s->kind == SymbolKind::Class) return s;
+                if (s->kind == SymbolKind::Class) {
+                    if (s->decl && s->decl->isAttribute) {
+                        if (!attrHit) attrHit = s;
+                    } else {
+                        return s;
+                    }
+                }
+    return attrHit;
+}
+
+// bug.md #82: mirrors Resolver::resolveType's Named-path walk (§12) for
+// value-position namespace qualifiers. The first segment searches outward
+// from scope_ (an ordinary name lookup); every later segment is a
+// localLookup on the prior namespace's OWN scope, so a qualified path can't
+// leak into an enclosing scope. Returns null as soon as a segment isn't a
+// namespace (a plain name, or a class/value used as the base).
+Symbol* Checker::resolveNamespaceExpr(const Expr* e) const {
+    if (!e) return nullptr;
+    if (e->kind == ExprKind::Name) {
+        Symbol* ns = scope_ ? scope_->lookup(e->text) : nullptr;
+        return (ns && ns->kind == SymbolKind::Namespace) ? ns : nullptr;
+    }
+    if (e->kind == ExprKind::Member && e->colon) {
+        Symbol* base = resolveNamespaceExpr(e->a.get());
+        if (!base || !base->scope) return nullptr;
+        if (const std::vector<Symbol*>* v = base->scope->localLookup(e->text))
+            for (Symbol* s : *v)
+                if (s->kind == SymbolKind::Namespace) return s;
+    }
     return nullptr;
 }
 
@@ -4021,6 +4068,64 @@ void Checker::recordSpecialization(
     d.tuple = std::move(tuple); d.scope = callableScopes_[fn];
     d.cls = callableClasses_[fn]; d.instantiationSpan = call->span; d.depth = depth;
     specializationDemands_.push_back(std::move(d));
+}
+
+Symbol* Checker::specializeValueStruct(Symbol* generic, const std::vector<Type>& args) {
+    // Only user value structs with type parameters are candidates. Interfaces,
+    // primitives, reference classes, and the native collections are never columnar.
+    if (!generic || !generic->isValue || generic->isPrimitive || !generic->decl ||
+        generic->isInterface())
+        return nullptr;
+    const std::vector<std::string_view>& params = generic->decl->generics;
+    if (params.empty() || params.size() != args.size()) return nullptr;
+    if (!generic->shape.built) return nullptr;
+
+    // Memoize on (generic, arg-canonical tuple) so every eligible `Pair<int,int>`
+    // resolves to ONE symbol (the §5 keyEquals identity invariant). Ineligible
+    // instantiations cache a null so we don't re-test them.
+    std::string key = std::to_string(reinterpret_cast<uintptr_t>(generic));
+    for (const Type& a : args) key += "\x1f" + a.canonical;
+    auto found = valueStructSpecs_.find(key);
+    if (found != valueStructSpecs_.end()) return found->second;
+
+    std::unordered_map<std::string_view, std::string> sub;
+    for (size_t i = 0; i < params.size(); ++i) sub[params[i]] = args[i].canonical;
+
+    // Build the substituted shape. Every non-method field slot must substitute to
+    // a plain columnar scalar (int/float/bool/char) — that is exactly the
+    // columnarEligibleStruct line, evaluated against the monomorphized shape. A
+    // field whose type is a nested/heap type (e.g. `Array<A>`, or a param bound to
+    // `string`) leaves the instantiation ineligible: keep the generic symbol.
+    Shape shape;
+    bool anyField = false;
+    for (const Slot& s : generic->shape.slots) {
+        Slot out = s;
+        if (!s.isMethod) {
+            std::string canon = s.canonical;
+            auto it = sub.find(s.canonical);   // a field typed directly `A` (whole spelling)
+            if (it != sub.end()) canon = it->second;
+            if (columnarTypecodeOf(canon) == 0) { valueStructSpecs_[key] = nullptr; return nullptr; }
+            out.canonical = canon;
+            anyField = true;
+        }
+        shape.slots.push_back(std::move(out));
+    }
+    if (!anyField) { valueStructSpecs_[key] = nullptr; return nullptr; }
+
+    std::string name = "$spec." + std::string(generic->name) + "<";
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) name += ", ";
+        name += args[i].canonical;
+    }
+    name += ">";
+    Symbol* spec = sema_.newLateSymbol(SymbolKind::Class, sema_.intern(name), generic->decl);
+    spec->isValue = true;
+    spec->isPrimitive = false;
+    spec->scope = generic->scope;   // shared decl → same method/base lookups
+    shape.built = true;
+    spec->shape = std::move(shape);
+    valueStructSpecs_[key] = spec;
+    return spec;
 }
 
 void Checker::genericStaticMissing(const Expr* site, Symbol* concrete,

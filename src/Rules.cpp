@@ -130,10 +130,24 @@ int RuleEngine::fileOf(SourceSpan span) const {
 
 Scope* RuleEngine::namespaceScope(const std::string& ns) const {
     if (ns == "<root>") return sema_.global;
-    if (const std::vector<Symbol*>* v = sema_.global->localLookup(ns))
-        for (Symbol* s : *v)
-            if (s->kind == SymbolKind::Namespace && s->scope) return s->scope;
-    return nullptr;
+    // #91: a namespace key may be a nested path ("Atlantis::Orm") — walk each
+    // segment down from the global scope.
+    Scope* sc = sema_.global;
+    size_t pos = 0;
+    while (pos <= ns.size()) {
+        size_t sep = ns.find("::", pos);
+        std::string seg = ns.substr(pos, sep == std::string::npos ? std::string::npos
+                                                                  : sep - pos);
+        Scope* next = nullptr;
+        if (const std::vector<Symbol*>* v = sc->localLookup(seg))
+            for (Symbol* s : *v)
+                if (s->kind == SymbolKind::Namespace && s->scope) { next = s->scope; break; }
+        if (!next) return nullptr;
+        sc = next;
+        if (sep == std::string::npos) break;
+        pos = sep + 2;
+    }
+    return sc;
 }
 
 std::string RuleEngine::moduleOf(SourceSpan span) const {
@@ -1258,7 +1272,11 @@ void RuleEngine::collectRules(std::vector<StmtPtr>& items, const std::string& ns
             r.node = std::move(item);            // slot becomes null
             rules_.push_back(std::move(r));
         } else if (item->kind == StmtKind::Namespace) {
-            collectRules(item->body, std::string(item->name));
+            // #91: keep the FULL nested path — imports_ (walkProvenance) and
+            // namespaceScope both speak qualified names ("Atlantis::Orm").
+            collectRules(item->body,
+                         ns == "<root>" ? std::string(item->name)
+                                        : ns + "::" + std::string(item->name));
         }
     }
     items.erase(std::remove(items.begin(), items.end(), nullptr), items.end());
@@ -1271,13 +1289,19 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
         if (!item) continue;
         Stmt* s = item.get();
         if (s->kind == StmtKind::Namespace) {
+            // #91: resolve the namespace symbol through the CURRENT path, not
+            // the global scope, and recurse with the full qualified path.
+            std::string full = ns == "<root>" ? std::string(s->name)
+                                              : ns + "::" + std::string(s->name);
             Symbol* nsym = nullptr;
-            if (const std::vector<Symbol*>* v = sema_.global->localLookup(s->name))
-                for (Symbol* sy : *v)
-                    if (sy->kind == SymbolKind::Namespace) { nsym = sy; break; }
+            Scope* parent = namespaceScope(ns);
+            if (parent)
+                if (const std::vector<Symbol*>* v = parent->localLookup(s->name))
+                    for (Symbol* sy : *v)
+                        if (sy->kind == SymbolKind::Namespace) { nsym = sy; break; }
             decls_.push_back({s, "namespace", fileOf(s->span), chain, nsym});
             chain.push_back({"namespace", s, nsym});
-            indexDecls(s->body, chain, std::string(s->name));
+            indexDecls(s->body, chain, full);
             chain.pop_back();
         } else if (s->kind == StmtKind::Class) {
             std::string_view kw = s->isAttribute ? "attribute"
@@ -2246,13 +2270,34 @@ ExprPtr RuleEngine::cloneExpr(const Expr* e, Bindings& b, bool& err) {
             // rewrites `out` into a Member in place and returns immediately.
             std::string qualNs;
             if (qualifyDefSite(e->text, qualNs)) {
+                // #91: qualNs may be a nested path ("Atlantis::Orm") — build
+                // the left side as a chained Member (Atlantis then ::Orm …),
+                // never a single Name token containing "::".
+                ExprPtr left;
+                size_t pos = 0;
+                while (pos <= qualNs.size()) {
+                    size_t sep = qualNs.find("::", pos);
+                    std::string seg = qualNs.substr(
+                        pos, sep == std::string::npos ? std::string::npos : sep - pos);
+                    if (!left) {
+                        left = std::make_unique<Expr>(ExprKind::Name);
+                        left->span = e->span;
+                        left->text = own(seg);
+                    } else {
+                        auto m = std::make_unique<Expr>(ExprKind::Member);
+                        m->span = e->span;
+                        m->colon = true;
+                        m->text = own(seg);
+                        m->a = std::move(left);
+                        left = std::move(m);
+                    }
+                    if (sep == std::string::npos) break;
+                    pos = sep + 2;
+                }
                 out->kind = ExprKind::Member;
                 out->colon = true;
                 out->text = e->text;
-                auto nsName = std::make_unique<Expr>(ExprKind::Name);
-                nsName->span = e->span;
-                nsName->text = own(qualNs);
-                out->a = std::move(nsName);
+                out->a = std::move(left);
                 return out;
             }
         }

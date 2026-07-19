@@ -1,0 +1,780 @@
+// Atlantis Track 06 — ORM core (designs/atlantis/techdesign-06-orm.md).
+//
+// Namespace Atlantis::Orm owns the types AND the attributes and rules (amended
+// C1, subsystem-owned metaprogramming). This placement is exactly the design's
+// §0 "Owns" clause: an entity file opts in via `uses Atlantis::Orm;` and
+// activates exactly the ORM rule set. It became possible because bug #91
+// (nested-namespace rules never fired) was fixed at source during this track's
+// M0 (owner-directed) — probe orm_p1_nested_ns_rules.lev is the regression floor.
+//
+// DbValue (§0): a cell is `string | int | float | bool | None`, written out at
+// every signature (no alias facility). The C3 seam (Atlantis::Data) is the one
+// authority on its shape.
+namespace Atlantis {
+    namespace Orm {
+
+        // ==== §1.1 attribute vocabulary ====================================
+        attribute Table       { string name; }
+        attribute PrimaryKey  { }
+        attribute AutoIncrement { }
+        attribute NotNull     { }
+        attribute Ignore      { }
+        attribute HasMany     { string entity; string fk; }
+        attribute BelongsTo   { string entity; string fk = ""; }
+        attribute ManyToMany  { string through; string a; string b; }
+        attribute Row         { }
+
+        // ==== §0 error model ===============================================
+        // C3 capability interfaces stay driver-agnostic; these four are the
+        // ORM's own, all IException (via Exception), none HTTP-typed.
+        class MappingException : Exception {
+            new MappingException(string m) { Exception::Exception(m); }
+        }
+        class NotLoadedException : Exception {
+            new NotLoadedException(string m) { Exception::Exception(m); }
+        }
+        class EmptyResultException : Exception {
+            new EmptyResultException(string m) { Exception::Exception(m); }
+        }
+        class OrmLogicException : Exception {
+            new OrmLogicException(string m) { Exception::Exception(m); }
+        }
+
+        // ==== §7 DateTime <-> DATETIME text ("YYYY-MM-DD hh:mm:ss[.fff]") ==
+        string __ormPad2(int v) {
+            if (v < 10) { return "0" + v.toString(); }
+            return v.toString();
+        }
+        string __ormPad3(int v) {
+            if (v < 10) { return "00" + v.toString(); }
+            if (v < 100) { return "0" + v.toString(); }
+            return v.toString();
+        }
+        string fmtDateTime(DateTime d) {
+            string s = d.year().toString() + "-" + Atlantis::Orm::__ormPad2(d.month()) + "-" +
+                       Atlantis::Orm::__ormPad2(d.day()) + " " + Atlantis::Orm::__ormPad2(d.hour()) + ":" +
+                       Atlantis::Orm::__ormPad2(d.minute()) + ":" + Atlantis::Orm::__ormPad2(d.second());
+            if (d.milli() != 0) { return s + "." + Atlantis::Orm::__ormPad3(d.milli()); }
+            return s;
+        }
+        DateTime parseDateTime(string s, string ctx) {
+            // accepts "YYYY-MM-DD hh:mm:ss" with an optional ".f..ffffff" tail
+            if (s.length() < 19) {
+                throw MappingException(ctx + ": '" + s + "' is not a DATETIME " +
+                    "(want YYYY-MM-DD hh:mm:ss[.ffffff]) — fix the column value or the field type");
+            }
+            string frac = "";
+            if (s.length() > 20 && s.subStr(19, 1) == ".") {
+                string digits = s.subStr(20, s.length() - 20);
+                string ms = digits.subStr(0, 3);
+                while (ms.length() < 3) { ms = ms + "0"; }
+                frac = "." + ms;
+            }
+            string iso = s.subStr(0, 10) + "T" + s.subStr(11, 8) + frac + "Z";
+            DateTime? d = datetime::parseIso8601(iso);
+            if (d == None) {
+                throw MappingException(ctx + ": '" + s + "' is not a DATETIME " +
+                    "(want YYYY-MM-DD hh:mm:ss[.ffffff]) — fix the column value or the field type");
+            } else {
+                return d;
+            }
+        }
+
+        // ==== §2.3 converters — the witness idiom ==========================
+        // toDb: one overload per mapped type (§7); the generic tail carries
+        // enums by their int code — an unmappable field type fails HERE at
+        // compile time, naming the instantiation (§1.2's guarantee).
+        string | int | float | bool | None toDb(int v) => v;
+        string | int | float | bool | None toDb(int? v) => v;
+        string | int | float | bool | None toDb(float v) => v;
+        string | int | float | bool | None toDb(float? v) => v;
+        string | int | float | bool | None toDb(bool v) => v;
+        string | int | float | bool | None toDb(bool? v) => v;
+        string | int | float | bool | None toDb(string v) => v;
+        string | int | float | bool | None toDb(string? v) => v;
+        string | int | float | bool | None toDb(DateTime v) => Atlantis::Orm::fmtDateTime(v);
+        string | int | float | bool | None toDb(DateTime? v) {
+            if (v == None) { return None; } else { return Atlantis::Orm::fmtDateTime(v); }
+        }
+        string | int | float | bool | None toDb<T>(T v) => v.code();
+
+        // strict int coercion (§2.3): int passes, text-protocol digit strings
+        // parse strictly, everything else names the site.
+        int asDbInt(string | int | float | bool | None v, string ctx) {
+            match (v) {
+                int => { return v; }
+                string => {
+                    int? p = v.toInt();
+                    if (p == None) {
+                        throw MappingException(ctx + ": '" + v + "' is not an integer");
+                    } else {
+                        return p;
+                    }
+                }
+                None => {
+                    throw MappingException(ctx + ": NULL into a non-optional int — " +
+                        "make the field `int?` or add NOT NULL");
+                }
+                else => {
+                    throw MappingException(ctx + ": cell is not an integer");
+                }
+            }
+        }
+
+        // fromDb: witness-typed overloads — the field's current value pins the
+        // return type; overloads own all coercion. `ctx` is "<table>.<column>"
+        // spliced by the generated FromRow so every MappingException names
+        // table, column, and the fix (§0 error model).
+        int fromDb(string | int | float | bool | None v, int witness, string ctx)
+            => Atlantis::Orm::asDbInt(v, ctx);
+        int? fromDb(string | int | float | bool | None v, int? witness, string ctx) {
+            match (v) {
+                None => { return None; }
+                else => { return Atlantis::Orm::asDbInt(v, ctx); }
+            }
+        }
+        float fromDb(string | int | float | bool | None v, float witness, string ctx) {
+            match (v) {
+                float => { return v; }
+                int => { return v.toFloat(); }
+                string => {
+                    float? p = v.toFloat();
+                    if (p == None) {
+                        throw MappingException(ctx + ": '" + v + "' is not a number");
+                    } else {
+                        return p;
+                    }
+                }
+                None => {
+                    throw MappingException(ctx + ": NULL into a non-optional float — " +
+                        "make the field `float?` or add NOT NULL");
+                }
+                else => { throw MappingException(ctx + ": cell is not a number"); }
+            }
+        }
+        float? fromDb(string | int | float | bool | None v, float? witness, string ctx) {
+            match (v) {
+                None => { return None; }
+                else => { return Atlantis::Orm::fromDb(v, 0.0, ctx); }
+            }
+        }
+        bool fromDb(string | int | float | bool | None v, bool witness, string ctx) {
+            match (v) {
+                bool => { return v; }
+                int => {
+                    if (v == 0) { return false; }
+                    if (v == 1) { return true; }
+                    throw MappingException(ctx + ": " + v.toString() + " is not a boolean (want 0/1)");
+                }
+                string => {
+                    if (v == "0") { return false; }
+                    if (v == "1") { return true; }
+                    throw MappingException(ctx + ": '" + v + "' is not a boolean (want 0/1)");
+                }
+                None => {
+                    throw MappingException(ctx + ": NULL into a non-optional bool — " +
+                        "make the field `bool?` or add NOT NULL");
+                }
+                else => { throw MappingException(ctx + ": cell is not a boolean"); }
+            }
+        }
+        bool? fromDb(string | int | float | bool | None v, bool? witness, string ctx) {
+            match (v) {
+                None => { return None; }
+                else => { return Atlantis::Orm::fromDb(v, false, ctx); }
+            }
+        }
+        string fromDb(string | int | float | bool | None v, string witness, string ctx) {
+            match (v) {
+                string => { return v; }
+                None => {
+                    throw MappingException(ctx + ": NULL into a non-optional string — " +
+                        "make the field `string?` or add NOT NULL");
+                }
+                else => { throw MappingException(ctx + ": cell is not a string"); }
+            }
+        }
+        string? fromDb(string | int | float | bool | None v, string? witness, string ctx) {
+            match (v) {
+                None => { return None; }
+                string => { return v; }
+                else => { throw MappingException(ctx + ": cell is not a string"); }
+            }
+        }
+        DateTime fromDb(string | int | float | bool | None v, DateTime witness, string ctx) {
+            match (v) {
+                string => { return Atlantis::Orm::parseDateTime(v, ctx); }
+                None => {
+                    throw MappingException(ctx + ": NULL into a non-optional DateTime — " +
+                        "make the field `DateTime?` or add NOT NULL");
+                }
+                else => { throw MappingException(ctx + ": cell is not a DATETIME string"); }
+            }
+        }
+        DateTime? fromDb(string | int | float | bool | None v, DateTime? witness, string ctx) {
+            match (v) {
+                None => { return None; }
+                string => { return Atlantis::Orm::parseDateTime(v, ctx); }
+                else => { throw MappingException(ctx + ": cell is not a DATETIME string"); }
+            }
+        }
+        // Enums ride the generic tail — LA-18 T::member; an unknown carrier in
+        // a row is a MappingException, never a silent default (§7).
+        T __ormEnumMiss<T>(T witness, string ctx, int code) {
+            throw MappingException(ctx + ": unknown enum carrier " + code.toString());
+        }
+        T fromDb<T>(string | int | float | bool | None v, T witness, string ctx)
+            => T::fromCode(Atlantis::Orm::asDbInt(v, ctx)) ??
+               Atlantis::Orm::__ormEnumMiss(witness, ctx, Atlantis::Orm::asDbInt(v, ctx));
+
+        // evaluates an assignment-expression element for effect (§2.2 Shape A);
+        // inlines to nothing on LLVM. An assignment expression yields the
+        // assigned field's type, so the sink is generic.
+        int step(int x) => 0;
+        int step<T>(T x) => 0;
+
+        // "<table>.<column>" for MappingException context. A helper because
+        // punctuation-only string literals ("." and "@Row ") get corrupted
+        // inside inject templates (quasiquote lexer defect — see the ORM
+        // implementation log; templates call this instead).
+        string ctx(string table, string col) => table + "." + col;
+        string ctxRow(string col) => "@Row " + col;
+
+        // element equality over DbValue cells (dirtyCols, §1.3 Model).
+        bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
+            match (a) {
+                int => { match (b) { int => { return a == b; } else => { return false; } } }
+                float => { match (b) { float => { return a == b; } else => { return false; } } }
+                bool => { match (b) { bool => { return a == b; } else => { return false; } } }
+                string => { match (b) { string => { return a == b; } else => { return false; } } }
+                None => { match (b) { None => { return true; } else => { return false; } } }
+            }
+        }
+
+        // §7 DDL suggestion from a field's canonical type spelling (used by the
+        // generated __ormColTypes and the migration scaffolder, §10).
+        string ddlSuggest(string t) {
+            if (t == "int") { return "BIGINT"; }
+            if (t == "int | None") { return "BIGINT NULL"; }
+            if (t == "float") { return "DOUBLE"; }
+            if (t == "float | None") { return "DOUBLE NULL"; }
+            if (t == "bool") { return "TINYINT(1)"; }
+            if (t == "bool | None") { return "TINYINT(1) NULL"; }
+            if (t == "string") { return "VARCHAR(255)"; }
+            if (t == "string | None") { return "VARCHAR(255) NULL"; }
+            if (t == "DateTime") { return "DATETIME(6)"; }
+            if (t == "DateTime | None") { return "DATETIME(6) NULL"; }
+            return "INT";        // enum carrier (§7); anything else failed the build already
+        }
+
+        // ==== §1.3 mixins — real stateful bases ============================
+        class Timestamps {
+            DateTime createdAt = DateTime::ofEpochMs(0);
+            DateTime updatedAt = DateTime::ofEpochMs(0);
+            Array<string> __tsCols() => ["createdAt", "updatedAt"];
+            Array<string | int | float | bool | None> __tsVals() =>
+                [Atlantis::Orm::toDb(this.createdAt), Atlantis::Orm::toDb(this.updatedAt)];
+            Array<string> __tsColTypes() => ["DATETIME(6)", "DATETIME(6)"];
+            void __tsApply(Atlantis::Data::Row r, string table) {
+                this.createdAt = Atlantis::Orm::fromDb(r.byName("createdAt"), this.createdAt, table + ".createdAt");
+                this.updatedAt = Atlantis::Orm::fromDb(r.byName("updatedAt"), this.updatedAt, table + ".updatedAt");
+            }
+        }
+        class SoftDelete {
+            DateTime? deletedAt = None;
+            bool isDeleted() => this.deletedAt != None;
+            Array<string> __sdCols() => ["deletedAt"];
+            Array<string | int | float | bool | None> __sdVals() =>
+                [Atlantis::Orm::toDb(this.deletedAt)];
+            Array<string> __sdColTypes() => ["DATETIME(6) NULL"];
+            void __sdApply(Atlantis::Data::Row r, string table) {
+                this.deletedAt = Atlantis::Orm::fromDb(r.byName("deletedAt"), this.deletedAt, table + ".deletedAt");
+            }
+        }
+
+        // ==== §1.3 Model ===================================================
+        class Model {
+            Array<string | int | float | bool | None> __snap = [];
+            bool __isNew = true;
+
+            bool isNew() => this.__isNew;
+            bool isDirty() {
+                if (this.__isNew) { return true; }
+                return this.dirtyCols().length() > 0;
+            }
+            Array<string> dirtyCols() {
+                Array<string> cols = this.allCols();
+                Array<string | int | float | bool | None> vals = this.allVals();
+                Array<string> dirty = [];
+                if (this.__snap.length() != vals.length()) { return cols; }   // never sealed: all dirty
+                int i = 0;
+                while (i < vals.length()) {
+                    if (!Atlantis::Orm::dbEq(vals.at(i), this.__snap.at(i))) {
+                        dirty = dirty.add(cols.at(i));
+                    }
+                    i = i + 1;
+                }
+                return dirty;
+            }
+
+            // Aggregation over the generated own-body members + the framework
+            // mixins' hand-written contributor trios (§1.3: compile-time-known
+            // type probes; finite, two mixins, zero reflection).
+            Array<string> allCols() {
+                Array<string> cols = this.__ormCols();
+                match (this) {
+                    Timestamps => { for (string c in this.__tsCols()) { cols = cols.add(c); } }
+                    else => { }
+                }
+                match (this) {
+                    SoftDelete => { for (string c in this.__sdCols()) { cols = cols.add(c); } }
+                    else => { }
+                }
+                return cols;
+            }
+            Array<string | int | float | bool | None> allVals() {
+                Array<string | int | float | bool | None> vals = this.__ormVals();
+                match (this) {
+                    Timestamps => { for (string | int | float | bool | None v in this.__tsVals()) { vals = vals.add(v); } }
+                    else => { }
+                }
+                match (this) {
+                    SoftDelete => { for (string | int | float | bool | None v in this.__sdVals()) { vals = vals.add(v); } }
+                    else => { }
+                }
+                return vals;
+            }
+            Array<string> allColTypes() {
+                Array<string> ts = this.__ormColTypes();
+                match (this) {
+                    Timestamps => { for (string t in this.__tsColTypes()) { ts = ts.add(t); } }
+                    else => { }
+                }
+                match (this) {
+                    SoftDelete => { for (string t in this.__sdColTypes()) { ts = ts.add(t); } }
+                    else => { }
+                }
+                return ts;
+            }
+            void __ormApplyMix(Atlantis::Data::Row r, string table) {
+                match (this) {
+                    Timestamps => { this.__tsApply(r, table); }
+                    else => { }
+                }
+                match (this) {
+                    SoftDelete => { this.__sdApply(r, table); }
+                    else => { }
+                }
+            }
+            void __ormSeal() {
+                this.__snap = this.allVals();     // COW alias, O(1) (§2.2)
+                this.__isNew = false;
+            }
+            // §4.3 Timestamps discipline (one `now` per save()):
+            void __ormTouchInsert(int nowMs) {
+                match (this) {
+                    Timestamps => {
+                        this.createdAt = DateTime::ofEpochMs(nowMs);
+                        this.updatedAt = DateTime::ofEpochMs(nowMs);
+                    }
+                    else => { }
+                }
+            }
+            void __ormTouchUpdate(int nowMs) {
+                match (this) {
+                    Timestamps => { this.updatedAt = DateTime::ofEpochMs(nowMs); }
+                    else => { }
+                }
+            }
+            // §4.3 DELETE under SoftDelete: remove() becomes a tombstone.
+            bool __ormIsSoftDelete() {
+                match (this) {
+                    SoftDelete => { return true; }
+                    else => { return false; }
+                }
+            }
+            int pkVal() {
+                string pk = this.__ormPk();
+                Array<string> cols = this.allCols();
+                Array<string | int | float | bool | None> vals = this.allVals();
+                int i = 0;
+                while (i < cols.length()) {
+                    if (cols.at(i) == pk) {
+                        return Atlantis::Orm::asDbInt(vals.at(i), "pk '" + pk + "'");
+                    }
+                    i = i + 1;
+                }
+                throw OrmLogicException("pk column '" + pk + "' not among allCols()");
+            }
+            string | int | float | bool | None colVal(string col) {
+                Array<string> cols = this.allCols();
+                Array<string | int | float | bool | None> vals = this.allVals();
+                int i = 0;
+                while (i < cols.length()) {
+                    if (cols.at(i) == col) { return vals.at(i); }
+                    i = i + 1;
+                }
+                throw OrmLogicException("column '" + col + "' not among allCols()");
+            }
+            void __ormMarkDeleted(int nowMs) {
+                match (this) {
+                    SoftDelete => { this.deletedAt = DateTime::ofEpochMs(nowMs); }
+                    else => { }
+                }
+            }
+
+            // Generated-member defaults (§1.3): the throwing bodies convert the
+            // C1 silent-no-fire hazard into a loud boot error (§8 duty 1).
+            // Derived overrides dispatch on the runtime object (P8 re-pinned).
+            Array<string> __ormPath() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            string __ormPk() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            Array<string> __ormCols() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            Array<string | int | float | bool | None> __ormVals() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            Array<string> __ormColTypes() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            Array<string> __ormNotNullCols() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            void __ormSetPk(int v) {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            bool __ormAutoPk() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            string __ormEntity() {
+                throw OrmLogicException("ORM members not generated for this type — is the " +
+                    "class @Table-attributed, does it derive Model, and does its file " +
+                    "`uses Atlantis::Orm;`?");
+            }
+            // §5 relation registry (populated by ctor-appended registrations
+            // from the relation rules; quads flattened: field, kind, entity, fk
+            // — plus M2M's through/a/b riding the same flat array, 6 slots).
+            Array<string> __ormRels = [];
+            void __ormRelReg(string field, string kind, string entity, string fk,
+                             string m2mA, string m2mB) {
+                this.__ormRels = this.__ormRels.add(field);
+                this.__ormRels = this.__ormRels.add(kind);
+                this.__ormRels = this.__ormRels.add(entity);
+                this.__ormRels = this.__ormRels.add(fk);
+                this.__ormRels = this.__ormRels.add(m2mA);
+                this.__ormRels = this.__ormRels.add(m2mB);
+            }
+            // Typed wrapper fill, dispatched by field name — overridden by the
+            // generated __ormRelFill in each entity (raw-Array bridge, §5.3).
+            void __ormRelFill(string field, Array<Model> items) {
+                throw OrmLogicException("relation fill: no generated __ormRelFill for this type");
+            }
+        }
+
+        // ==== §5.1 relation wrappers =======================================
+        // Rel/RelMany distinguish UNLOADED from EMPTY — the silent-empty
+        // enterprise failure is unrepresentable (§5.1). Touching an unloaded
+        // relation throws with the fix in the message.
+        class Rel<T> {
+            bool __loaded = false;
+            Array<T> __items = [];
+            string __name = "?";
+            new Rel() { }
+            bool isLoaded() => this.__loaded;
+            T get() {
+                if (!this.__loaded) {
+                    throw NotLoadedException("relation '" + this.__name + "' was not loaded — " +
+                        "add .with((e) => e." + this.__name + ") to the query, or " +
+                        "await db.load(entities, (e) => e." + this.__name + ")");
+                }
+                if (this.__items.length() == 0) {
+                    throw EmptyResultException("relation '" + this.__name + "' is empty");
+                }
+                return this.__items.at(0);
+            }
+            T? orNone() {
+                if (!this.__loaded) {
+                    throw NotLoadedException("relation '" + this.__name + "' was not loaded — " +
+                        "add .with((e) => e." + this.__name + ") to the query, or " +
+                        "await db.load(entities, (e) => e." + this.__name + ")");
+                }
+                if (this.__items.length() == 0) { return None; }
+                return this.__items.at(0);
+            }
+            // raw-Array bridge (erased generics): the loader hands over the
+            // materialized children; the elements were built by the target
+            // entity's own FromRow, so the runtime types are exact.
+            void __fill(Array items, string name) {
+                this.__items = items;
+                this.__loaded = true;
+                this.__name = name;
+            }
+            void __fillIf(string want, string field, Array items) {
+                if (want == field) { this.__fill(items, field); }
+            }
+            int __fillIfStep(string want, string field, Array items) {
+                this.__fillIf(want, field, items);
+                return 0;
+            }
+            void __setName(string n) { this.__name = n; }
+        }
+        class RelMany<T> {
+            bool __loaded = false;
+            Array<T> __items = [];
+            string __name = "?";
+            new RelMany() { }
+            bool isLoaded() => this.__loaded;
+            Array<T> all() {
+                if (!this.__loaded) {
+                    throw NotLoadedException("relation '" + this.__name + "' was not loaded — " +
+                        "add .with((e) => e." + this.__name + ") to the query, or " +
+                        "await db.load(entities, (e) => e." + this.__name + ")");
+                }
+                return this.__items;
+            }
+            int count() {
+                if (!this.__loaded) {
+                    throw NotLoadedException("relation '" + this.__name + "' was not loaded — " +
+                        "add .with((e) => e." + this.__name + ") to the query, or " +
+                        "await db.load(entities, (e) => e." + this.__name + ")");
+                }
+                return this.__items.length();
+            }
+            void __fill(Array items, string name) {
+                this.__items = items;
+                this.__loaded = true;
+                this.__name = name;
+            }
+            void __fillIf(string want, string field, Array items) {
+                if (want == field) { this.__fill(items, field); }
+            }
+            int __fillIfStep(string want, string field, Array items) {
+                this.__fillIf(want, field, items);
+                return 0;
+            }
+            void __setName(string n) { this.__name = n; }
+        }
+
+        // wrappers learn their field name at construction, so an unloaded
+        // touch names the relation in its NotLoadedException (§5.1).
+        rule ormRelName {
+            match on field f in class C : Model
+            where f.type.startsWith("Rel<") || f.type.startsWith("RelMany<")
+            inject `this.$f.__setName($f.name);` at bottom of C.constructor
+        }
+
+        // ==== §8.3 rule-time guards (the Track 03 sentinel pattern) ========
+        bool __ormGuard(meta::Class c) {
+            if (!c.hasBase("Model")) {
+                throw RuntimeException("@Table " + c.name + ": entities must derive " +
+                    "Atlantis::Orm::Model (`class " + c.name + " : Model, ...`)");
+            }
+            int pks = 0;
+            for (meta::Field f in c.fields) {
+                string t = f.type;
+                bool isRel = t.startsWith("Rel<") || t.startsWith("RelMany<");
+                if (f.hasAttr("PrimaryKey")) {
+                    pks = pks + 1;
+                    if (t != "int") {
+                        throw RuntimeException("@Table " + c.name + ": @PrimaryKey field '" +
+                            f.name + "' must be int (got '" + t + "') — single int pk in v1");
+                    }
+                }
+                if (f.hasAttr("AutoIncrement") && !f.hasAttr("PrimaryKey")) {
+                    throw RuntimeException("@Table " + c.name + ": @AutoIncrement on '" +
+                        f.name + "' — only the @PrimaryKey field may be @AutoIncrement");
+                }
+                if (f.hasAttr("Ignore") && isRel) {
+                    throw RuntimeException("@Table " + c.name + ": @Ignore on relation field '" +
+                        f.name + "' is redundant — relations are never columns (§1.2); drop it");
+                }
+                if (f.hasAttr("NotNull") && t.endsWith(" | None")) {
+                    throw RuntimeException("@Table " + c.name + ": @NotNull field '" + f.name +
+                        "' is optional ('" + t + "') — drop the '?' or drop @NotNull (§7)");
+                }
+                if (f.hasAttr("Ignore") || isRel || f.name.startsWith("__orm") ||
+                    f.name.startsWith("__snap")) { continue; }
+                if (t.contains("=>")) {
+                    throw RuntimeException("@Table " + c.name + ": field '" + f.name +
+                        "' has function type '" + t + "' — not a column shape; @Ignore it (§1.2)");
+                }
+                if (t.startsWith("Map<") || t.startsWith("Array<") || t.startsWith("Set<") ||
+                    t == "Block") {
+                    throw RuntimeException("@Table " + c.name + ": field '" + f.name +
+                        "' has type '" + t + "' — no column mapping (§7); @Ignore it or " +
+                        "restructure");
+                }
+                if (t.contains("|") && !t.endsWith(" | None")) {
+                    throw RuntimeException("@Table " + c.name + ": field '" + f.name +
+                        "' has union type '" + t + "' — only T? is a column shape (§7)");
+                }
+            }
+            if (pks != 1) {
+                throw RuntimeException("@Table " + c.name + ": exactly one @PrimaryKey int " +
+                    "field required (found " + pks.toString() + ")");
+            }
+            return true;
+        }
+
+        rule ormGuard {
+            match @Table(t) on class C
+            where Atlantis::Orm::__ormGuard(C) && false
+            inject `0;` at bottom of C.constructor
+        }
+
+        // ==== §2 generated members (the seam) ==============================
+        rule ormPath {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `Array<string> __ormPath() => [$t.name];` at member of C
+        }
+        rule ormPk {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `string __ormPk() =>
+                [ $for f in C.fields.where((x) => x.hasAttr("PrimaryKey")) : $f.name ].at(0);`
+                at member of C
+        }
+        rule ormEntity {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `string __ormEntity() => $C.name;` at member of C
+        }
+        rule ormAutoPk {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `bool __ormAutoPk() =>
+                [ $for f in C.fields.where((x) => x.hasAttr("PrimaryKey") && x.hasAttr("AutoIncrement")) : 1 ].length() > 0;`
+                at member of C
+        }
+        rule ormCols {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `Array<string> __ormCols() =>
+                [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                                && !x.type.startsWith("Rel<")
+                                                && !x.type.startsWith("RelMany<")) : $f.name ];`
+                at member of C
+        }
+        rule ormVals {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `Array<string | int | float | bool | None> __ormVals() =>
+                [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                                && !x.type.startsWith("Rel<")
+                                                && !x.type.startsWith("RelMany<")) :
+                    Atlantis::Orm::toDb(this.$f) ];`
+                at member of C
+        }
+        rule ormColTypes {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `Array<string> __ormColTypes() =>
+                [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                                && !x.type.startsWith("Rel<")
+                                                && !x.type.startsWith("RelMany<")) :
+                    Atlantis::Orm::ddlSuggest($f.type) ];`
+                at member of C
+        }
+        rule ormNotNullCols {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `Array<string> __ormNotNullCols() =>
+                [ $for f in C.fields.where((x) => x.hasAttr("NotNull")) : $f.name ];`
+                at member of C
+        }
+        // §2.2 the write side — Shape A (probe P3 GREEN: this.$f as assignment
+        // target inside a $for element works; no Shape B scratch machinery).
+        rule ormFromRow {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `new FromRow(Atlantis::Data::Row r) {
+                Array<int> _fx = [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
+                                                && !x.type.startsWith("Rel<")
+                                                && !x.type.startsWith("RelMany<")) :
+                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, Atlantis::Orm::ctx($t.name, $f.name))) ];
+                this.__ormApplyMix(r, $t.name);
+                this.__ormSeal();
+            }` at member of C
+        }
+        rule ormSetPk {
+            match @PrimaryKey on field f in class C : Model
+            inject `void __ormSetPk(int v) { this.$f = v; }` at member of C
+        }
+
+        // §5.2/§5.4 relation registrations (ctor-appended; per-field rules bind
+        // the attribute values — strings v1, LA-27 swaps in member refs).
+        rule ormHasMany {
+            match @HasMany(h) on field f in class C : Model
+            inject `this.__ormRelReg($f.name, "hasMany", $h.entity, $h.fk, "", "");`
+                at bottom of C.constructor
+        }
+        rule ormBelongsTo {
+            match @BelongsTo(b) on field f in class C : Model
+            inject `this.__ormRelReg($f.name, "belongsTo", $b.entity, $b.fk, "", "");`
+                at bottom of C.constructor
+        }
+        rule ormManyToMany {
+            match @ManyToMany(m) on field f in class C : Model
+            inject `this.__ormRelReg($f.name, "manyToMany", $m.through, "", $m.a, $m.b);`
+                at bottom of C.constructor
+        }
+        // typed wrapper fill: one generated override dispatching by field name
+        // over the entity's relation fields (raw-Array bridge into Rel/RelMany).
+        rule ormRelFill {
+            match @Table(t) on class C
+            where C.hasBase("Model")
+            inject `void __ormRelFill(string field, Array<Model> items) {
+                Array<int> _fx = [ $for f in C.fields.where((x) => x.type.startsWith("Rel<")
+                                                              || x.type.startsWith("RelMany<")) :
+                    Atlantis::Orm::step(this.$f.__fillIfStep(field, $f.name, items)) ];
+            }` at member of C
+        }
+
+        // ==== §6.3 @Row structs — the dense lane ===========================
+        rule ormRowGuardStruct {
+            match @Row on struct S
+            where Atlantis::Orm::__ormRowGuard(S) && false
+            inject `0;` at bottom of S.constructor
+        }
+        bool __ormRowGuard(meta::Class c) {
+            for (meta::Field f in c.fields) {
+                string t = f.type;
+                if (t.contains("=>") || t.startsWith("Map<") || t.startsWith("Array<") ||
+                    t.startsWith("Rel<") || t.startsWith("RelMany<") ||
+                    (t.contains("|") && !t.endsWith(" | None"))) {
+                    throw RuntimeException("@Row " + c.name + ": field '" + f.name +
+                        "' has type '" + t + "' — @Row fields must be column-shaped (§6.3)");
+                }
+            }
+            return true;
+        }
+        rule ormRowFromRow {
+            match @Row on struct S
+            inject `new FromRow(Atlantis::Data::Row r) {
+                Array<int> _fx = [ $for f in S.fields :
+                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, Atlantis::Orm::ctxRow($f.name))) ];
+            }` at member of S
+        }
+    }
+}

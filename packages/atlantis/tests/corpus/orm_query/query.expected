@@ -1,0 +1,39 @@
+p1 closure=100 tree=100 agree=true
+p2 closure=101 tree=101 agree=true
+p3 closure=100 tree=100 agree=true
+p4 closure=110 tree=110 agree=true
+p5 closure=011 tree=011 agree=true
+p6 closure=010 tree=010 agree=true
+p7 closure=010 tree=010 agree=true
+p8 closure=001 tree=001 agree=true
+p9 closure=010 tree=010 agree=true
+p10 closure=101 tree=101 agree=true
+s1=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`active` AND (`name` LIKE BINARY 'A%')) ORDER BY `name` ASC LIMIT 50
+s2=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE ((`qty` >= ?) AND (`qty` < ?)) params=[1,50]
+s3=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`tag` IS NULL)
+s4=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`name` LIKE BINARY ?) params=['50\%%']
+s5=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`name` IN (?,?)) params=['Anchor','amp']
+s6=SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` ORDER BY `price` DESC, `name` ASC LIMIT 5 OFFSET 10
+[sql] SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE `active` :: []
+all n=2 first=Anchor
+[sql] SELECT COUNT(*) AS c FROM `products` WHERE `active` :: []
+count=2
+[sql] SELECT 1 AS e FROM `products` WHERE `active` LIMIT 1 :: []
+exists=true
+[sql] SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` ORDER BY `id` ASC LIMIT 1 :: []
+first=First
+[sql] SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`name` = 'nope') LIMIT 1 :: []
+firstOrNone=None
+[sql] SELECT `id`, `name`, `price`, `qty`, `active`, `tag` FROM `products` WHERE (`name` = 'nope') LIMIT 1 :: []
+first empty throws: yes
+[sql] UPDATE `products` SET `active` = 0 WHERE (`qty` < ?) :: [10]
+set changed=3
+[sql] UPDATE `products` SET `qty` = (`qty` + 1) WHERE `active` :: []
+set computed=3
+[sql] DELETE FROM `products` WHERE (`qty` = 0) :: []
+deleted=3
+sd1=SELECT `id`, `label`, `deletedAt` FROM `sditems` WHERE (`label` LIKE BINARY 'x%') AND (`deletedAt` IS NULL)
+sd2=SELECT `id`, `label`, `deletedAt` FROM `sditems` WHERE (`label` LIKE BINARY 'x%')
+[sql] UPDATE `sditems` SET `deletedAt` = ? WHERE (`label` = 'old') AND (`deletedAt` IS NULL) :: [<dt>]
+tombstoned=3
+[done]

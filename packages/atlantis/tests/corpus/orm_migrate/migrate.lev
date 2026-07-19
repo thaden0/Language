@@ -1,0 +1,188 @@
+// Atlantis Track 06 — ORM M4 corpus (techdesign-06-orm.md §10, §13 M4).
+// Migrations end-to-end against a STATEFUL fake schema_migrations table:
+// first run applies the chain in order, second run applies nothing, a
+// tampered stored hash is a hard error, a forked chain is a hard error with
+// the merge recipe, and the scaffolder emits head-parented source + suggested
+// DDL from the generated members.
+uses Atlantis::Orm;
+uses Atlantis::Data;
+
+string redact(string | int | float | bool | None v) {
+    match (v) {
+        string => {
+            if (v.length() >= 19 && v.subStr(4, 1) == "-" && v.subStr(7, 1) == "-" &&
+                v.subStr(10, 1) == " ") { return "<dt>"; }
+            if (v.length() == 64) { return "<hash>"; }
+            return "'" + v + "'";
+        }
+        int => { return v.toString(); }
+        float => { return v.toString(); }
+        bool => { if (v) { return "true"; } return "false"; }
+        None => { return "NULL"; }
+    }
+}
+
+class FakeTx : ITransaction {
+    new FakeTx() { }
+    Promise<void> commit() {
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    Promise<void> rollback() {
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    void close() { }
+}
+// stateful fake: emulates exactly the schema_migrations table
+class FakeConn : IDbConnection {
+    FakePool owner;
+    new FakeConn(FakePool owner) { this.owner = owner; }
+    Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+        console.writeln("[sql] " + sql);
+        if (sql.contains("FROM `schema_migrations`")) {
+            Array<string> cols = ["name", "hash"];
+            Array<Row> rows = [];
+            int i = 0;
+            while (i < this.owner.names.length()) {
+                Map<string, int> idx = Map();
+                idx["name"] = 0;
+                idx["hash"] = 1;
+                Array<string | int | float | bool | None> cells = [];
+                cells = cells.add(this.owner.names.at(i));
+                cells = cells.add(this.owner.hashes.at(i));
+                rows = rows.add(Row(cells, idx));
+                i = i + 1;
+            }
+            return Promise(ResultSet(cols, rows));
+        }
+        return Promise(ResultSet([], []));
+    }
+    Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) { shown = shown.add(redact(p)); }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        if (sql.startsWith("INSERT INTO `schema_migrations`")) {
+            string | int | float | bool | None n = params.at(0);
+            string | int | float | bool | None h = params.at(1);
+            match (n) {
+                string => {
+                    match (h) {
+                        string => {
+                            this.owner.names = this.owner.names.add(n);
+                            this.owner.hashes = this.owner.hashes.add(h);
+                        }
+                        else => { }
+                    }
+                }
+                else => { }
+            }
+        }
+        return Promise(ExecResult(1, 0));
+    }
+    Promise<ITransaction> begin() {
+        Promise<ITransaction> p = Promise();
+        p.resolve(FakeTx());
+        return p;
+    }
+    void close() { }
+}
+class FakePool : IDbPool {
+    Array<string> names = [];
+    Array<string> hashes = [];
+    FakeConn conn;
+    new FakePool() { this.conn = FakeConn(this); }
+    Promise<IDbConnection> acquire() {
+        Promise<IDbConnection> p = Promise();
+        p.resolve(this.conn);
+        return p;
+    }
+    void release(IDbConnection c) { }
+}
+
+// ---- an entity for the scaffolder's suggested DDL ----
+@Table("gadgets")
+class Gadget : Model, Timestamps {
+    @PrimaryKey @AutoIncrement
+    int id;
+    @NotNull
+    string label;
+    int? weight;
+}
+
+// ---- migrations ----
+class M1 : Migration {
+    string name() => "0001_create_gadgets";
+    Array<string> up() {
+        return ["CREATE TABLE `gadgets` (`id` BIGINT PRIMARY KEY AUTO_INCREMENT, `label` VARCHAR(255) NOT NULL)"];
+    }
+}
+class M2 : Migration {
+    string name() => "0002_add_weight";
+    string parent() => "0001_create_gadgets";
+    Array<string> up() {
+        return ["ALTER TABLE `gadgets` ADD COLUMN `weight` BIGINT NULL"];
+    }
+}
+// a fork for the two-children error path
+class MFork : Migration {
+    string name() => "0002_fork";
+    string parent() => "0001_create_gadgets";
+    Array<string> up() { return ["SELECT 1"]; }
+}
+
+Promise<void> run() {
+    FakePool pool = FakePool();
+    Db db = Db(pool);
+    Array<Migration> reg = [];
+    reg = reg.add(M1());
+    reg = reg.add(M2());
+    MigrationRunner runner = MigrationRunner(db, reg);
+
+    // first run: applies both, in chain order
+    int applied = await runner.migrate();
+    console.writeln("first run applied=" + applied.toString());
+
+    // second run: chain already applied, hashes verify, nothing to do
+    int applied2 = await runner.migrate();
+    console.writeln("second run applied=" + applied2.toString());
+
+    // tamper: rewrite a stored hash -> hard error naming the migration
+    pool.hashes = [];
+    pool.hashes = pool.hashes.add("beef");
+    pool.hashes = pool.hashes.add("dead");
+    try {
+        int bad = await runner.migrate();
+        console.writeln("tamper: NOT THROWN");
+    } catch (Atlantis::Orm::OrmLogicException e) {
+        console.writeln("tamper throws: yes");
+    }
+
+    // fork: two migrations claim one parent -> merge recipe error
+    Array<Migration> forked = [];
+    forked = forked.add(M1());
+    forked = forked.add(M2());
+    forked = forked.add(MFork());
+    MigrationRunner fr = MigrationRunner(db, forked);
+    try {
+        Array<Migration> c = fr.chainOrder();
+        console.writeln("fork: NOT THROWN");
+    } catch (Atlantis::Orm::OrmLogicException e) {
+        console.writeln("fork throws: yes");
+    }
+
+    // scaffolder: suggested DDL from generated members + head-parented source
+    console.writeln(runner.suggestedDdl(Gadget()));
+    console.writeln(runner.scaffoldSource("0003_next"));
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    await run();
+    console.writeln("[done]");
+}

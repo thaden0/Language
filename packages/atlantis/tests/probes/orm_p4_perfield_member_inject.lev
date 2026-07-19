@@ -1,0 +1,34 @@
+// ORM M0 P4 (techdesign-06-orm.md §11): a per-field rule (field subject)
+// injecting a MEMBER into the enclosing class (__ormSetPk), vs ctor-append
+// only. Also probes the single-element-$for alternative.
+// Placement: root Atlantis (P1 fallback).
+namespace Atlantis {
+    attribute Table { string name; }
+    attribute PrimaryKey { }
+    int __ormStep(int x) => 0;
+    rule setPkMember {
+        match @PrimaryKey on field f in class C
+        inject `void __ormSetPk(int v) { this.$f = v; }` at member of C
+    }
+    rule setPkFor {
+        match @Table(t) on class C
+        inject `void __ormSetPk2(int v) {
+            Array<int> _fx = [ $for f in C.fields.where((x) => x.hasAttr("PrimaryKey")) :
+                Atlantis::__ormStep(this.$f = v) ];
+        }` at member of C
+    }
+}
+uses Atlantis;
+
+@Table("users")
+class User {
+    @PrimaryKey
+    int id = 0;
+    int age = 1;
+}
+
+User u = User();
+u.__ormSetPk(42);
+console.writeln(u.id);
+u.__ormSetPk2(77);
+console.writeln(u.id);
