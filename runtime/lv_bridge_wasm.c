@@ -67,9 +67,19 @@ static int lv_clo_reg(const LvValue* cb) {
         if (!g_clo[i].used) { slot = i; break; }
     if (slot < 0) {
         if (g_clo_len == g_clo_cap) {
-            g_clo_cap = g_clo_cap ? g_clo_cap * 2 : 8;
-            g_clo = realloc(g_clo, (size_t)g_clo_cap * sizeof *g_clo);
-            if (!g_clo) return -1;
+            int new_cap = g_clo_cap ? g_clo_cap * 2 : 8;
+            /* realloc into a temp: on failure the old table (and its retained
+             * roots) MUST survive intact, and the failure MUST be loud — a lost
+             * registration would silently drop the handler. The pending-throw
+             * flag is caught by CallNativeFn's blanket throw check, so the -1
+             * sentinel never reaches addEventListener. */
+            LvCloEnt* grown = realloc(g_clo, (size_t)new_cap * sizeof *g_clo);
+            if (!grown) {
+                lvrt_raise("host bridge: out of memory registering event handler");
+                return -1;
+            }
+            g_clo = grown;
+            g_clo_cap = new_cap;
         }
         slot = g_clo_len++;
     }
@@ -180,4 +190,8 @@ int64_t lv_ex_fieldcount(int64_t classId) { return lvrt_fieldcount(classId); }
 __attribute__((export_name("lvrt_class_field_name")))
 const char* lv_ex_class_field_name(int64_t classId, int64_t i) {
     return lvrt_class_field_name(classId, i);
+}
+__attribute__((export_name("lvrt_class_name")))
+const char* lv_ex_class_name(int64_t classId) {
+    return lvrt_class_name(classId);
 }

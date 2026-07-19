@@ -273,13 +273,19 @@ export function makeHost(getInstance, sink = defaultSink,
   function fieldName(classId, i) {
     return readCStr(exports().lvrt_class_field_name(classId, BigInt(i)) >>> 0);
   }
+  function className(classId) {
+    return readCStr(exports().lvrt_class_name(classId) >>> 0);
+  }
   function marshalObj(payload) {
     const d = dvNew();
     const classId = d.getBigInt64(payload, true);          // object: {classId, dyn, slots...}
     const nslots = Number(exports().lvrt_fieldcount(classId));
-    // handle-wrapper short-circuit (§3): a class with exactly one int slot
-    // named "h" (DomNode/DomEvent) IS its handle — return the JS value.
-    if (nslots === 1 && fieldName(classId, 0) === 'h') {
+    // handle-wrapper short-circuit (§3): the bridge's own handle wrappers
+    // (DomNode/DomEvent) ARE their JS value — identify them by class NAME, not
+    // by an ambiguous "one int slot" shape (a user class `{int h;}` shares that
+    // shape but is a plain object). Their sole slot is the int handle.
+    const cls = className(classId);
+    if (cls === 'DomNode' || cls === 'DomEvent') {
       const handle = Number(d.getBigInt64(payload + 16 + 8, true));  // slot 0 payload
       return heap[handle];
     }

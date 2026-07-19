@@ -787,9 +787,11 @@ void    lvrt_callclosure(LvValue* out, const LvValue* clo,
  * wasm-*gained* capability, so unlike the hard-03 gate there is no compile-time
  * diagnostic, just a loud runtime error if native code reaches one (the
  * existing corpus never does, so the four-lane differential is unaffected).
- * All args cross as LvValue* per the boundary rule (§2.1). Every result is
- * retained +1 into the register by generated code (fresh string / handle
- * transfer; retain is a no-op on the int/void results via the immediate gate).
+ * All args cross as LvValue* per the boundary rule (§2.1). Results that can be
+ * a fresh counted value are retained +1 into the register by generated code:
+ * lvrt_hostcall (a string/handle result transfers +1; retain is a no-op on its
+ * int/void results via the immediate gate) and lvrt_hostecho (a fresh string).
+ * lvrt_host_clo_reg's result is ALWAYS an int index, so it takes no retain.
  *
  * lvrt_hostcall: the generic sync host call. `op` (string) selects the
  *   operation; `h0` is the primary node handle (INT; 0 = document/none), `h1`
@@ -820,6 +822,13 @@ void    lvrt_hostecho(LvValue* out, const LvValue* v);
  * through linear memory", realized as a typed accessor rather than JS parsing
  * the LvClassInfo struct layout). */
 const char* lvrt_class_field_name(int64_t classId, int64_t i);
+
+/* Track W hard-06 companion (NOT emitted-against — host-accessor discipline as
+ * above). Returns the interned class-name pointer for `classId` (NUL-terminated
+ * C string in linear memory), or NULL when unknown. The JS marshaler reads it
+ * to identify the handle-wrapper classes (DomNode/DomEvent) by name rather than
+ * by an ambiguous slot-shape heuristic (doc 05 §3). */
+const char* lvrt_class_name(int64_t classId);
 
 /* LA-30 B2 (doc 06 §4) — the sysTask* floor (lv_loop.c). Ids, not handles,
  * cross this boundary; every result is a scalar int. run/joinAll/awaitAny2

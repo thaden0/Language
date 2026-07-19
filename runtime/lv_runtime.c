@@ -3099,18 +3099,23 @@ void lvrt_callclosure(LvValue* out, const LvValue* clo,
 }
 
 /* Track W hard-06 (designs/wasm-frontend/hard-06-hostbridge-seam.md): the
- * JS/DOM host-bridge accessor + native stubs. lvrt_class_field_name is the one
- * host-facing reader the JS marshaler pairs with lvrt_fieldcount to walk an
- * object's slots (doc 05 §3); real on every target (reads the registered class
- * table), meaningful only when a JS host reads it through the wasm export.
- * On wasm the bridge ENTRY points (lvrt_hostcall/host_clo_reg/hostecho) live in
- * lv_bridge_wasm.c; here they are native stubs that raise, since DOM/JS is a
- * wasm-only capability (a program that reaches one on a native build gets a
- * loud, catchable RuntimeException — the existing corpus never does). */
+ * JS/DOM host-bridge accessors + native stubs. lvrt_class_field_name and
+ * lvrt_class_name are the host-facing readers the JS marshaler pairs with
+ * lvrt_fieldcount to identify a class and walk its slots (doc 05 §3); real on
+ * every target (reads the registered class table), meaningful only when a JS
+ * host reads them through the wasm export. On wasm the bridge ENTRY points
+ * (lvrt_hostcall/host_clo_reg/hostecho) live in lv_bridge_wasm.c; here they are
+ * native stubs that raise, since DOM/JS is a wasm-only capability (a program
+ * that reaches one on a native build gets a loud, catchable RuntimeException —
+ * the existing corpus never does). */
 const char* lvrt_class_field_name(int64_t classId, int64_t i) {
     const LvClassInfo* c = lv_find_class(classId);
     if (!c || i < 0 || i >= c->nslots || !c->slotNames) return NULL;
     return c->slotNames[i];
+}
+const char* lvrt_class_name(int64_t classId) {
+    const LvClassInfo* c = lv_find_class(classId);
+    return c ? c->name : NULL;
 }
 
 #ifndef __wasm__

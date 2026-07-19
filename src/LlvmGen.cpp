@@ -2897,7 +2897,9 @@ struct Gen {
                             retainDst();
                         } else if (n == "sysHostCloReg") {
                             // Register a handler closure as a doc-05 §5 root
-                            // (retained host-side); returns its table index.
+                            // (retained host-side); returns its table index. The
+                            // result is always an int index — no retainDst (a
+                            // retain on an immediate would be a no-op anyway).
                             b.CreateCall(rtHostCloReg, {regs[in.a], arg(0)});
                         } else if (n == "sysHostEcho") {
                             // Reflective marshaler round-trip probe (doc 05 §8):
