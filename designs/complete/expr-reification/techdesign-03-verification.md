@@ -191,4 +191,115 @@ consumes the landed surface as-is.
 
 ## 10. Implementation log
 
-(Append findings and completion note here.)
+**2026-07-19 — STAGE 3 IMPLEMENTED IN FULL.** All of §8's acceptance items green
+on oracle + IR + LLVM; full pre-existing ctest matrix (238 tests, incl.
+emit-C++/ELF/wasm/wine/qemu lanes) re-run clean on a full rebuild. Landed, all
+in `tests/`/`docs/` (nothing in `src/`, per this stage's hard rule):
+
+- §2 — 21-row positive corpus (`tests/corpus/expr_reify/expr_reify_r01_field.lev`
+  … `_r21_positions.lev`), each with the §1 canonical `dump`/`dumpSite` helpers
+  copied verbatim, byte-identical oracle/IR/LLVM. Row 10 (`!u.active`) is
+  **omitted** — see the #86 finding below. Row 11's unary-minus and row 21's
+  siteId ordering both needed a fixture correction, not a design change (`0-5`
+  parsed as `Bin("-",...)` — literal `-5` was needed to hit `Un("-", Lit(5))`;
+  the Checker's siteId walk visits top-level function decls, then top-level
+  statements, then top-level class decls, each in **its own textual order** —
+  not one strict top-to-bottom pass across all three groups, so row 21's four
+  positions had to be arranged in that group order to land siteId 0..3).
+- §2 twins — all 5 (rows 1, 4, 12, 15, 18) byte-identical via a new
+  `tests/run_expr_reify_twin.sh` + 5 CMake rows; captured the real `--expand`
+  output first (per R8's already-logged deviation — no explicit `<F>` on the
+  emitted construction) and hand-matched it, including the synthesized
+  `__lvReifyArr` IIFE spelling for non-empty arrays.
+- §3 — full 14-row negative corpus (`tests/negative/expr_reify_{call,await,
+  nested,block,assign_pos,capmut,is,match,interp,index,ternary,captype,value,
+  ambig}.lev`) + new `tests/run_expr_reify_error.sh` + 14 CMake rows. `interp`
+  asserts the diagnostic that actually fires (`non-whitelisted call
+  'toString'`), not doc02's catalog spelling "string interpolation" — string
+  interpolation desugars to a `+`/`.toString()`-call chain at **parse time**
+  (`Parser.cpp:1709 parseInterpolatedString`), before the Checker ever runs, so
+  no distinct `ExprKind` for it survives to the reifier; a dedicated named
+  reject is structurally unreachable. Not a bug — a design/reality correction,
+  logged per this doc's own STOP-AND-ESCALATE §2 (negative form produces "the
+  wrong diagnostic"); the diagnostic that fires IS correct and informative,
+  just not the literal string the ask's catalog assumed.
+- §4 — differential corpus (`tests/corpus/expr_diff/`, 5 files, 2 CMake rows +
+  LLVM leg): every whitelisted `Bin`/`Un`/`Call` op, None-operand `==`/`!=`
+  pinning, the 9 like/ilike escape/fold edge pins (doc 01 §2.4 rows 10-18)
+  re-run through reified trees, and the two R5 snapshot rows. `!`-unary is
+  excluded (see #86). The `<`-against-`None` relational row is excluded (see
+  #87 — a pre-existing, non-reifier bug). `snap_value` was **rewritten** from
+  its literal ask text to pin the VERIFIED real behavior: this stage found
+  that ordinary closures in this language capture local variables **live**
+  (by reference to the variable slot), confirmed with a plain, non-reified
+  repro (`var f = () => lo >= 50; lo = 99; f()` reads the current `lo`, not
+  the value at closure creation) — so leg 1 (`.fn`, explicitly "the lambda,
+  unchanged" per doc 00 §2) does **not** enjoy doc 00 R5's literal "affects
+  neither leg" promise; only leg 2 (`binds`, built from a separate
+  construction-argument array literal evaluated once) is actually
+  snapshotted. The row now asserts the two legs correctly **disagree** after
+  a post-construction mutation — a premise correction (same class as Stage
+  2's logged R8 deviation), not a hand-waved mismatch. `snap_ref` passes as
+  specified (reference-typed captures are live on both legs by construction,
+  which is what R5 asks for there).
+- §5 — `--expand` visibility confirmed (`expr::Expr(`/`expr::Bin(` both
+  present, per R8's already-adjusted spelling); the existing
+  `corpus_expr_reify_expand` round-trip test now covers all 28 files in
+  `tests/corpus/expr_reify/` (27 checked, 1 skipped). Row 3 (enum operand)
+  needed `@no-roundtrip` — pre-existing bug #69 (enum `$` re-lex), unrelated
+  to LA-31; the exemption is also noted inline in
+  `tests/run_expand_roundtrip.sh`. A **separate, new** round-trip defect was
+  found (not wired into any green test — see #88 below): a file with two
+  reified `expr::Call` sites sharing a whitelisted name but different
+  receiver kinds breaks the Array-receiver site's tree walk after one
+  `--expand`+recompile cycle; `tests/corpus/expr_diff/` is therefore
+  deliberately NOT given a round-trip CMake row.
+- §6 — `tests/corpus/expr_reify/expr_orm_smoke_1.lev`: fluent `Query<E>.where`
+  (two distinct siteIds, `Array<Node>` accumulation, stable render) + `.set`.
+  **The ask's own headline example does not compile as designed** — see #89
+  below; the smoke demonstrates only the plain-comparison/arithmetic shapes,
+  which reify correctly through the generic `Query<E>`.
+- §7 — `docs/reference.md` new `## 6.14 Expression reification` (taxonomy,
+  conversion rule, reifiable-subset table, `binds` snapshot contract incl. the
+  live-closure-capture finding, whitelist + full `like`/`ilike` semantics,
+  E1/E2/E3 catalog incl. the interpolation note, `siteId` determinism, R1/R8
+  `--expand` notes, a worked `expr::eval` excerpt); `docs/footguns.md` gained
+  a new "Expression reification" cluster (bugs #86/#88/#89) plus a #87 row in
+  cluster B and three new "by design" rows (`--expand` runs the Checker,
+  Array-capture `None` slot, `Field` paths carry no parameter marker).
+
+**Four compiler defects found and filed, none fixed here (hard rule — this
+stage touches nothing in `src/`):**
+
+- **`known_bugs_2.md` #86 [P1]** — the reifier's `Un("!", …)` stores op text
+  `"?"`, not `"!"` (`opSymbol`, `Checker.cpp:34`, has no `TokenKind::Bang`
+  case). Silent-wrong-value risk for any tree-walker dispatching on the op
+  string. Positive/differential corpora omit the `!`-unary row.
+- **`known_bugs_1.md` #87 [P0]** — `<`/`<=`/`>`/`>=` of a `None`-valued `T?`
+  against a literal produces a `bool` whose `.toString()` prints empty
+  (branching on it is fine; only stringifying is wrong) — unanimous across
+  oracle/IR/emit-C++/LLVM, ordinary code, nothing to do with `expr::`.
+  Differential corpus's None-operand rows cover only `==`/`!=` (unaffected).
+- **`known_bugs_2.md` #88 [P0]** — `--expand`-then-recompile of two reified
+  `expr::Call` sites sharing a whitelisted name but different receiver kinds
+  (e.g. one `string.contains`, one `Array.contains`) silently breaks the
+  Array-receiver site's `evalNode`-style tree walk; a **direct** `match` on
+  the same node right next to the call correctly identifies it, ruling out
+  object-identity corruption — narrowed to something round-trip-specific
+  (printer/reparse), not reproducible via direct reification.
+- **`known_bugs_2.md` #89 [P0]** — a whitelisted `Call` inside a lambda whose
+  parameter type flows through a **generic type parameter** (exactly the
+  ORM's `Query<E>.where(expr::Expr<(E)=>bool>)` shape,
+  `designs/atlantis/techdesign-06-orm.md:337`) is wrongly rejected as
+  non-whitelisted, even though the identical body reifies fine with a
+  concrete parameter type and plain comparisons reify fine through the same
+  generic method. Likely cause: the reifier's own `typeOf(recv)` re-query
+  (`Checker.cpp:3384-3386`) loses the generic substitution context
+  `checkLambdaBody` had. **This is the one finding that keeps Track 06 M2
+  from being fully, immediately unblocked** — the ORM's own headline example
+  needs this fixed before it can be adopted verbatim.
+
+No STOP was needed in the sense of halting work — each finding was isolated,
+filed, and the corpus adjusted to assert verified-real (never hand-waved)
+behavior, per this doc's own protocol, and the stage continued. Nothing
+outside this stage's ownership list was touched.

@@ -1,0 +1,5 @@
+// LA-31 Stage 3 §3 — a lambda VALUE (not a literal) in an Expr position (E1, R16).
+class User { int age; new User(int g) { age = g; } }
+void take(expr::Expr<(User)=>bool> e) { }
+(User)=>bool f = (u) => u.age > 0;
+take(f);

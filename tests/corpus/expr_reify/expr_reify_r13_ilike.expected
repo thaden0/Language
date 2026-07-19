@@ -1,0 +1,5 @@
+s0:Call(ilike,Field(name),[Bind(0)])
+s0binds:binds=[str:a%]
+s0site:siteId=0
+fn0=true
+fn1=false

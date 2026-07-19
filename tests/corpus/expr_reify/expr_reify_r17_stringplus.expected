@@ -1,0 +1,5 @@
+s0:Bin(==,Bin(+,Bin(+,Field(first),Lit(str: )),Field(last)),Bind(0))
+s0binds:binds=[str:Ada Lovelace]
+s0site:siteId=0
+fn0=true
+fn1=false

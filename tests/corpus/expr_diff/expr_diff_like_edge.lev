@@ -1,0 +1,154 @@
+// LA-31 Stage 3 §4 — differential corpus: the like/ilike escape/fold edge
+// pins (doc 01 §2.4 rows 10-18) re-run through reified trees, closure leg
+// vs eval leg. The pattern is a captured local (Bind), the text a param
+// field (Field) — matches the ask's ORM shape exactly.
+class Rec { string text; new Rec(string t) { text = t; } }
+
+// ---- expr::eval — reference tree interpreter (doc 01 §3.1, verbatim copy) ----
+bool evalTruth(string | int | float | bool | None v) {
+    match (v) {
+        bool => { return v; }
+        else => { return false; }
+    }
+}
+
+string asStr(string | int | float | bool | None v) {
+    match (v) {
+        string => { return v; }
+        else   => { return ""; }
+    }
+}
+
+bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        None => { match (b) { None => { return true; }  else => { return false; } } }
+        int  => { match (b) { int  => { return a == b; } else => { return false; } } }
+        float=> { match (b) { float=> { return a == b; } else => { return false; } } }
+        bool => { match (b) { bool => { return a == b; } else => { return false; } } }
+        string => { match (b) { string => { return a == b; } else => { return false; } } }
+    }
+}
+
+string | int | float | bool | None dbNum(string op,
+        string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        int => { match (b) { int => {
+            int x = a; int y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+            if (op == "%")  return x % y;
+        } else => { } } }
+        float => { match (b) { float => {
+            float x = a; float y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+        } else => { } } }
+        string => { match (b) { string => {
+            if (op == "+") return a + b;
+        } else => { } } }
+        else => { }
+    }
+    match (a) { None => { } else => { match (b) { None => { } else => {
+        throw RuntimeException("expr::eval: bad operands for " + op); } } } }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return false;
+    return None;
+}
+
+string | int | float | bool | None evalNode(
+        expr::Node n,
+        (Array<string>) => string | int | float | bool | None rec,
+        Array<string | int | float | bool | None> binds,
+        Array<string | int | float | bool | None> arrayBind0) {
+    match (n) {
+        expr::Field => { return rec(n.path); }
+        expr::Lit   => { return n.v; }
+        expr::Bind  => { return binds[n.slot]; }
+        expr::Un    => {
+            expr::Un u = n;
+            string | int | float | bool | None inner = evalNode(u.e, rec, binds, arrayBind0);
+            if (u.op == "!") return !evalTruth(inner);
+            match (inner) {
+                int   => { return 0 - inner; }
+                float => { return 0.0 - inner; }
+                else  => { return None; }
+            }
+        }
+        expr::Bin   => {
+            expr::Bin b = n;
+            string | int | float | bool | None lv = evalNode(b.l, rec, binds, arrayBind0);
+            string | int | float | bool | None rv = evalNode(b.r, rec, binds, arrayBind0);
+            if (b.op == "&&") return evalTruth(lv) && evalTruth(rv);
+            if (b.op == "||") return evalTruth(lv) || evalTruth(rv);
+            if (b.op == "==") return dbEq(lv, rv);
+            if (b.op == "!=") return !dbEq(lv, rv);
+            return dbNum(b.op, lv, rv);
+        }
+        expr::Call  => {
+            expr::Call c = n;
+            if (c.name == "contains" && c.args.length() == 1) {
+                match (c.recv) {
+                    expr::Bind => {
+                        string | int | float | bool | None needle =
+                            evalNode(c.args[0], rec, binds, arrayBind0);
+                        int k = 0;
+                        while (k < arrayBind0.length()) {
+                            if (dbEq(arrayBind0[k], needle)) return true;
+                            k = k + 1;
+                        }
+                        return false;
+                    }
+                    else => { }
+                }
+            }
+            string recvS = asStr(evalNode(c.recv, rec, binds, arrayBind0));
+            string arg0S = asStr(evalNode(c.args[0], rec, binds, arrayBind0));
+            if (c.name == "like")       return recvS.like(arg0S);
+            if (c.name == "ilike")      return recvS.ilike(arg0S);
+            if (c.name == "startsWith") return recvS.startsWith(arg0S);
+            if (c.name == "endsWith")   return recvS.endsWith(arg0S);
+            if (c.name == "contains")   return recvS.contains(arg0S);
+            throw RuntimeException("expr::eval: non-whitelisted call " + c.name);
+        }
+        else => { throw RuntimeException("expr::eval: unhandled node"); }
+    }
+}
+// ---- end expr::eval ----
+
+(Array<string>) => string | int | float | bool | None recOf(Rec r) {
+    return (path) => { if (path[0] == "text") return r.text; return None; };
+}
+Array<string | int | float | bool | None> noArr = [];
+
+void row(string tag, string text, string pat) {
+    Rec r = Rec(text);
+    expr::Expr<(Rec)=>bool> eL = (u) => u.text.like(pat);
+    expr::Expr<(Rec)=>bool> eI = (u) => u.text.ilike(pat);
+    bool fnL = eL.fn(r);
+    bool evL = evalTruth(evalNode(eL.tree, recOf(r), eL.binds, noArr));
+    bool fnI = eI.fn(r);
+    bool evI = evalTruth(evalNode(eI.tree, recOf(r), eI.binds, noArr));
+    console.writeln(tag + "L:" + fnL.toString() + ":" + evL.toString());
+    console.writeln(tag + "I:" + fnI.toString() + ":" + evI.toString());
+}
+
+row("10", "HELLO", "hello");
+row("11", "Hello", "h%O");
+row("12", "50%", "50\\%");
+row("13", "505", "50\\%");
+row("14", "a_b", "a\\_b");
+row("15", "axb", "a\\_b");
+row("16", "a\\", "a\\");
+row("17", "a", "a\\");
+row("18", "ab", "a\\");

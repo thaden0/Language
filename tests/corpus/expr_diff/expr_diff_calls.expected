@@ -1,0 +1,12 @@
+like:true:true
+like:false:false
+ilike:true:true
+ilike:false:false
+sw:true:true
+sw:false:false
+ew:true:true
+ew:false:false
+cont:true:true
+cont:false:false
+arrcont:true:true
+arrcont:false:false

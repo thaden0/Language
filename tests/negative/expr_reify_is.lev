@@ -1,0 +1,6 @@
+// LA-31 Stage 3 §3 — 'is' expression is unsupported (E2).
+class Animal { new Animal() { } }
+class Dog : Animal { new Dog() { } }
+class User { Animal pet; new User(Animal p) { pet = p; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => u.pet is Dog));

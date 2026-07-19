@@ -1,0 +1,4 @@
+// LA-31 Stage 3 §3 — assignment outside a set-shaped lambda (E2, R10).
+class User { int visits; new User(int v) { visits = v; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => (u.visits = 1) == 1));

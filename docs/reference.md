@@ -2313,6 +2313,248 @@ post-freeze `byteAt`/`byteToString`).
 
 ---
 
+## 6.14 Expression reification (`namespace expr`, LA-31)
+
+A **lambda literal** in a position typed `expr::Expr<F>` compiles to two co-resident
+artifacts: an ordinary closure (every lambda already produces one) AND a runtime, walkable
+`expr::Node` tree mirroring the lambda's **checked** body, plus a `binds` array of captured
+values snapshotted once at construction, plus a compile-time-unique `siteId`. This is a
+**language** capability (like `regex::`/`json::`), not an ORM feature — the ORM
+(`designs/atlantis/techdesign-06-orm.md`) is the first consumer, not the only one. The
+language guarantees exactly one thing about fidelity: the tree mirrors the checked AST
+(resolved members, folded comptime constants, enum carriers). Consumers own their own
+rendering fidelity via their own differential corpora. Coverage: oracle, IR, LLVM full;
+emit-C++/frozen ELF are not targets for this surface (existing emit-C++ suite stays green;
+the prelude additions do not regress reachability).
+
+### 6.14.1 The `expr::` taxonomy
+
+```
+namespace expr {
+    class Node { }
+    class Field : Node { Array<string> path; }
+    class Lit : Node { string | int | float | bool | None v; }
+    class Bind : Node { int slot; }
+    class Bin : Node { string op; Node l; Node r; }
+    class Un : Node { string op; Node e; }
+    class Call : Node { string name; Node recv; Array<Node> args; }
+    class Assign : Node { Field target; Node value; }
+    class Expr<F> {
+        F fn;                                              // leg 1 — the closure
+        expr::Node tree;                                   // leg 2 — the walkable tree
+        Array<string | int | float | bool | None> binds;    // captured values, snapshotted once
+        int siteId;                                         // per-compilation, source-order-stable
+    }
+}
+```
+
+All node classes are reference classes, data only — behavior lives in consumer code that
+`match`-walks the tree (`expr::eval`, below, is the canonical example). No methods beyond
+constructors exist on these classes.
+
+### 6.14.2 The conversion rule — where a lambda literal reifies
+
+A lambda **literal** (never a lambda-typed *value* — see E1 below) is reified wherever its
+target type is `expr::Expr<F>`, in every position that already carries an expected type:
+
+- a **call argument** (ordinary overload resolution; a lambda literal matches a `FuncRef`
+  parameter and an `expr::Expr<_>` parameter at the **same tier**, so an overload pair
+  offering both is a compile error — E3 below, not a silent preference),
+- a **local or global bind** with a declared `expr::Expr<F>` type,
+- a `return` against a declared `expr::Expr<F>` return type,
+- a class **field initializer** with a declared `expr::Expr<F>` field type.
+
+The reifiable body is exactly **one expression** — `(u) => <expr>`, never a block, not even
+a single-`return` block (E2 `block body`). Every lambda parameter is a legal `Field` root
+(multi-parameter lambdas reify: `(a, b) => a.age < b.age`). A `Field` path carries **no
+parameter marker** — two same-named fields on different parameters dump identically; a
+consumer that needs per-parameter roots declares single-parameter lambdas
+(`docs/footguns.md`).
+
+### 6.14.3 The reifiable subset
+
+| body construct | reifies to |
+|---|---|
+| `u.f`, `u.f.g` (a chain rooted at a lambda parameter) | `Field(["f","g"])` |
+| a captured chain NOT rooted at a lambda parameter (a bare captured local, `this.x`, `capturedObj.field`, `this.x.y`, …) | one `Bind(slot)` of the **whole chain's value**, snapshotted once (§6.14.4) |
+| an int/float/bool/string literal, `None`, or an enum member (`E::M`) | `Lit(<value>)` / `Lit(<int carrier>)` / `Lit(None)` |
+| `l <op> r`, op ∈ `== != < <= > >= && \|\| + - * / %` | `Bin("<op>", …, …)` — operands never reordered (a written `None != u.x` stays `Bin("!=", Lit(None), Field(x))`) |
+| `!e`, `-e` | `Un("!", …)` / `Un("-", …)` |
+| a whitelisted method call (§6.14.5) | `Call("<name>", <receiver>, [<args>])` |
+| `u.field = <expr>` as the lambda's **entire body**, target `Expr<(E)=>int>` | `Assign(Field(["field"]), …)` — the "set" shape |
+| anything else | a compile error naming the construct (§6.14.6) |
+
+A captured value is legal only if its checked type is `string|int|float|bool` (or `T?` of
+those) — or, as a special case, an `Array<T>` used solely as the receiver of a whitelisted
+`Array<T>.contains(x)` (§6.14.5's Array row): its slot is still allocated, but the `binds`
+array carries **`None`** in that slot (the `binds` element union cannot carry an Array); the
+closure leg still captures the array normally, and a consumer that needs its contents keeps
+its own reference (`docs/footguns.md`). Any other use of a non-value-typed capture is a
+named reject (`capture of a non-value type`).
+
+### 6.14.4 The `binds` snapshot contract
+
+`binds[k]` is the value of the k-th **distinct** captured expression, evaluated **once, at
+`Expr` construction**, in first-reference order; the tree consults only `binds`, never a
+live environment. Distinctness is by canonical chain spelling (root symbol + member path) —
+`lo` captured twice, or `this.x` referenced twice, shares one slot. Mechanically this falls
+out of ordinary left-to-right construction-argument evaluation: the closure, then the tree
+(no user code runs — a `Bind` node holds only a slot int), then the `binds` array literal
+(the only place a captured expression is actually evaluated).
+
+Two consequences, both pinned by corpus (`tests/corpus/expr_diff/expr_diff_snapshot.lev`):
+
+- A captured **value**-typed local's later mutation is invisible to the tree/`binds` leg
+  (`evalNode` over `.tree`/`.binds` always sees the value at construction time).
+- A captured **reference**-typed value's later **content** mutation (e.g. appending to a
+  captured `Array` used via `.contains`) IS visible, equally, wherever that reference is
+  read from — because it is the same underlying object, not a copy.
+
+Caution for consumers: this stage found that ordinary closures in this language capture
+local variables **live** (by reference to the variable slot), not by value at creation —
+so the **closure leg** (`.fn`) does *not* enjoy the same "frozen at construction" guarantee
+the `binds` array does. A captured local mutated after `Expr` construction is still visible
+to a later `.fn(...)` call, even though `evalNode`-style tree-walkers see the frozen
+snapshot. Treat `.fn` and the tree/`binds` pair as having **independently** correct but
+**different** capture semantics; do not assume they always agree after a post-construction
+mutation (`known_bugs_2.md`, filed against this finding — not fixed, not a reifier defect).
+
+### 6.14.5 The whitelist — reifiable method calls
+
+One static table drives both the accept path and the "non-whitelisted call" diagnostic's
+allow-list (growth is ticket-amendment-only, never ad hoc):
+
+| receiver (checked type) | method | arity |
+|---|---|---|
+| `string` | `like` | 1 |
+| `string` | `ilike` | 1 |
+| `string` | `startsWith` | 1 |
+| `string` | `endsWith` | 1 |
+| `string` | `contains` | 1 |
+| `Array<T>` (any `T`) | `contains` | 1 |
+
+Receiver matching uses the receiver expression's **checked type** — `u.age.like(p)` fails
+the ordinary checker (no `.like` on `int`) before the whitelist is ever consulted. A call
+that type-checks but is not one of these rows (`u.name.toUpper()`) is the named reject
+"non-whitelisted call '\<name\>'".
+
+**Known limitation** (`known_bugs_2.md` #89): a whitelisted call inside a lambda whose
+parameter type flows through a **generic type parameter** (e.g.
+`Query<E> { Query<E> where(expr::Expr<(E)=>bool> p); }` called as `Query<User>`) is
+currently, incorrectly, rejected as non-whitelisted — the identical body reifies correctly
+against a concrete, non-generic parameter type. Plain comparisons/arithmetic reify
+correctly through the same generic method; only the whitelisted-call path is affected. Not
+fixed by this stage (verification-only; the fix is `Checker.cpp`-internal).
+
+#### `like` / `ilike` — full semantics
+
+Anchored **full-string** match (SQL `LIKE`), byte-oriented: `%` (byte 37) matches any run of
+bytes including empty; `_` (byte 95) matches exactly one **byte** (not scalar — a UTF-8
+multibyte character needs one `_` per byte); `\` (byte 92) escapes the next byte to a
+literal, **including** a trailing `\` with no following byte in the pattern — `"a\\"`
+matches literal text `"a\\"` (a lone trailing `\` is unmatchable only when no text byte 92
+is left to pair with it, which falls out of the matcher mechanically rather than being a
+special case). Empty pattern matches only the empty string; trailing `%` runs collapse.
+`like` compares bytes exactly (case-sensitive); `ilike` folds A–Z (65–90) to a–z (97–122)
+on **both** text and pattern bytes at each comparison site (including an escaped literal
+byte) — no folded copies are built, and everything outside ASCII compares byte-exact (a
+non-ASCII letter never folds).
+
+### 6.14.6 Diagnostics
+
+Every reject points at the offending span, with a note naming the lambda site. `E2`'s
+"non-whitelisted call" reject also appends a note line generated by iterating the
+whitelist table (so it can never drift from §6.14.5):
+`reifiable calls: string.like/1, string.ilike/1, string.startsWith/1, string.endsWith/1, string.contains/1, Array.contains/1`.
+
+- **E1** — `only a lambda literal can be reified to expr::Expr<F>` — a lambda-typed
+  *value* (not a literal) reached an `Expr<F>` position. There is no runtime reification of
+  values, by design; a future need for one is a new request ticket.
+- **E2** — `cannot reify <construct>: outside the LA-31 reifiable subset`, `<construct>` one
+  of: `non-whitelisted call '<name>'` · `await` · `nested lambda` · `block body` ·
+  `assignment outside a set-shaped lambda` · `mutation of a capture` · `'is' expression` ·
+  `'match' expression` · `indexing` · `range` · `conditional expression` · `capture of a
+  non-value type` · `unsupported construct '<kind>'` (a catch-all so no shape slips through
+  unnamed). Note: **string interpolation has no dedicated diagnostic** — interpolation
+  desugars to a `+`/`.toString()`-call chain at parse time (before the Checker ever runs),
+  so an interpolated hole inside a reified body surfaces as whatever the desugared pieces
+  hit — in practice always `non-whitelisted call 'toString'`, since every hole is
+  unconditionally `.toString()`-called.
+- **E3** — `ambiguous lambda argument: matches both a function parameter and an expr::Expr
+  parameter; extract a typed local to select` — an overload pair offering both a `FuncRef`
+  and an `expr::Expr<_>` parameter, called with a lambda literal, ties instead of picking
+  by declaration order.
+
+### 6.14.7 `siteId`
+
+A monotonic `int`, starting at 0, bumped once per successful reification in the Checker's
+own walk order over the file — which visits top-level function declarations, then
+top-level statements, then top-level class declarations, each in their own textual order
+(not a single strict top-to-bottom pass across all three groups). Compile-time-unique and
+stable across runs of the same build; no span hash, no time, no randomness. Consumer-side
+memoization keyed on `siteId` is a consumer's own concern — the language does not memoize
+per site itself.
+
+### 6.14.8 `--expand` visibility and the checked-AST guarantee
+
+Per ruling R1, `--expand` now runs the **full Checker** before printing — an ill-typed
+program fails `--expand` exactly like a normal compile (`docs/footguns.md`).
+`--ast-after-rules` stays the pre-Checker debugging view for ill-typed programs.
+`--expand` of a reified site shows the emitted construction; the emitted form omits the
+explicit generic argument the printer cannot yet round-trip on a construction callee —
+`expr::Expr((u) => u.active, expr::Field(["active"]), [], 0)`, not
+`expr::Expr<(User)=>bool>(...)` — with `F` resolved by ordinary generic inference from the
+first (closure) argument. A non-empty `binds`/`args` array prints as an immediately-invoked
+`() => { Array<Elem> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(e0)); …; return
+__lvReifyArr; }()` (the landed `[]`+`.add` widening idiom — a bare array literal is
+invariant and cannot widen to the union/Node element type any other way); an empty array
+prints as plain `[]`. Recompiling `--expand` output never double-reifies (the printed
+lambda targets the ctor's plain `F fn` parameter, not an `Expr<F>` position) and — with one
+exception — recompiles byte-identically: a file with **two** reified `Array<T>.contains`-
+or-sibling calls sharing the same whitelisted name but different receiver kinds currently
+breaks on round-trip (`known_bugs_2.md` #88); a program using an enum inside a reified
+comparison inherits the pre-existing, unrelated `#69` (enum `$` re-lex) round-trip
+limitation.
+
+### 6.14.9 A worked example — `expr::eval`, the reference tree interpreter
+
+Every differential corpus file embeds this walker verbatim (checked user code, never
+prelude — the tree taxonomy is data, not behavior):
+
+```
+string | int | float | bool | None evalNode(
+        expr::Node n,
+        (Array<string>) => string | int | float | bool | None rec,
+        Array<string | int | float | bool | None> binds,
+        Array<string | int | float | bool | None> arrayBind0) {
+    match (n) {
+        expr::Field => { return rec(n.path); }
+        expr::Lit   => { return n.v; }
+        expr::Bind  => { return binds[n.slot]; }
+        expr::Bin   => {
+            expr::Bin b = n;
+            string | int | float | bool | None lv = evalNode(b.l, rec, binds, arrayBind0);
+            string | int | float | bool | None rv = evalNode(b.r, rec, binds, arrayBind0);
+            if (b.op == "&&") return evalTruth(lv) && evalTruth(rv);
+            // == / != / relational / arithmetic dispatch similarly on b.op
+        }
+        // Un, Call — see tests/corpus/expr_eval/expr_eval_1.lev for the full walker
+        else => { throw RuntimeException("expr::eval: unhandled node"); }
+    }
+}
+```
+
+`None` semantics for `==`/`!=`: `None == None` is `true`, `None` vs. non-`None` is `false`.
+For the four relational operators and arithmetic, any `None` operand makes a comparison
+`false` and arithmetic `None` (in-language, **not** via a reified tree — the same `T?`
+relational-compare defect noted in `docs/footguns.md`, #87, affects ordinary code equally).
+An `Array<T>.contains` call's receiver is a `Bind` whose `binds` slot is the marker `None`
+(§6.14.3); a consumer walking the tree passes the array's real contents in separately (the
+`arrayBind0` parameter above is a test-harness convenience, not a language limit — multiple
+Array captures per lambda each get their own `None`-marked slot).
+
+---
+
 ## 7. Compiler
 
 ```

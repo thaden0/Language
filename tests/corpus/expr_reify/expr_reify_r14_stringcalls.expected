@@ -1,0 +1,12 @@
+s0:Call(startsWith,Field(name),[Lit(str:A)])
+s0binds:binds=[]
+s0site:siteId=0
+s1:Call(endsWith,Field(name),[Lit(str:a)])
+s1binds:binds=[]
+s1site:siteId=1
+s2:Call(contains,Field(name),[Lit(str:d)])
+s2binds:binds=[]
+s2site:siteId=2
+fn0=true
+fn1=true
+fn2=true

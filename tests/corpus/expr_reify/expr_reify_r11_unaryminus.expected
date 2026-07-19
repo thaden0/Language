@@ -1,0 +1,5 @@
+s0:Bin(>,Field(score),Un(-,Lit(int:5)))
+s0binds:binds=[]
+s0site:siteId=0
+fn0=true
+fn1=false

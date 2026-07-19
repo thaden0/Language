@@ -1,0 +1,6 @@
+s0:Bin(&&,Bin(>=,Field(age),Lit(int:18)),Bin(<,Field(age),Lit(int:65)))
+s0binds:binds=[]
+s0site:siteId=0
+fn0=true
+fn1=false
+fn2=false

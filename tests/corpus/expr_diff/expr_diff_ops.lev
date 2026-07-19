@@ -1,0 +1,186 @@
+// LA-31 Stage 3 §4 — differential corpus: closure leg (.fn) vs expr::eval leg,
+// per whitelisted Bin/Un op, over the same fixtures. `!`-unary is excluded
+// (known_bugs_2.md #86: the reifier's Un("!", ...) op text is "?", not "!").
+class Rec { int age; new Rec(int a) { age = a; } }
+
+// ---- expr::eval — reference tree interpreter (doc 01 §3.1, verbatim copy) ----
+bool evalTruth(string | int | float | bool | None v) {
+    match (v) {
+        bool => { return v; }
+        else => { return false; }
+    }
+}
+
+int asInt(string | int | float | bool | None v) {
+    match (v) {
+        int => { return v; }
+        else => { return 0 - 1; }
+    }
+}
+
+string asStr(string | int | float | bool | None v) {
+    match (v) {
+        string => { return v; }
+        else   => { return ""; }
+    }
+}
+
+bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        None => { match (b) { None => { return true; }  else => { return false; } } }
+        int  => { match (b) { int  => { return a == b; } else => { return false; } } }
+        float=> { match (b) { float=> { return a == b; } else => { return false; } } }
+        bool => { match (b) { bool => { return a == b; } else => { return false; } } }
+        string => { match (b) { string => { return a == b; } else => { return false; } } }
+    }
+}
+
+string | int | float | bool | None dbNum(string op,
+        string | int | float | bool | None a, string | int | float | bool | None b) {
+    match (a) {
+        int => { match (b) { int => {
+            int x = a; int y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+            if (op == "%")  return x % y;
+        } else => { } } }
+        float => { match (b) { float => {
+            float x = a; float y = b;
+            if (op == "<")  return x < y;
+            if (op == "<=") return x <= y;
+            if (op == ">")  return x > y;
+            if (op == ">=") return x >= y;
+            if (op == "+")  return x + y;
+            if (op == "-")  return x - y;
+            if (op == "*")  return x * y;
+            if (op == "/")  return x / y;
+        } else => { } } }
+        string => { match (b) { string => {
+            if (op == "+") return a + b;
+        } else => { } } }
+        else => { }
+    }
+    match (a) { None => { } else => { match (b) { None => { } else => {
+        throw RuntimeException("expr::eval: bad operands for " + op); } } } }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return false;
+    return None;
+}
+
+string | int | float | bool | None evalNode(
+        expr::Node n,
+        (Array<string>) => string | int | float | bool | None rec,
+        Array<string | int | float | bool | None> binds,
+        Array<string | int | float | bool | None> arrayBind0) {
+    match (n) {
+        expr::Field => { return rec(n.path); }
+        expr::Lit   => { return n.v; }
+        expr::Bind  => { return binds[n.slot]; }
+        expr::Un    => {
+            expr::Un u = n;
+            string | int | float | bool | None inner = evalNode(u.e, rec, binds, arrayBind0);
+            if (u.op == "!") return !evalTruth(inner);
+            match (inner) {
+                int   => { return 0 - inner; }
+                float => { return 0.0 - inner; }
+                else  => { return None; }
+            }
+        }
+        expr::Bin   => {
+            expr::Bin b = n;
+            string | int | float | bool | None lv = evalNode(b.l, rec, binds, arrayBind0);
+            string | int | float | bool | None rv = evalNode(b.r, rec, binds, arrayBind0);
+            if (b.op == "&&") return evalTruth(lv) && evalTruth(rv);
+            if (b.op == "||") return evalTruth(lv) || evalTruth(rv);
+            if (b.op == "==") return dbEq(lv, rv);
+            if (b.op == "!=") return !dbEq(lv, rv);
+            return dbNum(b.op, lv, rv);
+        }
+        expr::Call  => {
+            expr::Call c = n;
+            if (c.name == "contains" && c.args.length() == 1) {
+                match (c.recv) {
+                    expr::Bind => {
+                        string | int | float | bool | None needle =
+                            evalNode(c.args[0], rec, binds, arrayBind0);
+                        int k = 0;
+                        while (k < arrayBind0.length()) {
+                            if (dbEq(arrayBind0[k], needle)) return true;
+                            k = k + 1;
+                        }
+                        return false;
+                    }
+                    else => { }
+                }
+            }
+            string recvS = asStr(evalNode(c.recv, rec, binds, arrayBind0));
+            string arg0S = asStr(evalNode(c.args[0], rec, binds, arrayBind0));
+            if (c.name == "like")       return recvS.like(arg0S);
+            if (c.name == "ilike")      return recvS.ilike(arg0S);
+            if (c.name == "startsWith") return recvS.startsWith(arg0S);
+            if (c.name == "endsWith")   return recvS.endsWith(arg0S);
+            if (c.name == "contains")   return recvS.contains(arg0S);
+            throw RuntimeException("expr::eval: non-whitelisted call " + c.name);
+        }
+        else => { throw RuntimeException("expr::eval: unhandled node"); }
+    }
+}
+// ---- end expr::eval ----
+
+(Array<string>) => string | int | float | bool | None recOf(Rec r) {
+    return (path) => { if (path[0] == "age") return r.age; return None; };
+}
+
+Array<string | int | float | bool | None> noBinds = [];
+Array<string | int | float | bool | None> noArr = [];
+
+void cmp(string op, Rec r, expr::Expr<(Rec)=>bool> e) {
+    bool fn = e.fn(r);
+    bool ev = evalTruth(evalNode(e.tree, recOf(r), e.binds, noArr));
+    console.writeln(op + ":" + fn.toString() + ":" + ev.toString());
+}
+void cmpInt(string op, Rec r, expr::Expr<(Rec)=>int> e) {
+    int fn = e.fn(r);
+    int ev = asInt(evalNode(e.tree, recOf(r), e.binds, noArr));
+    console.writeln(op + ":" + fn.toString() + ":" + ev.toString());
+}
+
+Rec r30 = Rec(30);
+Rec r18 = Rec(18);
+
+expr::Expr<(Rec)=>bool> eEq  = (u) => u.age == 18;
+expr::Expr<(Rec)=>bool> eNe  = (u) => u.age != 18;
+expr::Expr<(Rec)=>bool> eLt  = (u) => u.age < 18;
+expr::Expr<(Rec)=>bool> eLe  = (u) => u.age <= 18;
+expr::Expr<(Rec)=>bool> eGt  = (u) => u.age > 18;
+expr::Expr<(Rec)=>bool> eGe  = (u) => u.age >= 18;
+expr::Expr<(Rec)=>bool> eAnd = (u) => u.age > 10 && u.age < 40;
+expr::Expr<(Rec)=>bool> eOr  = (u) => u.age < 10 || u.age > 25;
+
+cmp("eq", r30, eEq);  cmp("eq", r18, eEq);
+cmp("ne", r30, eNe);  cmp("ne", r18, eNe);
+cmp("lt", r30, eLt);  cmp("lt", r18, eLt);
+cmp("le", r30, eLe);  cmp("le", r18, eLe);
+cmp("gt", r30, eGt);  cmp("gt", r18, eGt);
+cmp("ge", r30, eGe);  cmp("ge", r18, eGe);
+cmp("and", r30, eAnd); cmp("and", r18, eAnd);
+cmp("or", r30, eOr);   cmp("or", r18, eOr);
+
+expr::Expr<(Rec)=>int> ePlus = (u) => u.age + 3;
+expr::Expr<(Rec)=>int> eMinus = (u) => u.age - 3;
+expr::Expr<(Rec)=>int> eTimes = (u) => u.age * 3;
+expr::Expr<(Rec)=>int> eDiv = (u) => u.age / 3;
+expr::Expr<(Rec)=>int> eMod = (u) => u.age % 4;
+expr::Expr<(Rec)=>int> eNeg = (u) => 0 - u.age;
+
+cmpInt("plus", r30, ePlus);
+cmpInt("minus", r30, eMinus);
+cmpInt("times", r30, eTimes);
+cmpInt("div", r30, eDiv);
+cmpInt("mod", r30, eMod);
+cmpInt("neg", r30, eNeg);
