@@ -5960,8 +5960,17 @@ void Resolver::importOne(Stmt* s, Scope* into) {
     }
     if (ns && ns->scope)
         for (auto& [name, syms] : ns->scope->names)
-            for (Symbol* sym : syms)
+            for (Symbol* sym : syms) {
+                // An attribute's class symbol is not ordinary-name surface —
+                // `@Name` resolution goes through the imports map + namespace
+                // scopes (RuleEngine::resolveAttr), never the overlay. Dumping
+                // it here would let e.g. `@Row` (Atlantis::Orm) silently
+                // shadow a real class `Row` (Atlantis::Data) for every bare
+                // type/value use in the importing file.
+                if (sym->kind == SymbolKind::Class && sym->decl &&
+                    sym->decl->isAttribute) continue;
                 into->names[name].push_back(sym);
+            }
 }
 
 // Resolve one selective `use Path::name (as alias);` (imports.md §3/§4) and
@@ -6134,6 +6143,19 @@ std::string Resolver::resolveType(TypeRef* t, Scope* scope) {
             bool navFailed = false;
             if (t->path.empty()) {
                 sym = scope->lookup(t->name);
+                // An attribute's class symbol is not an ordinary TYPE — `@Row`
+                // (Atlantis::Orm) must not silently shadow a real class named
+                // Row (Atlantis::Data) imported into the same file. Prefer a
+                // non-attribute type when one is visible.
+                if (sym && sym->decl && sym->decl->isAttribute) {
+                    Symbol* nonAttr = nullptr;
+                    for (Scope* sc = scope; sc && !nonAttr; sc = sc->parent)
+                        if (const auto* v = sc->localLookup(t->name))
+                            for (Symbol* c : *v)
+                                if (isTypeKind(c->kind) &&
+                                    !(c->decl && c->decl->isAttribute)) { nonAttr = c; break; }
+                    if (nonAttr) sym = nonAttr;
+                }
                 if (hygieneSym && (!sym || !isTypeKind(sym->kind))) sym = hygieneSym;
             } else {
                 // ::-qualified: walk the namespace path (§12), then find the type
@@ -6155,8 +6177,13 @@ std::string Resolver::resolveType(TypeRef* t, Scope* scope) {
                     }
                 }
                 if (ns && ns->scope)
-                    if (const auto* v = ns->scope->localLookup(t->name))
-                        for (Symbol* c : *v) if (isTypeKind(c->kind)) { sym = c; break; }
+                    if (const auto* v = ns->scope->localLookup(t->name)) {
+                        for (Symbol* c : *v)
+                            if (isTypeKind(c->kind) &&
+                                !(c->decl && c->decl->isAttribute)) { sym = c; break; }
+                        if (!sym)
+                            for (Symbol* c : *v) if (isTypeKind(c->kind)) { sym = c; break; }
+                    }
             }
 
             if (navFailed) { /* namespace error already reported */ }

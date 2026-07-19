@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | — |
+| P0       | #94 |
 | P1       | — |
 | P2       | — |
 | P3       | — |
@@ -30,6 +30,62 @@ green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
 
 ---
+
+## #94 [P0] — calling a function-typed FIELD via dot-call silently no-ops on LLVM
+
+**Found:** 2026-07-19, ORM Track 06 M1 (boot validation never ran on LLVM
+while printing success). Related family: the 2026-07-11 "field-closure
+dot-call" finding and #53's this-receiver lambda rule — this entry is the
+checked-code, LLVM-specific shape with a live repro.
+**Priority justification:** P0.3 — an actively-maintained engine silently
+drops an operation for checker-accepted ordinary code; the symptom (missing
+side effects) surfaces away from the causing site. Oracle and IR run the call
+correctly; LLVM returns without executing the closure body.
+
+**Repro shape (from the ORM):**
+
+```
+class RepoHandle {
+    () => Promise<void> validate;      // field holding a closure
+    ...
+}
+await h.validate();                    // oracle/IR: runs the closure; LLVM: silent no-op
+```
+
+Observed concretely: `Db.validate()` printed its success line on LLVM while
+the closure's `DESCRIBE` never executed (the corpus caught it as a missing
+`[sql]` log line). Copying to a local first is reliable on all engines:
+
+```
+var f = h.validate;
+await f();
+```
+
+**Root-cause pointer:** LLVM lowering of a dynamic call whose callee is a
+field read (member access → call in one expression); the local-copy form
+takes the ordinary closure-value call path.
+
+**Workaround (debt sites):** copy the field to a local, then call — applied
+throughout `packages/atlantis/src/orm/db.lev` (search "field-closure
+dot-call"); `packages/atlantis-mysql/src/pool.lev` (`var f = fn;`) already
+used the same idiom.
+
+---
+
+#92 fixed 2026-07-19 (found+fixed in-session, ORM Track 06): an ATTRIBUTE's
+class symbol shadowed a real same-named class for ordinary bare-name
+resolution — with `uses Atlantis::Orm; uses Atlantis::Data;`, a bare `Row`
+resolved to the `@Row` attribute (declared first in import order) instead of
+the `Atlantis::Data::Row` class, making every member read on the value
+silently void on the oracle (and `User::FromRow(r)` fail overload matching).
+Fixed at source in three places: `Resolver::importOne` no longer dumps
+attribute-class symbols into `uses` overlay scopes at all (attribute
+resolution runs through the imports map + namespace scopes, never the
+overlay), and both `Resolver::resolveType` (bare + qualified branches) and
+`Checker::visibleClass` prefer a non-attribute type when both are visible.
+Regression floor: `packages/atlantis/tests/probes/miniorm/` (cross-package
+Row construction + FromRow through the full ORM rule set, oracle green) and
+the whole atlantis corpus suite (`packages/atlantis/tests/runtests.sh`).
 
 ## Priority system
 

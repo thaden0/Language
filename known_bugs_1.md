@@ -18,8 +18,8 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | — |
-| P1       | — |
+| P0       | #95 |
+| P1       | #93 |
 | P2       | — |
 | P3       | — |
 
@@ -98,4 +98,82 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
-No open entries.
+## #93 [P1] — punctuation-only string literals inside inject templates are corrupted
+
+**Found:** 2026-07-19, implementing ORM Track 06 (M1).
+**Priority justification:** P1.1 — the corrupted expression compiles and runs,
+silently producing a wrong value (no diagnostic); observed on the oracle, so
+every engine inherits it.
+
+**Repro:** a rule template containing a string literal that is only punctuation
+or starts with `@`:
+
+```
+rule r {
+    match @Table(t) on class C
+    inject `string ctx() => $t.name + "." + $f.name;` at member of C
+}
+```
+
+Under `--ast-after-rules` the injected body reads `(("users" + .) + "id")` —
+the `"."` literal degraded to a bare `.` token; likewise `"@Row " + $f.name`
+degraded to `(@Row  + "userId")`. The program still compiles and the concat
+yields a wrong string (the corrupted operand contributes garbage/empty), so
+any code building messages from template literals is silently wrong.
+
+**Root-cause pointer:** the quasiquote template clone path (`Rules.cpp`
+cloneExpr / template re-lex) appears to lose the string-literal kind for
+tokens that would re-lex as punctuation/attribute markers.
+
+**Workaround (debt sites):** move the literal into an ordinary helper function
+and call it from the template — the ORM does this with
+`Atlantis::Orm::ctx(table, col)` / `ctxRow(col)`
+(`packages/atlantis/src/orm/orm.lev`); templates never carry punctuation-only
+or `@`-leading string literals.
+
+## #95 [P0] — atlantis routing corpus segfaults on LLVM (pre-existing at 2026-07-19 master)
+
+**Found:** 2026-07-19, running the new `packages/atlantis/tests/runtests.sh`
+across all corpus dirs during ORM Track 06 verification.
+**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
+primary backend) crashes mid-run on checker-accepted, previously-landed code
+(the crash-later variant counts).
+
+**Repro:**
+
+```
+./build/trident plan packages/atlantis/tests/corpus/routing --plan /tmp/r.lvplan --leviathan ./build/leviathan
+./build/leviathan --build-native /tmp/r.bin --plan /tmp/r.lvplan
+/tmp/r.bin        # prints 2 lines ("== M3 Era-A end-to-end ..." + "-- GET / --"), then dumps core
+```
+
+Oracle and IR runs of the same plan produce the full 40+-line expected output
+(`routing.expected`). Verified present with ALL of this session's compiler
+changes stashed (clean master `src/`), so it predates Track 06's work — the
+routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
+since regressed it. Not diagnosed further here (out of Track 06 scope).
+
+---
+
+#91 found AND fixed 2026-07-19 (same session, owner-directed): rules and
+attributes declared in a NESTED namespace (`namespace Atlantis { namespace Orm
+{ … } }` or `namespace Atlantis::Orm { … }`) never fired — `uses Atlantis::Orm`
++ bare `@Table` errored `no attribute 'Table' in scope`; a fully qualified
+`@Atlantis::Orm::Table` resolved the attribute but the co-located rule stayed
+silent with `matched no imported rule (missing 'uses Orm'?)`; `uses Orm` (the
+name the warning asked for) was `unknown namespace`. Root cause: `Rules.cpp`
+keyed rule/attribute namespaces by the innermost SIMPLE name (`collectRules`/
+`indexDecls` recursion dropped the prefix) while `computeFileImports` produces
+full paths ("Atlantis::Orm"), and `RuleEngine::namespaceScope` could only
+resolve root-level names — nested declarations fell into the gap between the
+two spellings, so the visibility test `effective.count(r.ns)` could never be
+true. Fixed by (1) making `namespaceScope` walk `::`-separated paths, (2)
+carrying the full qualified path through the `collectRules`/`indexDecls`
+recursions (with the namespace symbol resolved through the parent path, not
+the global scope), and (3) building def-site qualification (§10) as a chained
+Member expression (`Atlantis` then `::Orm` then `::name`) instead of a single
+Name token containing "::". Regression floor:
+`packages/atlantis/tests/probes/orm_p1_nested_ns_rules.lev` (oracle+IR+LLVM);
+full meta/rule/expand/reify ctest set green after the fix. This unblocked the
+ORM Track 06 amended-C1 placement (rules/attributes subsystem-owned in
+`Atlantis::Orm`) with no fallback relocation needed.

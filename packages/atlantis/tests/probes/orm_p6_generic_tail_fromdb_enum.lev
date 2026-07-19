@@ -1,0 +1,42 @@
+// ORM M0 P6 (techdesign-06-orm.md §11): witness-typed converter overloads —
+// generic tail fromDb<T> using T::fromCode for enum fields; concrete overloads
+// still win for scalars (Track 03 P-3 specificity, LA-18 T::member, #54 fixed).
+namespace Atlantis {
+    namespace Orm {
+        int asInt(string | int | float | bool | None v) {
+            match (v) {
+                int => { return v; }
+                else => { return -1; }
+            }
+        }
+        int fromDb(string | int | float | bool | None v, int witness) => Atlantis::Orm::asInt(v) + 100;
+        string fromDb(string | int | float | bool | None v, string witness) {
+            match (v) {
+                string => { return "s:" + v; }
+                else => { return witness; }
+            }
+        }
+        T fromDb<T>(string | int | float | bool | None v, T witness)
+            => T::fromCode(Atlantis::Orm::asInt(v)) ?? witness;
+    }
+}
+uses Atlantis::Orm;
+
+enum Color { Red, Green, Blue }
+
+string | int | float | bool | None cell = 2;
+Color c = fromDb(cell, Color::Red);
+console.writeln(c.toString());
+
+string | int | float | bool | None icell = 1;
+int i = fromDb(icell, 0);
+console.writeln(i);
+
+string | int | float | bool | None scell = "hi";
+string s = fromDb(scell, "");
+console.writeln(s);
+
+// unknown carrier -> witness
+string | int | float | bool | None bad = 9;
+Color d = fromDb(bad, Color::Green);
+console.writeln(d.toString());

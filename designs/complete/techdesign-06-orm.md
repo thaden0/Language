@@ -765,3 +765,48 @@ the ticket, not here.
   amended C1 (attributes/rules subsystem-owned). Probes not yet run; implementation not
   started. M0's P1 (nested-namespace rule placement) flagged as the first action and a
   framework-wide concern.
+- 2026-07-19 — **IMPLEMENTED IN FULL (M0–M4), all corpora green oracle+IR+LLVM.**
+  LA-31 had landed 2026-07-19 (with #86/#88/#89 fixed), so M2+ activated immediately —
+  no interim floor was ever user-visible. Source: `packages/atlantis/src/orm/`
+  (`orm.lev` core+rules, `query.lev` renderer+Query, `db.lev` Repo/Db/UoW/relations/
+  validation, `migrate.lev`); corpora `packages/atlantis/tests/corpus/orm{,_query,_rel,_migrate}`
+  + `packages/atlantis-mysql/tests/orm_loopback` (ORM over the REAL driver, prepared
+  statements + binary rows, loopback socket); probes `orm_p1..p8` + `miniorm`; results
+  in `packages/atlantis/tests/RESULTS.md`. Highlights against this doc:
+  - **P1 fired the STOP-condition bug and the owner ordered a source fix instead**:
+    #91 (nested-namespace rules/attributes never fire) fixed in `Rules.cpp` same day —
+    the amended-C1 placement ships EXACTLY as §0 "Owns" specifies, no fallback
+    relocation. Two more compiler bugs found+fixed in-session (#92 attribute-class
+    shadowing of bare type names — `Resolver::importOne`/`resolveType` +
+    `Checker::visibleClass`); two found+worked around (#93 punctuation-only template
+    string literals corrupted → `ctx()`/`ctxRow()` helpers; #94 field-closure dot-call
+    silent no-op on LLVM → local-copy-then-call throughout). #95 (pre-existing routing
+    corpus LLVM segfault, unrelated) filed while sweeping.
+  - **Shape A won** (P3 green): FromRow is the single clean assignment-in-`$for`
+    template; Shape B's scratch machinery never existed. `__ormSetPk` is the per-field
+    member injection (P4). String reification is the bare `$f.name` hole (quoted holes
+    are literals — §2.1's `"$f.name"` spelling corrected).
+  - **Explicit generic call args don't exist in the language** (P8 finding):
+    `repo<E>()` infers E from the factory closure; `rows<T>` ships as
+    `db.rows(sql, params, witness)`; `db.load(es, path)`/`.with(path)` infer. Same
+    surface semantics, inference-carried.
+  - §3.4 consistency law enforced: the M2 corpus runs 10 predicates on both legs
+    (closure vs embedded `expr::eval` over tree+binds) and diffs verdicts — all agree;
+    rendered SQL is asserted via captured-SQL logs (statement counts, dirty-only SETs,
+    one-SQL-per-terminal — the §9 ledger rows).
+  - `Array<T>.contains` rides `.whereIn(predicate, contents)` — LA-31 R17 puts a None
+    marker in the binds slot and the consumer must carry its own reference; there is no
+    other bridge. Whitelist otherwise as §3.3.
+  - `transact()` pins THIS `Db` to one connection for the body (a generically-typed
+    child with `tx.users` is unconstructible under erased generics); nested-guard,
+    commit-on-return, rollback-on-throw, release-on-every-edge as §4.5.
+  - Timestamps: `updatedAt = now` on already-dirty entities, then dirtyCols()
+    recomputed (the literal §4.3 reading would dirty every tracked entity per save).
+  - Boot validation is `await db.validate()` (repos register after the Db ctor;
+    ctors cannot await). Duties 1+2 as §8; reserved-word advice dropped since every
+    generated statement backtick-quotes.
+  - Migrations: bookkeeping INSERT is a single atomic statement, not tx-wrapped
+    (MySQL DDL auto-commits around it — §10's own documented bound).
+  - Real-MySQL-8 live acceptance (AG-4's §7.2 job) stays environment-gated exactly as
+    Track 05 landed it (server present here but no test credentials); FakeDriver +
+    loopback-fake legs cover the seam, the Docker job stands ready.

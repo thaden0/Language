@@ -1716,11 +1716,21 @@ Symbol* Checker::hygienicClass(const Expr* e) const {
 // scope hide it. Used only for the explicit `C::Label()` constructor spelling,
 // where the qualifier itself states that a type/constructor is intended.
 Symbol* Checker::visibleClass(std::string_view name) const {
+    // Attribute class symbols only name types behind `@` — prefer a real class
+    // when both are visible (e.g. @Row vs Atlantis::Data::Row), falling back
+    // to the attribute hit only when nothing else matches.
+    Symbol* attrHit = nullptr;
     for (const Scope* sc = scope_; sc; sc = sc->parent)
         if (const std::vector<Symbol*>* syms = sc->localLookup(name))
             for (Symbol* s : *syms)
-                if (s->kind == SymbolKind::Class) return s;
-    return nullptr;
+                if (s->kind == SymbolKind::Class) {
+                    if (s->decl && s->decl->isAttribute) {
+                        if (!attrHit) attrHit = s;
+                    } else {
+                        return s;
+                    }
+                }
+    return attrHit;
 }
 
 Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {

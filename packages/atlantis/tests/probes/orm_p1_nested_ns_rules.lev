@@ -1,0 +1,28 @@
+// ORM M0 P1 (techdesign-06-orm.md §11): rules + attributes declared in the
+// NESTED namespace Atlantis::Orm; the template calls Atlantis::Orm::toDb by
+// its fully qualified nested path. Gates the whole subsystem-rules model
+// (amended C1). Track 03 §5.3 documented an open resolver concern on
+// nested-namespace qualified paths in templates — this is that check.
+// 2026-07-19: FAILED as predicted (bug #91), then FIXED at source same day
+// (Rules.cpp: qualified-path namespace keys). This probe is the regression floor.
+namespace Atlantis {
+    namespace Orm {
+        attribute Table { string name; }
+        string toDb(int v) => "i:" + v.toString();
+        string toDb(string v) => "s:" + v;
+        rule p1FirstVal {
+            match @Table(t) on class C
+            inject `string __p1Val() => Atlantis::Orm::toDb(this.a) + "/" + Atlantis::Orm::toDb(this.b) + "/" + $t.name;` at member of C
+        }
+    }
+}
+uses Atlantis::Orm;
+
+@Table("users")
+class User {
+    int a = 41;
+    string b = "x";
+}
+
+User u = User();
+console.writeln(u.__p1Val());

@@ -1,0 +1,828 @@
+// Atlantis Track 06 — ORM unit of work (techdesign-06-orm.md §4, §5, §8).
+//
+// One Db per request (H-5), never shared; the identity map lives per Repo
+// (same-pk ⇒ same instance within a context, §4.2); save() is the only write
+// path (§0 rule 4): INSERTs (multi-row, per class) → UPDATEs (dirty cols only)
+// → DELETEs, one transaction when more than one statement is pending, all on
+// ONE acquired connection (§4.3).
+namespace Atlantis {
+    namespace Orm {
+
+        // The Db-side view of one registered repo — typed closures built where
+        // E is concrete (inside Db.repo<E>(), a method-level type parameter),
+        // so the erased-generics wall never gets in the loader's way.
+        class RepoHandle {
+            string entity;                                   // simple entity name
+            string pathKey;                                  // joined __ormPath()
+            Model proto;
+            (Atlantis::Data::Row) => Model mat;              // materialize, tracked
+            (int, Array<Model>) => void adopt;               // post-INSERT identity reg
+            () => Promise<void> validate;
+            new RepoHandle(string entity, string pathKey, Model proto,
+                           (Atlantis::Data::Row) => Model mat,
+                           (int, Array<Model>) => void adopt,
+                           () => Promise<void> validate) {
+                this.entity = entity;
+                this.pathKey = pathKey;
+                this.proto = proto;
+                this.mat = mat;
+                this.adopt = adopt;
+                this.validate = validate;
+            }
+        }
+
+        string __ormSimpleName(string qualified) {
+            int i = qualified.length() - 1;
+            while (i > 0) {
+                if (qualified.subStr(i - 1, 2) == "::") { return qualified.subStr(i + 1, qualified.length() - i - 1); }
+                i = i - 1;
+            }
+            return qualified;
+        }
+        string __ormInPh(int n) {
+            string ph = "";
+            int i = 0;
+            while (i < n) {
+                if (i > 0) { ph = ph + ","; }
+                ph = ph + "?";
+                i = i + 1;
+            }
+            return ph;
+        }
+
+        // ==== §4.1 Repo<E> =================================================
+        class Repo<E> {
+            Db db;
+            () => E make;
+            (Atlantis::Data::Row) => E fromRow;
+            Map<int, E> ident;
+            E proto;
+
+            new Repo(Db db, () => E make, (Atlantis::Data::Row) => E fromRow) {
+                this.db = db;
+                this.make = make;
+                this.fromRow = fromRow;
+                this.ident = Map();
+                this.proto = make();
+            }
+
+            Db dbOf() => this.db;
+            Model protoModel() => this.proto;
+
+            // §4.2: the identity map is consulted BEFORE FromRow — a hit skips
+            // materialization entirely; in-memory dirty state is never
+            // clobbered by a re-read (EF semantics).
+            E materialize(Atlantis::Data::Row r, bool track) {
+                int pk = Atlantis::Orm::asDbInt(r.byName(this.proto.__ormPk()),
+                                                this.pathKey() + " pk");
+                if (track && this.ident.has(pk)) { return this.ident.at(pk); }
+                // field-closure dot-call is a silent no-op on LLVM (bug #2
+                // family) — copy to a local before calling, throughout.
+                var mk = this.fromRow;
+                E e = mk(r);
+                if (track) {
+                    this.ident[pk] = e;
+                    this.db.__track(e);
+                }
+                return e;
+            }
+            string pathKey() => this.proto.__ormPath().joinToString(".");
+            // post-INSERT identity registration (raw-Array bridge; the element
+            // was built by this repo's own entity class, so the runtime type is
+            // exact — probe v15/orm_p8).
+            void __adopt(int pk, Array raw) {
+                E e = raw.at(0);
+                this.ident[pk] = e;
+            }
+
+            // 0-or-1 rows by pk (shared by find/findOrNone; identity map first)
+            Promise<Array<E>> __byPk(int pk) {
+                Array<E> out = [];
+                if (this.ident.has(pk)) {
+                    out = out.add(this.ident.at(pk));
+                    return Promise(out);
+                }
+                string sql = "SELECT " + Atlantis::Orm::__ormColsSql(this.proto) +
+                             " FROM " + Atlantis::Orm::qpath(this.proto.__ormPath()) +
+                             " WHERE " + Atlantis::Orm::qcol(this.proto.__ormPk()) +
+                             " = ? LIMIT 1";
+                Array<string | int | float | bool | None> ps = [];
+                ps = ps.add(pk);
+                Atlantis::Data::ResultSet rs = await this.db.__q(sql, ps);
+                if (rs.rows.length() > 0) {
+                    out = out.add(this.materialize(rs.rows.at(0), true));
+                }
+                return Promise(out);
+            }
+            Promise<E> find(int pk) {
+                Array<E> hit = await this.__byPk(pk);
+                if (hit.length() == 0) {
+                    throw EmptyResultException("find(" + pk.toString() + "): no row in " +
+                                               this.pathKey());
+                }
+                return Promise(hit.at(0));
+            }
+            Promise<E?> findOrNone(int pk) {
+                Array<E> hit = await this.__byPk(pk);
+                Promise<E?> p = Promise();
+                if (hit.length() == 0) { p.resolve(None); }
+                else { p.resolve(hit.at(0)); }
+                return p;
+            }
+
+            Query<E> query() => Query(this);
+            Query<E> where(expr::Expr<(E) => bool> p) => this.query().where(p);
+            Query<E> whereIn(expr::Expr<(E) => bool> p,
+                             Array<string | int | float | bool | None> contents)
+                => this.query().whereIn(p, contents);
+            Query<E> orderBy(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.query().orderBy(k);
+            Query<E> orderByDesc(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.query().orderByDesc(k);
+            Query<E> take(int n) => this.query().take(n);
+            Query<E> skip(int n) => this.query().skip(n);
+            Query<E> noTrack() => this.query().noTrack();
+            Query<E> withDeleted() => this.query().withDeleted();
+            Query<E> with<R>(expr::Expr<(E) => R> path) => this.query().with(path);
+            Promise<Array<E>> all() {
+                Query<E> q = this.query();
+                Array<E> rows = await q.all();
+                return Promise(rows);
+            }
+            Promise<int> count() {
+                Query<E> q = this.query();
+                return q.count();
+            }
+            Promise<bool> exists() {
+                Query<E> q = this.query();
+                return q.exists();
+            }
+
+            // §6.2 raw hatch, materialized: result columns are checked against
+            // allCols() with a MappingException listing both sets on mismatch.
+            Promise<Array<E>> sql(string text, Array<string | int | float | bool | None> params) {
+                Atlantis::Data::ResultSet rs = await this.db.__q(text, params);
+                Array<string> want = this.proto.allCols();
+                for (string c in want) {
+                    if (!rs.columns.contains(c)) {
+                        throw MappingException("repo.sql() for " + this.pathKey() +
+                            ": result columns [" + rs.columns.joinToString(",") +
+                            "] do not cover entity columns [" + want.joinToString(",") +
+                            "] — missing '" + c + "'");
+                    }
+                }
+                Array<E> out = [];
+                for (Atlantis::Data::Row r in rs.rows) {
+                    out = out.add(this.materialize(r, true));
+                }
+                return Promise(out);
+            }
+
+            // §8 boot validation, duties 1+2, for this repo's entity.
+            Promise<void> __validate() {
+                // duty 1 (C1 silent-no-fire): the Model throwing default turns
+                // "forgot @Table / forgot `uses Atlantis::Orm`" into a boot
+                // error naming the fix.
+                Array<string> path = this.proto.__ormPath();
+                Array<string> cols = this.proto.allCols();
+                // duty 2 (schema drift):
+                Atlantis::Data::ResultSet rs =
+                    await this.db.__q("DESCRIBE " + Atlantis::Orm::qpath(path), []);
+                Array<string> dbCols = [];
+                Array<string> dbNull = [];
+                Array<bool> dbHasDefault = [];
+                Array<string> dbExtra = [];
+                for (Atlantis::Data::Row r in rs.rows) {
+                    string? f = r.strAt("Field");
+                    if (f == None) { continue; }
+                    dbCols = dbCols.add(f);
+                    string? nn = r.strAt("Null");
+                    dbNull = dbNull.add(nn ?? "YES");
+                    string | int | float | bool | None dv = r.byName("Default");
+                    match (dv) {
+                        None => { dbHasDefault = dbHasDefault.add(false); }
+                        else => { dbHasDefault = dbHasDefault.add(true); }
+                    }
+                    string? ex = r.strAt("Extra");
+                    dbExtra = dbExtra.add(ex ?? "");
+                }
+                for (string c in cols) {
+                    if (!dbCols.contains(c)) {
+                        throw MappingException("boot validation " + this.pathKey() +
+                            ": field '" + c + "' has no column — @Ignore it or migrate");
+                    }
+                }
+                int i = 0;
+                while (i < dbCols.length()) {
+                    if (!cols.contains(dbCols.at(i)) && dbNull.at(i) == "NO" &&
+                        !dbHasDefault.at(i) && !dbExtra.at(i).contains("auto_increment")) {
+                        throw MappingException("boot validation " + this.pathKey() +
+                            ": column '" + dbCols.at(i) + "' is not mapped and not defaultable");
+                    }
+                    i = i + 1;
+                }
+                for (string nn in this.proto.__ormNotNullCols()) {
+                    int j = 0;
+                    while (j < dbCols.length()) {
+                        if (dbCols.at(j) == nn && dbNull.at(j) == "YES") {
+                            throw MappingException("boot validation " + this.pathKey() +
+                                ": @NotNull field '" + nn + "' maps to a nullable column — " +
+                                "migrate the column or drop @NotNull");
+                        }
+                        j = j + 1;
+                    }
+                }
+                // @BelongsTo FK field existence (§8 duty 2): fk defaults to
+                // <field>Id and must be one of the entity's own columns.
+                Array<string> rels = this.proto.__ormRels;
+                int k = 0;
+                while (k + 5 < rels.length()) {
+                    if (rels.at(k + 1) == "belongsTo") {
+                        string fk = rels.at(k + 3);
+                        if (fk == "") { fk = rels.at(k) + "Id"; }
+                        if (!cols.contains(fk)) {
+                            throw MappingException("boot validation " + this.pathKey() +
+                                ": @BelongsTo '" + rels.at(k) + "' expects fk column '" + fk +
+                                "' on this entity — declare the field or set fk: explicitly");
+                        }
+                    }
+                    k = k + 6;
+                }
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+        }
+
+        // ==== §4.1 Db — the context =========================================
+        class Db {
+            Atlantis::Data::IDbPool pool;
+            Atlantis::Data::IDbConnection? pinned = None;
+            bool saving = false;
+            Array<Model> newList = [];
+            Array<Model> removeList = [];
+            Array<Model> removeHardList = [];
+            Array<Model> tracked = [];
+            Array<RepoHandle> handles = [];
+            int autoincMode = -1;                 // -1 = not yet probed (§4.3)
+
+            new Db(Atlantis::Data::IDbPool pool) {
+                this.pool = pool;
+            }
+
+            Repo<E> repo<E>(() => E make) {
+                Repo<E> r = Repo(this, make, (row) => E::FromRow(row));
+                Model proto = r.protoModel();
+                RepoHandle h = RepoHandle(
+                    proto.__ormEntity(),
+                    r.pathKey(),
+                    proto,
+                    (row) => r.materialize(row, true),
+                    (pk, ms) => r.__adopt(pk, ms),
+                    () => r.__validate());
+                this.handles = this.handles.add(h);
+                return r;
+            }
+
+            void add(Model e) { this.newList = this.newList.add(e); }
+            void remove(Model e) { this.removeList = this.removeList.add(e); }
+            void removeHard(Model e) { this.removeHardList = this.removeHardList.add(e); }
+            void __track(Model e) { this.tracked = this.tracked.add(e); }
+
+            // ---- one connection per statement burst (pinned inside transact) —
+            Promise<Atlantis::Data::ResultSet> __q(string sql,
+                    Array<string | int | float | bool | None> params) {
+                Atlantis::Data::IDbConnection? p = this.pinned;
+                if (p != None) {
+                    Atlantis::Data::ResultSet rs = await p.query(sql, params);
+                    return Promise(rs);
+                }
+                using Atlantis::Data::IDbConnection c = await this.pool.acquire();
+                Atlantis::Data::ResultSet rs2 = await c.query(sql, params);
+                return Promise(rs2);
+            }
+            Promise<Atlantis::Data::ExecResult> __x(string sql,
+                    Array<string | int | float | bool | None> params) {
+                Atlantis::Data::IDbConnection? p = this.pinned;
+                if (p != None) {
+                    Atlantis::Data::ExecResult er = await p.execute(sql, params);
+                    return Promise(er);
+                }
+                using Atlantis::Data::IDbConnection c = await this.pool.acquire();
+                Atlantis::Data::ExecResult er2 = await c.execute(sql, params);
+                return Promise(er2);
+            }
+
+            // ==== §4.3 save() ==============================================
+            Promise<void> save() {
+                if (this.saving) {
+                    throw OrmLogicException("re-entrant save() — await the previous save()");
+                }
+                this.saving = true;
+                try {
+                    await this.__saveInner();
+                    this.saving = false;
+                } catch (IException e) {
+                    this.saving = false;
+                    throw e;
+                }
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            Promise<int> __autoincLockMode() {
+                if (this.autoincMode >= 0) { return Promise(this.autoincMode); }
+                try {
+                    Atlantis::Data::ResultSet rs =
+                        await this.__q("SELECT @@innodb_autoinc_lock_mode AS m", []);
+                    if (rs.rows.length() > 0) {
+                        this.autoincMode = Atlantis::Orm::asDbInt(rs.rows.at(0).byName("m"),
+                                                                  "@@innodb_autoinc_lock_mode");
+                    } else {
+                        this.autoincMode = 1;
+                    }
+                } catch (IException e) {
+                    this.autoincMode = 1;      // correct-over-fast only matters in mode 2
+                }
+                return Promise(this.autoincMode);
+            }
+
+            RepoHandle __handleByPath(string pathKey) {
+                for (RepoHandle h in this.handles) {
+                    if (h.pathKey == pathKey) { return h; }
+                }
+                throw OrmLogicException("no repo registered for table path '" + pathKey +
+                    "' — construct it via db.repo(() => Entity()) before use");
+            }
+            RepoHandle __handleByEntity(string simple) {
+                for (RepoHandle h in this.handles) {
+                    if (h.entity == simple) { return h; }
+                }
+                throw OrmLogicException("no repo registered for entity '" + simple +
+                    "' — construct it via db.repo(() => " + simple + "()) before use");
+            }
+
+            Promise<void> __saveInner() {
+                int nowMs = std::sysNow();       // one clock read per save() (§4.3)
+                // ---- plan: INSERT groups (per entity class, add order) ----
+                Array<string> groupKeys = [];
+                for (Model e in this.newList) {
+                    e.__ormTouchInsert(nowMs);
+                    string key = e.__ormPath().joinToString(".");
+                    if (!groupKeys.contains(key)) { groupKeys = groupKeys.add(key); }
+                }
+                Array<string> sqls = [];
+                Array<Array<string | int | float | bool | None>> paramss = [];
+                Array<string> kinds = [];
+                // per-statement write-back bookkeeping (insert statements only)
+                Array<Array<Model>> insertGroups = [];
+                Array<string> insertPaths = [];
+
+                int mode = 1;
+                bool needMode = false;
+                for (string key in groupKeys) {
+                    int n = 0;
+                    for (Model e in this.newList) {
+                        if (e.__ormPath().joinToString(".") == key) { n = n + 1; }
+                    }
+                    if (n > 1) { needMode = true; }
+                }
+                if (needMode) { mode = await this.__autoincLockMode(); }
+
+                for (string key in groupKeys) {
+                    Array<Model> group = [];
+                    for (Model e in this.newList) {
+                        if (e.__ormPath().joinToString(".") == key) { group = group.add(e); }
+                    }
+                    Model first = group.at(0);
+                    bool auto = first.__ormAutoPk();
+                    string pk = first.__ormPk();
+                    Array<string> cols = first.allCols();
+                    Array<string> insCols = [];
+                    for (string c in cols) {
+                        if (auto && c == pk) { continue; }
+                        insCols = insCols.add(c);
+                    }
+                    Array<string> quoted = [];
+                    for (string c in insCols) { quoted = quoted.add(Atlantis::Orm::qcol(c)); }
+                    string head = "INSERT INTO " + Atlantis::Orm::qpath(first.__ormPath()) +
+                                  " (" + quoted.joinToString(", ") + ") VALUES ";
+                    string rowPh = "(" + Atlantis::Orm::__ormInPh(insCols.length()) + ")";
+                    // §4.3: multi-row under lock modes 0/1; interleaved (2)
+                    // downgrades to per-row — correct over fast, logged.
+                    bool perRow = auto && mode == 2 && group.length() > 1;
+                    if (perRow) {
+                        for (Model e in group) {
+                            Array<string | int | float | bool | None> ps = [];
+                            Array<string | int | float | bool | None> vals = e.allVals();
+                            int i = 0;
+                            while (i < cols.length()) {
+                                if (!(auto && cols.at(i) == pk)) { ps = ps.add(vals.at(i)); }
+                                i = i + 1;
+                            }
+                            sqls = sqls.add(head + rowPh);
+                            paramss = paramss.add(ps);
+                            kinds = kinds.add("insert");
+                            Array<Model> one = [];
+                            one = one.add(e);
+                            insertGroups = insertGroups.add(one);
+                            insertPaths = insertPaths.add(key);
+                        }
+                    } else {
+                        Array<string | int | float | bool | None> ps = [];
+                        Array<string> rowPhs = [];
+                        for (Model e in group) {
+                            rowPhs = rowPhs.add(rowPh);
+                            Array<string | int | float | bool | None> vals = e.allVals();
+                            int i = 0;
+                            while (i < cols.length()) {
+                                if (!(auto && cols.at(i) == pk)) { ps = ps.add(vals.at(i)); }
+                                i = i + 1;
+                            }
+                        }
+                        sqls = sqls.add(head + rowPhs.joinToString(","));
+                        paramss = paramss.add(ps);
+                        kinds = kinds.add("insert");
+                        insertGroups = insertGroups.add(group);
+                        insertPaths = insertPaths.add(key);
+                    }
+                }
+                // ---- plan: UPDATEs (identity-map scan, dirty cols only) ----
+                Array<Model> updates = [];
+                for (Model e in this.tracked) {
+                    if (e.__isNew) { continue; }
+                    if (!e.isDirty()) { continue; }
+                    e.__ormTouchUpdate(nowMs);
+                    updates = updates.add(e);
+                    Array<string> dirty = e.dirtyCols();
+                    Array<string> cols = e.allCols();
+                    Array<string | int | float | bool | None> vals = e.allVals();
+                    Array<string> sets = [];
+                    Array<string | int | float | bool | None> ps = [];
+                    for (string d in dirty) {
+                        sets = sets.add(Atlantis::Orm::qcol(d) + " = ?");
+                        int i = 0;
+                        while (i < cols.length()) {
+                            if (cols.at(i) == d) { ps = ps.add(vals.at(i)); }
+                            i = i + 1;
+                        }
+                    }
+                    ps = ps.add(e.pkVal());
+                    sqls = sqls.add("UPDATE " + Atlantis::Orm::qpath(e.__ormPath()) +
+                                    " SET " + sets.joinToString(", ") +
+                                    " WHERE " + Atlantis::Orm::qcol(e.__ormPk()) + " = ?");
+                    paramss = paramss.add(ps);
+                    kinds = kinds.add("update");
+                }
+                // ---- plan: DELETEs (§4.3: SoftDelete remove() = tombstone) --
+                Array<Model> sealAfterDelete = [];
+                for (Model e in this.removeList) {
+                    if (e.__ormIsSoftDelete()) {
+                        Array<string | int | float | bool | None> ps = [];
+                        ps = ps.add(Atlantis::Orm::fmtDateTime(DateTime::ofEpochMs(nowMs)));
+                        ps = ps.add(e.pkVal());
+                        sqls = sqls.add("UPDATE " + Atlantis::Orm::qpath(e.__ormPath()) +
+                                        " SET " + Atlantis::Orm::qcol("deletedAt") + " = ?" +
+                                        " WHERE " + Atlantis::Orm::qcol(e.__ormPk()) + " = ?");
+                        paramss = paramss.add(ps);
+                        kinds = kinds.add("softdelete");
+                        e.__ormMarkDeleted(nowMs);
+                        sealAfterDelete = sealAfterDelete.add(e);
+                    } else {
+                        Array<string | int | float | bool | None> ps = [];
+                        ps = ps.add(e.pkVal());
+                        sqls = sqls.add("DELETE FROM " + Atlantis::Orm::qpath(e.__ormPath()) +
+                                        " WHERE " + Atlantis::Orm::qcol(e.__ormPk()) + " = ?");
+                        paramss = paramss.add(ps);
+                        kinds = kinds.add("delete");
+                    }
+                }
+                for (Model e in this.removeHardList) {
+                    Array<string | int | float | bool | None> ps = [];
+                    ps = ps.add(e.pkVal());
+                    sqls = sqls.add("DELETE FROM " + Atlantis::Orm::qpath(e.__ormPath()) +
+                                    " WHERE " + Atlantis::Orm::qcol(e.__ormPk()) + " = ?");
+                    paramss = paramss.add(ps);
+                    kinds = kinds.add("delete");
+                }
+
+                if (sqls.length() == 0) {
+                    Promise<void> nop = Promise();
+                    nop.resolve(None);
+                    return nop;
+                }
+
+                // ---- execute: sequential, ONE connection, self-wrapped tx ----
+                Atlantis::Data::IDbConnection? already = this.pinned;
+                if (already != None) {
+                    await this.__runPlan(already, sqls, paramss, kinds, insertGroups, insertPaths);
+                } else {
+                    using Atlantis::Data::IDbConnection c = await this.pool.acquire();
+                    if (sqls.length() > 1) {
+                        Atlantis::Data::ITransaction tx = await c.begin();
+                        try {
+                            await this.__runPlan(c, sqls, paramss, kinds, insertGroups, insertPaths);
+                            await tx.commit();
+                            tx.close();
+                        } catch (IException e) {
+                            await tx.rollback();
+                            tx.close();
+                            throw e;
+                        }
+                    } else {
+                        await this.__runPlan(c, sqls, paramss, kinds, insertGroups, insertPaths);
+                    }
+                }
+                this.newList = [];
+                this.removeList = [];
+                this.removeHardList = [];
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            Promise<void> __runPlan(Atlantis::Data::IDbConnection c,
+                    Array<string> sqls,
+                    Array<Array<string | int | float | bool | None>> paramss,
+                    Array<string> kinds,
+                    Array<Array<Model>> insertGroups,
+                    Array<string> insertPaths) {
+                int insertIdx = 0;
+                int i = 0;
+                while (i < sqls.length()) {
+                    Atlantis::Data::ExecResult er = await c.execute(sqls.at(i), paramss.at(i));
+                    if (kinds.at(i) == "insert") {
+                        Array<Model> group = insertGroups.at(insertIdx);
+                        string pathKey = insertPaths.at(insertIdx);
+                        insertIdx = insertIdx + 1;
+                        Model first = group.at(0);
+                        bool auto = first.__ormAutoPk();
+                        int j = 0;
+                        while (j < group.length()) {
+                            Model e = group.at(j);
+                            if (auto) {
+                                // consecutive ids for one multi-row INSERT under
+                                // lock modes 0/1 (§4.3); per-row otherwise.
+                                e.__ormSetPk(er.lastInsertId + j);
+                            }
+                            e.__ormSeal();
+                            this.__track(e);
+                            RepoHandle h = this.__handleByPath(pathKey);
+                            Array<Model> one = [];
+                            one = one.add(e);
+                            var ad = h.adopt;
+                            ad(e.pkVal(), one);
+                            j = j + 1;
+                        }
+                    }
+                    if (kinds.at(i) == "update" || kinds.at(i) == "softdelete") {
+                        // re-seal happens below via the tracked scan
+                    }
+                    i = i + 1;
+                }
+                // re-seal every clean-slate entity (updates + tombstones)
+                for (Model e in this.tracked) {
+                    if (!e.__isNew && e.isDirty()) { e.__ormSeal(); }
+                }
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            // ==== §4.5 transact() ==========================================
+            // The body receives this same Db, pinned to one connection with
+            // BEGIN open; commit on return, ROLLBACK on any throw, connection
+            // released either way. Nested transact throws (no savepoints v1).
+            Promise<T> transact<T>((Db) => Promise<T> body) {
+                if (this.pinned != None) {
+                    throw OrmLogicException("nested transact() — no savepoints in v1");
+                }
+                Atlantis::Data::IDbConnection c = await this.pool.acquire();
+                Atlantis::Data::ITransaction tx = await c.begin();
+                this.pinned = c;
+                var f = body;
+                try {
+                    T out = await f(this);
+                    await tx.commit();
+                    tx.close();
+                    this.pinned = None;
+                    c.close();
+                    return Promise(out);
+                } catch (IException e) {
+                    await tx.rollback();
+                    tx.close();
+                    this.pinned = None;
+                    c.close();
+                    throw e;
+                }
+            }
+
+            // ==== §6.2 raw hatch ===========================================
+            Promise<Atlantis::Data::ResultSet> raw(string sql,
+                    Array<string | int | float | bool | None> params)
+                => this.__q(sql, params);
+
+            // ==== §6.3 the dense lane ======================================
+            // T is method-level (LA-18); the witness argument carries T since
+            // explicit generic call arguments are not in the language (M0
+            // finding, P8) — `db.rows(sql, [], UserStat())`.
+            Promise<Array<T>> rows<T>(string sql,
+                    Array<string | int | float | bool | None> params, T witness) {
+                Atlantis::Data::ResultSet rs = await this.__q(sql, params);
+                Array<T> out = [];
+                for (Atlantis::Data::Row r in rs.rows) {
+                    out = out.add(T::FromRow(r));
+                }
+                return Promise(out);
+            }
+
+            // ==== §5.3 explicit batch relation loading =====================
+            Promise<void> load<E, R>(Array<E> es, expr::Expr<(E) => R> path) {
+                Array<Model> ms = [];
+                for (E e in es) { ms = ms.add(e); }
+                await this.__loadRel(ms, Atlantis::Orm::__ormPathField(path.tree));
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            // one query per relation over the whole collection — N+1 is
+            // structurally unreachable (§5.3).
+            Promise<void> __loadRel(Array<Model> parents, string field) {
+                Promise<void> done = Promise();
+                if (parents.length() == 0) {
+                    done.resolve(None);
+                    return done;
+                }
+                Model p0 = parents.at(0);
+                Array<string> rels = p0.__ormRels;
+                string kind = "";
+                string entity = "";
+                string fk = "";
+                string m2mA = "";
+                string m2mB = "";
+                int k = 0;
+                bool found = false;
+                while (k + 5 < rels.length()) {
+                    if (rels.at(k) == field) {
+                        kind = rels.at(k + 1);
+                        entity = rels.at(k + 2);
+                        fk = rels.at(k + 3);
+                        m2mA = rels.at(k + 4);
+                        m2mB = rels.at(k + 5);
+                        found = true;
+                    }
+                    k = k + 6;
+                }
+                if (!found) {
+                    throw OrmLogicException("no relation '" + field + "' declared on " +
+                        p0.__ormEntity() + " — @HasMany/@BelongsTo/@ManyToMany it");
+                }
+                Array<string | int | float | bool | None> pks = [];
+                for (Model p in parents) {
+                    if (!p.__isNew) { pks = pks.add(p.pkVal()); }
+                }
+                if (kind == "hasMany") {
+                    RepoHandle child = this.__handleByEntity(Atlantis::Orm::__ormSimpleName(entity));
+                    string sql = "SELECT " + Atlantis::Orm::__ormColsSql(child.proto) +
+                                 " FROM " + Atlantis::Orm::qpath(child.proto.__ormPath()) +
+                                 " WHERE " + Atlantis::Orm::qcol(fk) + " IN (" +
+                                 Atlantis::Orm::__ormInPh(pks.length()) + ")";
+                    Atlantis::Data::ResultSet rs = await this.__q(sql, pks);
+                    Array<Model> children = [];
+                    var cmat = child.mat;
+                    for (Atlantis::Data::Row r in rs.rows) { children = children.add(cmat(r)); }
+                    for (Model p in parents) {
+                        Array<Model> mine = [];
+                        for (Model ch in children) {
+                            if (Atlantis::Orm::dbEq(ch.colVal(fk), p.pkVal())) { mine = mine.add(ch); }
+                        }
+                        p.__ormRelFill(field, mine);
+                    }
+                }
+                if (kind == "belongsTo") {
+                    string fkCol = fk;
+                    if (fkCol == "") { fkCol = field + "Id"; }       // §5.2 default
+                    RepoHandle target = this.__handleByEntity(Atlantis::Orm::__ormSimpleName(entity));
+                    Array<string | int | float | bool | None> ids = [];
+                    for (Model p in parents) {
+                        string | int | float | bool | None v = p.colVal(fkCol);
+                        match (v) {
+                            None => { }
+                            else => {
+                                if (!ids.contains(v)) { ids = ids.add(v); }
+                            }
+                        }
+                    }
+                    Array<Model> targets = [];
+                    if (ids.length() > 0) {
+                        string sql = "SELECT " + Atlantis::Orm::__ormColsSql(target.proto) +
+                                     " FROM " + Atlantis::Orm::qpath(target.proto.__ormPath()) +
+                                     " WHERE " + Atlantis::Orm::qcol(target.proto.__ormPk()) +
+                                     " IN (" + Atlantis::Orm::__ormInPh(ids.length()) + ")";
+                        Atlantis::Data::ResultSet rs = await this.__q(sql, ids);
+                        var tmat = target.mat;
+                        for (Atlantis::Data::Row r in rs.rows) { targets = targets.add(tmat(r)); }
+                    }
+                    for (Model p in parents) {
+                        Array<Model> mine = [];
+                        string | int | float | bool | None v = p.colVal(fkCol);
+                        for (Model t in targets) {
+                            if (Atlantis::Orm::dbEq(t.pkVal(), Atlantis::Orm::asDbInt(v, fkCol))) {
+                                mine = mine.add(t);
+                            }
+                        }
+                        p.__ormRelFill(field, mine);
+                    }
+                }
+                if (kind == "manyToMany") {
+                    // §5.4: one through-table query; project "whichever side
+                    // isn't self". v1 targets the parents' own entity (the
+                    // owner's self-join ruling); a: is the self side.
+                    RepoHandle through = this.__handleByEntity(Atlantis::Orm::__ormSimpleName(entity));
+                    string sql = "SELECT " + Atlantis::Orm::__ormColsSql(through.proto) +
+                                 " FROM " + Atlantis::Orm::qpath(through.proto.__ormPath()) +
+                                 " WHERE " + Atlantis::Orm::qcol(m2mA) + " IN (" +
+                                 Atlantis::Orm::__ormInPh(pks.length()) + ") OR " +
+                                 Atlantis::Orm::qcol(m2mB) + " IN (" +
+                                 Atlantis::Orm::__ormInPh(pks.length()) + ")";
+                    Array<string | int | float | bool | None> ps2 = [];
+                    for (string | int | float | bool | None v in pks) { ps2 = ps2.add(v); }
+                    for (string | int | float | bool | None v in pks) { ps2 = ps2.add(v); }
+                    Atlantis::Data::ResultSet rs = await this.__q(sql, ps2);
+                    Array<Model> links = [];
+                    var thmat = through.mat;
+                    for (Atlantis::Data::Row r in rs.rows) { links = links.add(thmat(r)); }
+                    RepoHandle target = this.__handleByPath(p0.__ormPath().joinToString("."));
+                    Array<string | int | float | bool | None> otherIds = [];
+                    for (Model l in links) {
+                        string | int | float | bool | None av = l.colVal(m2mA);
+                        string | int | float | bool | None bv = l.colVal(m2mB);
+                        for (Model p in parents) {
+                            if (Atlantis::Orm::dbEq(av, p.pkVal()) && !otherIds.contains(bv)) {
+                                otherIds = otherIds.add(bv);
+                            }
+                            if (Atlantis::Orm::dbEq(bv, p.pkVal()) && !otherIds.contains(av)) {
+                                otherIds = otherIds.add(av);
+                            }
+                        }
+                    }
+                    Array<Model> targets = [];
+                    if (otherIds.length() > 0) {
+                        string sql2 = "SELECT " + Atlantis::Orm::__ormColsSql(target.proto) +
+                                      " FROM " + Atlantis::Orm::qpath(target.proto.__ormPath()) +
+                                      " WHERE " + Atlantis::Orm::qcol(target.proto.__ormPk()) +
+                                      " IN (" + Atlantis::Orm::__ormInPh(otherIds.length()) + ")";
+                        Atlantis::Data::ResultSet rs2 = await this.__q(sql2, otherIds);
+                        var t2mat = target.mat;
+                        for (Atlantis::Data::Row r in rs2.rows) { targets = targets.add(t2mat(r)); }
+                    }
+                    for (Model p in parents) {
+                        Array<Model> mine = [];
+                        for (Model l in links) {
+                            string | int | float | bool | None av = l.colVal(m2mA);
+                            string | int | float | bool | None bv = l.colVal(m2mB);
+                            string | int | float | bool | None other = None;
+                            if (Atlantis::Orm::dbEq(av, p.pkVal())) { other = bv; }
+                            if (Atlantis::Orm::dbEq(bv, p.pkVal())) { other = av; }
+                            match (other) {
+                                None => { }
+                                else => {
+                                    for (Model t in targets) {
+                                        if (Atlantis::Orm::dbEq(t.pkVal(), Atlantis::Orm::asDbInt(other, "m2m"))) {
+                                            mine = mine.add(t);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        p.__ormRelFill(field, mine);
+                    }
+                }
+                done.resolve(None);
+                return done;
+            }
+
+            // ==== §8 boot validation (dev mode) ============================
+            Promise<void> validate() {
+                int i = 0;
+                while (i < this.handles.length()) {
+                    RepoHandle h = this.handles.at(i);
+                    var v = h.validate;
+                    await v();
+                    i = i + 1;
+                }
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+        }
+
+        string __ormColsSql(Model proto) {
+            Array<string> quoted = [];
+            for (string c in proto.allCols()) { quoted = quoted.add(Atlantis::Orm::qcol(c)); }
+            return quoted.joinToString(", ");
+        }
+    }
+}

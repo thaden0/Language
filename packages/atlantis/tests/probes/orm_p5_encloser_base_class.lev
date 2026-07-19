@@ -1,0 +1,28 @@
+// ORM M0 P5 (techdesign-06-orm.md §11): encloser constraint `in class C : Model`
+// where Model is a base CLASS (not an interface) — Shape B's match shape and
+// the mixin-aware rules depend on the resolved base chain accepting classes.
+// Placement: root Atlantis (P1 fallback).
+namespace Atlantis {
+    class Model {
+        int tracked = 0;
+    }
+    rule bumpFields {
+        match on field f in class C : Model
+        inject `this.tracked = this.tracked + 1;` at bottom of C.constructor
+    }
+}
+uses Atlantis;
+
+class Account : Model {
+    int a = 1;
+    string b = "x";
+}
+
+class Plain {
+    int c = 5;
+}
+
+Account e = Account();
+Plain p = Plain();
+console.writeln(e.tracked);
+console.writeln(p.c);

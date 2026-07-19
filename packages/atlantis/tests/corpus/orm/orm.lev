@@ -1,0 +1,334 @@
+// Atlantis Track 06 — ORM M1 corpus (techdesign-06-orm.md §13 M1).
+// Generated members, FromRow, identity map, save() (multi-row INSERT +
+// write-back, dirty-cols-only UPDATE, SoftDelete tombstone), noTrack, raw/sql,
+// rows+@Row, transact, boot validation — all against a FakeDriver that logs
+// every statement (the captured-SQL speed-ledger discipline).
+uses Atlantis::Orm;
+uses Atlantis::Data;
+
+// ---- deterministic output: redact wall-clock DATETIME params ----
+string redact(string | int | float | bool | None v) {
+    match (v) {
+        string => {
+            if (v.length() >= 19 && v.subStr(4, 1) == "-" && v.subStr(7, 1) == "-" &&
+                v.subStr(10, 1) == " ") { return "<dt>"; }
+            return "'" + v + "'";
+        }
+        int => { return v.toString(); }
+        float => { return v.toString(); }
+        bool => { if (v) { return "true"; } return "false"; }
+        None => { return "NULL"; }
+    }
+}
+
+// ---- the FakeDriver (C3 seam implementation, scripted results) ----
+class FakeTx : ITransaction {
+    new FakeTx() { console.writeln("[sql] BEGIN"); }
+    Promise<void> commit() {
+        console.writeln("[sql] COMMIT");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    Promise<void> rollback() {
+        console.writeln("[sql] ROLLBACK");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    void close() { }
+}
+
+class FakeConn : IDbConnection {
+    FakePool owner;
+    new FakeConn(FakePool owner) { this.owner = owner; }
+    Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) { shown = shown.add(redact(p)); }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        return Promise(this.owner.nextResult(sql));
+    }
+    Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) { shown = shown.add(redact(p)); }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        int last = 0;
+        if (sql.startsWith("INSERT")) {
+            last = this.owner.nextId;
+            int n = 1;   // rows in this statement = count of "(" groups after VALUES
+            int i = sql.indexOf("VALUES") + 6;
+            n = 0;
+            while (i < sql.length()) {
+                if (sql.subStr(i, 1) == "(") { n = n + 1; }
+                i = i + 1;
+            }
+            this.owner.nextId = this.owner.nextId + n;
+            return Promise(ExecResult(n, last));
+        }
+        return Promise(ExecResult(1, 0));
+    }
+    Promise<ITransaction> begin() {
+        Promise<ITransaction> p = Promise();
+        p.resolve(FakeTx());
+        return p;
+    }
+    void close() { }
+}
+
+class FakePool : IDbPool {
+    Array<ResultSet> queue = [];
+    int nextId = 100;
+    FakeConn conn;
+    new FakePool() { this.conn = FakeConn(this); }
+    Promise<IDbConnection> acquire() {
+        Promise<IDbConnection> p = Promise();
+        p.resolve(this.conn);
+        return p;
+    }
+    void release(IDbConnection c) { }
+    void push(ResultSet rs) { this.queue = this.queue.add(rs); }
+    ResultSet nextResult(string sql) {
+        if (sql.startsWith("DESCRIBE")) { return describeUsers(); }
+        if (sql.contains("@@innodb_autoinc_lock_mode")) {
+            return rs1(["m"], dbv().add(1));
+        }
+        if (this.queue.length() == 0) { return ResultSet([], []); }
+        ResultSet head = this.queue.at(0);
+        this.queue = this.queue.skip(1);
+        return head;
+    }
+}
+
+// ---- result-set builders ----
+// bare array literals are invariant, so cells are built with the []+.add
+// widening idiom via this seed helper
+Array<string | int | float | bool | None> dbv() {
+    Array<string | int | float | bool | None> a = [];
+    return a;
+}
+Row mkRow(Array<string> cols, Array<string | int | float | bool | None> cells) {
+    Map<string, int> idx = Map();
+    int i = 0;
+    while (i < cols.length()) {
+        idx[cols.at(i)] = i;
+        i = i + 1;
+    }
+    return Row(cells, idx);
+}
+ResultSet rs1(Array<string> cols, Array<string | int | float | bool | None> cells) {
+    return ResultSet(cols, [mkRow(cols, cells)]);
+}
+ResultSet describeUsers() {
+    Array<string> c = ["Field", "Type", "Null", "Key", "Default", "Extra"];
+    Array<Row> rows = [];
+    rows = rows.add(mkRow(c, dbv().add("id").add("bigint").add("NO").add("PRI").add(None).add("auto_increment")));
+    rows = rows.add(mkRow(c, dbv().add("name").add("varchar(255)").add("NO").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("email").add("varchar(255)").add("YES").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("active").add("tinyint(1)").add("YES").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("relation").add("int").add("YES").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("createdAt").add("datetime(6)").add("YES").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("updatedAt").add("datetime(6)").add("YES").add("").add(None).add("")));
+    rows = rows.add(mkRow(c, dbv().add("deletedAt").add("datetime(6)").add("YES").add("").add(None).add("")));
+    return ResultSet(c, rows);
+}
+Array<string> userCols() {
+    return ["id", "name", "email", "active", "relation", "createdAt", "updatedAt", "deletedAt"];
+}
+Row userRow(int id, string name, string email, bool active) {
+    return mkRow(userCols(), dbv().add(id).add(name).add(email).add(active)
+        .add(1).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None));
+}
+
+// ---- entities ----
+enum RelationType { NoneKind, Friend, Foe }
+
+@Table("users")
+class User : Model, Timestamps, SoftDelete {
+    @PrimaryKey @AutoIncrement
+    int id;
+
+    @NotNull
+    string name;
+
+    string email;
+    bool active = true;
+    RelationType relation;
+
+    @Ignore
+    int scoreCache;
+}
+
+// a Model-derived class WITHOUT @Table: generates nothing; the throwing
+// defaults make that loud (§8 duty 1).
+class Orphan : Model {
+    int id;
+}
+
+// §6.3 the dense lane
+@Row struct UserStat {
+    int userId;
+    int postCount;
+    new UserStat() {
+        this.userId = 0;
+        this.postCount = 0;
+    }
+}
+
+class AppDb : Db {
+    Repo<User> users;
+    new AppDb(IDbPool p) {
+        Db::Db(p);
+        this.users = this.repo(() => User());
+    }
+}
+
+Promise<void> run() {
+    FakePool pool = FakePool();
+    AppDb db = AppDb(pool);
+
+    // ---- generated members ----
+    User proto = User();
+    console.writeln("path=" + proto.__ormPath().joinToString("."));
+    console.writeln("pk=" + proto.__ormPk() + " auto=" + proto.__ormAutoPk().toString());
+    console.writeln("entity=" + proto.__ormEntity());
+    console.writeln("cols=" + proto.__ormCols().joinToString(","));
+    console.writeln("allCols=" + proto.allCols().joinToString(","));
+    console.writeln("colTypes=" + proto.__ormColTypes().joinToString(","));
+    console.writeln("notNull=" + proto.__ormNotNullCols().joinToString(","));
+
+    // ---- §8 duty 1: the throwing default is loud ----
+    Orphan orphan = Orphan();
+    try {
+        orphan.__ormPath();
+        console.writeln("orphan: NOT THROWN");
+    } catch (Atlantis::Orm::OrmLogicException e) {
+        console.writeln("orphan throws: yes");
+    }
+
+    // ---- §8 boot validation against DESCRIBE ----
+    await db.validate();
+    console.writeln("validate: ok");
+
+    // ---- FromRow + identity map (§4.2) ----
+    pool.push(rs1(userCols(), dbv().add(1).add("ada").add("a@x").add(true).add(2).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None)));
+    User u1 = await db.users.find(1);
+    console.writeln("u1 " + u1.id.toString() + " " + u1.name + " " + u1.relation.toString() +
+                    " active=" + u1.active.toString() + " new=" + u1.isNew().toString() +
+                    " dirty=" + u1.isDirty().toString());
+    console.writeln("created=" + Atlantis::Orm::fmtDateTime(u1.createdAt));
+    // identity: a second find(1) never re-queries and returns the SAME instance
+    User u1b = await db.users.find(1);
+    u1.name = "renamed";
+    console.writeln("identity same=" + u1b.name);
+
+    // ---- save(): multi-row INSERT + write-back + dirty UPDATE (§4.3) ----
+    User n1 = User();
+    n1.name = "bob";
+    n1.email = "b@x";
+    User n2 = User();
+    n2.name = "cyn";
+    n2.email = "c@x";
+    db.add(n1);
+    db.add(n2);
+    u1.email = "new@x";           // dirty: email (+ updatedAt at save)
+    await db.save();
+    console.writeln("ids=" + n1.id.toString() + "," + n2.id.toString() +
+                    " sealed=" + (!n1.isNew()).toString());
+    console.writeln("u1 dirty after save=" + u1.isDirty().toString());
+
+    // ---- re-entrancy guard fires only DURING save; sequential saves fine ----
+    await db.save();               // nothing pending -> no SQL
+    console.writeln("empty save: ok");
+
+    // ---- SoftDelete tombstone (§4.3) ----
+    db.remove(u1);
+    await db.save();
+    console.writeln("softDeleted=" + u1.isDeleted().toString());
+
+    // ---- noTrack (§4.4) ----
+    pool.push(rs1(userCols(), dbv().add(9).add("ghost").add("g@x").add(false).add(0).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None)));
+    Array<User> ghosts = await db.users.noTrack().all();
+    pool.push(rs1(userCols(), dbv().add(9).add("ghost2").add("g@x").add(false).add(0).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None)));
+    Array<User> ghosts2 = await db.users.noTrack().all();
+    console.writeln("noTrack distinct=" + (ghosts.at(0).name != ghosts2.at(0).name).toString());
+
+    // ---- §6.2 raw + repo.sql ----
+    pool.push(rs1(["n"], dbv().add(42)));
+    ResultSet rr = await db.raw("SELECT COUNT(*) AS n FROM `users`", []);
+    console.writeln("raw n=" + Atlantis::Orm::asDbInt(rr.rows.at(0).byName("n"), "n").toString());
+    pool.push(rs1(userCols(), dbv().add(77).add("sqlrow").add("s@x").add(true).add(0).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None)));
+    Array<User> viaSql = await db.users.sql("SELECT * FROM `users` WHERE id = 77", []);
+    console.writeln("viaSql=" + viaSql.at(0).name);
+    // column-mismatch names both sets (§6.2)
+    pool.push(rs1(["id", "nope"], dbv().add(1).add("x")));
+    try {
+        Array<User> bad = await db.users.sql("SELECT id, nope FROM `users`", []);
+        console.writeln("sql mismatch: NOT THROWN");
+    } catch (Atlantis::Orm::MappingException e) {
+        console.writeln("sql mismatch throws: yes");
+    }
+
+    // ---- §6.3 @Row dense lane ----
+    Array<string> statCols = ["userId", "postCount"];
+    pool.push(ResultSet(statCols, [mkRow(statCols, dbv().add(1).add(5)), mkRow(statCols, dbv().add(2).add(9))]));
+    Array<UserStat> stats = await db.rows(
+        "SELECT userId, COUNT(*) AS postCount FROM posts GROUP BY userId", [], UserStat());
+    console.writeln("stats=" + stats.at(0).userId.toString() + ":" +
+                    stats.at(0).postCount.toString() + "," +
+                    stats.at(1).userId.toString() + ":" + stats.at(1).postCount.toString());
+
+    // ---- §4.5 transact: commit + rollback + nested guard ----
+    int got = await db.transact((tx) => {
+        Promise<int> p = Promise();
+        p.resolve(5);
+        return p;
+    });
+    console.writeln("tx result=" + got.toString());
+    try {
+        int bad = await db.transact((tx) => db.transact((tx2) => {
+            Promise<int> p = Promise();
+            p.resolve(0);
+            return p;
+        }));
+        console.writeln("nested: NOT THROWN");
+    } catch (Atlantis::Orm::OrmLogicException e) {
+        console.writeln("nested transact throws: yes");
+    }
+    try {
+        int bad2 = await db.transact((tx) => {
+            Promise<int> p = Promise();
+            if (true) { throw Atlantis::Orm::OrmLogicException("boom"); }
+            return p;
+        });
+        console.writeln("throwing tx: NOT RETHROWN");
+    } catch (Atlantis::Orm::OrmLogicException e) {
+        console.writeln("tx rolls back and rethrows: yes");
+    }
+
+    // ---- converter edges (§2.3/§7) ----
+    try {
+        Row brokenRow = mkRow(userCols(), dbv().add(3).add(None).add("e@x")
+            .add(true).add(0).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None));
+        User broken = User::FromRow(brokenRow);
+        console.writeln("null-into-name: NOT THROWN");
+    } catch (Atlantis::Orm::MappingException e) {
+        console.writeln("null-into-name throws: yes");
+    }
+    try {
+        Row broken2Row = mkRow(userCols(), dbv().add(3).add("x").add("e@x")
+            .add(true).add(99).add("2026-01-02 03:04:05").add("2026-01-02 03:04:05").add(None));
+        User broken2 = User::FromRow(broken2Row);
+        console.writeln("bad-enum: NOT THROWN");
+    } catch (Atlantis::Orm::MappingException e) {
+        console.writeln("bad-enum throws: yes");
+    }
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    await run();
+    console.writeln("[done]");
+}

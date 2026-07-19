@@ -1,0 +1,217 @@
+// Atlantis Track 06 — ORM M3 corpus (techdesign-06-orm.md §5, §13 M3).
+// Relations: Rel/RelMany wrappers (unloaded throws, loudly), .with() on a
+// query, db.load() over a collection, @HasMany/@BelongsTo/@ManyToMany-through
+// (the owner's self-join pipe ruling), always one batched query per relation —
+// N+1 structurally unreachable, asserted via the captured-SQL log.
+uses Atlantis::Orm;
+uses Atlantis::Data;
+
+class FakeTx : ITransaction {
+    new FakeTx() { console.writeln("[sql] BEGIN"); }
+    Promise<void> commit() {
+        console.writeln("[sql] COMMIT");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    Promise<void> rollback() {
+        console.writeln("[sql] ROLLBACK");
+        Promise<void> p = Promise();
+        p.resolve(None);
+        return p;
+    }
+    void close() { }
+}
+class FakeConn : IDbConnection {
+    FakePool owner;
+    new FakeConn(FakePool owner) { this.owner = owner; }
+    Promise<ResultSet> query(string sql, Array<string | int | float | bool | None> params) {
+        Array<string> shown = [];
+        for (string | int | float | bool | None p in params) {
+            match (p) {
+                int => { shown = shown.add(p.toString()); }
+                string => { shown = shown.add("'" + p + "'"); }
+                else => { shown = shown.add("?"); }
+            }
+        }
+        console.writeln("[sql] " + sql + " :: [" + shown.joinToString(",") + "]");
+        return Promise(this.owner.next());
+    }
+    Promise<ExecResult> execute(string sql, Array<string | int | float | bool | None> params) {
+        console.writeln("[sql] " + sql);
+        return Promise(ExecResult(1, 0));
+    }
+    Promise<ITransaction> begin() {
+        Promise<ITransaction> p = Promise();
+        p.resolve(FakeTx());
+        return p;
+    }
+    void close() { }
+}
+class FakePool : IDbPool {
+    Array<ResultSet> queue = [];
+    FakeConn conn;
+    new FakePool() { this.conn = FakeConn(this); }
+    Promise<IDbConnection> acquire() {
+        Promise<IDbConnection> p = Promise();
+        p.resolve(this.conn);
+        return p;
+    }
+    void release(IDbConnection c) { }
+    void push(ResultSet rs) { this.queue = this.queue.add(rs); }
+    ResultSet next() {
+        if (this.queue.length() == 0) { return ResultSet([], []); }
+        ResultSet head = this.queue.at(0);
+        this.queue = this.queue.skip(1);
+        return head;
+    }
+}
+Array<string | int | float | bool | None> dbv() {
+    Array<string | int | float | bool | None> a = [];
+    return a;
+}
+Row mkRow(Array<string> cols, Array<string | int | float | bool | None> cells) {
+    Map<string, int> idx = Map();
+    int i = 0;
+    while (i < cols.length()) {
+        idx[cols.at(i)] = i;
+        i = i + 1;
+    }
+    return Row(cells, idx);
+}
+
+// ---- entities (§1's shape, self-join per the owner's ruling §5.4) ----
+@Table("musers")
+class MUser : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string name;
+
+    @HasMany("App::MPost", fk: "userId")
+    RelMany<MPost> posts = RelMany();
+
+    @ManyToMany(through: "App::MRel", a: "user1", b: "user2")
+    RelMany<MUser> friends = RelMany();
+}
+
+@Table("mposts")
+class MPost : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string title;
+    int userId;
+
+    @BelongsTo("App::MUser", fk: "userId")
+    Rel<MUser> author = Rel();
+}
+
+@Table("mrels")
+class MRel : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    int user1;
+    int user2;
+}
+
+Array<string> userCols() { return ["id", "name"]; }
+Array<string> postCols() { return ["id", "title", "userId"]; }
+Array<string> relCols() { return ["id", "user1", "user2"]; }
+
+class AppDb : Db {
+    Repo<MUser> users;
+    Repo<MPost> posts;
+    Repo<MRel> rels;
+    new AppDb(IDbPool p) {
+        Db::Db(p);
+        this.users = this.repo(() => MUser());
+        this.posts = this.repo(() => MPost());
+        this.rels = this.repo(() => MRel());
+    }
+}
+
+Promise<void> run() {
+    FakePool pool = FakePool();
+    AppDb db = AppDb(pool);
+
+    // ---- §5.1 unloaded touch throws, with the fix in the message ----
+    MUser fresh = MUser();
+    try {
+        int nn = fresh.posts.count();
+        console.writeln("unloaded: NOT THROWN");
+    } catch (Atlantis::Orm::NotLoadedException e) {
+        console.writeln("unloaded throws: yes");
+    }
+
+    // ---- §5.3 .with((u) => u.posts): parent SELECT + ONE child IN-query ----
+    pool.push(ResultSet(userCols(), [
+        mkRow(userCols(), dbv().add(1).add("ada")),
+        mkRow(userCols(), dbv().add(2).add("bob"))]));
+    pool.push(ResultSet(postCols(), [
+        mkRow(postCols(), dbv().add(10).add("intro").add(1)),
+        mkRow(postCols(), dbv().add(11).add("more").add(1)),
+        mkRow(postCols(), dbv().add(12).add("solo").add(2))]));
+    Array<MUser> us = await db.users.with((u) => u.posts).all();
+    console.writeln("ada posts=" + us.at(0).posts.count().toString() +
+                    " bob posts=" + us.at(1).posts.count().toString());
+    console.writeln("ada first=" + us.at(0).posts.all().at(0).title);
+
+    // ---- §5.3 db.load over a collection you already have (@BelongsTo) ----
+    Array<MPost> ps = us.at(0).posts.all();
+    for (MPost extra in us.at(1).posts.all()) { ps = ps.add(extra); }
+    // identity map already holds users 1/2; the batch still issues ONE query
+    pool.push(ResultSet(userCols(), [
+        mkRow(userCols(), dbv().add(1).add("ada")),
+        mkRow(userCols(), dbv().add(2).add("bob"))]));
+    await db.load(ps, (p) => p.author);
+    console.writeln("post10 author=" + ps.at(0).author.get().name +
+                    " post12 author=" + ps.at(2).author.get().name);
+    // identity: the loaded author IS the tracked instance
+    console.writeln("author identity=" + (us.at(0).id == ps.at(0).author.get().id).toString());
+
+    // ---- §5.4 M2M through, self-join pipe ruling ----
+    // friends of ada(1)+bob(2): links (1,2) and (3,1); targets 2,3,1 project
+    // "whichever side isn't self"
+    pool.push(ResultSet(relCols(), [
+        mkRow(relCols(), dbv().add(100).add(1).add(2)),
+        mkRow(relCols(), dbv().add(101).add(3).add(1))]));
+    pool.push(ResultSet(userCols(), [
+        mkRow(userCols(), dbv().add(2).add("bob")),
+        mkRow(userCols(), dbv().add(1).add("ada")),
+        mkRow(userCols(), dbv().add(3).add("cyn"))]));
+    await db.load(us, (u) => u.friends);
+    Array<string> adaFriends = [];
+    for (MUser f in us.at(0).friends.all()) { adaFriends = adaFriends.add(f.name); }
+    Array<string> bobFriends = [];
+    for (MUser f in us.at(1).friends.all()) { bobFriends = bobFriends.add(f.name); }
+    console.writeln("ada friends=" + adaFriends.joinToString(",") +
+                    " bob friends=" + bobFriends.joinToString(","));
+
+    // ---- empty collection: no query at all ----
+    Array<MPost> none = [];
+    await db.load(none, (p) => p.author);
+    console.writeln("empty load: ok");
+
+    // ---- Rel orNone on a loaded-but-empty relation ----
+    MPost orphanPost = MPost();
+    orphanPost.id = 99;
+    orphanPost.title = "orphan";
+    orphanPost.userId = 42;
+    db.add(orphanPost);
+    await db.save();
+    pool.push(ResultSet(userCols(), []));
+    Array<MPost> op = [];
+    op = op.add(orphanPost);
+    await db.load(op, (p) => p.author);
+    MUser? nobody = orphanPost.author.orNone();
+    if (nobody == None) { console.writeln("orphan author=None"); }
+    else { console.writeln("orphan author=some"); }
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    await run();
+    console.writeln("[done]");
+}

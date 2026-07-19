@@ -1,0 +1,62 @@
+// ORM M0 P8 (techdesign-06-orm.md §11): identity aliasing — Array<E> of class
+// refs, mutate via a map hit, observe via the array; repo factory-closure
+// generics — Db.repo(() => E make) with E::Label inside the generic method
+// and inside a lambda inside the generic method. NOTE: explicit generic call
+// arguments (`db.repo<User>(...)`) are NOT in the language — `f<T>(x)` parses
+// as comparisons ("cannot reference generic function ... unbound in value
+// position"). E is inferred from the factory closure's return type instead.
+class Model {
+    int pk = 0;
+}
+
+class User : Model {
+    string name;
+    new User() { this.name = "?"; }
+    new Make(string n) { this.name = n; }
+}
+
+class Repo<E> {
+    () => E make;
+    (string) => E mat;
+    Map<int, E> map;
+    new Repo(() => E make, (string) => E mat) {
+        this.make = make;
+        this.mat = mat;
+        this.map = Map();
+    }
+    E find(int pk, string n) {
+        if (this.map.has(pk)) { return this.map.at(pk); }
+        E fresh = this.mat(n);
+        this.map[pk] = fresh;
+        return fresh;
+    }
+}
+
+class Db {
+    Repo<E> repo<E>(() => E make) {
+        // E::Label inside a lambda inside the generic method:
+        return Repo(make, (n) => E::Make(n));
+    }
+}
+
+Db db = Db();
+Repo<User> users = db.repo(() => User());
+
+// identity aliasing: same pk -> same instance; mutation visible through both handles
+User a = users.find(1, "ada");
+User b = users.find(1, "ignored");
+a.name = "renamed";
+console.writeln(b.name);
+
+// through an Array<E> of refs:
+Array<User> held = [a];
+b.name = "again";
+console.writeln(held.at(0).name);
+
+// factory closure still usable:
+User c = users.make();
+console.writeln(c.name);
+
+// distinct pks are distinct instances
+User d = users.find(2, "bob");
+console.writeln(d.name);

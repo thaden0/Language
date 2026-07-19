@@ -1,0 +1,497 @@
+// Atlantis Track 06 — ORM queries (techdesign-06-orm.md §3, §6).
+//
+// Leviathan is the query language (§0 rule 1): predicates/orderings/set-bodies
+// are ordinary lambdas reified by LA-31 (`expr::Expr<F>`); SQL is a rendering
+// target behind the C3 seam, never the surface. The renderer walks the checked
+// tree; captured values ride as binds — user input cannot reach the SQL text,
+// by construction (§3.2). Literals render inline so each call site's SQL
+// string is stable for the driver's prepared-statement cache.
+namespace Atlantis {
+    namespace Orm {
+
+        struct SqlAndParams {
+            string sql;
+            Array<string | int | float | bool | None> params;
+            new SqlAndParams(string sql, Array<string | int | float | bool | None> params) {
+                this.sql = sql;
+                this.params = params;
+            }
+        }
+
+        // '...'-quote a compile-time string literal for inline rendering.
+        string sqlQuote(string s) {
+            string out = "'";
+            int i = 0;
+            while (i < s.length()) {
+                string ch = s.subStr(i, 1);
+                if (ch == "'") { out = out + "''"; }
+                else {
+                    if (ch == "\\") { out = out + "\\\\"; } else { out = out + ch; }
+                }
+                i = i + 1;
+            }
+            return out + "'";
+        }
+        // escape LIKE wildcards in a value bound into a composed pattern (§3.4).
+        string likeEscape(string s) {
+            string out = "";
+            int i = 0;
+            while (i < s.length()) {
+                string ch = s.subStr(i, 1);
+                if (ch == "%" || ch == "_" || ch == "\\") { out = out + "\\" + ch; }
+                else { out = out + ch; }
+                i = i + 1;
+            }
+            return out;
+        }
+        string qcol(string name) => "`" + name + "`";
+        string qpath(Array<string> segs) {
+            string out = "";
+            int i = 0;
+            while (i < segs.length()) {
+                if (i > 0) { out = out + "."; }
+                out = out + "`" + segs.at(i) + "`";
+                i = i + 1;
+            }
+            return out;
+        }
+
+        // ==== §3.5 the tree -> SQL renderer ================================
+        // One render per terminal; params accumulate in traversal order. The
+        // in-memory twin of every construct is the closure leg / expr::eval —
+        // the differential corpus (§3.4) pins agreement.
+        class SqlRender {
+            Array<string | int | float | bool | None> binds = [];
+            Array<string | int | float | bool | None> params = [];
+            // IN-list contents for Array.contains receivers (R17: the binds
+            // slot carries the None marker; the consumer keeps its own
+            // reference — Query.whereIn passes it through here).
+            Array<string | int | float | bool | None> inList = [];
+            bool hasInList = false;
+
+            new SqlRender(Array<string | int | float | bool | None> binds) {
+                this.binds = binds;
+            }
+
+            string lit(string | int | float | bool | None v) {
+                match (v) {
+                    int => { return v.toString(); }
+                    float => { return v.toString(); }
+                    bool => { if (v) { return "1"; } return "0"; }
+                    string => { return Atlantis::Orm::sqlQuote(v); }
+                    None => { return "NULL"; }
+                }
+            }
+            bool isNoneLit(expr::Node n) {
+                match (n) {
+                    expr::Lit => {
+                        string | int | float | bool | None v = n.v;
+                        match (v) {
+                            None => { return true; }
+                            else => { return false; }
+                        }
+                    }
+                    else => { return false; }
+                }
+            }
+            // the value of a pattern argument (Lit or Bind) for composed LIKEs
+            string | int | float | bool | None argValue(expr::Node n) {
+                match (n) {
+                    expr::Lit => { return n.v; }
+                    expr::Bind => { return this.binds.at(n.slot); }
+                    else => {
+                        throw OrmLogicException("query render: pattern argument must be a " +
+                            "literal or a captured value");
+                    }
+                }
+            }
+            string argStr(expr::Node n, string what) {
+                string | int | float | bool | None v = this.argValue(n);
+                match (v) {
+                    string => { return v; }
+                    else => { throw OrmLogicException("query render: " + what + " wants a string"); }
+                }
+            }
+
+            string render(expr::Node n) {
+                match (n) {
+                    expr::Field => {
+                        if (n.path.length() != 1) {
+                            throw OrmLogicException("query render: nested member path '" +
+                                n.path.joinToString(".") + "' is not renderable in v1 — " +
+                                "only direct entity fields");
+                        }
+                        return Atlantis::Orm::qcol(n.path.at(0));
+                    }
+                    expr::Lit => { return this.lit(n.v); }
+                    expr::Bind => {
+                        this.params = this.params.add(this.binds.at(n.slot));
+                        return "?";
+                    }
+                    expr::Bin => {
+                        expr::Bin b = n;
+                        if (b.op == "==" || b.op == "!=") {
+                            // §3.3: == None / != None -> IS NULL / IS NOT NULL
+                            if (this.isNoneLit(b.r)) {
+                                if (b.op == "==") { return "(" + this.render(b.l) + " IS NULL)"; }
+                                return "(" + this.render(b.l) + " IS NOT NULL)";
+                            }
+                            if (this.isNoneLit(b.l)) {
+                                if (b.op == "==") { return "(" + this.render(b.r) + " IS NULL)"; }
+                                return "(" + this.render(b.r) + " IS NOT NULL)";
+                            }
+                        }
+                        string op = b.op;
+                        if (op == "&&") { op = "AND"; }
+                        if (op == "||") { op = "OR"; }
+                        if (op == "==") { op = "="; }
+                        if (op == "!=") { op = "<>"; }
+                        return "(" + this.render(b.l) + " " + op + " " + this.render(b.r) + ")";
+                    }
+                    expr::Un => {
+                        expr::Un u = n;
+                        if (u.op == "!") { return "(NOT " + this.render(u.e) + ")"; }
+                        return "(-" + this.render(u.e) + ")";
+                    }
+                    expr::Call => {
+                        expr::Call c = n;
+                        if (c.name == "like") {
+                            return "(" + this.render(c.recv) + " LIKE BINARY " +
+                                   this.render(c.args.at(0)) + ")";
+                        }
+                        if (c.name == "ilike") {
+                            return "(LOWER(" + this.render(c.recv) + ") LIKE LOWER(" +
+                                   this.render(c.args.at(0)) + "))";
+                        }
+                        if (c.name == "startsWith") {
+                            string v = this.argStr(c.args.at(0), "startsWith");
+                            this.params = this.params.add(Atlantis::Orm::likeEscape(v) + "%");
+                            return "(" + this.render(c.recv) + " LIKE BINARY ?)";
+                        }
+                        if (c.name == "endsWith") {
+                            string v = this.argStr(c.args.at(0), "endsWith");
+                            this.params = this.params.add("%" + Atlantis::Orm::likeEscape(v));
+                            return "(" + this.render(c.recv) + " LIKE BINARY ?)";
+                        }
+                        if (c.name == "contains") {
+                            // Array<T>.contains -> IN (…): the receiver is a Bind
+                            // whose slot carries the R17 None marker; the real
+                            // contents arrive via Query.whereIn (§3.3).
+                            bool recvIsBind = false;
+                            match (c.recv) {
+                                expr::Bind => { recvIsBind = true; }
+                                else => { }
+                            }
+                            if (recvIsBind) {
+                                if (!this.hasInList) {
+                                    throw OrmLogicException("query render: Array.contains " +
+                                        "needs the array passed alongside — use " +
+                                        ".whereIn(predicate, array) (LA-31 R17: the binds " +
+                                        "slot carries only a marker)");
+                                }
+                                if (this.inList.length() == 0) { return "(1 = 0)"; }   // empty -> FALSE
+                                string ph = "";
+                                int i = 0;
+                                while (i < this.inList.length()) {
+                                    if (i > 0) { ph = ph + ","; }
+                                    ph = ph + "?";
+                                    this.params = this.params.add(this.inList.at(i));
+                                    i = i + 1;
+                                }
+                                return "(" + this.render(c.args.at(0)) + " IN (" + ph + "))";
+                            }
+                            // string.contains -> composed LIKE
+                            string v = this.argStr(c.args.at(0), "contains");
+                            this.params = this.params.add("%" + Atlantis::Orm::likeEscape(v) + "%");
+                            return "(" + this.render(c.recv) + " LIKE BINARY ?)";
+                        }
+                        throw OrmLogicException("query render: call '" + c.name +
+                            "' is outside the reifiable whitelist (§3.3)");
+                    }
+                    expr::Assign => {
+                        expr::Assign a = n;
+                        if (a.target.path.length() != 1) {
+                            throw OrmLogicException("query render: assignment target must be " +
+                                "a direct entity field");
+                        }
+                        return Atlantis::Orm::qcol(a.target.path.at(0)) + " = " +
+                               this.render(a.value);
+                    }
+                    else => { throw OrmLogicException("query render: unhandled node kind"); }
+                }
+            }
+        }
+
+        // ==== §3.5 Query<E> — immutable chain, exactly one SQL per terminal =
+        class Query<E> {
+            Repo<E> repo;
+            Array<expr::Node> wheres = [];
+            // parallel to wheres: each predicate's binds snapshot
+            Array<Array<string | int | float | bool | None>> whereBinds = [];
+            // parallel to wheres: IN-list contents ([] + false when absent)
+            Array<Array<string | int | float | bool | None>> whereIns = [];
+            Array<bool> whereHasIn = [];
+            Array<string> orderParts = [];
+            int takeN = -1;
+            int skipN = -1;
+            bool includeDeleted = false;
+            bool tracking = true;
+            Array<string> withFields = [];
+
+            new Query(Repo<E> repo) { this.repo = repo; }
+
+            Query<E> __clone() {
+                Query<E> q = Query(this.repo);
+                q.wheres = this.wheres;
+                q.whereBinds = this.whereBinds;
+                q.whereIns = this.whereIns;
+                q.whereHasIn = this.whereHasIn;
+                q.orderParts = this.orderParts;
+                q.takeN = this.takeN;
+                q.skipN = this.skipN;
+                q.includeDeleted = this.includeDeleted;
+                q.tracking = this.tracking;
+                q.withFields = this.withFields;
+                return q;
+            }
+
+            Query<E> where(expr::Expr<(E) => bool> p) {
+                Query<E> q = this.__clone();
+                q.wheres = q.wheres.add(p.tree);
+                q.whereBinds = q.whereBinds.add(p.binds);
+                Array<string | int | float | bool | None> none = [];
+                q.whereIns = q.whereIns.add(none);
+                q.whereHasIn = q.whereHasIn.add(false);
+                return q;
+            }
+            // §3.3 Array.contains: LA-31 R17 marks Array captures with None in
+            // the binds array — the consumer keeps its own reference. This is
+            // that reference's doorway; same predicate surface otherwise.
+            Query<E> whereIn(expr::Expr<(E) => bool> p,
+                             Array<string | int | float | bool | None> contents) {
+                Query<E> q = this.__clone();
+                q.wheres = q.wheres.add(p.tree);
+                q.whereBinds = q.whereBinds.add(p.binds);
+                q.whereIns = q.whereIns.add(contents);
+                q.whereHasIn = q.whereHasIn.add(true);
+                return q;
+            }
+
+            Query<E> __orderByTree(expr::Node t, bool desc) {
+                Query<E> q = this.__clone();
+                SqlRender r = SqlRender([]);
+                string col = r.render(t);
+                if (desc) { q.orderParts = q.orderParts.add(col + " DESC"); }
+                else { q.orderParts = q.orderParts.add(col + " ASC"); }
+                return q;
+            }
+            Query<E> orderBy(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.__orderByTree(k.tree, false);
+            Query<E> orderByDesc(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.__orderByTree(k.tree, true);
+            Query<E> thenBy(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.__orderByTree(k.tree, false);
+            Query<E> thenByDesc(expr::Expr<(E) => string | int | float | bool | None> k)
+                => this.__orderByTree(k.tree, true);
+
+            Query<E> take(int n) {
+                Query<E> q = this.__clone();
+                q.takeN = n;
+                return q;
+            }
+            Query<E> skip(int n) {
+                Query<E> q = this.__clone();
+                q.skipN = n;
+                return q;
+            }
+            Query<E> noTrack() {
+                Query<E> q = this.__clone();
+                q.tracking = false;
+                return q;
+            }
+            Query<E> withDeleted() {
+                Query<E> q = this.__clone();
+                q.includeDeleted = true;
+                return q;
+            }
+            // §5.3: the include is a reified member path — a typo'd relation is
+            // a compile error at the lambda.
+            Query<E> with<R>(expr::Expr<(E) => R> path) {
+                Query<E> q = this.__clone();
+                q.withFields = q.withFields.add(Atlantis::Orm::__ormPathField(path.tree));
+                return q;
+            }
+
+            // ---- render helpers ----
+            string __whereSql(SqlRender r) {
+                Array<string> parts = [];
+                int i = 0;
+                while (i < this.wheres.length()) {
+                    r.binds = this.whereBinds.at(i);
+                    r.hasInList = this.whereHasIn.at(i);
+                    r.inList = this.whereIns.at(i);
+                    parts = parts.add(r.render(this.wheres.at(i)));
+                    i = i + 1;
+                }
+                Atlantis::Orm::Model proto = this.repo.protoModel();
+                if (proto.__ormIsSoftDelete() && !this.includeDeleted) {
+                    parts = parts.add("(" + Atlantis::Orm::qcol("deletedAt") + " IS NULL)");
+                }
+                if (parts.length() == 0) { return ""; }
+                string sql = " WHERE " + parts.at(0);
+                int j = 1;
+                while (j < parts.length()) {
+                    sql = sql + " AND " + parts.at(j);
+                    j = j + 1;
+                }
+                return sql;
+            }
+            string __tailSql() {
+                string sql = "";
+                if (this.orderParts.length() > 0) {
+                    sql = sql + " ORDER BY " + this.orderParts.joinToString(", ");
+                }
+                if (this.takeN >= 0) {
+                    sql = sql + " LIMIT " + this.takeN.toString();
+                    if (this.skipN > 0) { sql = sql + " OFFSET " + this.skipN.toString(); }
+                } else {
+                    if (this.skipN > 0) {
+                        // MySQL needs a LIMIT to carry an OFFSET
+                        sql = sql + " LIMIT 18446744073709551615 OFFSET " + this.skipN.toString();
+                    }
+                }
+                return sql;
+            }
+            string __colsSql() {
+                Array<string> cols = this.repo.protoModel().allCols();
+                Array<string> quoted = [];
+                for (string c in cols) { quoted = quoted.add(Atlantis::Orm::qcol(c)); }
+                return quoted.joinToString(", ");
+            }
+            SqlAndParams __selectSql(int forcedLimit) {
+                SqlRender r = SqlRender([]);
+                string from = " FROM " + Atlantis::Orm::qpath(this.repo.protoModel().__ormPath());
+                string w = this.__whereSql(r);
+                string sql = "SELECT " + this.__colsSql() + from + w;
+                if (forcedLimit >= 0) {
+                    sql = sql + " LIMIT " + forcedLimit.toString();
+                    if (this.orderParts.length() > 0) {
+                        sql = "SELECT " + this.__colsSql() + from + w +
+                              " ORDER BY " + this.orderParts.joinToString(", ") +
+                              " LIMIT " + forcedLimit.toString();
+                    }
+                } else {
+                    sql = sql + this.__tailSql();
+                }
+                return SqlAndParams(sql, r.params);
+            }
+            // §3.5: inspection, diff-stable.
+            SqlAndParams toSql() => this.__selectSql(0 - 1);
+
+            // ---- terminals: exactly one SQL each ----
+            Promise<Array<E>> all() {
+                SqlAndParams sp = this.__selectSql(0 - 1);
+                Atlantis::Data::ResultSet rs = await this.repo.dbOf().__q(sp.sql, sp.params);
+                Array<E> out = [];
+                for (Atlantis::Data::Row row in rs.rows) {
+                    out = out.add(this.repo.materialize(row, this.tracking));
+                }
+                if (this.withFields.length() > 0) {
+                    Array<Atlantis::Orm::Model> ms = [];
+                    for (E e in out) { ms = ms.add(e); }
+                    for (string f in this.withFields) {
+                        await this.repo.dbOf().__loadRel(ms, f);
+                    }
+                }
+                return Promise(out);
+            }
+            Promise<E> first() {
+                Query<E> q = this.take(1);
+                Array<E> rows = await q.all();
+                if (rows.length() == 0) {
+                    throw EmptyResultException("first(): zero rows for " + this.toSql().sql);
+                }
+                return Promise(rows.at(0));
+            }
+            Promise<E?> firstOrNone() {
+                Query<E> q = this.take(1);
+                Array<E> rows = await q.all();
+                if (rows.length() == 0) {
+                    Promise<E?> p = Promise();
+                    p.resolve(None);
+                    return p;
+                }
+                Promise<E?> p2 = Promise();
+                p2.resolve(rows.at(0));
+                return p2;
+            }
+            Promise<int> count() {
+                SqlRender r = SqlRender([]);
+                string sql = "SELECT COUNT(*) AS c FROM " +
+                             Atlantis::Orm::qpath(this.repo.protoModel().__ormPath()) +
+                             this.__whereSql(r);
+                Atlantis::Data::ResultSet rs = await this.repo.dbOf().__q(sql, r.params);
+                if (rs.rows.length() == 0) { return Promise(0); }
+                return Promise(Atlantis::Orm::asDbInt(rs.rows.at(0).byName("c"), "count()"));
+            }
+            Promise<bool> exists() {
+                SqlRender r = SqlRender([]);
+                string sql = "SELECT 1 AS e FROM " +
+                             Atlantis::Orm::qpath(this.repo.protoModel().__ormPath()) +
+                             this.__whereSql(r) + " LIMIT 1";
+                Atlantis::Data::ResultSet rs = await this.repo.dbOf().__q(sql, r.params);
+                return Promise(rs.rows.length() > 0);
+            }
+            // §6.1 set-based writes: one UPDATE/DELETE, tracking bypassed.
+            Promise<int> set(expr::Expr<(E) => int> assignment) {
+                SqlRender r = SqlRender(assignment.binds);
+                string setSql = r.render(assignment.tree);
+                Array<string | int | float | bool | None> setParams = r.params;
+                r.params = [];
+                string w = this.__whereSql(r);
+                string sql = "UPDATE " + Atlantis::Orm::qpath(this.repo.protoModel().__ormPath()) +
+                             " SET " + setSql + w;
+                Array<string | int | float | bool | None> ps = setParams;
+                for (string | int | float | bool | None p in r.params) { ps = ps.add(p); }
+                Atlantis::Data::ExecResult er = await this.repo.dbOf().__x(sql, ps);
+                return Promise(er.affectedRows);
+            }
+            Promise<int> delete() {
+                Atlantis::Orm::Model proto = this.repo.protoModel();
+                SqlRender r = SqlRender([]);
+                if (proto.__ormIsSoftDelete()) {
+                    // tombstone UPDATE under SoftDelete (§6.1)
+                    string w = this.__whereSql(r);
+                    string sql = "UPDATE " + Atlantis::Orm::qpath(proto.__ormPath()) +
+                                 " SET " + Atlantis::Orm::qcol("deletedAt") + " = ?" + w;
+                    Array<string | int | float | bool | None> ps = [];
+                    ps = ps.add(Atlantis::Orm::fmtDateTime(DateTime::now()));
+                    for (string | int | float | bool | None p in r.params) { ps = ps.add(p); }
+                    Atlantis::Data::ExecResult er = await this.repo.dbOf().__x(sql, ps);
+                    return Promise(er.affectedRows);
+                }
+                string w2 = this.__whereSql(r);
+                string sql2 = "DELETE FROM " + Atlantis::Orm::qpath(proto.__ormPath()) + w2;
+                Atlantis::Data::ExecResult er2 = await this.repo.dbOf().__x(sql2, r.params);
+                return Promise(er2.affectedRows);
+            }
+        }
+
+        // include path: the reified tree of `(u) => u.posts` is Field(["posts"]).
+        string __ormPathField(expr::Node t) {
+            match (t) {
+                expr::Field => {
+                    if (t.path.length() != 1) {
+                        throw OrmLogicException(".with(): only a direct relation field is " +
+                            "loadable in v1 (nested include paths are a v2 line item)");
+                    }
+                    return t.path.at(0);
+                }
+                else => {
+                    throw OrmLogicException(".with(): the lambda must be a bare member " +
+                        "path ((u) => u.posts)");
+                }
+            }
+        }
+    }
+}

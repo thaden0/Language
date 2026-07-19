@@ -1,0 +1,237 @@
+// Track 06 ORM over the REAL Track 05 driver, end-to-end on a loopback socket
+// (techdesign-06-orm.md §13 M1: "green vs FakeDriver AND the Track 05 loopback
+// fake"). An in-language fake MySQL 8 server scripts the wire; the ORM's
+// find/save ride Driver+Pool+prepared statements over real TCP. The server
+// counts PREPARE/EXECUTE round-trips, pinning the prepared-statement-cache
+// speed lever (§9): a repeated find() hits the identity map, never the wire.
+uses MySql;
+uses MySql::Wire;
+uses MySql::FieldType;
+uses Atlantis::Data;
+uses Atlantis::Orm;
+
+// ---------- packet builders (server side, per the mysql loopback test) ----------
+string colDef(string name, int type, int flags) {
+    StringBuilder sb = StringBuilder();
+    sb << writeLenStr("def");
+    sb << writeLenStr("");
+    sb << writeLenStr("t");
+    sb << writeLenStr("t");
+    sb << writeLenStr(name);
+    sb << writeLenStr(name);
+    sb << writeLenenc(0x0c);
+    sb << wU16(45);
+    sb << wU32(255);
+    sb << wU8(type);
+    sb << wU16(flags);
+    sb << wU8(0);
+    sb << wU16(0);
+    return sb.toString();
+}
+string okPacket(int affected, int lastInsert, int status) {
+    StringBuilder sb = StringBuilder();
+    sb << wU8(0x00);
+    sb << writeLenenc(affected);
+    sb << writeLenenc(lastInsert);
+    sb << wU16(status);
+    sb << wU16(0);
+    return sb.toString();
+}
+string eofPacket(int status) {
+    StringBuilder sb = StringBuilder();
+    sb << wU8(0xFE);
+    sb << wU16(0);
+    sb << wU16(status);
+    return sb.toString();
+}
+string prepareOk(int stmtId, int numColumns, int numParams) {
+    StringBuilder sb = StringBuilder();
+    sb << wU8(0x00);
+    sb << wU32(stmtId);
+    sb << wU16(numColumns);
+    sb << wU16(numParams);
+    sb << wU8(0x00);
+    sb << wU16(0);
+    return sb.toString();
+}
+// binary row for (LONGLONG id, VAR_STRING name)
+string binRowIdName(int id, string name) {
+    StringBuilder sb = StringBuilder();
+    sb << wU8(0x00);           // header
+    sb << wU8(0x00);           // null bitmap ((2+2+7)/8 = 1 byte), no nulls
+    sb << wU64(id);
+    sb << writeLenStr(name);
+    return sb.toString();
+}
+string handshake(string nonce20) {
+    int caps = 0x0200 | 0x00080000 | 0x00008000 | 0x0008 | 0x2000 | 0x00200000;
+    StringBuilder sb = StringBuilder();
+    sb << wU8(10);
+    sb << "8.0.32"; sb << std::byteToString(0);
+    sb << wU32(1);
+    sb << nonce20.subStr(0, 8);
+    sb << std::byteToString(0);
+    sb << wU16(caps & 0xFFFF);
+    sb << wU8(45);
+    sb << wU16(2);
+    sb << wU16((caps >> 16) & 0xFFFF);
+    sb << wU8(21);
+    sb << zeros(10);
+    sb << nonce20.subStr(8, 12); sb << std::byteToString(0);
+    sb << "mysql_native_password"; sb << std::byteToString(0);
+    return sb.toString();
+}
+
+class FakeServer {
+    TcpListener listener;
+    bool authed;
+    MySql::PacketAssembler asm;
+    TcpStream client;
+    int prepares = 0;
+    int executes = 0;
+
+    new FakeServer(int port) {
+        this.listener = TcpListener(port);
+        this.authed = false;
+        this.asm = MySql::PacketAssembler((s, p) => { });
+        this.client = TcpStream(0 - 1);
+    }
+    bool ok() => this.listener.ok();
+    void start() {
+        FakeServer self = this;
+        this.listener.connections((c) => self.onConnect(c));
+    }
+    void stop() { this.listener.stop(); }
+    void onConnect(TcpStream c) {
+        FakeServer self = this;
+        this.client = c;
+        this.authed = false;
+        this.asm = MySql::PacketAssembler((s, p) => self.onPacket(s, p));
+        c.onData((chunk) => self.asm.feed(chunk));
+        string nonce = "";
+        int i = 1; while (i <= 20) { nonce = nonce + std::byteToString(i); i = i + 1; }
+        this.send1(handshake(nonce), 0);
+    }
+    void send1(string payload, int seq) {
+        this.client.send(MySql::Framing::encode(payload, seq));
+    }
+    void sendMany(Array<string> payloads, int startSeq) {
+        StringBuilder sb = StringBuilder();
+        int s = startSeq;
+        for (string pl in payloads) {
+            sb << MySql::Framing::encode(pl, s);
+            s = (s + MySql::Framing::packetCount(pl.length())) & 0xFF;
+        }
+        this.client.send(sb.toString());
+    }
+    void onPacket(int seq, string payload) {
+        int reply = (seq + 1) & 0xFF;
+        if (!this.authed) {
+            this.authed = true;
+            this.send1(okPacket(0, 0, 2), reply);
+            return;
+        }
+        int cmd = payload.byteAt(0);
+        string arg = payload.subStr(1, payload.length() - 1);
+        if (cmd == 0x03) { this.send1(okPacket(0, 0, 2), reply); return; }   // COM_QUERY (SET NAMES…)
+        if (cmd == 0x16) { this.onPrepare(arg, reply); return; }
+        if (cmd == 0x17) { this.onExecute(payload, reply); return; }
+        if (cmd == 0x0E) { this.send1(okPacket(0, 0, 2), reply); return; }   // PING
+        if (cmd == 0x01) { this.client.close(); return; }                    // QUIT
+        if (cmd == 0x19) { return; }                                         // STMT_CLOSE
+        this.send1(okPacket(0, 0, 2), reply);
+    }
+    void onPrepare(string sql, int reply) {
+        this.prepares = this.prepares + 1;
+        if (sql.startsWith("SELECT")) {
+            Array<string> pk = [];
+            pk = pk.add(prepareOk(10, 2, 1));
+            pk = pk.add(colDef("?", LONG, 0));
+            pk = pk.add(eofPacket(2));
+            pk = pk.add(colDef("id", LONGLONG, 0));
+            pk = pk.add(colDef("name", VAR_STRING, 0));
+            pk = pk.add(eofPacket(2));
+            this.sendMany(pk, reply);
+            return;
+        }
+        // INSERT INTO `looptbl` (`name`) VALUES (?)
+        Array<string> pk = [];
+        pk = pk.add(prepareOk(11, 0, 1));
+        pk = pk.add(colDef("?", VAR_STRING, 0));
+        pk = pk.add(eofPacket(2));
+        this.sendMany(pk, reply);
+    }
+    void onExecute(string payload, int reply) {
+        this.executes = this.executes + 1;
+        int stmtId = u32(payload, 1);
+        if (stmtId == 10) {
+            Array<string> pk = [];
+            pk = pk.add(writeLenenc(2));
+            pk = pk.add(colDef("id", LONGLONG, 0));
+            pk = pk.add(colDef("name", VAR_STRING, 0));
+            pk = pk.add(eofPacket(2));
+            pk = pk.add(binRowIdName(7, "ada"));
+            pk = pk.add(eofPacket(2));
+            this.sendMany(pk, reply);
+            return;
+        }
+        this.send1(okPacket(1, 55, 2), reply);
+    }
+}
+
+// ---------- the ORM on top ----------
+@Table("looptbl")
+class Loop : Model {
+    @PrimaryKey @AutoIncrement
+    int id;
+    string name;
+}
+
+class AppDb : Db {
+    Repo<Loop> loops;
+    new AppDb(IDbPool p) {
+        Db::Db(p);
+        this.loops = this.repo(() => Loop());
+    }
+}
+
+Promise<void> runClient(FakeServer srv) {
+    Driver drv = Driver();
+    DbConfig cfg = DbConfig("127.0.0.1", 13309, "atlantis", "atlantis-pass", "atlantis_test");
+    PoolOptions opts = PoolOptions(2, 0, 600000, 30000, 30000, 1024);
+    Pool pool = Pool(drv, cfg, opts);
+    AppDb db = AppDb(pool);
+
+    // find over the wire: prepared SELECT, binary row -> FromRow
+    Loop a = await db.loops.find(7);
+    console.writeln("[find] " + a.id.toString() + "/" + a.name +
+                    " new=" + a.isNew().toString());
+
+    // identity map: the second find never touches the wire
+    Loop b = await db.loops.find(7);
+    console.writeln("[identity] same=" + (b.name == a.name).toString());
+
+    // save: prepared INSERT, lastInsertId write-back
+    Loop fresh = Loop();
+    fresh.name = "bob";
+    db.add(fresh);
+    await db.save();
+    console.writeln("[save] id=" + fresh.id.toString() + " sealed=" + (!fresh.isNew()).toString());
+
+    console.writeln("[wire] prepares=" + srv.prepares.toString() +
+                    " executes=" + srv.executes.toString());
+
+    await pool.drain();
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() {
+    FakeServer srv = FakeServer(13309);
+    if (!srv.ok()) { console.writeln("listener failed"); return; }
+    srv.start();
+    await runClient(srv);
+    srv.stop();
+    console.writeln("[done]");
+}

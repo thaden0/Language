@@ -1,0 +1,16 @@
+unloaded throws: yes
+[sql] SELECT `id`, `name` FROM `musers` :: []
+[sql] SELECT `id`, `title`, `userId` FROM `mposts` WHERE `userId` IN (?,?) :: [1,2]
+ada posts=2 bob posts=1
+ada first=intro
+[sql] SELECT `id`, `name` FROM `musers` WHERE `id` IN (?,?) :: [1,2]
+post10 author=ada post12 author=bob
+author identity=true
+[sql] SELECT `id`, `user1`, `user2` FROM `mrels` WHERE `user1` IN (?,?) OR `user2` IN (?,?) :: [1,2,1,2]
+[sql] SELECT `id`, `name` FROM `musers` WHERE `id` IN (?,?,?) :: [2,1,3]
+ada friends=bob,cyn bob friends=ada
+empty load: ok
+[sql] INSERT INTO `mposts` (`title`, `userId`) VALUES (?,?)
+[sql] SELECT `id`, `name` FROM `musers` WHERE `id` IN (?) :: [42]
+orphan author=None
+[done]

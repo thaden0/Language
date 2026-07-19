@@ -1,0 +1,47 @@
+path=users
+pk=id auto=true
+entity=User
+cols=id,name,email,active,relation
+allCols=id,name,email,active,relation,createdAt,updatedAt,deletedAt
+colTypes=BIGINT,VARCHAR(255),VARCHAR(255),TINYINT(1),INT
+notNull=name
+orphan throws: yes
+[sql] DESCRIBE `users` :: []
+validate: ok
+[sql] SELECT `id`, `name`, `email`, `active`, `relation`, `createdAt`, `updatedAt`, `deletedAt` FROM `users` WHERE `id` = ? LIMIT 1 :: [1]
+u1 1 ada Foe active=true new=false dirty=false
+created=2026-01-02 03:04:05
+identity same=renamed
+[sql] SELECT @@innodb_autoinc_lock_mode AS m :: []
+[sql] BEGIN
+[sql] INSERT INTO `users` (`name`, `email`, `active`, `relation`, `createdAt`, `updatedAt`, `deletedAt`) VALUES (?,?,?,?,?,?,?),(?,?,?,?,?,?,?) :: ['bob','b@x',true,0,<dt>,<dt>,NULL,'cyn','c@x',true,0,<dt>,<dt>,NULL]
+[sql] UPDATE `users` SET `name` = ?, `email` = ?, `updatedAt` = ? WHERE `id` = ? :: ['renamed','new@x',<dt>,1]
+[sql] COMMIT
+ids=100,101 sealed=true
+u1 dirty after save=false
+empty save: ok
+[sql] UPDATE `users` SET `deletedAt` = ? WHERE `id` = ? :: [<dt>,1]
+softDeleted=true
+[sql] SELECT `id`, `name`, `email`, `active`, `relation`, `createdAt`, `updatedAt`, `deletedAt` FROM `users` WHERE (`deletedAt` IS NULL) :: []
+[sql] SELECT `id`, `name`, `email`, `active`, `relation`, `createdAt`, `updatedAt`, `deletedAt` FROM `users` WHERE (`deletedAt` IS NULL) :: []
+noTrack distinct=true
+[sql] SELECT COUNT(*) AS n FROM `users` :: []
+raw n=42
+[sql] SELECT * FROM `users` WHERE id = 77 :: []
+viaSql=sqlrow
+[sql] SELECT id, nope FROM `users` :: []
+sql mismatch throws: yes
+[sql] SELECT userId, COUNT(*) AS postCount FROM posts GROUP BY userId :: []
+stats=1:5,2:9
+[sql] BEGIN
+[sql] COMMIT
+tx result=5
+[sql] BEGIN
+[sql] ROLLBACK
+nested transact throws: yes
+[sql] BEGIN
+[sql] ROLLBACK
+tx rolls back and rethrows: yes
+null-into-name throws: yes
+bad-enum throws: yes
+[done]

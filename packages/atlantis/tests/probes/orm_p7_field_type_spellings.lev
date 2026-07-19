@@ -1,0 +1,40 @@
+// ORM M0 P7 (techdesign-06-orm.md §11): the exact $f.type spellings for
+// Rel<Post>/RelMany<Post>/enum/DateTime/optional fields as seen by rule
+// `where` filters — both via "$f.name=$f.type" string reification and via
+// filter behavior (what __ormCols excludes).
+// Placement: root Atlantis (P1 fallback).
+namespace Atlantis {
+    attribute Table { string name; }
+    rule ormTypes {
+        match @Table(t) on class C
+        inject `Array<string> __ormTypes() => [ $for f in C.fields : $f.name + "=" + $f.type ];`
+            at member of C
+    }
+    rule ormCols {
+        match @Table(t) on class C
+        inject `Array<string> __ormCols() =>
+            [ $for f in C.fields.where((x) => !x.type.startsWith("Rel<")
+                                            && !x.type.startsWith("RelMany<")) : $f.name ];`
+            at member of C
+    }
+}
+uses Atlantis;
+
+class Rel<T> { }
+class RelMany<T> { }
+enum Kind { A, B }
+
+@Table("posts")
+class Post {
+    int id = 0;
+    string name = "";
+    int? maybe;
+    DateTime when = DateTime::ofEpochMs(0);
+    Kind kind = Kind::A;
+    Rel<Post> parent;
+    RelMany<Post> children;
+}
+
+Post p = Post();
+console.writeln(p.__ormTypes().joinToString(","));
+console.writeln(p.__ormCols().joinToString(","));
