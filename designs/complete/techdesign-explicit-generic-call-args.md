@@ -1075,3 +1075,17 @@ exact pre-change commit `a93dfe7126e5ae3c75b0024c2c0731bf0dfd90a5` in an isolate
 
 Those baseline-only/out-of-scope failures do not alter the green active-engine acceptance result.
 All definition-of-done items are satisfied, so this design may move to `designs/complete/`.
+
+**2026-07-19 — follow-up: pinned generic value references (§4.6).** The original landing scoped the
+turbofish to the call-only form (a bare `callee::<T>` with no `(args)` was a parse error — the §7.4
+fallback). This follow-up lands the §4.6 value reference: `var f = identity::<int>;` (and the
+namespaced, `Type::method::<U>`, and bound `obj.method::<U>` forms) now parse and resolve. The
+parser attaches the type args to the callee node itself when no `(` follows; the checker seeds the
+substitution with the existing `filterExplicitCandidates` (arity) + `callGenericSeed` helpers and
+hands the pinned callable to LA-25's eta-expansion (`rewriteAsMethodRef` gained an optional
+substitution map so the closure's signature renders the concrete `(int) => int`). An *unpinned*
+reference (`var f = identity;`) stays the LA-25 §8.6 error, upgraded to suggest the turbofish. No
+engine/codegen change (the reference is one erased closure). Coverage:
+`tests/corpus/explicit_generic_call_args/value_references.lev` (tree-walk/IR/LLVM/emit-C++ +
+`--expand` round-trip) and value-reference rows in `test_checker.cpp`/`test_parser.cpp`. The
+call-only wording in `docs/reference.md` §2.5/§3.3 and `info.md` was corrected accordingly.

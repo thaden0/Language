@@ -934,7 +934,21 @@ Type Checker::typeOfInner(const Expr* e) {
             // globals
             if (Symbol* sym = scope_ ? scope_->lookup(e->text) : nullptr) {
                 if (sym->kind == SymbolKind::Class) return typeValue(sym);
-                if (sym->kind == SymbolKind::Function) return funcRef(sym);
+                if (sym->kind == SymbolKind::Function) {
+                    // LA-32 §4.6: a GENERIC function in value position needs a
+                    // concrete type tuple. A turbofish supplies it (pinned →
+                    // eta-expand to a concrete closure); an unpinned reference is
+                    // the LA-25 §8.6 error, now suggesting the turbofish. Non-
+                    // generic names keep the plain funcRef. This value-position
+                    // typeOf is never reached for a call callee (typeOfCallInner
+                    // resolves those), so it is exactly the reference position.
+                    if (sym->decl && !sym->decl->generics.empty() && methodRefsAllowed_) {
+                        bool isRef = false;
+                        Type t = tryResolveMethodRef(const_cast<Expr*>(e), nullptr, isRef);
+                        if (isRef) return t;
+                    }
+                    return funcRef(sym);
+                }
                 if (sym->kind == SymbolKind::Var && sym->decl) {
                     // Record the declaration so a read through a `use ... as`
                     // alias (imports.md §4: "the alias names the same slot")
@@ -1442,7 +1456,8 @@ const Stmt* Checker::pickMethodRefOverload(const std::vector<const Stmt*>& cands
 // callee (P-1 already proves that shape resolves correctly in call position).
 Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
                                  Symbol* ctorClass, const std::string& recvCanon,
-                                 const Type& retType) {
+                                 const Type& retType,
+                                 const std::unordered_map<std::string_view, Type>* subst) {
     SourceSpan sp = e->span;
     const bool bound = recvClass && !e->colon;
 
@@ -1502,7 +1517,10 @@ Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
         params.push_back(std::move(p));
         if (!first) sig += ", ";
         first = false;
-        sig += fromTypeRef(target->params[i].type.get()).canonical;
+        // LA-32 §4.6: a turbofish-pinned reference renders concrete parameter
+        // types (`int`, not `T`) through the seeded substitution.
+        sig += subst ? substitute(target->params[i].type.get(), *subst).canonical
+                     : fromTypeRef(target->params[i].type.get()).canonical;
     }
     sig += ") => " + retType.canonical;
 
@@ -1518,6 +1536,22 @@ Type Checker::rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
     Type ft{TKind::FuncRef, nullptr, sig, {}, nullptr, {}};
     ft.ret = std::make_shared<Type>(retType);
     return ft;
+}
+
+// LA-32 §4.6: a turbofish-pinned reference to a generic callable in value
+// position. Reuses the same explicit-arg machinery the call path uses —
+// filterExplicitCandidates for the arity check and callGenericSeed for the
+// substitution — then hands the pinned callable to the eta-expansion rewrite so
+// it becomes ONE concrete closure (the erasure posture holds: every engine
+// consumes it with no new op). The tuple LA-25 §8.6 lacked is now supplied.
+Type Checker::pinnedGenericRef(Expr* e, const Stmt* fn, Symbol* recvClass,
+                               Symbol* ctorClass, const std::string& recvCanon) {
+    std::vector<const Stmt*> one{fn};
+    if (!filterExplicitCandidates(e, one, nullptr, fn->name))
+        return Type{TKind::Error, nullptr, "", {}, nullptr, {}};   // arity already diagnosed
+    auto seed = callGenericSeed(e, fn, &fn->generics, nullptr, nullptr);
+    return rewriteAsMethodRef(e, fn, recvClass, ctorClass, recvCanon,
+                              substitute(fn->type.get(), seed), &seed);
 }
 
 Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
@@ -1549,10 +1583,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                              std::string(e->text) + "'; annotate the target function type");
             return unknown();
         }
-        if (!fn->generics.empty())
+        if (!fn->generics.empty()) {
+            if (!e->explicitTypeArgs.empty())            // LA-32 §4.6: pinned reference
+                return pinnedGenericRef(e, fn, nullptr, nullptr, "");
             return error(e->span, "cannot reference generic function '" +
                          std::string(e->text) +
-                         "' - its type parameters are unbound in value position");
+                         "' in value position — supply explicit type arguments, e.g. '" +
+                         std::string(e->text) + "::<...>'");
+        }
         return rewriteAsMethodRef(e, fn, nullptr, nullptr, "", fromTypeRef(fn->type.get()));
     }
     if (e->kind != ExprKind::Member) return unknown();
@@ -1580,10 +1618,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                         "'; annotate the target function type");
                         return unknown();
                     }
-                    if (!fn->generics.empty())
+                    if (!fn->generics.empty()) {
+                        if (!e->explicitTypeArgs.empty())   // LA-32 §4.6: pinned NS::fn::<T>
+                            return pinnedGenericRef(e, fn, nullptr, nullptr, "");
                         return error(e->span, "cannot reference generic function '" +
                                     std::string(name) +
-                                    "' - its type parameters are unbound in value position");
+                                    "' in value position — supply explicit type arguments, e.g. '" +
+                                    std::string(name) + "::<...>'");
+                    }
                     return rewriteAsMethodRef(e, fn, nullptr, nullptr, "",
                                               fromTypeRef(fn->type.get()));
                 }
@@ -1619,10 +1661,14 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                 "::" + std::string(name) + "'; annotate the target function type");
                 return unknown();
             }
-            if (!m->generics.empty())
+            if (!m->generics.empty()) {
+                if (!e->explicitTypeArgs.empty())   // LA-32 §4.6: pinned Type::method::<U>
+                    return pinnedGenericRef(e, m, bt.sym, nullptr, bt.canonical);
                 return error(e->span, "cannot reference generic function '" +
                             std::string(name) +
-                            "' - its type parameters are unbound in value position");
+                            "' in value position — supply explicit type arguments, e.g. '" +
+                            std::string(name) + "::<...>'");
+            }
             return rewriteAsMethodRef(e, m, bt.sym, nullptr, bt.canonical,
                                       fromTypeRef(m->type.get()));
         }
@@ -1652,10 +1698,16 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                 return unknown();
             }
             if (!m->generics.empty()) {
-                diagnosedMethodRefs_.insert(e);
-                return error(e->span, "cannot reference generic function '" +
-                            std::string(name) +
-                            "' - its type parameters are unbound in value position");
+                if (!e->explicitTypeArgs.empty()) {   // LA-32 §4.6: pinned obj.method::<U>
+                    // The bound rewrite needs its receiver check to run first, so
+                    // fall through to it below with the seed applied there.
+                } else {
+                    diagnosedMethodRefs_.insert(e);
+                    return error(e->span, "cannot reference generic function '" +
+                                std::string(name) +
+                                "' in value position — supply explicit type arguments, e.g. '" +
+                                std::string(name) + "::<...>'");
+                }
             }
 
             const bool localReceiver = e->a->kind == ExprKind::Name &&
@@ -1684,6 +1736,8 @@ Type Checker::tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef) {
                                       "; then use r." + std::string(name));
                 return result;
             }
+            if (!m->generics.empty() && !e->explicitTypeArgs.empty())  // LA-32 §4.6: pinned
+                return pinnedGenericRef(e, m, bt.sym, nullptr, "");
             return rewriteAsMethodRef(e, m, bt.sym, nullptr, "",
                                       fromTypeRef(m->type.get()));
         }

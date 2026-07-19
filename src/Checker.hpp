@@ -277,9 +277,21 @@ private:
                                    const std::string& retCanon) const;
     // §4.2: perform the eta-expansion AST rewrite (Member -> Lambda) once a
     // single candidate is chosen; returns the synthesized function Type.
+    // LA-32 §4.6: `subst`, when non-null, is a turbofish-pinned type-parameter
+    // map (`identity::<int>`) — the synthesized closure's signature renders the
+    // SUBSTITUTED parameter types (concrete `(int) => int`, not `(T) => T`).
     Type rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
                            Symbol* ctorClass, const std::string& recvCanon,
-                           const Type& retType);
+                           const Type& retType,
+                           const std::unordered_map<std::string_view, Type>* subst = nullptr);
+
+    // LA-32 §4.6: resolve a turbofish-pinned reference to a GENERIC callable in
+    // value position (`identity::<int>`, `T::method::<U>`, `obj.method::<U>`) to
+    // a concrete eta-expansion closure. Seeds from `e->explicitTypeArgs` (arity-
+    // checked via filterExplicitCandidates) and reuses rewriteAsMethodRef with
+    // the substitution. Returns Error (already diagnosed) on an arity mismatch.
+    Type pinnedGenericRef(Expr* e, const Stmt* fn, Symbol* recvClass,
+                          Symbol* ctorClass, const std::string& recvCanon);
 
     // ---- LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md) ----
     // The prelude's `expr::Expr<F>` class and its `expr` namespace, looked up
