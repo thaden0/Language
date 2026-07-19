@@ -1,0 +1,119 @@
+// Track W — W-M4 Atlantis-client demo (designs/wasm-frontend/techdesign-06-bindgen-and-ship.md §4).
+//
+// A small Leviathan browser client, end to end:
+//   1. parse a JSON task list — the static stand-in for a fetch response
+//      (fetch-as-a-stream endpoint is the W-M3 remainder, doc 05 §9 #6; the
+//      gate explicitly allows "a local static fixture", §4);
+//   2. render it into the DOM as a <ul> of task rows;
+//   3. install a "complete next" click handler that mutates state and
+//      re-renders the row + a live "remaining" status line;
+//   4. self-dispatch the clicks a real page's user would make.
+//
+// DOM is a wasm-GAINED capability with no --ir equivalent (the native
+// std::sysHost* natives raise, doc 05 §2), so this runs on the wasm lane
+// ONLY: tests/run_wasm_dom.sh, which builds it for wasm32 and drives it
+// headlessly against the in-memory DOM stub (tests/wasm_node_run.mjs's
+// nodeDom, the stand-in for a browser document). Its console trace is pinned
+// by todo.expected. In a real browser, open index.html — the same program
+// mounts its <ul> into the live document (lv_host.js's browserDom).
+//
+// Ordering note (doc 05 §4 / lv_host.js domCall): a self-dispatched click is
+// DEFERRED to its own turn (setTimeout(0)) — never fired re-entrantly — so
+// every synchronous line below prints first, then the two deferred handler
+// activations run in dispatch order. The golden reflects that.
+
+// Top-level control flow (while/if) is not in the grammar — the whole client
+// is one function called from the top level, exactly as dom_hello's handler
+// captures main's locals. The `on` closure captures demo()'s locals, which
+// stay alive as a host root (doc 05 §5) after demo() returns.
+void demo() {
+
+// --- the "fetched" payload (a local static fixture) ---
+string payload = "[" +
+  "{\"id\":1,\"title\":\"Wire the DOM bridge\",\"done\":false}," +
+  "{\"id\":2,\"title\":\"Ship the demo\",\"done\":false}," +
+  "{\"id\":3,\"title\":\"Sweep the docs\",\"done\":true}]";
+
+JsonValue doc = json::parse(payload) ?? JsonValue::ofNull();
+int total = doc.size();
+console.writeln("loaded " + total.toString() + " tasks");
+
+// --- render the list into the DOM ---
+DomNode app = Dom::create("div");
+app.setAttr("id", "app");
+DomNode list = Dom::create("ul");
+app.append(list);
+
+// The DOM owns display; these parallel arrays own iteration (the churn-corpus
+// "hold the handles" discipline, doc 05 §5). Built in full BEFORE the handler
+// closure is created, so the closure captures the finished arrays.
+Array<DomNode> rows = [];
+Array<string> titles = [];
+int i = 0;
+while (i < total) {
+    JsonValue t = doc.at(i);
+    string title = t.at("title").asStr() ?? "(untitled)";
+    bool done = t.at("done").asBool() ?? false;
+    DomNode li = Dom::create("li");
+    li.setText((done ? "[x] " : "[ ] ") + title);
+    list.append(li);
+    rows = rows.add(li);
+    titles = titles.add(title);
+    console.writeln("  row: " + li.text());
+    i = i + 1;
+}
+
+// --- the live status line ("[ ] " prefix == still-undone) ---
+DomNode status = Dom::create("p");
+status.setAttr("id", "status");
+app.append(status);
+
+int rem0 = 0;
+int m = 0;
+while (m < rows.length()) {
+    if (rows.at(m).text().startsWith("[ ] ")) rem0 = rem0 + 1;
+    m = m + 1;
+}
+status.setText("remaining: " + rem0.toString());
+console.writeln("initial " + status.text());
+
+// --- the "complete next" button + its click handler ---
+DomNode btn = Dom::create("button");
+btn.setText("complete next");
+app.append(btn);
+Dom::body().append(app);
+
+btn.on("click", (e) => {
+    // complete the first still-undone row
+    int idx = 0 - 1;
+    int k = 0;
+    while (k < rows.length()) {
+        if (idx < 0 && rows.at(k).text().startsWith("[ ] ")) idx = k;
+        k = k + 1;
+    }
+    if (idx < 0) {
+        console.writeln("completed: (none left)");
+    } else {
+        rows.at(idx).setText("[x] " + titles.at(idx));
+        console.writeln("completed: " + titles.at(idx));
+    }
+    // re-render the status line from the current DOM
+    int rem = 0;
+    int j = 0;
+    while (j < rows.length()) {
+        if (rows.at(j).text().startsWith("[ ] ")) rem = rem + 1;
+        j = j + 1;
+    }
+    status.setText("remaining: " + rem.toString());
+    console.writeln("status: " + status.text());
+});
+
+// A real page's user clicks; the harness self-dispatches through the same
+// dispatchEvent API. Both clicks are deferred to their own turns (see header).
+btn.click();
+btn.click();
+console.writeln("done");
+
+}  // end demo()
+
+demo();
