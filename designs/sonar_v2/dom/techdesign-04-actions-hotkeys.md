@@ -144,3 +144,38 @@ Differential oracle/IR/LLVM.
 ## 9. Implementation log
 
 - 2026-07-15 — design written; not started.
+- 2026-07-18 — **landed** (M1–M4). Files: `sonar_v2/src/dom/actions.lev` (rewrote the
+  D01 interim seam into the full registry + responder chain + `normalizeHotkey`/`fireActivate` +
+  slug/markup-wiring/greying free functions); `document.lev` (`__actionsForOrNone` — walk without
+  creating a row; `__hasAttrMeta`); `node.lev` (`DomNode.actions()` routes DOM containers to their
+  field registry; new `DomNode.action()` computed effective-key accessor); `builder.lev` (`hotkey`
+  wired via the T07 pending seam; `buildMarkup` runs the post-build action pass); `containers.lev`
+  (`FlexContainer.buildInto` runs the post-build action pass); `events.lev` (`__noteHandlerError`
+  free fn so `ActionRegistry.fire` shares the T03 dispatch-containment counter across namespaces —
+  the R3 bare-write lowering rule needs a namespace-`Sonar` free function). Corpus:
+  `tests/dom-actions/` (registry unit + chain matrix + normalizeHotkey table + slug table +
+  markup wiring + greying + the hotkey trio end-to-end; differential oracle/IR/LLVM green, emit-C++
+  SKIP on the documented async/native gap). D-P4 green as expected (T01's handler arrays are the
+  same shape).
+- **Deviations from the written design, and why:**
+  1. **Effective slug is NOT written into serialized meta** (§4 said "recorded in the node's meta
+     (action column)"). The D02 drift invariant requires the dom! comptime tier and the runtime
+     tier to serialize byte-identical trees, and the comptime emitter records only explicit attrs;
+     storing an auto-slug at the runtime tier would diverge them (`okBtn` gaining `action="ok"`).
+     §4's stated goal — "so the inspector and tests can see the effective key" — is served instead
+     by the on-demand `DomNode.action()` accessor (explicit attr, else `slug(label)`), which is
+     derivable and never stored. Firing/greying use the frozen key captured in the wired closure /
+     the bound-items column, so nothing functional depends on the meta write.
+  2. **Hotkeys are driven in the corpus via `keymap().handle(KeyEvent(...))`, not the byte
+     encoder.** The scripted-input chord encoder collapses Ctrl+Shift+letter to Ctrl+letter (a real
+     legacy-terminal limitation), so it cannot deliver `^+s` distinctly from `^s`. Driving the
+     keymap directly lets the corpus prove `^s`/`^+s` are distinct bindings. (The binding itself is
+     exercised end-to-end; only the *delivery* shortcut is taken.)
+  3. **The drift corpus's `hotkey="ctrl+o"` was removed.** `ctrl+o` is not D04 grammar (the grammar
+     is `^o`), and more fundamentally the drift harness builds the same markup into two attached
+     trees against one app — with D04 binding hotkeys at attach, a hotkey there is a genuine
+     duplicate-chord (exactly the §3 "two mounted components throw" case). Hotkey serialization +
+     binding coverage moved to `tests/dom-actions/`.
+- **v1 limitation carried forward (§6.4):** bound-items for greying resolve to the nearest ancestor
+  registry at build time; `setEnabled` on a registry an item did not bind to won't grey it. The
+  re-resolve-on-fire fix stays a v1.1 note (§8.3).

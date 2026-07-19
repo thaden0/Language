@@ -226,3 +226,66 @@ Differential oracle/IR/LLVM; emit-C++ compile-only.
     as meta, no E-D4 did-you-mean yet — a v1 simplification); the string↔component entry is the
     free function `Sonar::Dom::buildMarkup(markup, doc)` that D03's `FlexContainer(markup)` ctor
     will delegate to. Added `CheckBox` to the D01 value/text ladders (label channel — additive).
+- 2026-07-17 — **D02 M4 + M5 IMPLEMENTED in `sonar_v2/`** — the `dom!` comptime tier + the
+  tier-equivalence/drift harness; D02 is now complete end to end. New files:
+  `sonar_v2/src/dom/templates/{dom_expander,dom_macro}.lev`, `sonar_v2/src/dom/binding.lev`
+  (D05 scaffolding), tests `sonar_v2/tests/{dom-expand,dom-drift}/` (+ the templates glob in
+  `trident.toml`). **Verified oracle/IR/LLVM byte-identical** (full v2 suite green, 5 tests);
+  `dom-expand` also passes the emit-C++ compile lane (no App usage); `dom-drift` is the
+  sanctioned async skip.
+  - **M4 `dom_expander.lev`** — `expandDom` as the pure string→string engine (T06 de-risking
+    shape; `DomXParser`/`DomXEmitter`, all comptime-discipline rules followed): T06's algorithm
+    + line:col carets on every error (offsets carried on nodes/attrs; same format as the runtime
+    parser), fragment roots + auto-wrap (vertical `FlexContainer`, visible in the expansion),
+    D-C1 registry mirror for lowercase tags, Capitalized pass-through (incl. qualified),
+    `{{expr}}` → Text child + `Sonar::Dom::bindText(__doc, v, "{{expr}}", () =>
+    Sonar::Dom::text(expr))`, `${}` one-shot accepted, `on:`/`{expr}` attrs/`$for`/`$if` exactly
+    T06. Emission mirrors the runtime builder statement for statement: every element emits
+    `__doc.__recordBuild(v, tag, [literal attr names], [values])` — id/class run their side
+    effects INSIDE it exactly as at runtime — then typed setters in attribute order
+    (**sequential, last-write-wins — NOT T06's constraint folding**: the landed runtime applier
+    is sequential and it is the row source). Holes inside `$for` are one-shot (the T06/T11
+    stale-node rule); leaf text/hole children join one-shot into the `setNodeText` channel.
+    E-D3/E-D4(+did-you-mean)/E-D5(int/bool/enum literals typed at expansion)/E-D6 fire at
+    comptime with carets — the runtime tier stays E-D4-lenient (logged asymmetry, valid inputs
+    drift-free).
+  - **M4 `dom_macro.lev`** — the one-line macro, **declared in `namespace Sonar`, NOT
+    Sonar::Dom**: the rule engine records nested-namespace rules under the INNER name only
+    (`Rules.cpp collectRules`), so a macro inside `Sonar::Dom` is invisible to `uses Sonar::Dom`
+    call sites. At the package root it resolves like the landed `sonar!`.
+  - **`binding.lev` (D05 scaffolding, interim)** — `bindText` = initial render only (narrow to
+    `Text`, run the getter once); `text` overload family `string/int/bool/char` (free-fn
+    overloads confirmed green on all engines). The Binding table/tombstoning/sweep are D05
+    M1/M3; the `string | None` member waits on probe D-P3 (D05 M2).
+  - **Registry swap done** (the documented D03 interim closed): `flex`→`FlexContainer`,
+    `bar`/`contentbar`→`Bar` — `contentbar` owns the Bar reverse-match (D03's pairing), `flex`'s
+    matcher excludes Bar (`Bar : FlexContainer` would shadow it); `buildMarkup`'s multi-root
+    auto-wrap is now a `FlexContainer` too (identical to the dom! wrap).
+  - **Probe D-P7 RED:** `import()` spliced directly into a ctor argument is NOT comptime-folded
+    — it reaches the runtime prelude and throws LA-20. Fallback taken as designed: the T08
+    comptime-global shape (`comptime string corpus = import(...)`), cosmetic only. Note the
+    comptime global IS runtime-readable (folds to an ordinary literal by pass 2), so one corpus
+    file feeds all three tiers byte-identically.
+  - **Bug found & fixed in landed M1 (`markup.lev`):** the runtime parser mixed `chars()`
+    (code-point) positions into BYTE-indexed `subStr`/`indexOfFrom` — any multibyte scalar
+    shifted every later read (the drift corpus's `§` exposed it: mangled tag names). All
+    scanning/slicing now accumulates over the `chars()` array; same cosmetic slip fixed in the
+    expander's caret formatter. footguns.md by-design row added.
+  - **Cross-track discovery (documented for D08):** `Container.add` attaches unconditionally
+    (T01 seam), so building timer-owning components (`progress`/`spinner`) into even a DETACHED
+    tree arms real process timers while an App exists — a loop-less script must recursively
+    `__sonarDetach` (the drift test's `teardown`) or the process outlives `main`. D08's harness
+    should own a public teardown helper.
+  - **M5 tests** — `dom-expand`: every grammar production + every reachable E-D row pinned as
+    goldens over runtime `expandDom` (the exact comptime code path). `dom-drift`: ONE
+    all-tags/all-typed-attrs corpus (`corpus.sonar`) through all three tiers — serializer output
+    byte-equal across dom!/runtime/ctor (each tier against its own Document so ids cannot
+    collide; the ctor tier swaps the current Document via `__setCurrentDocument`), id
+    field-binding (`this.shell/name/okBtn`), post-swap reverse-match rows, and the dom!-only
+    surface (`$for` label={p} pinned via direct reads, `$if`/`$else`, `on:press` fired,
+    Capitalized `Gizmo` pass-through, string+int holes initial-rendered, auto-wrap). Registry-row
+    coverage COUNTING under a test flag stays deferred to D08 as designed (§7.1b).
+  - **The id rule as realized:** `id="x"` emits `this.x = __sonar_n;` unconditionally (the T06
+    rule) alongside the `registerId` that `__recordBuild` performs; "when an enclosing `this`
+    exists" is enforced by the compiler at the splice site — id-carrying `dom!` belongs inside a
+    class (documented; a free-function call site gets an honest compile error naming `this`).

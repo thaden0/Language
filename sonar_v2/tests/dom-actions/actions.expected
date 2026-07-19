@@ -1,0 +1,78 @@
+== registry-unit ==
+true
+false
+true
+false
+true
+1
+action 'alpha' already registered on this node
+false
+false
+1
+false
+true
+1
+== normalize-hotkey ==
+C-s
+C-S-s
+M-x
+M-x
+C-M-t
+F5
+Enter
+Tab
+S-F5
+C-M-S-k
+Empty key in chord: C-
+Unknown key in chord: Zzz
+== slug ==
+save
+save-as
+open
+new-file
+padded
+a-b
+file-menu
+[]
+== responder-chain ==
+true
+1
+0
+false
+1
+0
+true
+2
+false
+true
+1
+true
+== markup-wiring ==
+3
+save
+open-file
+[]
+save
+[]
+1
+1
+2
+== greying ==
+true
+false
+true
+true
+== hotkey-trio ==
+<menuitem hotkey="^o"></menuitem>
+false
+true
+1
+true
+1
+true
+1
+1
+1
+false
+1
+done

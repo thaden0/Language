@@ -54,9 +54,20 @@ namespace Sonar { namespace Dom {
     void applyAttr(IComponent c, Document doc, string tag, string name, string value) {
         // id/class are recorded (and their side effects run) by __recordBuild.
         if (name == "id" || name == "class") return;
-        // action/hotkey are D04 — recorded as serializable meta by __recordBuild,
-        // no setter here (interim).
-        if (name == "action" || name == "hotkey") return;
+        // `action` is recorded as serializable meta by __recordBuild; the
+        // select/press wiring is done by the post-build action pass (D04 §4,
+        // wireActionsInSubtree) once the subtree's responder chain is connected.
+        if (name == "action") return;
+        // `hotkey` rides the T07 pending seam (R7): normalize to parseChord-legal
+        // text, register PENDING now, bound into App.keymap() at attach / unbound
+        // at detach. Firing triggers the control (fireActivate), not a closure.
+        if (name == "hotkey") {
+            if (c is Component) {
+                Component comp = c;
+                comp.__sonarBindShortcut(normalizeHotkey(value), () => Sonar::Dom::fireActivate(comp));
+            }
+            return;
+        }
         if (name == "theme") throw SonarException("theme=\"" + value + "\" is not supported yet (E-D6)");
 
         // hidden: the semantic class (D-C6)
@@ -111,14 +122,25 @@ namespace Sonar { namespace Dom {
             Array<IComponent> kids = buildFragment(node.children, doc);
             for (IComponent kid in kids) c.add(kid);
         } else {
-            // leaf: text/hole children become its display text
-            string label = "";
+            // leaf: text/hole children become its display text. A run holding any
+            // {{hole}} becomes ONE live binding (D05 §7.4); a pure-text run is set
+            // once (no binding, no sweep cost).
+            Array<bool>   isHole = [];
+            Array<string> pieces = [];
+            bool hasHole = false;
             for (DomTplNode kid in node.children) {
-                if (kid.kind == DOM_TEXT) label = joinLabel(label, kid.text);
-                else if (kid.kind == DOM_HOLE) label = joinLabel(label, doc.get(kid.holeExpr));
+                if (kid.kind == DOM_TEXT)      { isHole = isHole.add(false); pieces = pieces.add(kid.text); }
+                else if (kid.kind == DOM_HOLE) { isHole = isHole.add(true);  pieces = pieces.add(kid.holeExpr); hasHole = true; }
                 else throw SonarException("<" + node.tag + "> is a leaf and cannot hold element children");
             }
-            if (label != "") setNodeText(c, label);
+            if (hasHole) {
+                bindLeafText(doc, c, isHole, pieces);
+            } else {
+                string label = "";
+                int pi = 0;
+                for (string piece in pieces) { label = joinLabel(label, piece); pi = pi + 1; }
+                if (label != "") setNodeText(c, label);
+            }
         }
         return c;
     }
@@ -138,10 +160,12 @@ namespace Sonar { namespace Dom {
                 doc.__recordBuild(t, "span", [], []);
                 out = out.add(t);
             } else {
-                // runtime {{hole}}: resolve once against expose()/store (D05
-                // wires live sweeps; interim resolves at build time).
-                Text t = Text(); t.text(doc.get(node.holeExpr));
+                // runtime {{hole}}: a live binding over a span Text. The getter
+                // resolves the key each sweep (expose → store → miss), so a later
+                // set()/expose() write reaches the span on the next frame (D05 §3).
+                Text t = Text();
                 doc.__recordBuild(t, "span", [], []);
+                bindRuntimeText(doc, t, node.holeExpr);
                 out = out.add(t);
             }
         }
@@ -156,14 +180,22 @@ namespace Sonar { namespace Dom {
     }
 
     // Single component: one root returns itself; multiple roots auto-wrap in a
-    // vertical flow container (the anchor's fragment rule, §2).
+    // vertical FlexContainer (the anchor's fragment rule, §2 — the same wrap
+    // the dom! tier emits, kept identical for the drift corpus).
     IComponent buildMarkup(string markup, Document doc) {
         Array<IComponent> roots = buildMarkupFragment(markup, doc);
-        if (roots.length() == 1) return roots[0];
-        Container wrap = Container();
-        wrap.setLayout(FlexLayout(Axis::Vertical));
-        for (IComponent r in roots) wrap.add(r);
-        return wrap;
+        IComponent result;
+        if (roots.length() == 1) {
+            result = roots[0];
+        } else {
+            FlexContainer wrap = FlexContainer();
+            for (IComponent r in roots) wrap.add(r);
+            result = wrap;
+        }
+        // Post-build: the subtree is now assembled under `result`, so per-item
+        // registry resolution walks a connected chain (D04 §4).
+        wireActionsInSubtree(result, doc);
+        return result;
     }
 
 }}

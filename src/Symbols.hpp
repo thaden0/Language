@@ -180,6 +180,117 @@ inline bool bareFieldAutoConstructs(const Symbol* fcls) {
     return !onConstructionCycle(fcls);
 }
 
+// ---- Ctor-supplied bare fields (definite first-assignment elision) ----------
+// §3 auto-construction of a bare reference-class field is a footgun when the
+// constructor is going to overwrite that field anyway: the throwaway default is
+// not merely wasted work, it is OBSERVABLE — the discarded object's own ctor can
+// have side effects or throw before the real value is ever bound. Sonar's App is
+// the canonical case: a `class W { App app; new W(App a) { app = a; } }` wrapper
+// eagerly default-constructs a SECOND `App()` at $init time, which the single-app
+// rule turns into a construction-time throw before `app = a` ever runs.
+//
+// The fix generalizes the existing "an initialized field never auto-constructs"
+// rule to "a ctor-supplied field never auto-constructs": if every constructor
+// definite-first-assigns the field (a plain top-level `f = rhs;` reached before
+// any read of `f`, rhs not reading `f`), the ctor supplies the value and the
+// field takes the plain void/None default instead — exactly the slot state a
+// construction-cycle field already relies on the ctor to fill. Scope is kept
+// deliberately tight, sound-not-complete, mirroring the readonly write-once
+// pass's top-level-statements-only discipline: reference classes only (value
+// structs keep their byte-identical co-allocation path), own directly-declared
+// fields only, and the class must have at least one constructor.
+
+// Does this expr subtree reference field `f` (bare implicit-this name or an
+// explicit `this.f`)? A same-named local over-matches, which only makes the
+// caller MORE conservative (it keeps auto-construction), so this stays sound.
+inline bool stmtReferencesField(const Stmt* s, std::string_view f);
+inline bool exprReferencesField(const Expr* e, std::string_view f) {
+    if (!e) return false;
+    if (e->kind == ExprKind::Name && e->text == f) return true;
+    if (e->kind == ExprKind::Member && !e->colon && e->a &&
+        e->a->kind == ExprKind::This && e->text == f) return true;
+    if (exprReferencesField(e->a.get(), f) || exprReferencesField(e->b.get(), f) ||
+        exprReferencesField(e->c.get(), f)) return true;
+    for (const ExprPtr& x : e->list) if (exprReferencesField(x.get(), f)) return true;
+    if (e->block && stmtReferencesField(e->block.get(), f)) return true;   // lambda block
+    for (const MatchArm& a : e->arms) {
+        if (exprReferencesField(a.value.get(), f) ||
+            exprReferencesField(a.bodyExpr.get(), f)) return true;
+        if (a.bodyBlock && stmtReferencesField(a.bodyBlock.get(), f)) return true;
+    }
+    return false;
+}
+inline bool stmtReferencesField(const Stmt* s, std::string_view f) {
+    if (!s) return false;
+    if (exprReferencesField(s->expr.get(), f) || exprReferencesField(s->init.get(), f) ||
+        exprReferencesField(s->forStep.get(), f)) return true;
+    for (const StmtPtr& b : s->body) if (stmtReferencesField(b.get(), f)) return true;
+    if (stmtReferencesField(s->thenBranch.get(), f) ||
+        stmtReferencesField(s->elseBranch.get(), f) ||
+        stmtReferencesField(s->forInit.get(), f)) return true;
+    for (const CatchClause& c : s->catches) if (stmtReferencesField(c.body.get(), f)) return true;
+    return false;
+}
+
+// If `e` is a plain (non-compound) assignment whose target is field `f`, return
+// its rhs; else null. `f = rhs` and `this.f = rhs` both count; `f += rhs` (a
+// read) does not.
+inline const Expr* fieldPlainAssignRhs(const Expr* e, std::string_view f) {
+    if (!e || e->kind != ExprKind::Binary || e->op != TokenKind::Eq) return nullptr;
+    const Expr* lhs = e->a.get();
+    if (!lhs) return nullptr;
+    bool isTarget = (lhs->kind == ExprKind::Name && lhs->text == f) ||
+                    (lhs->kind == ExprKind::Member && !lhs->colon && lhs->a &&
+                     lhs->a->kind == ExprKind::This && lhs->text == f);
+    return isTarget ? e->b.get() : nullptr;
+}
+
+// Does this ctor definite-first-assign field `f`? Scan its top-level statements
+// in order; the FIRST one that references `f` must be a plain `f = rhs;` whose
+// rhs does not itself read `f`. A brace-less single-statement body is one stmt.
+inline bool ctorFirstAssignsField(const Stmt* ctor, std::string_view f) {
+    const Stmt* body = ctor ? ctor->memberBody.get() : nullptr;
+    if (!body) return false;
+    if (body->kind == StmtKind::Block) {
+        for (const StmtPtr& st : body->body) {
+            const Stmt* s = st.get();
+            if (s->kind == StmtKind::ExprStmt)
+                if (const Expr* rhs = fieldPlainAssignRhs(s->expr.get(), f))
+                    return !exprReferencesField(rhs, f);
+            if (stmtReferencesField(s, f)) return false;   // read/nested-assign first
+        }
+        return false;   // never assigned at top level
+    }
+    if (body->kind == StmtKind::ExprStmt)
+        if (const Expr* rhs = fieldPlainAssignRhs(body->expr.get(), f))
+            return !exprReferencesField(rhs, f);
+    return false;
+}
+
+// The predicate both engines consult for a bare field slot: skip §3 auto-
+// construction because a constructor supplies the value.
+inline bool bareFieldSuppliedByCtor(const Symbol* cls, const Slot& s) {
+    if (s.isMethod) return false;
+    if (s.decl && s.decl->init) return false;                 // initialized elsewhere
+    const Symbol* fcls = fieldTypeOf(s);
+    if (!bareFieldAutoConstructs(fcls) || fcls->isValue) return false;  // ref classes only
+    if (!cls || !cls->decl) return false;
+    // Own, directly-declared bare field only — an inherited/distinct slot's
+    // construction + assignment discipline belongs to its declaring class.
+    bool ownField = false;
+    for (const StmtPtr& m : cls->decl->body)
+        if (m->kind == StmtKind::Member && !m->isCtor && !m->callable &&
+            !m->isGet && !m->isSet && !m->init && m->name == s.name) { ownField = true; break; }
+    if (!ownField) return false;
+    bool anyCtor = false;
+    for (const StmtPtr& m : cls->decl->body) {
+        if (m->kind != StmtKind::Member || !m->isCtor) continue;
+        anyCtor = true;
+        if (!ctorFirstAssignsField(m.get(), s.name)) return false;
+    }
+    return anyCtor;
+}
+
 struct Scope {
     Scope* parent = nullptr;
     std::unordered_map<std::string_view, std::vector<Symbol*>> names;

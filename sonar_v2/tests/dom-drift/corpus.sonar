@@ -1,0 +1,35 @@
+<flex id="shell" class="panel main" width="80" height="24" padding="1" title="ignored">
+    <!-- all-tags / all-typed-attrs drift corpus (D02 §7.1): every registry
+         row and every literal attribute shape, in the runtime-legal subset
+         shared by all three tiers -->
+    <bar dock="Top">
+        <menubar>
+            <menu title="File">
+                <menuitem action="open">Open</menuitem>
+                <separator/>
+                <menuitem action="quit">Quit</menuitem>
+            </menu>
+        </menubar>
+    </bar>
+    <split>
+        <tree title="Files"/>
+        <tabs>
+            <box title="Editor">
+                Editing {{filename}}
+                <span align="Center" wrap="Wrap">styled</span>
+                <text>plain</text>
+                <input id="name" placeholder="your name" value="len" maxLength="20"/>
+                <checkbox checked="true" label="pre">Agree</checkbox>
+                <radiogroup/>
+                <progress flex="1"/>
+                <spinner hidden="true"/>
+            </box>
+            <table title="Rows"/>
+        </tabs>
+    </split>
+    <contentbar dock="Bottom">Ready</contentbar>
+    <statusbar/>
+    <modal title="Confirm">
+        <button id="okBtn" row="1" col="2" rowSpan="1" colSpan="2">OK</button>
+    </modal>
+</flex>

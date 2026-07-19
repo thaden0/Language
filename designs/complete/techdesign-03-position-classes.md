@@ -221,3 +221,78 @@ oracle/IR/LLVM + emit-C++ compile-only; full-suite re-run at M5.
 ## 11. Implementation log
 
 - 2026-07-15 — design written; not started.
+- 2026-07-17 — **D03 IMPLEMENTED (M1–M6) in `sonar_v2/`** (same v2 package as D01/D02).
+  New files `sonar_v2/src/dom/{position,containers,classes}.lev`; additive edits to
+  `sonar_v2/src/component.lev` (`position_` now lazy `Position?`, `__sonarAbsolute`
+  predicate), `sonar_v2/src/mixins.lev` (`Styleable.resolve` class steps + the `#4`
+  `paintsBackground_` opt-out), plus `dom/{node,app}.lev` (popover verb; SonarApp
+  absolute-aware root arrange + the base-ctor fix below). **Verified oracle/IR/LLVM
+  byte-identical** (`sonar_v2/tests/dom-layout/`, golden `layout.expected`); emit-C++
+  is the sanctioned async/native skip (App run loop). Existing `tests/dom` + `tests/markup`
+  stay green.
+  - **M2 `position.lev`** — full `Position`: `weak IComponent? owner_` back-edge (F5,
+    **D-P9 green** — no cycle, dead-owner reads `None` and no-ops), get/set accessor views
+    for `method/x/y/w/h/z`. **D-P2 GREEN, no fallback taken:** get/set accessors — including
+    a COMPUTED getter with NO backing slot for the live `x`/`y` reads (`=> owner.box.x()`) —
+    lower byte-identical on all three engines, so the sketch's `.position.x` (live read) /
+    `.position.x = 7` (stored desire) spelling lands verbatim rather than dropping to
+    `setX/setY`. Live reads return `box` origin; writes store desires consumed only when
+    `Absolute`; `w/h` set-views map to `Constraint::Fixed`; `anchorTo`/`__resolveAbsolute`
+    resolve from the target's live box (dead-anchor freeze at last coords).
+  - **M1 `component.lev`** — `position_` is a lazy `Position?` (the real Position needs an
+    owner ctor arg, so the D01 interim's eager `Position()` no longer type-checks);
+    `position()` creates it with `this` as the weak owner on first touch. `__sonarAbsolute()`
+    reads `position_` WITHOUT lazy-creating, so a flow child never allocates a Position.
+  - **M3 `containers.lev`** — `FlexContainer : Container`, `Bar : FlexContainer` (**D-P1
+    green**: single inheritance, the #65 shape never arises). The flow/absolute partition +
+    absolute arrange + z-stable-sort are FREE FUNCTIONS (`flowOf/absOf/absByZOf/arrangeAbs`)
+    so the SonarApp root reuses the identical mechanism — one implementation of D-C5's
+    "honored by DOM containers AND the app root". `measure` ignores absolute children;
+    markup ctors delegate to D02's `buildMarkupFragment`.
+  - **M4 `classes.lev` + `mixins.lev`** — `classBaseKey`/`classFullKey` insert the class
+    after the component segment; `Styleable.resolve` folds them in as steps 4 and 7 (most
+    specific before the instance override). A theme with no class keys resolves
+    byte-identically (misses are transparent no-op layers — pinned by the `plain`/`err`
+    pair in the test). Semantic `hidden` coupling was already on Component (D01 interim);
+    retained.
+  - **M5 the `#4` leaf-paint fix** — the unconditional `paintBackground` box-clear was
+    ALREADY landed in this package (inherited from `sonar/`; `docs/footguns.md`'s #4 debt is
+    effectively closed and the full suite already green on it). D03 adds the design's
+    `paintsBackground_ = true` opt-out gate; `DebugOverlay` and `OverlayHost` set it false.
+    Behavior-neutral here — both already fully override `paint()` and never reach
+    `paintBackground` — so the flag is the sanctioned switch for a FUTURE transparent leaf,
+    not a live behavior change (no golden churn).
+  - **M6 popover** — `DomNode.popover(anchor, edge)`/`dismiss()` over the overlay stack;
+    `PopoverHost` (a `Container` overlay) self-arranges its child at `__resolveAbsolute`
+    (the `Menu` stored-coordinate precedent, generalized). SonarApp gained the absolute-aware
+    root `arrange`; root painting rides the landed damage-driven walk (`renderFrame` ->
+    `paintDamaged`), so a root-`paint` override is unnecessary (root-float z-order is child
+    order, v1).
+
+  **Findings / forced deviations (all footgun-compliant, none a compiler STOP):**
+  - **SonarApp (D01) never ran its base `App()` ctor.** Leviathan base ctors are EXPLICIT
+    (`Base::Ctor()`, reference §4.5) — they do NOT auto-run — so D01's `new SonarApp()` (which
+    assumed an auto-run "base initializer") left `currentApp`/`ILifecycleHost`/the single-app
+    guard/the root FlexLayout all UNSET. Invisible to the D01/D02 tests (none call
+    `Sonar::app()`), but D03's popover needs the overlay stack via `Sonar::app()`. Fixed by
+    adding `App::App();` as SonarApp's first ctor statement; `Bar` likewise now runs
+    `FlexContainer::FlexContainer()`. Worth a footgun-doc row (assumed-auto-run base ctors).
+  - **Absolute layout needs measure-before-arrange.** Flow children collapse to origin if a
+    container is `arrange`d without a prior `measure` (they carry `desired_ = 0`); the landed
+    frame loop always measures first, and the test mirrors that. Absolute children are
+    self-measured inside `arrangeAbs`, so they are unaffected.
+  - **No accessor over a shared same-name slot for live `x`.** `get x()` is purely computed
+    (delegates to a `liveX()` method) and `set x()` writes a distinct `desiredX_` — the two
+    accessors deliberately share no backing slot, which is what lets reads be live while
+    writes are stored.
+- 2026-07-18 — **Anchor-edge coverage extended** in the `dom-layout` differential test
+  (§9 "anchor edges × resize scripts"). The landed test asserted only `Below`, leaving
+  every other `anchorX`/`anchorY` branch untested; the new `anchors` section pins all five
+  `AnchorEdge`s (`Below/Above/LeftOf/RightOf/Over`) against a known-box absolute target, a
+  target-move resize script (the floats track the move — the enhancement over the sketch's
+  manual `.y = t.y + 1`), and `clearAnchor` (falls back to the stored desired coords).
+  Golden regenerated; **oracle/IR/LLVM byte-identical**, full suite still green. Dead-anchor
+  freeze (§8.4) stays out of the golden deliberately — it fires only when the `weak` target
+  is collected, whose timing is not cross-engine deterministic, so a diff-based assertion
+  would be flaky; the freeze branch remains covered by construction (`__resolveAbsolute`'s
+  `else`).

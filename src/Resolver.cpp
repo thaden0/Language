@@ -338,6 +338,55 @@ class string {
     // `reverse()` is deliberately NOT implemented here: a byte-reverse is wrong
     // for UTF-8. Deferred to Track 03's `chars()` — once it lands, this becomes
     // `chars().reverse().joinToString("")`. Logged so the gap isn't lost.
+
+    // LA-31 ruling R13: SQL LIKE semantics, byte-oriented, anchored full-string
+    // match. `%` = any run of bytes incl. empty; `_` = exactly one byte; `\`
+    // escapes the next byte to a literal (a lone trailing `\` matches a literal
+    // `\`). `ilike` folds A-Z<->a-z per byte at each comparison site, no folded
+    // string copies. Explicit `this.` on every self-call (this-receiver rule).
+    bool like(string pattern) return this.__likeMatch(pattern, false);
+
+    bool ilike(string pattern) return this.__likeMatch(pattern, true);
+
+    bool __likeMatch(string pattern, bool fold) {
+        int n = this.length();
+        int m = pattern.length();
+        int i = 0;
+        int j = 0;
+        int star = 0 - 1;
+        int mark = 0;
+        while (i < n) {
+            int pb = 0 - 1;
+            if (j < m) pb = pattern.byteAt(j);
+            if (pb == 92 && j + 1 < m) {
+                int lit = pattern.byteAt(j + 1);
+                int tb = this.byteAt(i);
+                if (fold) {
+                    if (lit >= 65 && lit <= 90) lit = lit + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (lit == tb) { i = i + 1; j = j + 2; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            } else if (pb == 95) {
+                i = i + 1; j = j + 1;
+            } else if (pb == 37) {
+                star = j; mark = i; j = j + 1;
+            } else {
+                int tb = this.byteAt(i);
+                int qb = pb;
+                if (fold) {
+                    if (qb >= 65 && qb <= 90) qb = qb + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (j < m && qb == tb) { i = i + 1; j = j + 1; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            }
+        }
+        while (j < m && pattern.byteAt(j) == 37) j = j + 1;
+        return j == m;
+    }
 }
 
 // Array<T>: a tiny native core (length/at/add — add is pure, returns a new
@@ -5276,6 +5325,71 @@ namespace json {
 }
 )prelude";
 
+// --- kPreludeExpr: LA-31 expression reification `expr::Expr<F>` -----------
+// The reified-tree node taxonomy. Bodies are trivial field stores only (the
+// checker never walks the prelude — prelude-not-checked rule); constructor
+// parameter names deliberately differ from field names so every store is an
+// unambiguous bare write. No module-level `expr::` globals (emit-C++ eager-
+// global-instance footgun) and no methods beyond constructors (the tree is
+// data; behavior lives in consumers).
+const char* kPreludeExpr = R"prelude(
+namespace expr {
+
+    class Node { }
+
+    class Field : Node {
+        Array<string> path;
+        new Field(Array<string> p) { path = p; }
+    }
+
+    class Lit : Node {
+        string | int | float | bool | None v;
+        new Lit(string | int | float | bool | None value) { v = value; }
+    }
+
+    class Bind : Node {
+        int slot;
+        new Bind(int s) { slot = s; }
+    }
+
+    class Bin : Node {
+        string op;
+        Node l;
+        Node r;
+        new Bin(string o, Node left, Node right) { op = o; l = left; r = right; }
+    }
+
+    class Un : Node {
+        string op;
+        Node e;
+        new Un(string o, Node inner) { op = o; e = inner; }
+    }
+
+    class Call : Node {
+        string name;
+        Node recv;
+        Array<Node> args;
+        new Call(string n, Node receiver, Array<Node> a) { name = n; recv = receiver; args = a; }
+    }
+
+    class Assign : Node {
+        Field target;
+        Node value;
+        new Assign(Field t, Node val) { target = t; value = val; }
+    }
+
+    class Expr<F> {
+        F fn;
+        expr::Node tree;
+        Array<string | int | float | bool | None> binds;
+        int siteId;
+        new Expr(F f, expr::Node t, Array<string | int | float | bool | None> b, int s) {
+            fn = f; tree = t; binds = b; siteId = s;
+        }
+    }
+}
+)prelude";
+
 bool isTypeKind(SymbolKind k) {
     return k == SymbolKind::Class || k == SymbolKind::TypeParam ||
            k == SymbolKind::Primitive;
@@ -5293,6 +5407,96 @@ void addToScope(Scope* scope, Symbol* sym) {
     scope->names[sym->name].push_back(sym);
 }
 
+// --- 005 R2/R3: match-arm value→type reclassification helpers ---------------
+
+// One classifiable leaf of a match-arm value pattern: a pure `::`-chain
+// (namespace `path` + leaf `name`) or a bare `Name` (empty path).
+struct ArmLeaf {
+    std::vector<std::string_view> path;   // namespace segments (empty for bare Name)
+    std::string_view name;                // final segment
+    SourceSpan span;
+};
+
+// Extract a bare `Name` or a pure `::`-chain into an ArmLeaf. Returns false for
+// anything else — a `.`-link anywhere (colon=false), a Call, Index, etc. — so
+// only genuine qualified-name-shaped patterns are ever reclassified.
+bool asChainLeaf(const Expr* e, ArmLeaf& out) {
+    if (!e) return false;
+    if (e->kind == ExprKind::Name) {
+        out.path.clear();
+        out.name = e->text;
+        out.span = e->span;
+        return true;
+    }
+    if (e->kind == ExprKind::Member && e->colon) {
+        std::vector<std::string_view> segs;      // collected leaf..root
+        const Expr* cur = e;
+        while (cur->kind == ExprKind::Member && cur->colon) {
+            segs.push_back(cur->text);
+            cur = cur->a.get();
+        }
+        if (!cur || cur->kind != ExprKind::Name) return false;   // a `.` link ⇒ disqualify
+        segs.push_back(cur->text);               // the root Name
+        std::reverse(segs.begin(), segs.end());  // now root..leaf
+        out.name = segs.back();
+        out.path.assign(segs.begin(), segs.end() - 1);
+        out.span = e->span;
+        return true;
+    }
+    return false;
+}
+
+// Flatten a `|` (Pipe) tree on the value route into its operand leaves.
+void collectPipeLeaves(const Expr* e, std::vector<const Expr*>& out) {
+    if (e && e->kind == ExprKind::Binary && e->op == TokenKind::Pipe) {
+        collectPipeLeaves(e->a.get(), out);
+        collectPipeLeaves(e->b.get(), out);
+    } else {
+        out.push_back(e);
+    }
+}
+
+// Classify a leaf against `scope`, navigating exactly as resolveType's Named
+// case. Returns navOK (false ⇒ root not a namespace, or a middle/leaf miss on a
+// qualified chain — the pattern is left untouched). On navOK, sets hasType /
+// hasValue from the leaf's visible symbols (a type-kind symbol vs a Var value).
+bool leafClassify(const ArmLeaf& lf, Scope* scope, bool& hasType, bool& hasValue) {
+    hasType = hasValue = false;
+    const std::vector<Symbol*>* cands = nullptr;
+    if (lf.path.empty()) {
+        for (Scope* sc = scope; sc && !cands; sc = sc->parent)
+            cands = sc->localLookup(lf.name);
+        if (!cands) return true;                 // unknown bare name: navOK, no symbols
+    } else {
+        Symbol* ns = nullptr;
+        for (size_t i = 0; i < lf.path.size(); ++i) {
+            std::string_view seg = lf.path[i];
+            if (i == 0)
+                for (Scope* sc = scope; sc && !ns; sc = sc->parent)
+                    ns = findLocal(sc, seg, SymbolKind::Namespace);
+            else
+                ns = (ns && ns->scope) ? findLocal(ns->scope, seg, SymbolKind::Namespace)
+                                       : nullptr;
+            if (!ns) return false;               // root not a namespace / middle miss
+        }
+        if (!ns || !ns->scope) return false;
+        cands = ns->scope->localLookup(lf.name);
+        if (!cands) return false;                // leaf absent in the namespace
+    }
+    for (Symbol* s : *cands) {
+        if (isTypeKind(s->kind)) hasType = true;
+        else if (s->kind == SymbolKind::Var) hasValue = true;
+    }
+    return true;
+}
+
+// A leaf is a clean type leaf iff navigation succeeded and it names a type but
+// not a value (ambiguous both-cases are handled explicitly at the R2 call site).
+bool leafIsType(const ArmLeaf& lf, Scope* scope) {
+    bool hasType = false, hasValue = false;
+    return leafClassify(lf, scope, hasType, hasValue) && hasType && !hasValue;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -5302,7 +5506,8 @@ void addToScope(Scope* scope, Symbol* sym) {
 Program Resolver::parsePrelude() {
     preludeFile_.name = "<prelude>";
     preludeFile_.text = std::string(kPreludeCore) + kPreludeStd +
-                        kPreludeRest + kPreludeRegexCore + kPreludeRegexApi + kPreludeWeb;
+                        kPreludeRest + kPreludeRegexCore + kPreludeRegexApi + kPreludeWeb +
+                        kPreludeExpr;
     DiagnosticSink dummy;  // the prelude is trusted; ignore its diagnostics
     Lexer lexer(preludeFile_, dummy);
     Parser parser(lexer.tokenize(), preludeFile_, dummy);
@@ -5616,6 +5821,7 @@ void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
     if (e->kind == ExprKind::Match) {
         resolveExprTypes(e->a.get(), scope);         // subject
         for (MatchArm& arm : e->arms) {
+            reclassifyMatchArm(arm, scope);          // 005 R2/R3: value → type pattern
             if (arm.type)      resolveType(arm.type.get(), scope);
             if (arm.value)     resolveExprTypes(arm.value.get(), scope);
             if (arm.bodyExpr)  resolveExprTypes(arm.bodyExpr.get(), scope);
@@ -5629,6 +5835,76 @@ void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
     resolveExprTypes(e->c.get(), scope);
     for (ExprPtr& x : e->list) resolveExprTypes(x.get(), scope);
     if (e->block) resolveStmtTypes(e->block.get(), scope);   // lambda block body
+}
+
+// 005 R2/R3: `NS::Type` and `Enum::Member` share a token shape, so the parser
+// leaves every `::`-qualified arm head on the neutral value route. Here — in the
+// pass all four engines share, before Eval/Lower — reclassify to a type pattern
+// when the leaf actually names a type. Parse neutrally, classify semantically.
+void Resolver::reclassifyMatchArm(MatchArm& arm, Scope* scope) {
+    if (!arm.value) return;
+    Expr* v = arm.value.get();
+
+    // R3: a `|` union on the value route (`ns::Sub | None =>`). `|` binds tighter
+    // than the arm route, so it parses as a Binary(Pipe) tree. If ANY leaf is a
+    // type, ALL must be — build a Union type pattern; a mixed tree is an error;
+    // no type leaves ⇒ leave it (a bitwise-or of int consts stays a value).
+    if (v->kind == ExprKind::Binary && v->op == TokenKind::Pipe) {
+        std::vector<const Expr*> leaves;
+        collectPipeLeaves(v, leaves);
+        std::vector<ArmLeaf> parsed(leaves.size());
+        std::vector<bool> isType(leaves.size(), false);
+        int types = 0;
+        for (size_t i = 0; i < leaves.size(); ++i) {
+            if (asChainLeaf(leaves[i], parsed[i]) && leafIsType(parsed[i], scope)) {
+                isType[i] = true;
+                ++types;
+            }
+        }
+        if (types == 0) return;                       // stays a value pattern
+        if (types != (int)leaves.size()) {
+            sink_.error(v->span, "mixed type/value '|' match pattern");
+            return;
+        }
+        auto uni = std::make_unique<TypeRef>(TypeKind::Union);
+        uni->span = v->span;
+        for (const ArmLeaf& lf : parsed) {
+            auto ref = std::make_unique<TypeRef>(TypeKind::Named);
+            ref->span = lf.span;
+            ref->path = lf.path;
+            ref->name = lf.name;
+            uni->members.push_back(std::move(ref));
+        }
+        resolveType(uni.get(), scope);
+        arm.type = std::move(uni);
+        arm.value = nullptr;
+        return;
+    }
+
+    // R2: a single pure `::`-chain. A bare Name never reaches the value route
+    // (the parser sends it to parseType), so require a non-empty namespace path.
+    ArmLeaf lf;
+    if (!asChainLeaf(v, lf) || lf.path.empty()) return;
+    bool hasType = false, hasValue = false;
+    if (!leafClassify(lf, scope, hasType, hasValue)) return;   // nav miss ⇒ leave
+    if (hasType && hasValue) {
+        std::string spelled;
+        for (std::string_view seg : lf.path) { spelled += seg; spelled += "::"; }
+        spelled += std::string(lf.name);
+        sink_.error(v->span, "ambiguous match pattern '" + spelled +
+                             "': names both a type and a value");
+        return;
+    }
+    if (hasType) {                                   // type, no value ⇒ type pattern
+        auto ref = std::make_unique<TypeRef>(TypeKind::Named);
+        ref->span = v->span;
+        ref->path = lf.path;
+        ref->name = lf.name;
+        resolveType(ref.get(), scope);
+        arm.type = std::move(ref);
+        arm.value = nullptr;
+    }
+    // value-only, or neither ⇒ leave as a value pattern (backstop/runtime stay loud).
 }
 
 void Resolver::resolveStmtTypes(Stmt* s, Scope* scope) {

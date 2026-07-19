@@ -1,0 +1,142 @@
+namespace Sonar { namespace Dom {
+    // ======================================================================
+    // Bindings — the `{{…}}` pull-sweep (techdesign-05, contract D-C8).
+    //
+    // A binding pairs a getter (evaluate the current value) with an apply
+    // (write it into a component). The Document holds the table; SonarApp's
+    // renderFrame sweeps it once per frame (Document.__sweepBindings, D05 §4):
+    // re-read each live getter, diff against the last value, apply on change.
+    // No write hook, no observer registration — `<span>{{filename}}</span>`
+    // plus a bare `filename = …` write updates the span on the next frame
+    // (§1: pull, not push).
+    //
+    // This file owns the Binding record, the `text` hole-renderer overload
+    // family (§3.1), and the two registration paths — the dom! tier's
+    // `bindText`/generic `bindNode` (`bind` is a reserved word), and the
+    // runtime string tier's key-resolving
+    // `bindRuntimeText`/`bindLeafText`. The sweep body + table live on
+    // Document (the members D01 declared for D05).
+    // ======================================================================
+
+    // The binding record (§2). A class, not a struct: it holds closures and is
+    // mutated in place through the table (#74 discipline).
+    class Binding {
+        IComponent      node;         // the Text (or attr host) the binding drives
+        string          sourceText;   // "{{filename}}" — serializer/inspector channel
+        () => string    getter;       // evaluate current value
+        (string) => void apply;       // write into the component (its setter invalidates)
+        string          last = "";    // diff cache
+        bool            dead = false; // tombstone (node detached; §2 lazy validation)
+        new Binding(IComponent n, string src, () => string g, (string) => void a) {
+            node = n; sourceText = src; getter = g; apply = a;
+        }
+    }
+
+    // ---- the hole renderer: `text` overload family (§3.1, probe D-P3) -------
+    // What every `{{expr}}` funnels through so the hole is stringified at the
+    // call site with the expression's own static type. The `string | None`
+    // member (D-P3) is what `{{filename}}` over a `string | None filename`
+    // needs — None renders "" rather than forcing a `?? ""` at the hole.
+    string text(string v)        => v;
+    string text(string | None v) => v == None ? "" : v;
+    string text(int v)           => v.toString();
+    string text(float v)         => v.toString();
+    string text(bool v)          => v ? "true" : "false";
+    string text(char v)          => v.toString();
+
+    // ---- registration (§2) -------------------------------------------------
+
+    // Generic registration: pair `getter` with `apply` on `node`, run the
+    // getter ONCE immediately (initial render = update path — the T11
+    // `__sonarBind` precedent), and add the record to the Document's table.
+    void bindNode(Document doc, IComponent node, string sourceText, () => string getter, (string) => void apply) {
+        Binding b = Binding(node, sourceText, getter, apply);
+        string v = getter();          // initial render
+        b.last = v;
+        apply(v);
+        doc.__registerBinding(b);
+    }
+
+    // Text binding: the apply is `(v) => t.text(v)` over the narrowed Text
+    // (explicit local capture — #53). A non-Text node registers nothing (the
+    // dom! emitter only calls this for span Texts it just built).
+    void bindText(Document doc, IComponent textNode, string sourceText, () => string getter) {
+        if (textNode is Text) {
+            Text t = textNode;
+            bindNode(doc, textNode, sourceText, getter, (v) => { t.text(v); });
+        }
+    }
+
+    // ---- runtime string tier: key resolution (§3) --------------------------
+    // A runtime `{{key}}` is a bare identifier resolved at sweep time in order:
+    // (1) an `expose(key, getter)` registration, (2) the Document store
+    // (`set`/`get`), (3) neither → "" + one log line naming the key
+    // (quiet-but-logged degradation). One RuntimeHole per hole holds the
+    // log-once flag.
+    class RuntimeHole {
+        Document doc_;
+        string   key_;
+        bool     missLogged_ = false;
+        new RuntimeHole(Document doc, string key) { doc_ = doc; key_ = key; }
+        string eval() {
+            string? v = doc_.__resolveKey(key_);
+            if (v != None) return v;
+            if (!missLogged_) {
+                Sonar::log("{{" + key_ + "}}: no expose()/store value for '" + key_
+                    + "' — rendering empty (D05 §3)");
+                missLogged_ = true;
+            }
+            return "";
+        }
+    }
+
+    // Register a runtime hole over a span Text (the buildFragment path).
+    void bindRuntimeText(Document doc, IComponent textNode, string key) {
+        RuntimeHole h = RuntimeHole(doc, key);
+        bindText(doc, textNode, "{{" + key + "}}", () => h.eval());
+    }
+
+    // A leaf whose display text is a run of literal pieces + {{hole}} keys
+    // (§7.4: a multi-piece run concatenates into ONE binding, not positional
+    // patching). `isHole_[i]` selects whether `pieces_[i]` is a literal or a
+    // key; the run shares one log-once flag.
+    class LeafTextRun {
+        Document      doc_;
+        Array<bool>   isHole_;
+        Array<string> pieces_;
+        bool          missLogged_ = false;
+        new LeafTextRun(Document doc, Array<bool> isHole, Array<string> pieces) {
+            doc_ = doc; isHole_ = isHole; pieces_ = pieces;
+        }
+        string eval() {
+            string label = "";
+            int i = 0;
+            for (bool hole in isHole_) {
+                string piece;
+                if (hole) piece = this.resolve(pieces_[i]);
+                else      piece = pieces_[i];
+                label = joinLabel(label, piece);
+                i = i + 1;
+            }
+            return label;
+        }
+        string resolve(string key) {
+            string? v = doc_.__resolveKey(key);
+            if (v != None) return v;
+            if (!missLogged_) {
+                Sonar::log("{{" + key + "}}: no expose()/store value for '" + key
+                    + "' — rendering empty (D05 §3)");
+                missLogged_ = true;
+            }
+            return "";
+        }
+    }
+
+    // Register a leaf text-run binding (holes present); applies via the leaf's
+    // text channel. The narrowed leaf is captured explicitly (#53).
+    void bindLeafText(Document doc, IComponent leaf, Array<bool> isHole, Array<string> pieces) {
+        LeafTextRun run = LeafTextRun(doc, isHole, pieces);
+        IComponent c = leaf;
+        bindNode(doc, leaf, "", () => run.eval(), (v) => { setNodeText(c, v); });
+    }
+}}

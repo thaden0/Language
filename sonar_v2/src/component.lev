@@ -179,16 +179,16 @@ namespace Sonar {
         bool reactiveNotifying_ = false;   // single-pass cycle-settle guard (§3)
 
         // ---- Sonar DOM additive seams (D-C4/D-C5/D-C6) ----------------------
-        // These fields are owned by D03 in the frozen DOM anchor; D01 only
-        // *reads* them (Document indexes by `domSlot_`; selectors and DomNode
-        // class ops read `classes_`; DomNode.position() returns `position_`).
-        // They are provided here in the v2 package so D01 builds and tests
-        // standalone. All are zero-behaviour when the DOM layer is unused.
-        // (`domSlot_` = -1 means "never touched by the DOM"; the class list is
-        // empty; `position_` is auto-constructed at Flow with x=y=0.)
+        // Owned by D03 in the frozen DOM anchor. All are zero-behaviour when the
+        // DOM layer is unused (`domSlot_` = -1 means "never touched by the DOM";
+        // the class list is empty; `position_` stays None until position() is
+        // first called). `position_` is a LAZY `Position?` — the real D03
+        // Position has no nullary ctor (it needs a `weak` owner back-ref), so a
+        // bare `Position position_ = Position()` would neither construct nor be
+        // correct; it is created on first touch with `this` as the owner.
         int domSlot_ = -1;
         Array<string> classes_ = [];
-        Dom::Position position_ = Dom::Position();
+        Dom::Position? position_ = None;
 
         bool hasClass(string name) {
             for (string c in classes_) if (c == name) return true;
@@ -218,7 +218,26 @@ namespace Sonar {
             else addClass(name);
         }
         Array<string> classList() => classes_;
-        Dom::Position position() => position_;
+        // Cheap absolute-positioning predicate for DOM containers (D03 §3): a
+        // child is absolute iff it has a Position whose method is Absolute. Reads
+        // `position_` WITHOUT lazy-creating, so a flow child never allocates a
+        // Position — the "zero-cost when DOM unused" guarantee holds through the
+        // arrange partition.
+        bool __sonarAbsolute() {
+            Dom::Position? p = position_;
+            if (p != None) return p.isAbsolute();
+            return false;
+        }
+        // Lazy: create the Position with `this` as its weak owner on first touch
+        // (D03 §1). The narrowed return keeps the checker happy without relying
+        // on narrowing across the assignment.
+        Dom::Position position() {
+            Dom::Position? p = position_;
+            if (p != None) return p;
+            Dom::Position created = Dom::Position(this);
+            position_ = created;
+            return created;
+        }
 
         Constraint widthConstraint() => width_;
         Constraint heightConstraint() => height_;

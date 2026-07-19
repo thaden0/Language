@@ -101,10 +101,15 @@ void main() {
     nName.show();
     console.writeln(nName.visible());            // true
 
-    // position (D-C5 interim seam)
-    nOpen.position().setMethod(PositionMethod::Absolute).setX(7).setY(3);
-    console.writeln(nOpen.position().x);         // 7
-    console.writeln(nOpen.position().method == PositionMethod::Absolute);  // true
+    // position (D-C5; D03 replaces the interim seam with live-read/stored-write
+    // views). nOpen is not laid out here, so the live `.x` read is 0; the stored
+    // desire surfaces through __resolveAbsolute (what an Absolute container uses).
+    Position pos = nOpen.position();
+    pos.method = PositionMethod::Absolute;
+    pos.x = 7;
+    pos.y = 3;
+    console.writeln(pos.__resolveAbsolute(Size(0, 0)).x());   // 7
+    console.writeln(pos.method == PositionMethod::Absolute);  // true
 
     // actions (D-C7 interim seam)
     Ctr fired = Ctr();

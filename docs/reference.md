@@ -270,7 +270,10 @@ the subject in that arm), a **value/range** (`0 =>`, `1..9 =>`), or **`else`**. 
 wins. Bodies are `=> expr;` or `=> { block }`; `match` is an expression (arms yield a value)
 or a statement (no trailing `;`). Exhaustive over a closed union (no `else` needed); an open
 hierarchy requires `else`. Lowers to the same `is`/`IsType` test as `catch` and `is` — one
-type-dispatch path. (`match` is a reserved word.)
+type-dispatch path. A `::`-qualified name in arm position resolves by symbol: a
+namespace-qualified **type** is a type pattern; an enum member or namespace-qualified
+constant is a value pattern; a name that is both is a compile error. (`match` is a reserved
+word.)
 
 ### 3.2 Primary expressions
 Lambdas take an expression body (`(x) => x + 1`) **or a statement block**

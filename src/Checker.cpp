@@ -1051,7 +1051,17 @@ Type Checker::typeOfInner(const Expr* e) {
                     // scalar). Done before typeOf so the pattern types as char.
                     if (subj.canonical == "char" && isCharLiteral(arm.value.get()))
                         markCharLiteral(arm.value.get());
-                    typeOf(arm.value.get());
+                    Type pat = typeOf(arm.value.get());
+                    // R4 (005): a value pattern that types as a TypeValue (a bare
+                    // type used where a value is expected — e.g. class-rooted
+                    // `C::field`/`C::T`) can never equal the subject, so it would
+                    // silently take `else`. Make that loud. Enum members type as
+                    // the enum's value struct and `float::NaN` as `float`, so no
+                    // legitimate value pattern is caught here.
+                    if (pat.kind == TKind::TypeValue)
+                        return error(arm.value->span,
+                                     "match pattern is a type ('" + pat.canonical +
+                                     "') used as a value — this arm can never match");
                     // Enum-member arm `Method::GET`: my typeOfMember rule stamps
                     // `resolved` on a genuine enum member — record it for closure.
                     if (arm.value->kind == ExprKind::Member && arm.value->colon &&
