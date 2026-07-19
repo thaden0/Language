@@ -3,6 +3,7 @@
 #include "Diagnostic.hpp"
 #include "LexicalStack.hpp"
 #include "Symbols.hpp"
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -259,6 +260,64 @@ private:
     Type rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
                            Symbol* ctorClass, const std::string& recvCanon,
                            const Type& retType);
+
+    // ---- LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md) ----
+    // The prelude's `expr::Expr<F>` class and its `expr` namespace, looked up
+    // once (lazily). exprClass_ stays null if the prelude lacks them (never in
+    // practice — Stage 1 landed the surface), which disables the whole hook.
+    Symbol* exprClass_ = nullptr;
+    Symbol* exprNamespace_ = nullptr;
+    bool exprLookedUp_ = false;
+    Symbol* exprClass();                       // resolve on first use
+    Symbol* exprNodeClass(const char* name);   // a class in the `expr` namespace
+    // R4: per-compilation reification-site counter, source-walk order, from 0.
+    int exprSiteCounter_ = 0;
+    // R1 idempotence: the lambda nodes that ARE a synthesized construction's
+    // first argument — the hook skips these so re-checking never re-reifies.
+    std::unordered_set<const Expr*> reifiedLambdas_;
+    // Synthesized literal/op/identifier text for reified nodes is interned into
+    // the PROGRAM's arena (`Program::synthNames`), not the checker's — the
+    // rewritten AST outlives the Checker (e.g. `--expand` prints it after the
+    // Checker is destroyed), so its string_views must too. A deque never
+    // invalidates the views taken into its elements.
+    Program* progMut_ = nullptr;
+    std::string_view ownText(std::string s);
+    // §2.1: if `pt` (a declared param/var/field/return TypeRef) is an
+    // Expr-target — `expr::Expr<Fn>` with Fn a function type — return Fn's
+    // TypeRef; else null. isExprTargetType is the resolved-Type form used in
+    // overload scoring (§2.2).
+    const TypeRef* exprTargetFn(const TypeRef* pt);
+    bool isExprTargetType(const Type& t);
+    // §3/§4: check `lambda`'s body against Fn, reify it, and rewrite `lambda`
+    // in place into the `expr::Expr(...)` construction. Returns the `Expr<Fn>`
+    // type, or an Error type on a reject (E1/E2/etc. already emitted). Only
+    // call when `lambda->kind == Lambda` and `fnRef` is a function TypeRef.
+    Type reifyLambda(Expr* lambda, const TypeRef* fnRef);
+    // The recursive body walk (§3.3): returns the constructed `expr::` node
+    // AST, or null on a reject (emits E2 at the offending span). ReifyCtx is
+    // defined in Checker.cpp.
+    struct ReifyCtx;
+    ExprPtr reifyNode(const Expr* e, ReifyCtx& ctx);
+    // The receiver of a whitelisted `Array<T>.contains` — a captured Array
+    // chain reifies to `Bind(slot)` whose binds value is the None marker (R17).
+    ExprPtr reifyArrayReceiver(const Expr* e, ReifyCtx& ctx);
+    // A DbValue-shaped checked type: string|int|float|bool, or a union all of
+    // whose members are those plus None (the binds element union, R17).
+    bool isDbValueType(const Type& t) const;
+    // A focused deep clone for the leaf grammar reification captures/literals
+    // ever contain (Name/This/Member chains, *Lit leaves) — span-carrying (H6).
+    ExprPtr cloneForReify(const Expr* e) const;
+    // Build an `expr::<cls>(args...)` construction Call (the Rules.cpp:549 idiom).
+    ExprPtr makeExprNode(const char* cls, std::vector<ExprPtr> args, SourceSpan sp);
+    // Build the binds array argument (§4 step 3): `[]` when empty, else an
+    // immediately-invoked closure that snapshots each capture into a
+    // union-typed slot and returns the `Array<string|int|float|bool|None>`
+    // (the only landed shape that types as the DbValue union — a bare uniform
+    // literal is Array<int>, invariantly un-assignable; see the log).
+    ExprPtr buildBindsExpr(ReifyCtx& ctx, SourceSpan sp);
+    // E2 reject: emit the diagnostic at `span`, the generated allow-list line,
+    // and a note at the lambda site; returns null for the caller to propagate.
+    ExprPtr reifyReject(const char* construct, SourceSpan span, ReifyCtx& ctx);
 
     // Walk a lambda's body with its parameters bound to `paramTypes` (falling
     // back to declared types / unknown), returning the body's inferred return

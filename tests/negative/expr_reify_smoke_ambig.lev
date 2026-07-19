@@ -1,0 +1,6 @@
+// LA-31 Stage 2 §8.4 — a lambda literal matching both a FuncRef and an
+// expr::Expr overload is ambiguous (E3, R2 — overrides declaration order).
+class User { int age; new User(int g) { age = g; } }
+string over(expr::Expr<(User)=>bool> e) { return "expr"; }
+string over((User)=>bool f) { return "func"; }
+console.writeln(over((u) => u.age > 0));
