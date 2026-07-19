@@ -1,10 +1,11 @@
 // Unit tests for tools/trident/{semver,mvs}.cpp (techdesign-package-manager.md
 // §5.1 P2.1a). Drives MVS against a fake, in-memory ModuleProvider — no I/O —
 // covering: single dep, transitive chain, diamond (same major, higher min
-// wins), two majors (distinct ids coexist), and an unsatisfiable/missing
-// version (clean error). Also checks determinism (root-require order does
-// not change the sorted build list) and the SemVer parser/comparator
-// directly. Minimal offline test harness, matching tests/test_lexer.cpp.
+// wins), two majors (distinct ids coexist), an unsatisfiable/missing version
+// (clean error), and the external-require cycle policy. Also checks
+// determinism (root-require order does not change the sorted build list) and
+// the SemVer parser/comparator directly. Minimal offline test harness,
+// matching tests/test_lexer.cpp.
 #include "../tools/trident/manifest.hpp"
 #include "../tools/trident/mvs.hpp"
 #include "../tools/trident/provider.hpp"
@@ -220,6 +221,86 @@ static void test_deterministic_regardless_of_root_order() {
     }
 }
 
+static void test_direct_cycle_is_a_hard_error() {
+    FakeProvider p;
+    p.add("github.com/x/a", "1.2.0", {vcsDep("github.com/x/b", "1.0.0")});
+    p.add("github.com/x/b", "1.0.0", {vcsDep("github.com/x/a", "1.0.0")});
+
+    MvsResult res = selectVersions({req("github.com/x/a", "1.2.0")}, p);
+    CHECK(!res.ok);
+    CHECK(res.err ==
+          "require cycle detected: github.com/x/a@1.2.0 -> github.com/x/b@1.0.0 -> "
+          "github.com/x/a@1.2.0 — the external dependency graph must be acyclic; break "
+          "the cycle by removing one of these modules' requires on the other");
+}
+
+static void test_self_require_is_a_hard_error() {
+    FakeProvider sameMajor;
+    sameMajor.add("github.com/x/a", "1.2.0", {vcsDep("github.com/x/a", "1.1.0")});
+
+    MvsResult direct = selectVersions({req("github.com/x/a", "1.2.0")}, sameMajor);
+    CHECK(!direct.ok);
+    CHECK(direct.err.find("github.com/x/a@1.2.0 -> github.com/x/a@1.2.0") !=
+          std::string::npos);
+
+    // 0.x and 1.x deliberately share one ModuleId. Once 1.1.0 wins, its
+    // require on 0.9.0 is therefore a one-node cycle too.
+    FakeProvider sharedIdentity;
+    sharedIdentity.add("github.com/x/a", "0.9.0", {vcsDep("github.com/x/a", "1.1.0")});
+    sharedIdentity.add("github.com/x/a", "1.1.0", {vcsDep("github.com/x/a", "0.9.0")});
+
+    MvsResult bucketed = selectVersions({req("github.com/x/a", "0.9.0")}, sharedIdentity);
+    CHECK(!bucketed.ok);
+    CHECK(bucketed.err.find("github.com/x/a@1.1.0 -> github.com/x/a@1.1.0") !=
+          std::string::npos);
+}
+
+static void test_one_way_cross_major_is_legal() {
+    FakeProvider p;
+    p.add("github.com/x/a", "1.5.0", {});
+    p.add("github.com/x/a", "2.0.0", {vcsDep("github.com/x/a", "1.5.0")});
+
+    MvsResult res = selectVersions({req("github.com/x/a", "2.0.0")}, p);
+    CHECK(res.ok);
+    CHECK(res.buildList.size() == 2);
+    CHECK(findEntry(res, "github.com/x/a", 1) != nullptr);
+    CHECK(findEntry(res, "github.com/x/a", 2) != nullptr);
+}
+
+static void test_mutual_cross_major_is_a_hard_error() {
+    FakeProvider p;
+    p.add("github.com/x/a", "1.5.0", {vcsDep("github.com/x/a", "2.0.0")});
+    p.add("github.com/x/a", "2.0.0", {vcsDep("github.com/x/a", "1.5.0")});
+
+    MvsResult res = selectVersions({req("github.com/x/a", "1.5.0")}, p);
+    CHECK(!res.ok);
+    CHECK(res.err.find("github.com/x/a@1.5.0 -> github.com/x/a@2.0.0 -> "
+                       "github.com/x/a@1.5.0") != std::string::npos);
+}
+
+static void test_dangling_edge_is_a_leaf_not_a_cycle() {
+    BuildListEntry a;
+    a.mod = ModuleId{"github.com/x/a", 1};
+    a.selected = Version{1, 0, 0};
+    a.requires_.push_back(req("github.com/x/missing", "1.0.0"));
+
+    CHECK(findRequireCycle({a}).empty());
+}
+
+static void test_cycle_through_dev_edge_is_a_hard_error() {
+    FakeProvider p;
+    Dependency devEdge = vcsDep("github.com/x/b", "1.0.0");
+    devEdge.dev = true;
+    p.add("github.com/x/a", "1.0.0", {devEdge});
+    p.add("github.com/x/b", "1.0.0", {vcsDep("github.com/x/a", "1.0.0")});
+
+    MvsResult res = selectVersions({req("github.com/x/a", "1.0.0")}, p);
+    CHECK(!res.ok);
+    CHECK(res.err.find("require cycle detected") != std::string::npos);
+    CHECK(res.err.find("github.com/x/a@1.0.0 -> github.com/x/b@1.0.0 -> "
+                       "github.com/x/a@1.0.0") != std::string::npos);
+}
+
 int main() {
     test_semver_parse_and_compare();
     test_single_dep();
@@ -229,6 +310,12 @@ int main() {
     test_two_majors_coexist();
     test_missing_version_is_a_clean_error();
     test_deterministic_regardless_of_root_order();
+    test_direct_cycle_is_a_hard_error();
+    test_self_require_is_a_hard_error();
+    test_one_way_cross_major_is_legal();
+    test_mutual_cross_major_is_a_hard_error();
+    test_dangling_edge_is_a_leaf_not_a_cycle();
+    test_cycle_through_dev_edge_is_a_hard_error();
 
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

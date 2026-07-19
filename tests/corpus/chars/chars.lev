@@ -4,6 +4,15 @@
 
 char up(char c) => c.isLower() ? std::charFromCode(c.code() - 32) : c;
 
+// Track 03 §5 problem #1: overload back-compat — a bare char literal argument
+// must prefer a `string` overload over a `char` one, regardless of which is
+// declared first (declaration order must not decide it).
+string g1(string s) => "string:" + s;
+string g1(char c) => "char:" + c.toString();
+
+string g2(char c) => "char:" + c.toString();
+string g2(string s) => "string:" + s;
+
 string classify(char c) {
     if (c.isDigit()) return "digit";
     if (c.isAlpha()) return "alpha";
@@ -45,6 +54,12 @@ void main() {
     console.writeln(std::charFromCode(66));   // B
     char mc = 'm';
     console.writeln(up(mc));            // M
+    console.writeln(up('m'));           // M  (bare char literal in call-arg position)
+
+    // overload back-compat: `string` wins over `char` for a literal argument,
+    // regardless of declaration order (g1 declares string first, g2 char first)
+    console.writeln(g1('m'));           // string:m
+    console.writeln(g2('m'));           // string:m
 
     // multi-byte
     char e = 'é';

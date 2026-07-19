@@ -35,7 +35,74 @@ bool expandRequires(const ProjectManifest& pm, std::vector<Require>& out, std::s
     return true;
 }
 
+std::string renderSelected(const BuildListEntry& entry) {
+    return entry.mod.path + "@" + formatSemVer(entry.selected);
+}
+
 }  // namespace
+
+std::string findRequireCycle(const std::vector<BuildListEntry>& entries) {
+    std::map<ModuleId, size_t> indexByModule;
+    for (size_t i = 0; i < entries.size(); ++i) indexByModule.emplace(entries[i].mod, i);
+
+    // Iterative three-color DFS. `pathPosition` lets a gray-target edge
+    // render precisely the active suffix that closes, including the
+    // repeated head, without recursion or a second graph walk.
+    enum Color : unsigned char { White, Gray, Black };
+    struct Frame {
+        size_t entryIndex;
+        size_t nextEdge;
+    };
+
+    std::vector<Color> color(entries.size(), White);
+    std::vector<size_t> path;
+    std::vector<size_t> pathPosition(entries.size(), entries.size());
+    std::vector<Frame> stack;
+
+    for (size_t start = 0; start < entries.size(); ++start) {
+        if (color[start] != White) continue;
+
+        color[start] = Gray;
+        pathPosition[start] = path.size();
+        path.push_back(start);
+        stack.push_back(Frame{start, 0});
+
+        while (!stack.empty()) {
+            Frame& frame = stack.back();
+            const std::vector<Require>& edges = entries[frame.entryIndex].requires_;
+            if (frame.nextEdge == edges.size()) {
+                color[frame.entryIndex] = Black;
+                pathPosition[frame.entryIndex] = entries.size();
+                path.pop_back();
+                stack.pop_back();
+                continue;
+            }
+
+            const Require& edge = edges[frame.nextEdge++];
+            auto targetIt = indexByModule.find(edge.mod);
+            if (targetIt == indexByModule.end()) continue;  // dangling lock edge: a leaf
+
+            size_t target = targetIt->second;
+            if (color[target] == White) {
+                color[target] = Gray;
+                pathPosition[target] = path.size();
+                path.push_back(target);
+                stack.push_back(Frame{target, 0});
+                continue;
+            }
+            if (color[target] != Gray) continue;
+
+            std::string cycle;
+            for (size_t i = pathPosition[target]; i < path.size(); ++i) {
+                if (!cycle.empty()) cycle += " -> ";
+                cycle += renderSelected(entries[path[i]]);
+            }
+            cycle += " -> " + renderSelected(entries[target]);
+            return cycle;
+        }
+    }
+    return "";
+}
 
 MvsResult selectVersions(const std::vector<Require>& rootRequires, ModuleProvider& provider) {
     MvsResult result;
@@ -91,6 +158,17 @@ MvsResult selectVersions(const std::vector<Require>& rootRequires, ModuleProvide
 
     result.buildList.reserve(entries.size());
     for (auto& [id, entry] : entries) result.buildList.push_back(std::move(entry));
+
+    // Policy validation happens only after MVS has fully converged. It reads
+    // the final graph but cannot perturb selection or short-circuit its walk.
+    std::string cycle = findRequireCycle(result.buildList);
+    if (!cycle.empty()) {
+        result.err = "require cycle detected: " + cycle +
+                     " — the external dependency graph must be acyclic; break the cycle by "
+                     "removing one of these modules' requires on the other";
+        return result;
+    }
+
     result.ok = true;
     return result;
 }
