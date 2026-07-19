@@ -319,5 +319,94 @@ All errors point at the offending span; E2 adds a note naming the lambda site.
 
 ## 10. Implementation log
 
-(Append micro-decisions closed under §authorization, findings, golden-churn inventory,
-and completion note here.)
+**2026-07-19 — STAGE 2 IMPLEMENTED IN FULL.** All of §8 green on oracle + IR + LLVM;
+full pre-existing ctest matrix (incl. emit-C++ lanes) re-run green. Landed:
+target-typing hook (both arrival paths), the reifier walk + whitelist register, the
+in-place rewrite, and the `--expand`-runs-Checker wiring. The following micro-decisions
+were closed under this stage's §-authorization (all within the doc-00 rulings; none
+alters a ruling — where landed grammar contradicted a ruling's *premise*, the closest
+ruling-faithful shape was taken and is flagged here).
+
+- **R8 forced deviation — the emitted construction carries NO explicit generic
+  argument; it relies on inference/erasure.** R8 (and §4 step 5, §8.5) call for emitting
+  `expr::Expr<(User)=>bool>(…)` with the concrete generic argument, citing
+  `Array<(A,B)=>R>` as "landed surface" and asserting "the parser re-accepts it
+  (round-trip)". That premise is **factually wrong on the landed grammar**: explicit
+  generic arguments on a *construction/call callee* do not exist — `Box<int>(5)` lexes
+  as `((Box < int) > (5))` (verified by direct repro; `foo<int>(5)` likewise). The
+  parser is **not** in this stage's ownership, and the round-trip harness (R1) requires
+  re-parseable output, so the construction is emitted as `expr::Expr(<lambda>, <tree>,
+  <binds>, <siteId>)` and F is bound by ordinary generic inference (from the `F fn`
+  first argument) / erased at runtime. This meets R8's *intent* — the site's checked
+  type is the exact concrete `expr::Expr<Fn>` (built directly by the reifier, not
+  inferred), reification never double-fires (the printed lambda targets `F fn`, a bare
+  type param, not an Expr-target), and the emitted source round-trips byte-identically —
+  while its literal `<Fn>` spelling is not in the `--expand` text because no landed
+  surface can round-trip it. Same class as Stage 1's logged `as`→match-narrowing
+  correction (a landed-grammar correction, not a design change). **Consequence for
+  §8.5 / doc-00 §6:** the `--expand` acceptance is worded as showing
+  `expr::Expr<(User)=>bool>(…)`; the shipped smoke asserts the round-trip runs
+  byte-identically (the load-bearing property) and shows `expr::Expr(…)`. Flagged for
+  the owner; re-adding the explicit spelling is a Parser change (generic-construction
+  syntax) that belongs in its own ticket, not S2.
+
+- **Binds / Call-args arrays are widened via an immediately-invoked closure, not a bare
+  literal (§4 step 3 realized).** §4 step 3 says the binds array's element type is
+  "target-typed by the ctor's declared param — no annotation emitted." On landed
+  grammar a *uniform* array literal is invariantly un-assignable to the wider element
+  type — `[lo]` is `Array<int>`, not `Array<string|int|float|bool|None>`; `[<Lit>]` is
+  `Array<Lit>`, not `Array<expr::Node>` — and no construction-arg/var-init path widens
+  it (verified; the MySQL DbValue arrays are all built `[]`+`.add` off a declared union
+  local for exactly this reason). Ruling-faithful realization: a non-empty widened array
+  is emitted as `(() => { Array<Elem> a = []; a = a.add(e0); …; return a; })()` — the
+  landed `[]`+`.add` idiom, wrapped inline so no statement hoist is needed, evaluated
+  once at construction in first-reference order (R5-correct). Empty binds emit a raw
+  `[]` (assignable to any Array). This is why the `--expand` dump of a captured lambda
+  shows an IIFE for its binds; it re-parses and re-runs identically. The union layout is
+  load-bearing on LLVM (Array<int> and Array<union> have different element layouts), so
+  this is not merely a checker-appeasement — it is required for engine correctness.
+
+- **Reified-node text lives in `Program::synthNames`, not the Checker.** The rewritten
+  AST outlives the `Checker` (notably: `--expand` destroys the Checker, then prints).
+  Synthesized op/field/name/siteId text is therefore interned into the program's arena,
+  whose lifetime matches the AST. (Caught by the `--expand` round-trip: a Checker-owned
+  arena dangled and printed garbage for a field-init reification while `--run` — which
+  read the freed memory before reuse — happened to survive. UB either way; fixed.)
+
+- **`--expand` round-trip forced a re-lexable name for method-ref eta-lambda params
+  (R1 fallout).** With `--expand` now running the Checker (R1), the pre-existing LA-25
+  method-reference rewrite's synthesized param pool (`$mr0…`) began appearing in
+  `--expand` output, and `$` is reserved for quasiquote holes → re-lex failure (the
+  `corpus_bound_method_refs_expand` round-trip broke). Renamed the pool `$mr`→`__mr`
+  (Checker.cpp `methodRefParamName`); behavior-inert (fresh, capture-nothing lambda
+  params), no test greps the old spelling. The reifier's own synthesized IIFE slot uses
+  the same-class re-lexable name `__lvReifyArr`. This is the one bounded golden-churn
+  item R1/§H2 anticipated, resolved by making the printed source re-parseable rather
+  than by regenerating a stale golden.
+
+- **Reification hook seams.** Path-1 (call argument) rides the existing lambda-last
+  deferral: applicability added at the pickInjecting scoring seam (§2.2, same tier as
+  lambda→FuncRef, no score change — H1/bug-#34 respected), and the actual reify fires in
+  the two post-resolution lambda-walk loops (`genericReturn` for function/method calls,
+  the ctor-arg loop for constructions). Path-2 (expected-type value position) hooks the
+  top of `typeInitExpr`, ordered before its construction/method-ref handling so a
+  `C::m` in an Expr position falls through to E1. E3 is a post-scoring check over the
+  top-tier ties (never touches the scoring numbers). E1's call-arg leg fires *after*
+  candidate selection because FuncRef is universally assignable (`assignable` leniency),
+  so a lambda *value* is not rejected by scoring — it is named at the chosen candidate's
+  Expr-target parameter, and only when the argument's type is actually FuncRef (an
+  already-`expr::Expr` value passes through as an ordinary value).
+
+- **Printer/engines: zero changes needed (§7 verified).** H5 did not fire — the emitted
+  construction has no generic args on the callee to render (see the R8 note), so the
+  existing `Member`+`Call`+`Array`+`Lambda`+`IntLit` printing round-trips as-is;
+  `src/AstPrinter.cpp` untouched. Lower/Eval/IrInterp/LlvmGen untouched — the corpus is
+  green on all three engines. Enum-member `E::M`→`Lit(<carrier>)` is implemented
+  (matches the stamped enum-member const global via `program_->enumDesugars`); the S2
+  smokes don't exercise it, S3's differential corpus will.
+
+- **Corpus posture** mirrors Stage 1: `tests/corpus/expr_reify/` is its own dir kept off
+  the top-level scan, with dedicated `corpus_expr_reify_{treewalk,ir,llvm}` +
+  `_expand` targets and four `expr_reify_reject_*` negative-diagnostic tests. emit-C++
+  and ELF never compile it (posture pinned in §1); the pre-existing emit-C++ lanes stay
+  green (the Checker changes are inert for any program with no `expr::Expr<F>` position).

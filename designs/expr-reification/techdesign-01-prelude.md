@@ -510,3 +510,40 @@ diverges here, that is a **bug-file-and-STOP**, not a workaround.
   workaround) and top-level `match` statements with no trailing-`;`
   workaround (plus the `as`→match-narrowing substitution logged above, which
   stands).
+- **2026-07-18 (later still) — STAGE 1 RESUMED AND COMPLETE.** 005 confirmed
+  landed (qualified `expr::Field =>` arms narrow correctly on oracle+IR+LLVM;
+  the earlier #85 STOP is gone). All three corpora authored, green on
+  oracle+IR+LLVM, and CMake-wired: `tests/corpus/expr_prelude/expr_prelude_1`
+  (§3.3), `tests/corpus/expr_like/expr_like_1` (§2.4, all 25 rows byte-match the
+  design truth table), `tests/corpus/expr_eval/expr_eval_1` (§3.2, the
+  hand-built trees + the full §3.1 `expr::eval` walker + the `matchElse:ok`
+  else-arm safety row). Each corpus is its OWN directory with dedicated
+  `corpus_expr_*_{treewalk,ir,llvm}` targets, deliberately kept off the
+  top-level `tests/corpus/` scan so `corpus_native` (emit-C++) and
+  `corpus_elf_full` (frozen X64Gen) never compile them — matching §1's posture
+  (emit-C++ not required for the expr corpus; ELF never gates).
+  **Four further mechanical, semantics-preserving syntax corrections vs. the
+  §3.1 verbatim text** (same class as the already-logged `as`→match-narrowing —
+  landed-grammar corrections, no design change, no STOP warranted):
+  1. **Statement-bodied match arms require a block.** Bare `T => return E;`
+     does not parse ("expected expression" at `return`); the landed grammar is
+     `T => { return E; }` for a statement body (an expression arm takes no
+     `return`). Applied throughout `eval`/`evalTruth`/`dbEq`.
+  2. **`get` is a contextual keyword (get-views) and cannot name a parameter.**
+     The §3.1 accessor parameter `get` mis-parses (misleading "expected
+     parameter name" at the return-union's last member). Renamed the parameter
+     `get`→`rec` everywhere; the `get1`/`get2` fixture names are unaffected.
+  3. **Array literals are invariant.** `[expr::Lit(..)]` is `Array<Lit>`, not
+     assignable to an `Array<expr::Node>` slot; `[18,65]` is `Array<int>`, not
+     assignable to `Array<string|int|float|bool|None>`. Each element is bound to
+     an intermediate correctly-typed local first (`expr::Node likeArg = …;`
+     `string|int|float|bool|None lo = 18;`) so the literal infers the wide type.
+  4. **`asStr` was referenced but never defined in §3.1** — supplied verbatim in
+     the corpus (string-narrowing coercion; a whitelisted `Call` receiver always
+     evaluates to a string in a valid tree).
+  Additionally, top-level control flow (`while`/`if`) is not part of the surface
+  grammar (top-level allows declarations, expression-statements, and `match`);
+  the two places that loop (`expr_prelude_1`'s mixed-array dump, `expr_eval_1`'s
+  `matchElse` try/catch probe) live in ordinary function bodies, called from the
+  top level. No new bugs found; #84/#85 not re-encountered (005 closed them).
+  Full pre-existing ctest matrix re-run green (incl. emit-C++/LLVM lanes).

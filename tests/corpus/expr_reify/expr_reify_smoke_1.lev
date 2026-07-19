@@ -1,0 +1,66 @@
+// LA-31 Stage 2 — positive smoke 1 (techdesign-02-reifier.md §8.1).
+// The ORM shape `(u) => u.active && u.name.like("A%")` reified to
+// expr::Expr<(User)=>bool>, both as a call argument and a declared bind.
+// Prints a canonical hand-rolled dump of .tree/.binds/.siteId and calls .fn
+// on two fixtures. Byte-identical on oracle + IR + LLVM.
+
+class User {
+    bool active;
+    string name;
+    int age;
+    new User(bool a, string n, int g) { active = a; name = n; age = g; }
+}
+
+string dv(string | int | float | bool | None v) {
+    match (v) {
+        string => { return "\"" + v + "\""; }
+        int    => { return v.toString(); }
+        float  => { return v.toString(); }
+        bool   => { return v.toString(); }
+        else   => { return "None"; }
+    }
+}
+
+string joinPath(Array<string> p) {
+    string s = "";
+    int i = 0;
+    while (i < p.length()) { if (i > 0) { s = s + "."; } s = s + p[i]; i = i + 1; }
+    return s;
+}
+
+string dumpArgs(Array<expr::Node> a) {
+    string s = "";
+    int i = 0;
+    while (i < a.length()) { if (i > 0) { s = s + ","; } s = s + dumpNode(a[i]); i = i + 1; }
+    return s;
+}
+
+string dumpNode(expr::Node n) {
+    match (n) {
+        expr::Bin    => { return "Bin(" + n.op + "," + dumpNode(n.l) + "," + dumpNode(n.r) + ")"; }
+        expr::Un     => { return "Un(" + n.op + "," + dumpNode(n.e) + ")"; }
+        expr::Field  => { return "Field(" + joinPath(n.path) + ")"; }
+        expr::Lit    => { return "Lit(" + dv(n.v) + ")"; }
+        expr::Bind   => { return "Bind(" + n.slot.toString() + ")"; }
+        expr::Call   => { return "Call(" + n.name + "," + dumpNode(n.recv) + ",[" + dumpArgs(n.args) + "])"; }
+        expr::Assign => { return "Assign(" + dumpNode(n.target) + "," + dumpNode(n.value) + ")"; }
+        else         => { return "Node"; }
+    }
+}
+
+string describe(expr::Expr<(User)=>bool> e) {
+    return "tree=" + dumpNode(e.tree) +
+           " binds=" + e.binds.length().toString() +
+           " site=" + e.siteId.toString();
+}
+
+User ada = User(true, "Ada", 30);
+User bob = User(false, "Bob", 70);
+
+// Arrival path 1 — a lambda literal as a call argument.
+console.writeln(describe((u) => u.active && u.name.like("A%")));
+
+// Arrival path 2 — a declared bind; then exercise the closure leg (.fn).
+expr::Expr<(User)=>bool> q = (u) => u.active && u.name.like("A%");
+console.writeln("fnAda=" + q.fn(ada).toString());
+console.writeln("fnBob=" + q.fn(bob).toString());

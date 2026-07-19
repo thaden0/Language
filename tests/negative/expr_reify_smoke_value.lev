@@ -1,0 +1,5 @@
+// LA-31 Stage 2 §8.3 — a lambda VALUE (not a literal) in an Expr position is E1 (R16).
+class User { int age; new User(int g) { age = g; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+(User)=>bool f = (u) => u.age > 0;
+console.writeln(useIt(f));
