@@ -111,7 +111,7 @@ with an inline pump/park BB graph, the fix is the contingent HARD packet
   --asyncify` build to de-risk engine-coverage complaints, record sizes/timings in the log,
   then **shelve it** — bring-up lane, never CI-required, never load-bearing (STOP
   condition 4). A stackless CPS transform is **not recommended, ever** — it reintroduces
-  the coloring §14 foreclosed (`techdesign-00-overview.md:181-186`).
+  the coloring §14 foreclosed (`../wasm-frontend/techdesign-00-overview.md:181-186`).
 
 ## 6. Verification (W-M2 gate)
 

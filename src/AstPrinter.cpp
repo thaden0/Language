@@ -287,6 +287,11 @@ struct Printer {
                     stmt(indent + 1, s->elseBranch.get());
                 }
                 break;
+            case StmtKind::ForSplice:
+                line(indent, "ForSplice " + sv(s->name) + " in " +
+                     exprStr(s->expr.get()));
+                stmt(indent + 1, s->thenBranch.get());
+                break;
             case StmtKind::While:
                 line(indent, "While (" + exprStr(s->expr.get()) + ")");
                 stmt(indent + 1, s->thenBranch.get());
@@ -722,6 +727,13 @@ struct SourcePrinter {
                 bracedBody(n, s->thenBranch.get());
                 if (s->elseBranch) { out += " else"; bracedBody(n, s->elseBranch.get()); }
                 out += "\n";
+                break;
+            case StmtKind::ForSplice:
+                // Template-only; the expanded program never contains one, so this
+                // renders only in a raw template dump.
+                ind(n); out += "$for " + sv(s->name) + " in " +
+                       srcExpr(s->expr.get()) + " :\n";
+                stmt(n + 1, s->thenBranch.get());
                 break;
             case StmtKind::While:
                 ind(n); out += "while (" + srcExpr(s->expr.get()) + ")";

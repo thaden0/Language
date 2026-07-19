@@ -1227,7 +1227,7 @@ void RuleEngine::evalAttrArgs(AttrUse& a, Symbol* attrClass) {
                                 std::to_string(i + 1) + ", no default)");
             return;
         }
-        values.push_back({std::string(f->name), v});
+        values.push_back({std::string(f->name), v, mapped[i] != nullptr});
     }
     attrValues_[&a] = std::move(values);
 }
@@ -1424,6 +1424,42 @@ Value RuleEngine::buildMetaValue(Stmt* decl) {
             if (a.resolved) attrs.arr->push_back(vstr(std::string(a.resolved->name)));
         v.obj->fields["attrs"] = attrs;
 
+        // Item A (LA-4, P4-I): the same attributes, but carrying their reified
+        // argument values (attrValues_, filled in walkAttrs before we run) — so
+        // `$for m in C.methods` can read `m.attr("op").argStr(0)`, not just the
+        // name. Positional, in attribute-field declaration order. Each AttrArg
+        // fills every primitive slot; the typed accessor picks the right one.
+        Symbol* attrCls = metaClassSymbol("Attr");
+        Symbol* argCls  = metaClassSymbol("AttrArg");
+        Value attributes; attributes.kind = VKind::Array;
+        attributes.arr = std::make_shared<std::vector<Value>>();
+        for (const AttrUse& a : decl->attrs) {
+            if (!a.resolved || !attrCls || !argCls) continue;
+            Value av; av.kind = VKind::Object;
+            av.obj = std::make_shared<Object>();
+            av.obj->cls = attrCls;
+            av.obj->fields["name"] = vstr(std::string(a.resolved->name));
+            Value args; args.kind = VKind::Array;
+            args.arr = std::make_shared<std::vector<Value>>();
+            auto it = attrValues_.find(&a);
+            if (it != attrValues_.end())
+                for (const auto& av : it->second) {
+                    const Value& fval = av.val;
+                    Value arg; arg.kind = VKind::Object;
+                    arg.obj = std::make_shared<Object>();
+                    arg.obj->cls = argCls;
+                    arg.obj->fields["s"] = vstr(fval.kind == VKind::String ? fval.s : std::string());
+                    arg.obj->fields["i"] = vint (fval.kind == VKind::Int   ? fval.i : 0);
+                    arg.obj->fields["b"] = vbool(fval.kind == VKind::Bool  ? fval.b : false);
+                    arg.obj->fields["f"] = vfloat(fval.kind == VKind::Float ? fval.f : 0.0);
+                    arg.obj->fields["present"] = vbool(av.provided);
+                    args.arr->push_back(arg);
+                }
+            av.obj->fields["args"] = args;
+            attributes.arr->push_back(av);
+        }
+        v.obj->fields["attributes"] = attributes;
+
         if (decl->callable) {
             v.obj->fields["returnType"] =
                 vstr(decl->type ? decl->type->canonical : std::string());
@@ -1501,7 +1537,7 @@ bool RuleEngine::tryMatch(const OwnedRule& r, const DeclInfo& di, Bindings& out,
                 b.val.kind = VKind::Object;
                 b.val.obj = std::make_shared<Object>();
                 b.val.obj->cls = found->resolved;
-                for (const auto& [fname, fval] : it->second) b.val.obj->fields[fname] = fval;
+                for (const auto& av : it->second) b.val.obj->fields[av.field] = av.val;
                 out[m.attrBind] = b;
             }
         }
@@ -1685,20 +1721,21 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
         bool err = false;
         if (act.anchor == AnchorKind::MemberOf) {
             if (!act.tmplMember) continue;
-            StmtPtr member = cloneStmt(act.tmplMember.get(), b, err);
-            if (err || !member) continue;
-            expandMacrosInClone(member);
+            // The template is one member, or a `$for m ... : <member>` that
+            // repeats a member per iteration (item J, member position).
+            std::vector<StmtPtr> members;
+            cloneStmtInto(act.tmplMember.get(), b, err, members);
+            if (err) continue;
+            expandMacrosInClone(members);
             Stmt* cls = boundClass(b, act.target);
             if (!cls) { sink_.error(act.span, "'" + std::string(act.target) +
                                     "' is not a bound class"); continue; }
-            injectMember(cls, std::move(member), r);
+            for (StmtPtr& member : members)
+                if (member) injectMember(cls, std::move(member), r);
 
         } else if (act.anchor == AnchorKind::CtorTop || act.anchor == AnchorKind::CtorBottom) {
             std::vector<StmtPtr> stmts;
-            for (const StmtPtr& t : act.tmplStmts) {
-                StmtPtr c = cloneStmt(t.get(), b, err);
-                if (c) stmts.push_back(std::move(c));
-            }
+            for (const StmtPtr& t : act.tmplStmts) cloneStmtInto(t.get(), b, err, stmts);
             if (err) continue;
             expandMacrosInClone(stmts);
             Stmt* cls = boundClass(b, act.target);
@@ -1722,7 +1759,7 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
             normalizeMemberBody(subj);
             std::vector<StmtPtr>& body = subj->memberBody->body;
             std::vector<StmtPtr> cloned;
-            for (const StmtPtr& t : act.tmplStmts) cloned.push_back(cloneStmt(t.get(), b, err));
+            for (const StmtPtr& t : act.tmplStmts) cloneStmtInto(t.get(), b, err, cloned);
             if (err) continue;
             expandMacrosInClone(cloned);
             if (act.anchor == AnchorKind::BodyTop) {
@@ -1820,10 +1857,7 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
             auto ns = std::make_unique<Stmt>(StmtKind::Namespace);
             ns->span = act.span;
             ns->name = act.target;
-            for (const StmtPtr& t : act.tmplStmts) {
-                StmtPtr c = cloneStmt(t.get(), b, err);
-                if (c) ns->body.push_back(std::move(c));
-            }
+            for (const StmtPtr& t : act.tmplStmts) cloneStmtInto(t.get(), b, err, ns->body);
             if (err) continue;
             expandMacrosInClone(ns->body);
             namespaceInjections_.push_back(std::move(ns));
@@ -1932,6 +1966,46 @@ void RuleEngine::cloneArgList(const std::vector<ExprPtr>& args, Bindings& b,
     }
 }
 
+// Statement-position `$for` (item J): the statement/decl/member analogue of
+// cloneArrayElements. A StmtKind::ForSplice repeats its body (thenBranch) once
+// per iterated item — same evaluation contract as the array form (iterator via
+// materializeBindings, M21 on a non-array, per-item extended bindings). A body
+// that is a `{ }` block splices its statements flat (so several statements can
+// repeat together); any other body clones as one. Non-ForSplice statements
+// clone 1:1.
+void RuleEngine::cloneStmtInto(const Stmt* s, Bindings& b, bool& err,
+                               std::vector<StmtPtr>& out) {
+    if (!s) return;
+    if (s->kind != StmtKind::ForSplice) {
+        StmtPtr c = cloneStmt(s, b, err);
+        if (c) out.push_back(std::move(c));
+        return;
+    }
+    std::unordered_map<std::string, Value> locals = materializeBindings(b);
+    std::string evErr; bool failed = false;
+    Value iter = evalComptimeAt(s->expr.get(), locals, evErr, failed);
+    if (failed) {
+        sink_.error(s->expr->span, "'$for' iterator evaluation failed: " + evErr);
+        err = true; return;
+    }
+    if (iter.kind != VKind::Array) {
+        sink_.error(s->expr->span, "'$for' iterator didn't yield an array (got '" +
+                    valueToString(iter) + "')");   // M21
+        err = true; return;
+    }
+    if (!iter.arr) return;                          // empty: nothing to repeat
+    for (const Value& item : *iter.arr) {
+        Bindings inner = b;                          // extend, not mutate
+        Binding ib; ib.hasVal = true; ib.val = item;
+        inner[s->name] = ib;
+        const Stmt* body = s->thenBranch.get();
+        if (body && body->kind == StmtKind::Block)
+            for (const StmtPtr& bs : body->body) cloneStmtInto(bs.get(), inner, err, out);
+        else
+            cloneStmtInto(body, inner, err, out);    // recursion also handles nested $for
+    }
+}
+
 void RuleEngine::cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings& b,
                                     bool& err, std::vector<ExprPtr>& out) {
     for (const ExprPtr& el : elems) {
@@ -2002,8 +2076,10 @@ void RuleEngine::cloneStmtListBody(const std::vector<StmtPtr>& in, Bindings& b,
             verbatimClone_ = saved;
             continue;
         }
-        StmtPtr c = cloneStmt(s.get(), b, err);
-        if (c) out.push_back(std::move(c));
+        // cloneStmtInto (not cloneStmt) so a statement-position `$for` nested in
+        // this block/body — e.g. inside a generated method — expands to one clone
+        // per item (item J). Plain statements still clone 1:1.
+        cloneStmtInto(s.get(), b, err, out);
     }
 }
 
@@ -2294,6 +2370,17 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
     if (isHole(out->name)) {
         auto it = b.find(out->name.substr(1));
         if (it != b.end() && it->second.declStmt) out->name = declRefName(it->second);
+        // A `$for`-bound meta.* value (member/namespace-position `$for` that
+        // GENERATES a decl named `$m`) splices its `name` field as the decl's
+        // name — the item-position analogue of cloneExpr's `this.$m` selector
+        // splice. Interned so the string_view outlives this binding.
+        else if (it != b.end() && it->second.hasVal &&
+                 it->second.val.kind == VKind::Object && it->second.val.obj) {
+            auto nit = it->second.val.obj->fields.find("name");
+            if (nit != it->second.val.obj->fields.end() &&
+                nit->second.kind == VKind::String)
+                out->name = own(nit->second.s);
+        }
     } else if (s->kind == StmtKind::Var && !verbatimClone_) {
         // Hygiene: rename a template-declared local at its declaration site.
         // Skipped under verbatimClone_ (§2.2): the original body keeps its own
@@ -2304,6 +2391,13 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
     if (isHole(out->selector.text)) {
         auto it = b.find(out->selector.text.substr(1));
         if (it != b.end() && it->second.declStmt) out->selector.text = declRefName(it->second);
+        else if (it != b.end() && it->second.hasVal &&
+                 it->second.val.kind == VKind::Object && it->second.val.obj) {
+            auto nit = it->second.val.obj->fields.find("name");
+            if (nit != it->second.val.obj->fields.end() &&
+                nit->second.kind == VKind::String)
+                out->selector.text = own(nit->second.s);
+        }
     }
     out->type = cloneType(s->type.get(), b, err);
     cloneParamList(s->params, b, err, out->params);   // $_params (§6), member side

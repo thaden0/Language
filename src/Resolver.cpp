@@ -2741,16 +2741,39 @@ namespace meta {
         throw RuntimeException("meta::parseStmts() is compile-time-only");
     }
     class Param  { string name; string type; }
+    // Attribute-value reflection (LA-4 item A, P4-I): a matched attribute already
+    // binds as an instance of its own class (`match @Column(c) ... $c.name`); this
+    // gives the SAME argument values to `$for`-iteration, where only names were
+    // visible before. `args` is positional (attribute-field declaration order,
+    // the same order `evalAttrArgs` fills); each slot carries every primitive
+    // form so the typed accessors need no per-arg type tag. Attribute fields are
+    // int/float/bool/string only (validateAttributeDecl), so four slots suffice.
+    class AttrArg { string s; int i; bool b; float f; bool present; }
+    class Attr {
+        string name;                               // the attribute's name, e.g. "Column"
+        Array<meta::AttrArg> args;                  // positional argument values
+        int    argCount()   => args.length();
+        // A defaulted (not explicitly written) argument reads as None, so
+        // `attr("Column")?.argStr(0) ?? field.name` falls back cleanly.
+        string? argStr(int i)   => args.at(i).present ? args.at(i).s : None;
+        int?    argInt(int i)   => args.at(i).present ? args.at(i).i : None;
+        bool?   argBool(int i)  => args.at(i).present ? args.at(i).b : None;
+        float?  argFloat(int i) => args.at(i).present ? args.at(i).f : None;
+    }
     class Field  {
         string name; string type;
         Array<string> attrs;                       // resolved attribute names
+        Array<meta::Attr> attributes;              // names + reified argument values
         bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
     }
     class Method {
         string name; string returnType;
         Array<meta::Param> params;
         Array<string> attrs;
+        Array<meta::Attr> attributes;              // names + reified argument values
         bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
         int arity() => params.length();
     }
     class Class {

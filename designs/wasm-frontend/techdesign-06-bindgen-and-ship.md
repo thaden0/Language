@@ -1,7 +1,48 @@
 # Track W — doc 6 of 6: rules bindgen, packaging & ship (W-M3 part 2, W-M4)
 
-**Status:** PROPOSED. **Depends on:** doc 05 (the bridge the bindgen generates stubs for).
-**HARD content:** none.
+**Status:** PARTIALLY BLOCKED (investigated 2026-07-19). **Depends on:** doc 05 (the
+bridge the bindgen generates stubs for). **HARD content:** none.
+
+**As-built investigation (2026-07-19) — §1 bindgen is not buildable as written; §2 is
+a live STOP. Details below; the metaprog prerequisites this doc assumed were built
+along the way.**
+
+- **The metaprog prerequisites landed** (`request-metaprog-attr-values.md` items A + B,
+  see that doc's status header): attribute-value reflection in `$for` iteration
+  (`meta::Field.attr("op")?.argStr(0)`) and statement/item/member-position `$for`
+  (`StmtKind::ForSplice`). Both green on `--run`/`--ir`/`--expand`, full meta suite
+  regression-clean. These are real wins for Atlantis's ORM — but they do **not**
+  unblock §1.
+- **§1's bindgen is blocked by three structural facts A+B cannot fix:**
+  1. **Declare-vs-generate collision.** To reflect the handle-wrapper's method
+     signatures the rule must match a class that *declares* them; generating
+     same-named marshaling methods back into that class collides (the member
+     checker rejects it — verified live), and no anchor injects into a class *other*
+     than the matched one. A faithful bindgen additionally needs **item E**
+     (inherited/interface member reflection, so signatures can live in an interface)
+     **and** cross-class member injection — both outside the sanctioned P4 roadmap,
+     which §9.2 of the P4 design deliberately bounds ("keep it bounded").
+  2. **The `__import` seam this doc targets was abandoned.** Doc 05 as-built (§9
+     item 1) dropped the one-wasm-import-per-method model for the reflective single
+     `lv.dom_call`; there is no per-method import declaration to *generate*. The
+     "stubs" are typed methods funneling to `std::sysHost{I,S,V}(op, …)`, whose
+     op-name string (`setAttr`→`"setAttribute"`) and return-native (V/S/I by return
+     type) vary per method and need conditional templating the bounded `$for`
+     doesn't express.
+  3. Consequently the §1 acceptance ("diff generated == hand stubs") cannot be met
+     without either the larger metaprog scope in (1) or a redesign of the DOM seam.
+     Neither is in this packet's charter; the hand-written `Dom` prelude surface
+     (doc 05, `Resolver.cpp` `kPreludeWasm`) remains the as-built reality.
+- **§2 packaging is a live STOP.** The "ship stdlib as files / per-target segment"
+  owner ruling is still OPEN (doc 00 §5, info.md §19 #18, proposal §398 — no decision
+  record anywhere). `kPreludeWasm` exists (`Resolver.cpp`) but is concatenated
+  unconditionally; per the STOP condition we do **not** improvise a `parsePrelude()`
+  seam. W-M4 shipping cannot close until the owner rules.
+- **§3/§4 (size passes, the Atlantis demo) remain doable on dev builds** against the
+  existing hand-written stubs — deferred, not blocked.
+
+The rest of this doc is the original PROPOSED plan, retained for when the metaprog
+scope in (1) and the packaging ruling in §2 land.
 
 ## 1. The bindgen — `@extern` via the rules engine (W-M3)
 

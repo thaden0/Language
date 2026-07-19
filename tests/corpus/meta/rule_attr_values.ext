@@ -1,0 +1,30 @@
+// LA-4 item A (attribute-value reflection): a `$for` over C.fields can now read
+// a per-field attribute's ARGUMENT values, not just its name (meta::Field.attr).
+// This is the ORM forcing function (request-metaprog-attr-values.md §1(A)):
+// enterprise columns are snake_case, fields are camelCase — `@Column("full_name")`
+// overrides the column name; a bare `@Column` falls back to the field name (a
+// defaulted arg reads as None, so `?.argStr(0) ?? f.name` picks the fallback).
+namespace Orm {
+    attribute Table  { string name; }
+    attribute Column { string col = ""; }
+    rule buildSchema {
+        match @Table(t) on class C
+        inject `Array<string> schema() =>
+            [ $t.name,
+              $for c in C.fields.where((x) => x.hasAttr("Column"))
+                       .map((f) => f.attr("Column")?.argStr(0) ?? f.name) : $c ];`
+               at member of C
+    }
+}
+uses Orm;
+
+@Table("users")
+class User {
+    @Column("full_name") string name;
+    @Column("created_at") int   createdAt;
+    @Column               int   id;          // bare: falls back to field name
+    int internalCounter;                       // not a column
+}
+
+User u = User();
+console.writeln(u.schema().joinToString(","));
