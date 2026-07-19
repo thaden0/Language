@@ -45,7 +45,7 @@ self-host gate G5 this document keys on).
 | # | Deferral | Decided at (exact ref) | Stated target / trigger |
 |---|---|---|---|
 | **D-A** | Monorepo / workspace orchestration (`members`/`targets`) | `designs/requests/accepted/proposal-package-manager.md:434` — "**Monorepo/workspace orchestration** (v1) \| Deferred; the manifest leaves room (a future `members`/`targets` field) without committing now (mirrors Doc 3 §8 Q6)." Mirror: `designs/complete/proposal-project-system.md:554–555` (§8 Q6: "out of scope for v1; the manifest schema leaves room (a `[targets]`-style extension)"). | No fixed date. Trigger: the first real multi-target consumer — earliest realistic one is this repo itself once the compiler is rewritten in Leviathan (post-G5, ~2027-Q1/Q2). |
-| **D-B** | External deps / registry lockfile — the registry-facing remainder | `designs/complete/proposal-project-system.md:548–550` (§8 Q4): "**`deps` / external packages:** deferred (§3.6). When it lands: named specifiers + a lockfile + optional registry, **never** raw URLs (Deno's proven mistake, §3.2). Acyclic package graph, hard error on cycle (§4.5)." Rationale at §3.6 (`:179–184`). | The *mechanism* half (VCS-path specifiers + `trident.lock` + MVS) already landed at **GT3, 2026-07-06**. The remainder — named (index-resolved) specifiers, ecosystem-scale lock guarantees, the cycle-policy ruling — rides D-D / P2.4, post-self-host. |
+| **D-B** | External deps / registry lockfile — the registry-facing remainder | `designs/complete/proposal-project-system.md:548–550` (§8 Q4): "**`deps` / external packages:** deferred (§3.6). When it lands: named specifiers + a lockfile + optional registry, **never** raw URLs (Deno's proven mistake, §3.2). Acyclic package graph, hard error on cycle (§4.5)." Rationale at §3.6 (`:179–184`). | VCS-path specifiers + `trident.lock` + MVS landed at **GT3, 2026-07-06**; exact-name sugar and trusted provenance landed at GT5/GT6 on 2026-07-19; the acyclic-graph hard error landed at **G-CYC1, 2026-07-19**. Only ecosystem-scale trust/discovery remains trigger-gated. |
 | **D-C** | Publishing & optional services (P2.3: `publish`/`yank` + caching proxy + thin index) | `designs/complete/techdesign-package-manager.md:195` (§2 roadmap, P2.3 row): gate GT5, originally targeted "**2027-02-15 (post self-host; explicitly deferred, non-blocking)**." Detail at §6 (`:506–512`), seams at §9 (`:574–583`). | **Done 2026-07-19** by explicit owner implementation directive: GT5 green, services remain optional (§10). |
 | **D-D** | Registry discoverability (the searchable thin index) | `designs/requests/accepted/proposal-package-manager.md:624–626` (§11 open Q2): "Do we ever need the searchable name index, or do VCS paths suffice forever? **Defer (Phase 4)**; Deno's reversal says *some* discoverability helps, but don't over-build early (§3.1)." Also §8.6 Phase 4 (`:503–505`): "added only when the ecosystem is big enough to want it." | Phase 4 / GT5 window at the earliest (post-self-host), and even then **measured** — built only when ecosystem signals justify it (§6.3). |
 
@@ -98,12 +98,11 @@ text:
   itself as stage-3 with identical output, full corpus green under the self-built
   compiler — "start ~2026-11; **self-hosted 2027-01-15**"
   (`designs/complete/techdesign-portable-backend.md:143`).
-- **The implemented MVS is cycle-tolerant.** `selectVersions()`
-  (`tools/trident/mvs.cpp:40–96`) is a worklist BFS that converges because a module's
-  selected version only ever increases; a require-graph cycle terminates naturally and
-  produces a valid build list. There is **no acyclicity hard-error** — which Doc 3 §4.5
-  (`designs/complete/proposal-project-system.md:278–279`) said the package graph would have. This
-  conflict is real and is resolved in D-B (§4.3, problem P-B3).
+- **External require graphs are now acyclic by enforcement.** MVS still converges and
+  selects exactly as before, then a deterministic post-convergence DFS rejects a cycle
+  with its complete chain. Lock-verbatim reads apply the same check before materialization.
+  G-CYC1 landed 2026-07-19
+  (`designs/complete/techdesign-trident-cycle-policy.md`); P-B3 is closed.
 
 ---
 
@@ -255,10 +254,10 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
    *shared* tamper-evident record. The local baseline is P2.2 (GT4, next step, not
    deferred); the at-scale form (Merkle transparency log) is P2.4, explicitly
    "ecosystem-scale-gated" (`designs/complete/techdesign-package-manager.md:196`).
-3. **The cycle-policy ruling** — Q4/§4.5 demand "acyclic package graph, hard error on
-   cycle"; the implemented MVS is deliberately cycle-tolerant (§1). ~~Unresolved
-   conflict.~~ **Resolved 2026-07-18: owner upheld the literal text (§10);
-   `designs/techdesign-trident-cycle-policy.md` implements.**
+3. **The cycle-policy ruling and enforcement are discharged** — the owner upheld
+   Q4/§4.5's literal "acyclic package graph, hard error on cycle" text on 2026-07-18;
+   deterministic post-MVS and lock-verbatim enforcement landed at G-CYC1 on 2026-07-19
+   (`designs/complete/techdesign-trident-cycle-policy.md`).
 
 ### 4.2 Why the (remaining) deferral is legitimate
 
@@ -269,8 +268,8 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
 - **The Deno lesson cuts both ways** (`designs/requests/accepted/proposal-package-manager.md:98–104`): pure
   URL-imports-no-manager failed, but so does building JSR before anyone publishes.
   Named specifiers need an index; the index is deliberately Phase 4 (D-D).
-- **The cycle ruling has no forcing function yet.** No real dep graph exists that could
-  contain a cycle; deciding under G5 time pressure would be policy-by-accident.
+- **The cycle-policy risk is closed.** The ruling and enforcement landed before the
+  ecosystem/self-host window, so no future consumer inherits an ambiguous graph contract.
 
 ### 4.3 Resolution path (when the triggers fire)
 
@@ -297,8 +296,8 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
    over `BuildListEntry.requires_` edges erroring with the named chain — either ruling
    is cheap; only the *decision* is owner-level. **[RULED 2026-07-18 — §10: the owner
    upheld the literal §4.5 text (hard error). This step's recommendation is superseded;
-   `designs/techdesign-trident-cycle-policy.md` (gate G-CYC1) is the implementation
-   design.]**
+   `designs/complete/techdesign-trident-cycle-policy.md` records the implementation and
+   green G-CYC1 gate.]**
 4. **At-scale lock integrity** (transparency log) stays P2.4, as-needed — do not
    schedule.
 
@@ -308,7 +307,7 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
 |---|---|---|
 | P-B1 | **Lockfile/MVS correctness drift while the remainder waits** — e.g. the P2.1d structural check deliberately does **not** compare hashes (that is GT4's job, per its log); until GT4 lands, a tampered store entry is undetected. | Already sequenced: GT4 (2026-11-30) closes it, pre-self-host. This tracker's only job is to keep GT4 *ahead of* every D-item (§2.2 rule) — verified at each gate. |
 | P-B2 | **Canonicalization freeze** — named-specifier and index work must never touch the content-hash canonicalization (fixed at P2.1b "and never changed thereafter"); a change reshuffles every recorded hash. | Restate H-3 of the P2 design in the promoted doc; any canonicalization edit is a STOP (§9). |
-| P-B3 | **The Doc 3 §4.5 acyclicity conflict** silently resolving itself by whoever touches `mvs.cpp` next. | §4.3 step 3: an explicit owner ruling, recorded in §10 of this file, before any cycle-related code change. **Ruling made 2026-07-18 (§10); closes when G-CYC1 is logged green.** |
+| P-B3 | **The Doc 3 §4.5 acyclicity conflict** silently resolving itself by whoever touches `mvs.cpp` next. | **Closed 2026-07-19.** Owner ruling recorded 2026-07-18; deterministic post-MVS + lock-verbatim enforcement landed at G-CYC1 (§10; `designs/complete/techdesign-trident-cycle-policy.md`). |
 | P-B4 | **Major-identity subtleties repeat** — the 0.x/1.x identity-bucket bug (fixed in the P2 log, 2026-07-06) shows identity encoding is easy to get subtly wrong; named specifiers add a second name→identity mapping layer. | The index maps *names to paths only* — never to versions or majors — so identity stays exactly `(vcs-path, major)` with one implementation (`provider.hpp`). Test the sugar by asserting the written manifest is byte-identical to the path-spelled equivalent. |
 
 ---
@@ -470,7 +469,7 @@ Problems that exist *because* the items wait, independent of any one item:
 | When | What | Status/gate |
 |---|---|---|
 | now → ~~2026-11-30~~ **landed 2026-07-15** | **P2.2 / GT4** (checksum DB, `vendor`, `audit`) — the next actual step; prerequisite to D-B/D-C; **not deferred**. | **Done** — landed 2026-07-15 ahead of target (`designs/complete/techdesign-package-manager.md` §2/§10; this file §10). |
-| now-ish (no code) | **Owner ruling on the cycle policy** (§4.3.3) — a decision, not an implementation. | **Made 2026-07-18 (§10): literal §4.5 upheld — hard error on require-cycle.** Promoted to `designs/techdesign-trident-cycle-policy.md` (gate G-CYC1); implementation pending, must land before the ~2026-11 freeze. |
+| **landed 2026-07-19** | **Owner ruling + enforcement of the cycle policy** (§4.3.3). | **Done.** Literal §4.5 upheld 2026-07-18; G-CYC1 landed and archived at `designs/complete/techdesign-trident-cycle-policy.md` before the ~2026-11 freeze. |
 | ~2026-11 → **2027-01-15** | **Self-host window (portable backend P5 → G5).** Remaining Trident deferrals freeze hard — no new scope may compete with the bootstrap. | G5 per `designs/complete/techdesign-portable-backend.md:143`; landed D-C surfaces remain stable. |
 | **2027-01-15** | **G5 lands → this tracker's review trigger.** Re-read D-A, D-B, and D-D against real consumers/metrics. | Append review to §10. |
 | **2026-07-19 (pulled forward)** | **D-C / P2.3 / GT5** — publish, yank, proxy, exact-name index wiring; optionality CI proof. | **Done** by explicit owner directive; gate evidence in the completed package design §10. |
@@ -586,7 +585,7 @@ included); the Go module-graph-tolerance precedent considered and knowingly reje
 tracker's §4.3.3 *recommendation* (cycle-tolerant + `why`/`audit` surfacing) is
 **superseded**; the proposal text stands as written (no source-doc amendment needed);
 §4.1 item 3, §4.4 P-B3, and §8 annotated accordingly. Promoted design:
-`designs/techdesign-trident-cycle-policy.md` — shared post-convergence DFS in
+`designs/complete/techdesign-trident-cycle-policy.md` — shared post-convergence DFS in
 `selectVersions()` plus a defensive lock-verbatim check in `resolveVcsDeps()`, gate
 **G-CYC1**, scoped to the external graph only (Local-kind deps and the namespace layer
 explicitly fenced out), must land before the ~2026-11 self-host freeze. **STOP (j) is
@@ -610,3 +609,19 @@ install-time code execution was introduced. D-C is therefore complete. D-A, D-B'
 ecosystem-scale/cycle remainder, and D-D's broader searchable discovery stay in this
 tracker under their existing triggers; the exact-name index shipped for GT5 does not by
 itself authorize registry search/ranking scope.
+
+**2026-07-19 — G-CYC1 landed; P-B3 closed.** The external VCS require graph is now
+unconditionally acyclic: a shared deterministic iterative DFS validates the final MVS
+build list after convergence and validates lock-verbatim reconstruction before any
+materialization. Errors name the complete selected-version chain; there is no tolerance
+flag and no change to MVS selection, ModuleId identity, local dependencies, `why`/`audit`,
+the build-plan contract, or `src/`. `mvstests` is 55/55 green across every policy row;
+the merged Trident integration group is 6/6 green, including generated-lock tamper,
+actionable repair, vendor, proxy, and publish-policy interactions; the separation grep
+still returns only its two documented benign matches. Full-matrix validation retained
+only the two baseline exceptions already proven by the immediately preceding master
+design (frozen-ELF field-COW debt and an unset aarch64 sysroot); the QEMU lane passes
+with `LVRT_SYSROOT=/usr/aarch64-linux-gnu`, and the active LLVM churn twin is green.
+Authoritative design and detailed evidence:
+`designs/complete/techdesign-trident-cycle-policy.md`. P-B3 is closed; D-A, D-D, and
+D-B's ecosystem-scale remainder stay in this tracker.

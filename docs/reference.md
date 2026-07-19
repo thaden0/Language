@@ -132,9 +132,11 @@ operand (`c == 'a'`), a `char` match arm, or a return into `char`. `char c = 'a'
 is a char; `var s = 'a';` stays `string`; double-quoted literals are never char.
 Escapes work in char literals (`'\n'`, `'\x41'`). A single-quoted literal
 compared against a *string* keeps string typing (back-compat, §6.1 char note).
-Call-argument position is **not** yet a target-typing site (a `char`-typed value
-binds to a `char` parameter, but a bare `'x'` argument stays `string` — deferred,
-`designs/techdesign-track03-type-surface.md`).
+Call-argument position is a target-typing site too: a bare `'x'` argument to a
+`char` parameter binds as `char`, same as a `char`-typed value. Where an
+overload set has both `f(char)` and `f(string)`, a bare literal argument
+always prefers `f(string)` (back-compat), regardless of which is declared
+first — `designs/complete/techdesign-track03-type-surface.md`.
 ```
 ::  :  ;  ,  .  ..  (  )  {  }  [  ]
 =>  =  ==  !=  !  <  >  <=  >=  +  -  *  /  %
@@ -3013,7 +3015,9 @@ maximum of every declared minimum for one module identity), writes the determini
 canonical source hashes to the companion lock (`trident.toml` → `trident.lock`), and stores source
 under `$TRIDENT_HOME/store/<sha256>/` (default `~/.trident/store`). A present consistent lock is
 used verbatim; editing dependency requirements without re-locking is a loud error. The checksum DB
-is an append-only hash-chained log, so a moved tag or changed source is rejected.
+is an append-only hash-chained log, so a moved tag or changed source is rejected. The resolved
+external require graph must be acyclic: both fresh MVS and lock-verbatim resolution reject a cycle
+before materialization and name its complete selected-version chain.
 
 `trident publish` validates a clean, fully tracked package source set, creates (or idempotently
 confirms) its immutable tag, and records the hash. `trident yank` appends policy metadata: fresh

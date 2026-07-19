@@ -27,6 +27,14 @@ struct MvsResult {
     std::string err;
 };
 
+// Return "" when `entries`' recorded require graph is acyclic; otherwise
+// return the first cycle as a rendered chain such as
+// "path@1.2.0 -> other@1.0.0 -> path@1.2.0". Deterministic for a given
+// build list: entries are visited in their existing (ModuleId-sorted) order
+// and requires in recorded order. An edge whose ModuleId has no entry is a
+// leaf, not a cycle.
+std::string findRequireCycle(const std::vector<BuildListEntry>& entries);
+
 // Run MVS over the require graph rooted at `rootRequires`, reading each
 // visited module's own `requires` via `provider.manifestOf()` (never
 // `materialize()` — H-2: fetch just the manifest to walk the graph; only the
