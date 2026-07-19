@@ -30,9 +30,9 @@ namespace harpoon {
     }
 
     // Right-pads `label` with dots up to a fixed column so status words
-    // align, the same fixed-width discipline `docs/footguns.md` recommends
-    // for in-place repaint (unrelated bug, same idiom: never let variable-
-    // width content leave a ragged column).
+    // align — the same fixed-width-repaint idiom used elsewhere in the repo
+    // (unrelated to this: never let variable-width content leave a ragged
+    // column).
     string __padLabel(string label) {
         int width = 40;
         if (label.length() + 2 >= width) return label + " ";

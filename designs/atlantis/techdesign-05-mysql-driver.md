@@ -678,7 +678,7 @@ pool churn (50 sequential acquires over max 5) → drain, loop exits clean (+0B 
     env; §7.2 second CI job drops in unchanged.
   - **Live Docker acceptance (§7.2)** not run — no Docker/MySQL available here; the
     loopback fake server stands in on all three engines.
-  - **Two compiler defects found + filed** (`known_bugs_1.md`, `docs/footguns.md`):
+  - **Two compiler defects found + filed** (`known_bugs_1.md` #82, `known_bugs_2.md` #83):
     **#82** cross-package nested-namespace `const int` reads as 0 when fully-qualified
     (silent); **#83** implementing a dependency's interface requires bare (uses-imported)
     member types and `uses` must appear in every package source file. Both worked around

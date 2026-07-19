@@ -112,8 +112,9 @@ over the example's own directory — deterministic because the corpus runs with 
   a golden-visible change), inspector.
 - `sonar/tests/runtests.sh`: picks up `tests/dom*` + the new example by its existing globs; no
   runner changes expected (verified at M1).
-- `docs/footguns.md`: close the #4 row (D03); add none (the suite introduces no new footguns — a
-  claim the composition corpus keeps honest).
+- No new footguns introduced (the suite adds none — a claim the composition corpus keeps honest);
+  bug #4's workaround is retired by D03, and there is no separate footgun registry to update
+  (`docs/footguns.md` was retired 2026-07-19).
 
 ## 6. Milestones
 

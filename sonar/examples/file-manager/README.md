@@ -12,4 +12,4 @@ SONAR_SCRIPT=1 trident run   # selects files with Down, snapshots the split view
 A production build would back the `ListView` with a lazy directory source over
 the `File`/`sys` natives; this example uses an in-memory listing to stay
 hermetic and differential. Mutable fields are padded to a fixed width
-(see `sonar-bugs.md #4`).
+(see Sonar bug #4).

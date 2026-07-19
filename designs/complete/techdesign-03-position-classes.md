@@ -9,7 +9,7 @@ F5 weak fields. Probes: D-P1, D-P2, D-P9.
 **Gates:** G-D2. **Difficulty:** L. **Risk:** MED/HIGH — this track touches landed paint/resolve
 paths; the full differential re-run is part of its definition of done, not an afterthought.
 
-Implements anchor D-C5 (Position), D-C6 (classes). Owns the `sonar-bugs.md #4` fix (§6).
+Implements anchor D-C5 (Position), D-C6 (classes). Owns the Sonar bug #4 fix (§6).
 
 ---
 
@@ -152,7 +152,7 @@ them); no theme.lev changes. Built-ins gain nothing (no built-in class keys v1).
 arranges at `__resolveAbsolute`. Modal/dialog semantics stay T05's (no outside-dismiss), per the
 inventory's deliberate Menu/Modal distinction.
 
-## 6. The leaf-paint fix (`sonar-bugs.md #4` — owned here)
+## 6. The leaf-paint fix (Sonar bug #4 — owned here)
 
 **Ruling:** a leaf that repaints must first clear its box. `Styleable.paintBackground` becomes
 unconditional: fill `box` with `' '` at the resolved `"background"` style (a `Default/Default/0`
@@ -166,8 +166,9 @@ clear its whole box to the resolved background before painting content").
 **Definition of done for this change alone:** the ENTIRE landed suite re-runs on all four engines
 (`sonar/tests/**` + examples under `SONAR_SCRIPT=1`); goldens that legitimately change (snapshots
 that previously showed inherited stale/parent pixels inside a leaf box) regenerate via `regen.sh`
-with each diff reviewed and the file-manager fixed-width workaround retired; `docs/footguns.md`'s #4
-debt row closes.
+with each diff reviewed and the file-manager fixed-width workaround retired; bug #4's workaround
+is fully retired (no separate footgun registry to close a row in — `docs/footguns.md` was retired
+2026-07-19).
 
 ## 7. Milestones
 

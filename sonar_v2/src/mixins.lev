@@ -120,7 +120,7 @@ namespace Sonar {
             // within the leaf's own box; if this fill is skipped (as it was
             // under the empty/default theme, whose resolved background bg is
             // Color::Default) the previous, longer content survives underneath
-            // the new one (sonar-bugs.md #4). Fill unconditionally: under the
+            // the new one (Sonar bug #4). Fill unconditionally: under the
             // default theme the resolved style is Default/Default — a plain
             // space, identical to the App root's own full-surface clear — and
             // under a concrete theme it is that theme's background. Either way

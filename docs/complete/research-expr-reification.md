@@ -604,6 +604,7 @@ the union return type are all landed capabilities — §3.5.)
   ([Ast.hpp:483](../src/Ast.hpp#L483)), closure lowering
   ([Lower.cpp:1723](../src/Lower.cpp#L1723)), prelude string methods
   ([Resolver.cpp:176](../src/Resolver.cpp#L176)).
-- Footguns to read at kickoff: `docs/footguns.md`; memory entries *Prelude backend
-  gotchas*, *this-receiver lambda bug*, *emit-C++ by-name reachability*, *Generics are
-  erased*, *X64Gen frozen*, *No deferrals in designs*.
+- Footguns to read at kickoff: `known_bugs_1.md`/`known_bugs_2.md` (`docs/footguns.md`
+  was retired 2026-07-19); memory entries *Prelude backend gotchas*, *this-receiver
+  lambda bug*, *emit-C++ by-name reachability*, *Generics are erased*, *X64Gen frozen*,
+  *No deferrals in designs*.

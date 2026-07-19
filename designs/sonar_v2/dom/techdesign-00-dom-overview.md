@@ -24,7 +24,7 @@ missing `<textarea>` component — so a web developer's muscle memory writes wor
 The DOM module is **a layer, not a rewrite**. T01–T11 are landed, validated, and byte-identical
 across engines; nothing here reopens them. New code lives in `sonar/src/dom/**` plus one new
 component file; the only edits to landed files are three additive `Component` fields, one additive
-`Styleable.resolve` extension, and the sanctioned `sonar-bugs.md #4` paint fix — all flagged in the
+`Styleable.resolve` extension, and the sanctioned Sonar bug #4 paint fix — all flagged in the
 anchor log (§10) with the T05/T07/T11 additive-extension precedent.
 
 ## 2. The target feel, line by line (fidelity contract)
@@ -240,7 +240,7 @@ ships differential oracle/IR/LLVM goldens with ONE shared `.expected`; emit-C++ 
   across early returns; namespace-global writes only via bare-assignment free functions
   (`__setCurrentDocument` mirrors `__setCurrentApp`); structs snapshot `this` in closures — anything
   a closure observes is a class.
-- **sonar-bugs.md #4** (stale glyphs on shrink) is **owned and fixed by D03** — bindings shrink
+- **Sonar bug #4** (stale glyphs on shrink) is **owned and fixed by D03** — bindings shrink
   strings constantly, so the DOM suite cannot ship on the workaround. The fix (unconditional leaf
   background clear, opt-out flag) runs the full differential suite + golden regen (D03 §6).
 - **P0.3 stop-the-line scope check**: #74's construct (`Array<Struct>.add` loops) appears nowhere in

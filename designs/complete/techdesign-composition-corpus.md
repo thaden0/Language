@@ -132,6 +132,11 @@ bug.md entry. Fixing bug #N ends with grepping the registry for #N and un-workar
 the listed debt sites — reverting a workaround for a now-fixed bug is not "reverting
 validated work"; the registry row is what makes that distinction auditable.
 
+**Retired 2026-07-19:** `docs/footguns.md` was merged into `known_bugs_1.md`/
+`known_bugs_2.md` — each open bug's own entry now carries its Workaround and Debt sites
+inline, so there is no separate registry file to read at kickoff or grep on fix. Track
+kickoff now means reading the two `known_bugs_*.md` files directly.
+
 ## 2. Corpus design
 
 **Location:** `tests/corpus/composition/{fnvalues,aggregates,names,generics}/` — one
@@ -153,7 +158,9 @@ and no finding here may gate on it.
 
 **Fix definition-of-done** (recorded here, enforced by the red runner): a bug.md #N fix
 lands together with (a) its red→green promotion, (b) removal of its bug.md entry (existing
-convention), and (c) the footguns.md debt sweep for #N.
+convention, which since 2026-07-19 also removes that entry's inline Workaround/Debt-sites
+note — see the P-3 retirement above), and (c, pre-2026-07-19) the footguns.md debt sweep
+for #N.
 
 ## 3. The matrices
 
@@ -198,8 +205,8 @@ instantiation (red: #54); ctor type-arg inference through nested call / fluent c
 
 **Ownership (disjoint-files rule):** this track owns `tests/corpus/composition/**`,
 `tests/run_red_corpus.sh`, one delimited `add_test` block in `CMakeLists.txt`,
-`docs/footguns.md`, and bug.md's standings/marker text. It does not touch `src/`,
-`packages/`, or any other track's corpus.
+`docs/footguns.md` (retired 2026-07-19 — see the P-3 note above), and bug.md's
+standings/marker text. It does not touch `src/`, `packages/`, or any other track's corpus.
 
 ## 5. Non-goals
 

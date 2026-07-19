@@ -1,4 +1,4 @@
-// Regression: sonar-bugs.md #4 — a leaf's in-place repaint to SHORTER content
+// Regression: Sonar bug #4 — a leaf's in-place repaint to SHORTER content
 // must clear its whole box, leaving no stale glyphs from the previous, longer
 // content. A damage-driven repaint of a lone dirty leaf runs only
 // paintBackground+paintContent within the leaf's own box (the App root's

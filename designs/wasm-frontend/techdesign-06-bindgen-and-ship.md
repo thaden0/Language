@@ -132,5 +132,6 @@ floor.
   status honestly); add the encoding ruling outcome (doc 05 §7).
 - `docs/reference.md`: backend/target matrix row for `wasm32` (covered subset, gated set,
   diagnostics); the `@extern` surface.
-- `docs/footguns.md`: the marshaler header-gate footgun (`payload-16` on literal
-  strings/dense records) and the DOM↔closure cycle shape.
+- `known_bugs_1.md`/`known_bugs_2.md`: the marshaler header-gate footgun (`payload-16`
+  on literal strings/dense records) and the DOM↔closure cycle shape, if either is a
+  filed compiler defect (`docs/footguns.md` was retired 2026-07-19).

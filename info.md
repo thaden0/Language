@@ -2133,11 +2133,13 @@ implemented and share this same front end.
     side, URL-string parsing, redirect following, and request timeouts are deferred to the
     framework era; v1 is one-connection-per-request with explicit host/port/path. Pipelining on
     the server is also unbuilt (keep-alive is buffered-but-serial).
-18. **Ship stdlib as files** — the prelude roughly doubled with Track 09 and is now four
-    concatenated raw-string segments (`kPreludeCore/Std/Rest/Web`, Resolver.cpp). Moving the
-    stdlib to shipped `.lev` files is the better long-term answer but changes the compiler's
-    distribution story — wants an owner ruling. (Prelude compile-time cost is the trigger to
-    watch.)
+18. ~~**Ship stdlib as files** — the prelude roughly doubled with Track 09 and is now four
+    concatenated raw-string segments (`kPreludeCore/Std/Rest/Web`, Resolver.cpp).~~ **Resolved
+    (owner ruling):** the stdlib ships as `.lev` files, not per-target in-binary segments.
+    Moving the prelude to shipped source files is the goal — `parsePrelude()` gains a real
+    file-reading seam; per-target selection (e.g. a wasm-only `kPreludeWasm`) is a packaging
+    detail *within* that model (which files get shipped/loaded per target), not an alternative
+    to it. See §18.
 
 ---
 

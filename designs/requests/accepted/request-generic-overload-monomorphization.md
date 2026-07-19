@@ -96,8 +96,9 @@ an erased, dynamically-dispatched language behave like a monomorphizing one at t
 
 ## 4. Known warnings
 
-- **Bug association:** closes **#54** (`known_bugs_2.md`), P1. `docs/footguns.md` line ~54 records the
-  current workaround as a footgun — remove that row on landing.
+- **Bug association:** closes **#54** (`known_bugs_2.md`), P1. If #54 is still open when this
+  lands, its known_bugs entry (which records the current workaround inline — `docs/footguns.md`
+  was retired 2026-07-19) gets deleted per the standard fix definition-of-done.
 - **Overload-set selection at collection time:** the checker must record the *unresolved* overload
   set at the demand site and re-run selection **inside each specialized copy**, not memoize the
   definition-site (wrong) pick. This is the crux of the fix — the current bug is precisely a premature
@@ -150,7 +151,7 @@ out at §7.1/§7.6, i.e. worse on both axes.
 
 ## 7. Interim fallback (in use)
 
-Hand-written monomorphic per-type overloads instead of one generic helper — the workaround #54 and
-`docs/footguns.md` already record (Track 03's `__atlEnc`/`__atlDec` families ship this way,
+Hand-written monomorphic per-type overloads instead of one generic helper — the workaround #54's
+known_bugs entry already records (Track 03's `__atlEnc`/`__atlDec` families ship this way,
 `packages/atlantis/src/serialization/*`). Deletable on landing: once the trigger extends, the generic
 helper can replace the per-type ladder with no source change beyond removing the duplicates.
