@@ -4,9 +4,9 @@
 substring, and doc section is specified below; there are **zero decisions to make**.
 **Depends on:** Stages 1–2 landed. **Owns:** `tests/corpus/expr_reify_*`,
 `tests/negative/expr_reify_*`, `tests/run_expr_reify_error.sh`, CMake rows,
-`docs/reference.md` §expr, `docs/footguns.md` additions, the M2 smoke, and the
+`docs/reference.md` §expr, the M2 smoke, and the
 completion file moves. **This stage touches NOTHING in `src/`** — a compiler defect
-found here is filed in `/bug.md` with a minimal repro, never patched.
+found here is filed in `known_bugs_1.md`/`known_bugs_2.md` with a minimal repro, never patched.
 **Window:** 2026-07-23 → 2026-07-25.
 
 ## STOP-AND-ESCALATE PROTOCOL
@@ -162,13 +162,16 @@ consumes the landed surface as-is.
   `siteId` determinism, `like`/`ilike` full semantics (doc 01 §2.2–2.3 pins including
   the trailing-`\` refinement), and the R1 note that `--expand` is now post-check with
   `--ast-after-rules` as the pre-check view.
-- **`docs/footguns.md`** — add rows: (a) `--expand` now runs the Checker — ill-typed
-  programs fail it; use `--ast-after-rules` to debug ill-typed expansions; (b) an
-  Array (or any non-DbValue) capture's binds slot holds `None` — consumers keep their
-  own reference; (c) `Field` paths carry no parameter marker — multi-param reified
+- **`docs/reference.md` §expr** — document these behavioral facts alongside the rest
+  of the section (there is no separate footgun registry — `docs/footguns.md` was
+  retired 2026-07-19): (a) `--expand` now runs the Checker — ill-typed programs fail
+  it; use `--ast-after-rules` to debug ill-typed expansions; (b) an Array (or any
+  non-DbValue) capture's binds slot holds `None` — consumers keep their own
+  reference; (c) `Field` paths carry no parameter marker — multi-param reified
   lambdas with same-named fields need consumer care.
-- If any new footgun was *discovered* during Stages 1–3, its row goes in too (each
-  stage's implementation log is the source).
+- If any new *compiler defect* was discovered during Stages 1–3 (as opposed to the
+  above intentional behavior), it gets a `known_bugs_1.md`/`known_bugs_2.md` entry
+  (each stage's implementation log is the source).
 
 ## 8. Stage-3 acceptance = the whole-feature acceptance (doc 00 §6)
 

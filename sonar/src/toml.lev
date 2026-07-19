@@ -51,7 +51,8 @@ namespace Sonar {
 
     // A validated carrier int (-1 == Default, or 0..15) back to a Color. The
     // guard uses an else-arm, not an early return, so the `Color?` narrowing
-    // survives (footguns.md "narrowing doesn't survive an early return").
+    // survives — flow narrowing is branch-scoped and doesn't survive an early
+    // return/continue.
     Color colorFromCode(int code) {
         Color? c = Color::fromCode(code);
         if (c == None) { return Color::Default; }

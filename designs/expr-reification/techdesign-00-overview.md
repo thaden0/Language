@@ -10,7 +10,9 @@ stage documents. **On full resolution, move this entire directory to
 `designs/complete/expr-reification/` and move the request to
 `designs/requests/accepted/`** (see §7 Completion Protocol).
 
-Read `docs/footguns.md` at kickoff of every stage (quality-gates policy).
+Read `known_bugs_1.md`/`known_bugs_2.md` at kickoff of every stage (quality-gates
+policy) — `docs/footguns.md` was retired 2026-07-19; each bug's Workaround/Debt-sites
+note now lives inline in its known_bugs entry.
 
 ---
 
@@ -189,7 +191,7 @@ ownership** — no file is touched by two stages.
 |---|---|---|---|---|---|
 | S1 prelude surface | `techdesign-01-prelude.md` | **Sonnet** (stop-and-escalate) | `src/Resolver.cpp` (prelude string segments only) | `tests/corpus/expr_prelude_*`, `tests/corpus/expr_like_*`, `tests/corpus/expr_eval_*` + CMake rows | 2026-07-19 → 07-20 |
 | S2 reifier | `techdesign-02-reifier.md` | **Fable** | `src/Checker.cpp`, `src/Checker.hpp`, `src/main.cpp` (+ `src/AstPrinter.cpp` only if H5 fires) | `tests/corpus/expr_reify_smoke_*`, `tests/negative/expr_reify_smoke_*`, updated `--expand` goldens | 2026-07-20 → 07-23 |
-| S3 verification & landing | `techdesign-03-verification.md` | **Sonnet** (stop-and-escalate) | **nothing in src/** (hard rule — findings are filed, never patched) | full `tests/corpus/expr_reify_*`, `tests/negative/expr_reify_*`, `run_expr_reify_error.sh`, differential rows, `docs/reference.md` §expr, `docs/footguns.md` rows, M2 smoke | 2026-07-23 → 07-25 |
+| S3 verification & landing | `techdesign-03-verification.md` | **Sonnet** (stop-and-escalate) | **nothing in src/** (hard rule — findings are filed, never patched) | full `tests/corpus/expr_reify_*`, `tests/negative/expr_reify_*`, `run_expr_reify_error.sh`, differential rows, `docs/reference.md` §expr, `known_bugs_1.md`/`known_bugs_2.md` entries, M2 smoke | 2026-07-23 → 07-25 |
 
 **Difficulty rationale.** S2 is **Fable**: it operates inside overload resolution (the
 historically bug-breeding surface — #34's silent wrong-pick class), performs in-place
@@ -238,8 +240,8 @@ master on completion — never leave work uncommitted.
 1. Confirm §6 all green on a clean rebuild (`ctest` full matrix).
 2. `git mv designs/expr-reification designs/complete/expr-reification` (whole set).
 3. `git mv designs/requests/request-expr-reification.md designs/requests/accepted/`.
-4. `docs/reference.md` §expr section landed; `docs/footguns.md` updated with any new
-   rows found en route.
+4. `docs/reference.md` §expr section landed; any new bugs found en route filed as
+   entries in `known_bugs_1.md`/`known_bugs_2.md`.
 5. Note in the commit message that Atlantis Track 06 M2 is unblocked.
 6. Commit and push to master (`git push origin <branch>:master` from your own
    worktree). Nothing left untracked.

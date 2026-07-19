@@ -15,9 +15,9 @@
 // bite the natural encodings. The workaround dodges both by storing only
 // primitives: a `Map<string,int>` index into three parallel `Array<int>`
 // carrier columns (fg code / bg code / attrs). `Style` is reconstructed on read
-// (a value struct returned by value — fully supported). See docs/footguns.md
-// (#41, #49 debt rows) — reverting to `Map<string, Style>` is sanctioned once
-// either bug is fixed.
+// (a value struct returned by value — fully supported). #41 and #49 were both
+// fixed 2026-07-14 (info.md's landed log) — reverting to `Map<string, Style>`
+// is sanctioned now, just not done as a side effect of this change.
 //
 // Built-in themes are authored as TOML assets (sonar/themes/*.toml), declared
 // in this package's own trident.toml `assets`, and folded to comptime strings

@@ -8,8 +8,8 @@ document wins until amended here.
 
 Ground-truth inputs: `designs/sonar_v2/techdesign-00-overview.md` (Sonar contracts/rulings),
 `sonar_v2/src/dom/*.lev` (the actual DOM API — `SonarApp`, `DomNode`, `query`, actions),
-`sonar_v2/src/components/*.lev`, `docs/reference.md` + `docs/footguns.md` (language facts),
-`known_bugs_1.md`/`known_bugs_2.md` (live compiler bugs to design around).
+`sonar_v2/src/components/*.lev`, `docs/reference.md` (language facts),
+`known_bugs_1.md`/`known_bugs_2.md` (live compiler bugs and their workarounds to design around).
 
 ---
 
@@ -461,7 +461,7 @@ repro; implementers escalate, design agents record in §14 only. Never merge com
 manager concerns; never re-implement dependency resolution in Helm. X64Gen/ELF frozen; nothing
 gates on ELF. Completed designs move to `designs/complete/`.
 
-**Footgun discipline baked into every track** (from `docs/footguns.md` + the Sonar bug corpus):
+**Footgun discipline baked into every track** (from `known_bugs_1.md`/`known_bugs_2.md` + the Sonar bug corpus):
 
 1. No truthiness — conditions are `bool`; `x == None`/`!= None` with narrowing; `?.`/`??`.
 2. No `static` — namespace consts/functions + labeled constructors (`TextBuffer::FromFile`).

@@ -85,7 +85,7 @@ harpoon/
     sibling/          # app/ + tests/ as two projects ([[dep]] on app + harpoon)
 ```
 
-## Remaining gotchas (see `docs/footguns.md` for the cross-project registry)
+## Remaining gotchas
 
 - **Give your test-suite entry point any name but `main`** if the file also
   `uses harpoon;` — a bulk `uses` import's `main` silently wins over a

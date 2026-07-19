@@ -19,13 +19,15 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | — |
+| P1       | #83 |
 | P2       | — |
+| P3       | — |
 
-Every open bug also carries a row in `docs/footguns.md` (workaround + debt sites) and,
-once the composition corpus lands, a red-lane repro under `tests/corpus/composition/`
-(`designs/techdesign-composition-corpus.md`). Fixing #N means: fix, delete the entry here,
-sweep the footguns row's debt sites, promote red→green — one commit.
+Each entry's Workaround note (inline, above) carries its own debt sites — there is no
+separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two files).
+Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
+green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
+Fixing #N means: fix, delete the entry here, promote red→green — one commit.
 
 ---
 
@@ -95,4 +97,45 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
+
+---
+
+## #83 [P1] — implementing a dependency's interface requires bare (uses-imported) member types, and `uses` is package-global via source concatenation
+
+**Markers:** P1.2 (the only workaround is per-use: every future driver/consumer
+track — Track 06 ORM, `atlantis-postgres`, any package implementing a C3/atlantis
+interface — must independently know and re-apply the pattern).
+
+Two linked resolver behaviors surface when a package (B) implements an interface
+declared in a dependency (A):
+
+1. **Alias-qualified member types fail interface satisfaction.** If B spells a
+   method's return/param type as `A::Data::Foo`, the checker reports
+   `Promise<A::Data::Foo>` is *not assignable to* the interface's required
+   `Promise<Foo>` — even for a non-generic `A::Data::Foo` vs `Foo`. The
+   alias-qualified type and the interface's in-package bare name are treated as
+   distinct identities. **Workaround:** `uses A::Data;` and spell member types
+   **bare** (`Foo`); the interface-inheritance clause itself may stay qualified
+   (`class Impl : A::Data::IThing`).
+
+2. **`uses` behaves package-global.** Source files in a package are concatenated
+   (the "file boundaries dissolve" invariant), so a bare name resolves only if
+   **every** file that contributes to the namespace carries the `uses` — a single
+   sibling file lacking `uses A::Data;` makes the bare names in *other* files read
+   as `unknown type`. **Workaround:** put the `uses` line in *every* `.lev` file of
+   the package, even files that do not themselves reference the imported types.
+
+Minimal repro: pkgA `namespace A { namespace Data { class Foo{…} interface IThing{ Promise<Foo> make(); } } }`;
+pkgB `uses A::Data; namespace B { class Impl : A::Data::IThing { Promise<A::Data::Foo> make(){…} } }`
+→ "not assignable to required `Promise<Foo>`". Changing `A::Data::Foo` → `Foo`
+(bare) compiles. Adding a second pkgB file that declares `namespace B { … }`
+without its own `uses A::Data;` reintroduces `unknown type Foo` in the first file.
+
+**Root cause pointer:** (1) type-identity comparison keys on the alias-qualified
+symbol path rather than the canonical class; (2) `uses` scope is applied per
+translation-unit-fragment but bare-name lookup runs over the merged namespace.
+Both are worked around throughout `packages/atlantis-mysql/` (bare C3 types +
+`uses Atlantis::Data;` in all eight src files); a fix would let drivers name C3
+types either way. **Debt sites:** every file in `packages/atlantis-mysql/src/`
+(8 files) + `packages/atlantis-mysql/tests/{loopback,pool}/main.lev`.
 

@@ -12,7 +12,8 @@ only if hazard H5 fires; `tests/corpus/expr_reify_smoke_*`,
 `tests/negative/expr_reify_smoke_*`; updates to existing `--expand` goldens forced by
 R1. **Window:** 2026-07-20 → 2026-07-23.
 
-Read `docs/footguns.md` before starting. The four precedents to have open while
+Read `known_bugs_1.md`/`known_bugs_2.md` before starting (`docs/footguns.md` was
+retired 2026-07-19 and merged into those two files). The four precedents to have open while
 implementing: `Checker::rewriteAsMethodRef` (Checker.cpp:1274–1363, the in-place
 rewrite template), `RuleEngine::reify` (Rules.cpp:549–649, the build-AST-from-nothing
 idiom), the lambda-applicability seam (Checker.cpp:2455–2460), and `checkLambdaBody`

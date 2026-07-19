@@ -11,7 +11,7 @@ class Dashboard {
         grid = GridBox(2, 2);
         grid.gap(1);
         // Fill the vertical axis: on the root's vertical FlexLayout a child with
-        // no flex is sized to its intrinsic height (sonar-bugs.md #1's ruling —
+        // no flex is sized to its intrinsic height (Sonar bug #1's ruling —
         // stretch is opt-in), so opt the grid in explicitly.
         grid.setHeight(Constraint::Flex(1));
         add("CPU", 0, 0);
