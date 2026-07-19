@@ -519,6 +519,19 @@ int main() {
            "inject `const int y = 1; y = 2;` at top of body } } "
            "uses RC; class K { @InjectConst void f() { } } K k = K(); k.f();");
 
+    // --- techdesign-labeled-break-continue.md F2: cloneStmt must preserve
+    // `label` through rule injection (the same field-drop trap as isConst
+    // above — isRawSegment/isUsing/isConst all hit it before this). A
+    // template containing a labeled loop + a labeled break targeting it must
+    // still resolve post-clone: if cloneStmt dropped `label`, the injected
+    // loop would clone in unlabeled and the injected `break outer;` would
+    // fail to resolve (no enclosing loop is labeled 'outer'), flipping this
+    // CLEAN to an error.
+    CLEAN("namespace RL { attribute InjectLabel {} "
+          "rule addLabel { match @InjectLabel on method m "
+          "inject `outer: while (false) { break outer; }` at top of body } } "
+          "uses RL; class K { @InjectLabel void f() { } } K k = K(); k.f();");
+
     // --- LA-20: comptime import() -------------------------------------------
     // Single-file (rootDir) mode against a real scratch directory — plan-mode
     // (I03/I05, per-module asset tables) is exercised by the project corpus

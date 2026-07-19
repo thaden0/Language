@@ -828,6 +828,16 @@ add_test(NAME corpus_expr_reify_expand
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
+# bug.md #88 fix: was unwired because two expr::Call construction sites
+# sharing a whitelisted name with different receiver kinds (expr_diff_calls.lev's
+# string- and Array-receiver "contains") silently corrupted the Array-receiver
+# site's tree walk on round-trip; root cause was srcStmtInline (AstPrinter.cpp)
+# dropping any While/DoWhile/For/ForIn/Try statement nested directly in a
+# lambda/match-arm block, not the reifier/checker. Now green.
+add_test(NAME corpus_expr_diff_expand
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_diff")
 # LA-18: concrete AST/IR copies for generic `T::member` on class + struct
 # tuples, including LA-25 value-position composition, transitive demand, and a
 # non-overridden generic instance method. Specializations are ordinary

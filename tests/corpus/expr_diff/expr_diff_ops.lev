@@ -1,6 +1,6 @@
 // LA-31 Stage 3 §4 — differential corpus: closure leg (.fn) vs expr::eval leg,
-// per whitelisted Bin/Un op, over the same fixtures. `!`-unary is excluded
-// (known_bugs_2.md #86: the reifier's Un("!", ...) op text is "?", not "!").
+// per whitelisted Bin/Un op, over the same fixtures. `!`-unary included since
+// bug.md #86 fix (the reifier's Un("!", ...) op text used to be "?", not "!").
 class Rec { int age; new Rec(int a) { age = a; } }
 
 // ---- expr::eval — reference tree interpreter (doc 01 §3.1, verbatim copy) ----
@@ -161,6 +161,7 @@ expr::Expr<(Rec)=>bool> eGt  = (u) => u.age > 18;
 expr::Expr<(Rec)=>bool> eGe  = (u) => u.age >= 18;
 expr::Expr<(Rec)=>bool> eAnd = (u) => u.age > 10 && u.age < 40;
 expr::Expr<(Rec)=>bool> eOr  = (u) => u.age < 10 || u.age > 25;
+expr::Expr<(Rec)=>bool> eNot = (u) => !(u.age == 18);
 
 cmp("eq", r30, eEq);  cmp("eq", r18, eEq);
 cmp("ne", r30, eNe);  cmp("ne", r18, eNe);
@@ -170,6 +171,7 @@ cmp("gt", r30, eGt);  cmp("gt", r18, eGt);
 cmp("ge", r30, eGe);  cmp("ge", r18, eGe);
 cmp("and", r30, eAnd); cmp("and", r18, eAnd);
 cmp("or", r30, eOr);   cmp("or", r18, eOr);
+cmp("not", r30, eNot); cmp("not", r18, eNot);
 
 expr::Expr<(Rec)=>int> ePlus = (u) => u.age + 3;
 expr::Expr<(Rec)=>int> eMinus = (u) => u.age - 3;

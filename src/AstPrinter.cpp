@@ -36,6 +36,18 @@ const char* opSymbol(TokenKind k) {
 
 std::string sv(std::string_view s) { return std::string(s); }
 
+// techdesign-labeled-break-continue.md F2: the `--ast` dump suffix for a
+// labeled loop/labeled break/continue (parser golden tests read this).
+std::string labelSuffix(const Stmt* s) {
+    return s->label.empty() ? "" : " label=" + std::string(s->label);
+}
+// Same design doc: the `--expand` source-reconstruction prefix (`label: `)
+// on a labeled loop, so a rule-injected labeled loop + labeled break stays
+// recompilable (corpus_meta_expand_roundtrip).
+std::string labelPrefix(const Stmt* s) {
+    return s->label.empty() ? "" : std::string(s->label) + ": ";
+}
+
 std::string typeStr(const TypeRef* t);
 
 std::string typeList(const std::vector<TypeRefPtr>& ts, const char* sep) {
@@ -298,28 +310,28 @@ struct Printer {
                 stmt(indent + 1, s->thenBranch.get());
                 break;
             case StmtKind::While:
-                line(indent, "While (" + exprStr(s->expr.get()) + ")");
+                line(indent, "While (" + exprStr(s->expr.get()) + ")" + labelSuffix(s));
                 stmt(indent + 1, s->thenBranch.get());
                 break;
             case StmtKind::DoWhile:
-                line(indent, "DoWhile (" + exprStr(s->expr.get()) + ")");
+                line(indent, "DoWhile (" + exprStr(s->expr.get()) + ")" + labelSuffix(s));
                 stmt(indent + 1, s->thenBranch.get());
                 break;
             case StmtKind::Break:
-                line(indent, "Break");
+                line(indent, "Break" + labelSuffix(s));
                 break;
             case StmtKind::Continue:
-                line(indent, "Continue");
+                line(indent, "Continue" + labelSuffix(s));
                 break;
             case StmtKind::ForIn:
                 line(indent, "ForIn " + sv(s->name) + " : " +
                      (s->inferred ? "var" : typeStr(s->type.get())) +
-                     " in " + exprStr(s->expr.get()));
+                     " in " + exprStr(s->expr.get()) + labelSuffix(s));
                 stmt(indent + 1, s->thenBranch.get());
                 break;
             case StmtKind::For:
                 line(indent, "For (cond " +
-                     (s->expr ? exprStr(s->expr.get()) : std::string("true")) + ")");
+                     (s->expr ? exprStr(s->expr.get()) : std::string("true")) + ")" + labelSuffix(s));
                 if (s->forInit) { line(indent + 1, "init"); stmt(indent + 2, s->forInit.get()); }
                 if (s->forStep) line(indent + 1, "step " + exprStr(s->forStep.get()));
                 stmt(indent + 1, s->thenBranch.get());
@@ -547,8 +559,31 @@ std::string srcStmtInline(const Stmt* s) {
             if (s->elseBranch) h += " else " + srcStmtInline(s->elseBranch.get());
             return h;
         }
-        case StmtKind::Break:    return "break;";
-        case StmtKind::Continue: return "continue;";
+        case StmtKind::While:
+            return labelPrefix(s) + "while (" + srcExpr(s->expr.get()) + ") " +
+                   srcStmtInline(s->thenBranch.get());
+        case StmtKind::DoWhile:
+            return labelPrefix(s) + "do " + srcStmtInline(s->thenBranch.get()) +
+                   " while (" + srcExpr(s->expr.get()) + ");";
+        case StmtKind::For:
+            return labelPrefix(s) + "for (" + (s->forInit ? srcStmtInline(s->forInit.get()) : ";") +
+                   " " + (s->expr ? srcExpr(s->expr.get()) : std::string()) +
+                   "; " + (s->forStep ? srcExpr(s->forStep.get()) : std::string()) + ") " +
+                   srcStmtInline(s->thenBranch.get());
+        case StmtKind::ForIn:
+            return labelPrefix(s) + "for (" + (s->inferred ? std::string("var") : typeStr(s->type.get())) +
+                   " " + sv(s->name) + " in " + srcExpr(s->expr.get()) + ") " +
+                   srcStmtInline(s->thenBranch.get());
+        case StmtKind::Try: {
+            std::string h = "try " + srcStmtInline(s->thenBranch.get());
+            for (const CatchClause& c : s->catches) {
+                h += " catch (" + typeStr(c.type.get()) +
+                     (c.name.empty() ? "" : " " + sv(c.name)) + ") " + srcStmtInline(c.body.get());
+            }
+            return h;
+        }
+        case StmtKind::Break:    return s->label.empty() ? "break;" : "break " + sv(s->label) + ";";
+        case StmtKind::Continue: return s->label.empty() ? "continue;" : "continue " + sv(s->label) + ";";
         case StmtKind::Throw:    return "throw " + srcExpr(s->expr.get()) + ";";
         // The marker name is stored already-quoted (the raw StringLiteral token).
         case StmtKind::Empty:    return s->name.empty() ? ";" : "@anchor(" + sv(s->name) + ");";
@@ -741,28 +776,28 @@ struct SourcePrinter {
                 stmt(n + 1, s->thenBranch.get());
                 break;
             case StmtKind::While:
-                ind(n); out += "while (" + srcExpr(s->expr.get()) + ")";
+                ind(n); out += labelPrefix(s) + "while (" + srcExpr(s->expr.get()) + ")";
                 bracedBody(n, s->thenBranch.get()); out += "\n";
                 break;
             case StmtKind::DoWhile:
-                ind(n); out += "do";
+                ind(n); out += labelPrefix(s) + "do";
                 bracedBody(n, s->thenBranch.get());
                 out += " while (" + srcExpr(s->expr.get()) + ");\n";
                 break;
             case StmtKind::For:
-                ind(n); out += "for (";
+                ind(n); out += labelPrefix(s) + "for (";
                 out += (s->forInit ? srcStmtInline(s->forInit.get()) : ";");
                 out += " " + (s->expr ? srcExpr(s->expr.get()) : std::string());
                 out += "; " + (s->forStep ? srcExpr(s->forStep.get()) : std::string()) + ")";
                 bracedBody(n, s->thenBranch.get()); out += "\n";
                 break;
             case StmtKind::ForIn:
-                ind(n); out += "for (" + (s->inferred ? std::string("var") : typeStr(s->type.get())) +
+                ind(n); out += labelPrefix(s) + "for (" + (s->inferred ? std::string("var") : typeStr(s->type.get())) +
                        " " + sv(s->name) + " in " + srcExpr(s->expr.get()) + ")";
                 bracedBody(n, s->thenBranch.get()); out += "\n";
                 break;
-            case StmtKind::Break:    line(n, "break;"); break;
-            case StmtKind::Continue: line(n, "continue;"); break;
+            case StmtKind::Break:    line(n, s->label.empty() ? "break;" : "break " + sv(s->label) + ";"); break;
+            case StmtKind::Continue: line(n, s->label.empty() ? "continue;" : "continue " + sv(s->label) + ";"); break;
             case StmtKind::Throw:    line(n, "throw " + srcExpr(s->expr.get()) + ";"); break;
             case StmtKind::Try:
                 ind(n); out += "try";

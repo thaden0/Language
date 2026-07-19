@@ -393,6 +393,16 @@ struct Stmt {
     // zero-arg `close()` decl the Lowerer calls at every block-exit edge.
     bool isUsing = false;
     const Stmt* usingClose = nullptr;
+    // Labeled loops (techdesign-labeled-break-continue.md): on While/DoWhile/
+    // For/ForIn — this loop's label ("" = unlabeled). On Break/Continue — the
+    // target label ("" = unlabeled, nearest loop). `labelTarget` is the
+    // checker-resolved target loop Stmt for a labeled Break/Continue (same
+    // stash precedent as Expr::resolved / Stmt::usingClose); null until
+    // checked, and NEVER copied by cloneStmt (Rules.cpp) — it is a checker
+    // product computed after rule splicing ever runs, so a clone's copy would
+    // dangle into the template tree.
+    std::string_view label;
+    const Stmt* labelTarget = nullptr;
     // Struct-equality §5.5 (packet 02): this member is the Resolver-synthesized
     // derived `(==)`. The synthesis pass erases and regenerates these each run
     // (the two-pass resolver can change a struct's field list between passes).

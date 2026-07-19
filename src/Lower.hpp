@@ -58,8 +58,27 @@ private:
     // (before its body lowers) — every using at-or-above this floor was
     // declared INSIDE this loop, so an unlabeled break/continue here crosses
     // exactly that suffix and none of the enclosing scope's usings.
-    struct LoopCtx { std::vector<int> breakJumps, continueJumps; size_t usingsFloor = 0; };
+    // techdesign-labeled-break-continue.md F5: `stmt` stamps this loop's own
+    // AST node, so a labeled break/continue's checker-resolved target
+    // (Stmt::labelTarget) can find ITS LoopCtx on this stack (loopCtxFor),
+    // rather than always assuming loops_.back().
+    struct LoopCtx {
+        std::vector<int> breakJumps, continueJumps;
+        size_t usingsFloor = 0;
+        const Stmt* stmt = nullptr;
+    };
     std::vector<LoopCtx> loops_;
+    // techdesign-labeled-break-continue.md F5: one using's break/continue
+    // traffic to one target loop. A using crossed only by unlabeled breaks
+    // (or labeled breaks all naming the SAME loop) has exactly one chain per
+    // direction — the pre-existing single-list shape, generalized so a
+    // second labeled break naming a DIFFERENT (outer) loop gets its own
+    // chain and its own cleanup-group stub instead of colliding with the
+    // first's.
+    struct ExitChain {
+        const Stmt* targetLoop = nullptr;
+        std::vector<int> jumps;
+    };
     // techdesign-02 F3: one entry per currently-active `using` local, flat
     // across the whole function (nesting order == vector order, regardless of
     // block boundaries — see the design doc's cleanup-group layout). A
@@ -68,14 +87,27 @@ private:
     // needs to keep closing outward, records ITS jump into usings_[i-1]'s
     // list the same way — so each list accumulates from both statement sites
     // and inner stubs before the owning group is ever emitted.
+    // `retJumps`/`needRet` stay a single chain (techdesign-labeled-break-
+    // continue.md F5 item 1): a return crosses every active using regardless
+    // of loops, with exactly one target (the function exit), so it was
+    // already fully general.
     struct UsingCtx {
         int slotReg = 0;
         const Stmt* closeDecl = nullptr;
         int rangeStart = 0;              // pc right after init: handler range open
-        std::vector<int> retJumps, brkJumps, cntJumps;
-        bool needRet = false, needBrk = false, needCnt = false;
+        std::vector<int> retJumps;
+        bool needRet = false;
+        std::vector<ExitChain> brkChains, cntChains;
     };
     std::vector<UsingCtx> usings_;
+    // techdesign-labeled-break-continue.md F5: find-or-create the ExitChain
+    // for `target` in `chains` (a using's brkChains or cntChains).
+    ExitChain& chainFor(std::vector<ExitChain>& chains, const Stmt* target);
+    // The LoopCtx on `loops_` whose stmt == target, or null. A miss is an
+    // internal error (§4 P5): the checker's lexical-enclosure guarantee means
+    // a labeled break/continue's target loop is always still on the stack
+    // when this is consulted (post-order argument, F5 item 4).
+    LoopCtx* loopCtxFor(const Stmt* target);
     // Per-function: the register every cross-using return's value funnels
     // into before chaining outward, and whether this function's returns are
     // void-shaped (both lazily fixed by the FIRST cross-using return in the

@@ -86,6 +86,15 @@ private:
     // errors. Reset to 0 at every function/lambda body boundary (a break inside
     // a closure never exits the enclosing function's loop).
     int loopDepth_ = 0;
+    // techdesign-labeled-break-continue.md F3: one entry per currently-open
+    // labeled loop, pushed/popped at exactly the loopDepth_ increment/decrement
+    // sites (same four loop cases) — labels are pure lexical control-flow
+    // structure, so they live beside loopDepth_ rather than in the Resolver.
+    // Saved/cleared/restored at every loopDepth_ function-boundary reset too,
+    // so a labeled break inside a lambda can never resolve an enclosing
+    // function's label.
+    struct LabelEntry { std::string_view name; const Stmt* stmt; };
+    std::vector<LabelEntry> labelStack_;
     // techdesign-02 F3: true for exactly the duration of checking a Block's
     // direct child that is itself that Block's next statement — `using` is
     // legal only as a direct statement of a block, so this flag is set right
@@ -210,6 +219,17 @@ private:
     bool isCompileTimeConstant(const Expr* e);
     bool typeMayBeValueStruct(const Type& t);
     void check(Stmt* s);
+    // techdesign-labeled-break-continue.md F3: push/pop `s`'s label (a no-op
+    // if unlabeled) around a loop's body check, at exactly the loopDepth_
+    // increment/decrement sites. pushLoopLabel reports the Java-style
+    // duplicate-of-enclosing-label error but pushes regardless (best-effort:
+    // an inner same-named loop still shadows, belt-and-braces).
+    void pushLoopLabel(Stmt* s);
+    void popLoopLabel(Stmt* s);
+    // Resolve a Break/Continue's label (empty = nearest enclosing loop, the
+    // existing loopDepth_ check) against labelStack_, stashing the target
+    // loop Stmt* on s->labelTarget on a hit.
+    void bindLoopLabel(Stmt* s);
 
     // typing
     Type typeOf(const Expr* e);
@@ -298,7 +318,8 @@ private:
     // in place into the `expr::Expr(...)` construction. Returns the `Expr<Fn>`
     // type, or an Error type on a reject (E1/E2/etc. already emitted). Only
     // call when `lambda->kind == Lambda` and `fnRef` is a function TypeRef.
-    Type reifyLambda(Expr* lambda, const TypeRef* fnRef);
+    Type reifyLambda(Expr* lambda, const TypeRef* fnRef,
+                      const std::unordered_map<std::string_view, Type>* subst = nullptr);
     // The recursive body walk (§3.3): returns the constructed `expr::` node
     // AST, or null on a reject (emits E2 at the offending span). ReifyCtx is
     // defined in Checker.cpp.

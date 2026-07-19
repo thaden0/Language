@@ -117,6 +117,21 @@ namespace Sonar {
             host_ = host;
             open_ = true;
             Sonar::app().pushOverlay(host);
+            // Auto-focus the first tab stop AMONG THIS MODAL'S CONTENT (the
+            // Menu.focusFirst precedent, menu.lev): without this,
+            // dispatchKey's `focused_` stays pinned to whatever was focused
+            // before this Modal opened — which may live in a DIFFERENT
+            // subtree (or another overlay entirely, the dialog-awaiting-a-
+            // dialog case, techdesign-07 D07) — so Enter/Escape would
+            // silently miss this Modal's own controls. Walked from
+            // children(), not `this`: Modal itself is also a Focusable tab
+            // stop (the Escape/dismissKey catch-all), and collectTabStops'
+            // document-order walk would otherwise return the Modal itself
+            // before any real control. A Modal with no focusable content
+            // (rare) simply stays unfocused, unchanged.
+            Array<Focusable> stops = [];
+            for (IComponent c in children()) stops = stops.concat(collectTabStops(c));
+            if (!stops.isEmpty()) Sonar::app().focus(stops[0]);
         }
         void close() {
             if (!open_) return;

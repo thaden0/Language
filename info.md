@@ -1398,6 +1398,13 @@ string sign(int n) => match (n) {
   loop; a compile error outside one. A lambda body is its own loop-nesting scope (a bare
   `break`/`continue` never escapes into an enclosing function's loop); `match` is not a
   loop-nesting boundary (an arm's `break`/`continue` targets the enclosing loop).
+- **Labeled `break label;` / `continue label;`** (techdesign-labeled-break-continue.md) — a
+  loop labeled `label: while (...)`/`for (...)`/`do ... while (...)` can be targeted from
+  arbitrary nesting depth. One label per loop; sibling loops may reuse a label; an enclosing
+  loop's label cannot be reused (duplicate = compile error); labels are a separate namespace
+  from values. Same lambda/match boundary rules as the unlabeled forms. A labeled exit crossing
+  one or more `using`s closes exactly the resources declared inside the *target* loop, reverse
+  declaration order — see reference.md §5.2.
 - **`using Type name = expr;`** (techdesign-02 F3) — deterministic resource cleanup; see §12.6
   and reference.md §5.2/§6.6.65.
 - Body-is-one-statement applies everywhere a body appears (methods, accessors, binds, loops):

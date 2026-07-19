@@ -1,6 +1,6 @@
 # Deferral Resolution — Labeled `break` / `continue`
 
-**Status: ACTIVE — design ready, not implemented.** Promoted out of deferral 2026-07-17
+**Status: COMPLETE — landed in full 2026-07-19 (see §10 implementation log).** Promoted out of deferral 2026-07-17
 (was `deferal-labeled-break-continue.md`). Re-verified against master that day: still 100%
 unbuilt (no `Stmt::label`/`labelTarget`/`labelStack_` anywhere in `src/`). The §4 blocker is
 **cleared** — Track 03 landed in full long ago, so the compiler-file serialization concern is
@@ -570,4 +570,103 @@ forms.
 
 ## 10. Implementation log
 
-*(empty — filled by the implementing agent per overview §4.2)*
+**Landed in full, 2026-07-19.** All of F1-F7 implemented in one pass on
+`agent0`; no coordination needed with Track 03 (long since landed and
+irrelevant by this date — the §4 serialization concern was already stale
+per the design's own currency note).
+
+**P-probes:** P1 (dead-grammar) confirmed clean — grepped the whole
+`tests/`/`examples/` tree for statement-initial `identifier :`; the only hit
+was `tests/corpus/const_section.lev`'s `const:` sectional label, which is a
+**class-member**-position construct (parsed inside `parseClassMemberInner`,
+never reaches `parseStatement`) and therefore doesn't collide with the new
+guard. P3 (`--ir` baseline) captured for the entire top-level corpus +
+churn/ (84 files) before touching `Lower.cpp`; diffed to **zero changes**
+after F5 landed — the hard byte-identity gate held on the first attempt.
+P2 (Eval flag-site audit) found **7** loop consume-pairs today, not 6 as
+Track 02's memory suggested (`ForIn` has grown a 4th sub-branch —
+`forInProtocol`, the iterator-protocol desugar — since Track 02 landed);
+all 7 got the target-pointer treatment, exactly as the design anticipated
+("any extra site that appeared since Track 02 gets the target treatment
+too"). Likewise, Eval's frame-confinement site count is **6**
+(`runCtor`, `evalComptimeBody`, `callComptimeMacro`, `callFunction`,
+`callClosure`, `callPrimMethod`), not the design's stale "four call-frame
+sites" — all 6 got `breakTarget_`/`continueTarget_` save/clear/restore,
+plus the LA-30 `TaskState` save/restore struct (a park-site boundary the
+design didn't enumerate by name but which follows the identical
+save/clear/restore discipline as the other frame sites). All Jul-6-era
+`file:line` references in the design body had drifted, as warned; grounded
+against the current tree before every edit rather than trusted verbatim.
+
+**Checker boundary-reset count:** 6 sites reset `loopDepth_`, not the
+design's "four function-boundary resets" — `checkLambdaBody`, `reifyLambda`
+(the LA-31 expr-reification lambda leg), the statement-level `Bind` factory
+case, `checkFunction`, `walk()`'s top-level `Bind` case, and
+`checkComptimeRoot`. All 6 got `labelStack_` save/clear/restore (or a bare
+clear where the site itself doesn't restore `loopDepth_`, e.g.
+`checkFunction`/`walk`/`checkComptimeRoot` — each begins a wholly fresh
+walk state, so a clear suffices, no save needed).
+
+**F5 (Lower) came together on the first build** — no compile errors, and
+the P3 `--ir` diff gate passed immediately, confirming the `LoopCtx.stmt` +
+`ExitChain` generalization is genuinely shape-preserving for label-free
+programs. `retJumps`/`needRet` were left untouched (single chain, per the
+design's own argument that a return has exactly one target regardless of
+loops).
+
+**AstPrinter scope widened slightly beyond the design's literal region.**
+The design named only the `--ast` debug-dump printer (F2). While
+implementing, also added label reconstruction to the `--expand`
+source-printer (loop-header `label: ` prefix, `break`/`continue label;`)
+and to `srcStmtInline`'s Break/Continue cases — otherwise a rule-injected
+labeled loop (exactly the F7 rule-injection hygiene scenario, and the
+design's own problem #10) would silently lose its label under
+`--expand`/`corpus_meta_expand_roundtrip`, producing an unparseable
+`break outer;` with no matching label in the reconstructed source. Verified
+via the existing round-trip test infrastructure conceptually (no new corpus
+program depends on this path yet, so it's currently inert insurance, not a
+tested behavior change).
+
+**F7 test results — all verified by direct execution, not just written and
+trusted:**
+- `tests/corpus/labeled_loops.lev` / `labeled_using.lev` (cases a-g) —
+  hand-traced by hand first, then run and confirmed **byte-identical**
+  against the hand-trace AND across all 5 engines (oracle `--run`, `--ir`,
+  native `--emit-cpp`+g++, LLVM `--native-obj`+runtime-v2, and ELF
+  `--emit-elf`) with zero divergence anywhere.
+- `tests/corpus/churn/labeled_using_churn.lev` — a labeled `continue`
+  crossing a `using` in a hot for..in loop; `fuzz/churn_leak.py` reports
+  **+0B** live-at-exit growth from N=100 to N=800 on both the ELF and LLVM
+  churn lanes.
+- `tests/run_elf.sh` gained the `.lev` glob (matching `run_corpus.sh`/
+  `run_native.sh`, already done per the design's currency note) plus the
+  `.expected`/`.stdin` per-extension stem-derivation fix the design called
+  for (`"${f%.*}"` instead of a hardcoded `.ext` strip) — needed for the new
+  `.lev` corpus files to run on ELF at all.
+- `test_checker.cpp`, `test_parser.cpp`, `test_meta.cpp` — all new
+  ERRORS/CLEAN/golden/hygiene cases pass; the rule-injection hygiene test
+  (a labeled loop + labeled break injected via `rule`/`inject`) exercises
+  the exact `cloneStmt` field-copy fix.
+- Full `ctest` suite: **236/238 green**, zero regressions. The 2 failing
+  test *targets* (`corpus_elf_core`, `corpus_elf_full`) are fully accounted
+  for by **3 pre-existing, unrelated, frozen-backend bugs** — found while
+  running the whole-corpus ELF lanes (not caused by this design; confirmed
+  pre-existing by re-running the identical repros against a clean
+  pre-change tree via a temporary `git stash`/`stash pop`), filed per §9's
+  problem #9 policy rather than touched:
+  `known_bugs_1.md` #90 (`Range`-as-`IIterable<int>` iterates empty on ELF),
+  #92 (class-identity `==`/`!=` prints empty on ELF); `known_bugs_2.md` #91
+  (`char::code()` on a 4-byte-UTF-8 scalar prints empty on ELF). X64Gen.cpp
+  was never touched.
+
+**No IR changes, no X64Gen edits** — confirmed exactly as F6 predicted:
+labeled forms lower to the same `Op::Jump` record-and-patch idiom as
+unlabeled ones, so every backend inherited the feature for free through
+existing ops.
+
+**STOP conditions:** none fired. `loopCtxFor`'s internal-error path never
+triggered on any corpus program (the post-order enclosure argument held);
+the P3 `--ir` diff never showed a change; no X64Gen edit was ever made or
+tempted.
+
+Design moved to `designs/complete/` on landing (this commit).
