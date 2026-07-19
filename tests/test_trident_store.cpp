@@ -94,6 +94,15 @@ static void test_store_idempotent_and_order_independent() {
     bool ok3 = materializeToStore(files1, dir3, hash3, err3);
     CHECK(ok3 && hash3 == hash1 && dir3 == dir1);
 
+    // A content-addressed cache hit is not blindly trusted. Extra/tampered
+    // files would otherwise be gathered even though the directory name and
+    // provider-side hash still matched the lock.
+    writeFile(dir1 + "/injected.lev", "namespace Injected {}\n");
+    std::string corruptDir, corruptHash, corruptErr;
+    CHECK(!materializeToStore(files1, corruptDir, corruptHash, corruptErr));
+    CHECK(corruptErr.find("corrupt") != std::string::npos);
+    ::unlink((dir1 + "/injected.lev").c_str());
+
     // Different content hashes differently.
     writeFile(srcDir + "/a.lev", "namespace A2 {}\n");
     std::vector<StoreFile> filesChanged = {

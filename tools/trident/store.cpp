@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -41,6 +42,35 @@ bool writeWholeFile(const std::string& path, const std::string& data, std::strin
     return out.good();
 }
 
+bool collectStoreFiles(const std::string& root, const std::string& dir,
+                       std::vector<StoreFile>& files, std::string& err) {
+    DIR* handle = ::opendir(dir.c_str());
+    if (!handle) { err = "cannot open store entry '" + dir + "'"; return false; }
+    bool ok = true;
+    while (ok) {
+        dirent* ent = ::readdir(handle);
+        if (!ent) break;
+        std::string name = ent->d_name;
+        if (name == "." || name == "..") continue;
+        std::string path = dir + "/" + name;
+        struct stat st;
+        if (::lstat(path.c_str(), &st) != 0) {
+            err = "cannot inspect store path '" + path + "'";
+            ok = false;
+        } else if (S_ISDIR(st.st_mode)) {
+            ok = collectStoreFiles(root, path, files, err);
+        } else if (S_ISREG(st.st_mode)) {
+            files.push_back({path.substr(root.size() + 1), path});
+        } else {
+            err = "store entry contains a symlink or special file at '" +
+                  path.substr(root.size() + 1) + "'";
+            ok = false;
+        }
+    }
+    ::closedir(handle);
+    return ok;
+}
+
 }  // namespace
 
 std::string storeRoot() {
@@ -66,6 +96,21 @@ bool canonicalContentHash(std::vector<StoreFile> files, std::string& hash, std::
     return true;
 }
 
+bool verifyStoreEntry(const std::string& storeDir, const std::string& expectedHash,
+                      std::string& err) {
+    std::vector<StoreFile> stored;
+    if (!collectStoreFiles(storeDir, storeDir, stored, err)) return false;
+    std::string actual;
+    if (!canonicalContentHash(stored, actual, err)) return false;
+    if (actual != expectedHash) {
+        err = "content-addressed store entry '" + storeDir +
+              "' is corrupt (directory key sha256:" + expectedHash +
+              ", actual sha256:" + actual + ")";
+        return false;
+    }
+    return true;
+}
+
 bool materializeToStore(std::vector<StoreFile> files, std::string& storeDir,
                         std::string& contentHash, std::string& err) {
     if (!canonicalContentHash(files, contentHash, err)) return false;
@@ -73,7 +118,10 @@ bool materializeToStore(std::vector<StoreFile> files, std::string& storeDir,
     storeDir = storeRoot() + "/" + contentHash;
     struct stat st;
     if (::stat(storeDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-        return true;   // idempotent: already materialized, skip the copy
+        // A cache hit is trusted only after hashing the stored bytes too.
+        // Otherwise an injected file would be gathered into the build even
+        // though the provider's freshly-computed hash still matched the lock.
+        return verifyStoreEntry(storeDir, contentHash, err);
     }
 
     std::string tmpDir = storeDir + ".tmp." + std::to_string(::getpid());

@@ -41,8 +41,8 @@ enum class DepKind { Local, Vcs };
 // A declared dependency. Local-path deps (kind == Local) resolve today via
 // LocalProvider (resolve.{hpp,cpp}): `path` names a local directory whose own
 // manifest lists the sources that gather into this build. VCS deps (kind ==
-// Vcs) are recognized and schema-validated as of P2.0 but not yet resolved —
-// fetch/MVS/lockfile land in P2.1 (docs/techdesign-package-manager.md).
+// Vcs) resolve through MVS + the selected Git/Proxy provider; local deps keep
+// using the original recursive gather path.
 struct Dependency {
     std::string path;
     std::string version;

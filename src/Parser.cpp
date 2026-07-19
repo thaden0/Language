@@ -330,6 +330,22 @@ std::vector<ExprPtr> Parser::parseArgs() {
     return args;
 }
 
+// Parse the unambiguous call-site generic marker `::<T, U>`. The caller has
+// already established the ColonColon+Lt pair, so seeing it commits to this
+// grammar and never falls back to the ordinary comparison operators.
+std::vector<TypeRefPtr> Parser::parseExplicitTypeArgs() {
+    std::vector<TypeRefPtr> args;
+    advance();                                      // '::'
+    advance();                                      // '<'
+    if (at(TokenKind::Gt) || at(TokenKind::GtGt)) {
+        error("type argument after '<'");
+    } else {
+        do { args.push_back(parseType()); } while (accept(TokenKind::Comma));
+    }
+    expectGt();                                     // retains nested `>>` splitting
+    return args;
+}
+
 std::vector<ExprPtr> Parser::parseMacroArgs() {
     std::vector<ExprPtr> args;
     bool sawNamed = false;
@@ -628,7 +644,17 @@ StmtPtr Parser::parseForSpliceStmt(SpliceBody body) {
 
 ExprPtr Parser::parsePostfix(ExprPtr base) {
     for (;;) {
-        if (at(TokenKind::Dot) || at(TokenKind::ColonColon) ||
+        if (at(TokenKind::ColonColon) && peek(1).kind == TokenKind::Lt) {
+            auto c = mkExpr(ExprKind::Call, base->span);
+            c->a = std::move(base);
+            c->explicitTypeArgs = parseExplicitTypeArgs();
+            if (!at(TokenKind::LParen)) {
+                error("'(' after explicit type arguments");
+            } else {
+                c->list = parseArgs();
+            }
+            base = std::move(c);
+        } else if (at(TokenKind::Dot) || at(TokenKind::ColonColon) ||
             at(TokenKind::QuestionDot)) {
             bool colon = at(TokenKind::ColonColon);
             bool opt = at(TokenKind::QuestionDot);

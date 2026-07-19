@@ -52,7 +52,7 @@ void dumpSite(string label, expr::Node tree, Array<string | int | float | bool |
     console.writeln(label + "site:siteId=" + site.toString());
 }
 
-expr::Expr<(User)=>bool> e0 = expr::Expr((u) => u.name.like("A%"),
+expr::Expr<(User)=>bool> e0 = expr::Expr::<(User)=>bool>((u) => u.name.like("A%"),
     expr::Call("like", expr::Field(["name"]),
         () => { Array<expr::Node> __lvReifyArr = []; (__lvReifyArr = __lvReifyArr.add(expr::Lit("A%"))); return __lvReifyArr; }()),
     [], 0);

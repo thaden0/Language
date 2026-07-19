@@ -1,35 +1,11 @@
 #include "vcs.hpp"
+#include "process.hpp"
+#include <algorithm>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <sstream>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
-
-bool isExecutableFile(const std::string& path) {
-    struct stat st;
-    return ::stat(path.c_str(), &st) == 0 && ::access(path.c_str(), X_OK) == 0;
-}
-
-std::string findOnPath(const std::string& name) {
-    const char* pathEnv = std::getenv("PATH");
-    if (!pathEnv) return "";
-    std::string paths = pathEnv;
-    size_t start = 0;
-    while (start <= paths.size()) {
-        size_t colon = paths.find(':', start);
-        std::string dir = paths.substr(start, colon == std::string::npos
-                                                   ? std::string::npos
-                                                   : colon - start);
-        if (!dir.empty() && isExecutableFile(dir + "/" + name)) return dir + "/" + name;
-        if (colon == std::string::npos) break;
-        start = colon + 1;
-    }
-    return "";
-}
 
 // Run `git <args...>`, capturing stdout into `stdoutOut` (ls-remote's
 // output). stderr is inherited — git's own diagnostics surface directly,
@@ -38,50 +14,37 @@ std::string findOnPath(const std::string& name) {
 // which is a normal nonzero exit).
 int runGitCaptured(const std::vector<std::string>& args, std::string& stdoutOut,
                    std::string& err) {
-    std::string git = findGit();
-    if (git.empty()) {
+    if (findGit().empty()) {
         err = "cannot find the 'git' executable on $PATH (required for VCS "
              "dependencies — local-path deps need no git)";
         return -1;
     }
+    std::vector<std::string> command{"git"};
+    command.insert(command.end(), args.begin(), args.end());
+    return runProcess(command, stdoutOut, err);
+}
 
-    int pipefd[2];
-    if (::pipe(pipefd) != 0) { err = "pipe() failed"; return -1; }
+std::string trimNewlines(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
 
-    pid_t pid = ::fork();
-    if (pid < 0) { err = "fork() failed"; return -1; }
-    if (pid == 0) {
-        ::close(pipefd[0]);
-        ::dup2(pipefd[1], STDOUT_FILENO);
-        ::close(pipefd[1]);
-
-        std::vector<char*> argv;
-        argv.push_back(const_cast<char*>(git.c_str()));
-        for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-        argv.push_back(nullptr);
-        ::execv(git.c_str(), argv.data());
-        std::perror("trident: execv git");
-        ::_exit(127);
+bool runGitChecked(const std::vector<std::string>& args, std::string& out,
+                   const std::string& what, std::string& err) {
+    int rc = runGitCaptured(args, out, err);
+    if (rc < 0) return false;
+    if (rc != 0) {
+        err = what + " failed";
+        return false;
     }
-    ::close(pipefd[1]);
-
-    stdoutOut.clear();
-    char buf[4096];
-    ssize_t n;
-    while ((n = ::read(pipefd[0], buf, sizeof(buf))) > 0) stdoutOut.append(buf, n);
-    ::close(pipefd[0]);
-
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return 1;
+    out = trimNewlines(out);
+    return true;
 }
 
 }  // namespace
 
 std::string findGit() {
-    return findOnPath("git");
+    return findExecutable("git");
 }
 
 bool gitListTags(const std::string& remote, std::vector<std::string>& out, std::string& err) {
@@ -135,4 +98,96 @@ bool gitCloneTag(const std::string& remote, const std::string& tag, const std::s
         return false;
     }
     return true;
+}
+
+bool gitRepoRoot(const std::string& path, std::string& root, std::string& err) {
+    return runGitChecked({"-C", path, "rev-parse", "--show-toplevel"}, root,
+                         "git repository discovery in '" + path + "'", err);
+}
+
+bool gitWorkingTreeClean(const std::string& repo, bool& clean, std::string& details,
+                         std::string& err) {
+    if (!runGitChecked({"-C", repo, "status", "--porcelain", "--untracked-files=all"},
+                       details, "git status in '" + repo + "'", err))
+        return false;
+    clean = details.empty();
+    return true;
+}
+
+bool gitOriginUrl(const std::string& repo, std::string& remote, std::string& err) {
+    return runGitChecked({"-C", repo, "remote", "get-url", "origin"}, remote,
+                         "reading git remote 'origin' in '" + repo + "'", err);
+}
+
+bool gitHeadCommit(const std::string& repo, std::string& commit, std::string& err) {
+    return runGitChecked({"-C", repo, "rev-parse", "HEAD^{commit}"}, commit,
+                         "reading HEAD in '" + repo + "'", err);
+}
+
+bool gitPathTracked(const std::string& repo, const std::string& relativePath,
+                    bool& tracked, std::string& err) {
+    std::string out;
+    int rc = runGitCaptured({"-C", repo, "ls-files", "--error-unmatch", "--", relativePath},
+                            out, err);
+    if (rc < 0) return false;
+    tracked = rc == 0;
+    return true;
+}
+
+bool gitTagCommit(const std::string& repo, const std::string& tag, bool& exists,
+                  std::string& commit, std::string& err) {
+    std::string out;
+    int rc = runGitCaptured({"-C", repo, "rev-parse", "--quiet", "--verify",
+                             "refs/tags/" + tag + "^{commit}"}, out, err);
+    if (rc < 0) return false;
+    if (rc != 0) {
+        exists = false;
+        commit.clear();
+        return true;
+    }
+    exists = true;
+    commit = trimNewlines(out);
+    return true;
+}
+
+bool gitCreateTag(const std::string& repo, const std::string& tag,
+                  const std::string& commit, std::string& err) {
+    std::string out;
+    return runGitChecked({"-C", repo, "tag", tag, commit}, out,
+                         "creating git tag '" + tag + "'", err);
+}
+
+bool gitDeleteTag(const std::string& repo, const std::string& tag, std::string& err) {
+    std::string out;
+    return runGitChecked({"-C", repo, "tag", "-d", tag}, out,
+                         "deleting git tag '" + tag + "'", err);
+}
+
+std::string modulePathFromRemote(const std::string& remoteText) {
+    std::string remote = trimNewlines(remoteText);
+    bool localPath = remote.compare(0, 7, "file://") == 0 ||
+                     (!remote.empty() && (remote[0] == '/' || remote[0] == '.'));
+    if (remote.compare(0, 7, "file://") == 0) remote.erase(0, 7);
+    else {
+        size_t scheme = remote.find("://");
+        if (scheme != std::string::npos) {
+            std::string rest = remote.substr(scheme + 3);
+            size_t slash = rest.find('/');
+            std::string host = slash == std::string::npos ? rest : rest.substr(0, slash);
+            size_t at = host.rfind('@');
+            if (at != std::string::npos) host = host.substr(at + 1);
+            remote = host + (slash == std::string::npos ? "" : rest.substr(slash));
+        } else if (!remote.empty() && remote[0] != '/') {
+            // SCP-style SSH remote: git@host:owner/repo.git.
+            size_t colon = remote.find(':');
+            size_t at = remote.find('@');
+            if (colon != std::string::npos && at != std::string::npos && at < colon)
+                remote = remote.substr(at + 1, colon - at - 1) + "/" + remote.substr(colon + 1);
+        }
+    }
+    while (remote.size() > 1 && remote.back() == '/') remote.pop_back();
+    if (!localPath && remote.size() > 4 &&
+        remote.compare(remote.size() - 4, 4, ".git") == 0)
+        remote.resize(remote.size() - 4);
+    return remote;
 }

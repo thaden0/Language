@@ -1,6 +1,6 @@
 # Tech Design — Explicit Generic Type Arguments at Call Sites
 
-**Status:** READY FOR IMPLEMENTATION. **Date:** 2026-07-19.
+**Status:** COMPLETE — implemented and verified 2026-07-19. **Date:** 2026-07-19.
 **Source:** `docs/complete/research-explicit-generic-call-args.md` (the research input,
 archived when this decision-complete design was created).
 **Trigger:** LA-31 Stage 2's R8 forced deviation in
@@ -1033,5 +1033,45 @@ lane when LLVM is configured. Test counts are intentionally not frozen in this d
 
 ## 14. Implementation log
 
-No implementation has started. Append dated findings, STOP events, rulings, milestone evidence,
-and final validation here; do not rewrite the normative sections to hide deviations.
+**2026-07-19 — M0 baseline and design recovery.** The named design was absent from this
+checkout. Two untracked sibling drafts were inspected; the decision-complete call-only draft
+matching this request's scope was restored here. `info.md`, the research input, and this design
+were read before implementation. The checkout was merged with `origin/master` (the repository's
+actual mainline) before editing. Baseline parser/resolver/checker/meta and LA-31 expansion gates
+were green; direct repros confirmed that bare `f<T>(x)` remained comparison syntax and `::<`
+was an unused parser slot.
+
+**2026-07-19 — M1–M3 implemented.** Calls now own a deep-cloned/resolved/printed
+`explicitTypeArgs` vector. `parsePostfix` commits on `ColonColon` + `Lt`, parses types through the
+ordinary type grammar (including nested `>>`), and requires the value argument list. Checker
+selection validates construction/callable generic arity, filters overloads by that arity, seeds
+class or callable bindings authoritatively, substitutes receiver/value/default/injection/lambda
+expectations, and preserves ordinary no-list behavior. Construction, free/namespace functions,
+instance/base/optional methods, mixed overloads, named/default/injected values, precise
+diagnostics E1–E5, and target conflicts have focused coverage. Rules, default expressions,
+reifier copies, and LA-18 specialization copies preserve the vector; the transitive
+`outer::<T>` → `inner::<T>` specialization case is pinned.
+
+**2026-07-19 — M4 and LA-31 closure.** Reified lambdas now synthesize
+`expr::Expr::<Fn>(...)`; the five hand-authored twin fixtures and the expansion round-trip pin
+that spelling and no-double-reification behavior. While validating field-initializer reification,
+the new expression-carried TypeRefs exposed that `Resolver::resolveMember` did not visit member
+initializers; that general traversal hole was fixed. The new expansion corpus then exposed that
+the source printer omitted generic parameter lists on function/method declarations; it now emits
+them, allowing generic source plus explicit calls to reparse. Neither finding required runtime,
+IR, ABI, or backend semantic changes. The research input was archived with this design, and
+`docs/reference.md`/`info.md` now document exact arity, authority, call-only placement, and erasure.
+
+**2026-07-19 — acceptance evidence.** `git diff --check` and the focused 15-test matrix passed:
+parser/resolver/checker/meta, all five LA-31 twins, existing LA-31 expansion, and the explicit-call
+corpus on tree-walk, IR, emit-C++, LLVM, and expansion round-trip. The full configured matrix ran
+247 tests: 245 passed. Its two failures were proven pre-existing by rebuilding and rerunning the
+exact pre-change commit `a93dfe7126e5ae3c75b0024c2c0731bf0dfd90a5` in an isolated worktree:
+
+- frozen-ELF `corpus_churn_leak` reports the identical `field_cow_across_methods.ext` ARC debt
+  (N=100 16640B, N=800 128640B, +112000B) before and after this change;
+- `corpus_core_aarch64_qemu` fails before program entry in both builds because the host has no
+  `/lib/ld-linux-aarch64.so.1` and `LVRT_SYSROOT` is unset.
+
+Those baseline-only/out-of-scope failures do not alter the green active-engine acceptance result.
+All definition-of-done items are satisfied, so this design may move to `designs/complete/`.

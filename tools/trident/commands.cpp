@@ -2,10 +2,15 @@
 #include "checksum.hpp"
 #include "discover.hpp"
 #include "fetch.hpp"
+#include "index.hpp"
 #include "lock.hpp"
 #include "manifest.hpp"
+#include "package.hpp"
+#include "proxy.hpp"
+#include "provenance.hpp"
 #include "resolve.hpp"
 #include "semver.hpp"
+#include "vcs.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -70,15 +75,30 @@ bool regenerateLock(const std::string& manifestPath, const ProjectManifest& pm,
 // major<=1 bucket, unless the caller already knows a higher one).
 bool highestVersion(const std::string& path, int major, Version& out, std::string& err) {
     GitProvider provider;
+    std::string proxyEndpoint = tridentProxyEndpoint();
+    ProxyProvider proxy(proxyEndpoint);
+    ModuleProvider& selectedProvider = proxyEndpoint.empty()
+        ? static_cast<ModuleProvider&>(provider)
+        : static_cast<ModuleProvider&>(proxy);
     std::vector<Version> versions;
-    if (!provider.versions(ModuleId{path, major}, versions, err)) return false;
+    ModuleId mod{path, major};
+    if (!selectedProvider.versions(mod, versions, err)) return false;
     if (versions.empty()) {
         err = "no tags found for '" + path + "'";
         return false;
     }
-    out = versions[0];
-    for (const Version& v : versions)
-        if (compareSemVer(v, out) > 0) out = v;
+    bool found = false;
+    for (const Version& v : versions) {
+        bool yanked = false;
+        if (!checksumDbIsYanked(checksumDbPath(), mod, v, yanked, err)) return false;
+        if (yanked) continue;
+        if (!found || compareSemVer(v, out) > 0) out = v;
+        found = true;
+    }
+    if (!found) {
+        err = "every published version of '" + path + "' in this major is yanked";
+        return false;
+    }
     return true;
 }
 
@@ -124,6 +144,31 @@ bool copyTree(const std::string& srcDir, const std::string& dstDir, std::string&
     return ok;
 }
 
+bool parseVersionedSpec(const std::string& spec, std::string& path, Version& version,
+                        std::string& err) {
+    size_t at = spec.rfind('@');
+    if (at == std::string::npos || at == 0 || at + 1 == spec.size()) {
+        err = "expected <path>@<MAJOR.MINOR.PATCH>, got '" + spec + "'";
+        return false;
+    }
+    path = spec.substr(0, at);
+    if (!parseSemVer(spec.substr(at + 1), version, err)) {
+        err = "invalid version in '" + spec + "': " + err;
+        return false;
+    }
+    return true;
+}
+
+bool readLockForCommand(const std::string& manifestPath, Lockfile& lock, std::string& err) {
+    std::string path = lockfilePathFor(manifestPath);
+    std::string text;
+    if (!readWholeFile(path, text)) {
+        err = "no lock found at '" + path + "' — run `trident lock` first";
+        return false;
+    }
+    return parseLockfile(path, text, lock, err);
+}
+
 }  // namespace
 
 int cmdAdd(const std::string& manifestArg, const std::string& depSpec, const std::string& asName,
@@ -140,6 +185,23 @@ int cmdAdd(const std::string& manifestArg, const std::string& depSpec, const std
     if (at != std::string::npos) {
         path = depSpec.substr(0, at);
         version = depSpec.substr(at + 1);
+    }
+    // P2.3's optional thin index resolves only friendly names. Any explicit
+    // path bypasses it, preventing dependency-confusion shadowing.
+    std::string index = tridentIndexEndpoint();
+    if (!index.empty() && isFriendlyPackageName(path)) {
+        std::string resolved;
+        bool found = false;
+        if (!indexResolveName(index, path, resolved, found, err)) {
+            std::fprintf(stderr, "error: %s\n", err.c_str());
+            return 1;
+        }
+        if (!found) {
+            std::fprintf(stderr, "error: package name '%s' is not registered in TRIDENT_INDEX\n",
+                         path.c_str());
+            return 1;
+        }
+        path = resolved;
     }
     if (version.empty()) {
         // Major unknown without a version string — query the major<=1
@@ -346,7 +408,7 @@ int cmdWhy(const std::string& manifestArg, const std::string& path) {
     return 0;
 }
 
-int cmdAudit(const std::string& manifestArg) {
+int cmdAudit(const std::string& manifestArg, const std::string& policyPath) {
     std::string manifestPath, err;
     ProjectManifest pm;
     if (!loadManifestForCommand(manifestArg, manifestPath, pm, err)) {
@@ -375,6 +437,23 @@ int cmdAudit(const std::string& manifestArg) {
     for (const BuildListEntry& e : vr.buildList) {
         std::printf("OK   %s@%s  sha256:%s\n", e.mod.path.c_str(),
                     formatSemVer(e.selected).c_str(), e.contentHash.c_str());
+    }
+
+    std::string effectivePolicy = policyPath;
+    if (effectivePolicy.empty()) {
+        std::string companion = dirOf(manifestPath) + "trident.audit.toml";
+        struct stat st;
+        if (::stat(companion.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            effectivePolicy = companion;
+    }
+    if (!effectivePolicy.empty()) {
+        std::vector<std::string> policyReport;
+        if (!enforceAuditPolicy(effectivePolicy, vr.buildList, policyReport, err)) {
+            std::fprintf(stderr, "audit FAILED: %s\n", err.c_str());
+            return 1;
+        }
+        for (const std::string& line : policyReport) std::printf("%s\n", line.c_str());
+        std::printf("policy passed: %s\n", effectivePolicy.c_str());
     }
     std::printf("audit passed: %zu module(s) verified\n", vr.buildList.size());
     return 0;
@@ -414,5 +493,195 @@ int cmdVendor(const std::string& manifestArg) {
         }
     }
     std::printf("vendored %zu module(s) into %s\n", vr.buildList.size(), vendorDir.c_str());
+    return 0;
+}
+
+int cmdPublish(const std::string& manifestArg, const std::string& tag,
+               const std::string& modulePath, const std::string& signKey,
+               const std::string& identity, const std::string& artifact,
+               const std::string& attestationOut) {
+    if (!signKey.empty() && identity.empty()) {
+        std::fprintf(stderr, "error: --sign-key requires --identity <publisher>\n");
+        return 2;
+    }
+    if (signKey.empty() &&
+        (!identity.empty() || !artifact.empty() || !attestationOut.empty())) {
+        std::fprintf(stderr,
+            "error: --identity/--artifact/--attestation-out require --sign-key <private.pem>\n");
+        return 2;
+    }
+    PackageSnapshot package;
+    std::string err;
+    if (!inspectPackage(manifestArg, tag, modulePath, /*requireClean=*/true, package, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+
+    bool tagExists = false;
+    std::string taggedCommit;
+    if (!gitTagCommit(package.repoRoot, package.tag, tagExists, taggedCommit, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    bool createdTag = false;
+    if (tagExists) {
+        if (taggedCommit != package.commit) {
+            std::fprintf(stderr,
+                "error: immutable tag '%s' already points at %s, not current commit %s\n",
+                package.tag.c_str(), taggedCommit.c_str(), package.commit.c_str());
+            return 1;
+        }
+    } else {
+        if (!gitCreateTag(package.repoRoot, package.tag, package.commit, err)) {
+            std::fprintf(stderr, "error: %s\n", err.c_str());
+            return 1;
+        }
+        createdTag = true;
+    }
+
+    int identityMajor = package.version.major <= 1 ? 1 : package.version.major;
+    ModuleId mod{package.modulePath, identityMajor};
+    if (!checksumDbVerifyOrRecord(checksumDbPath(), mod, package.version,
+                                  package.contentHash, err)) {
+        if (createdTag) {
+            std::string rollbackErr;
+            gitDeleteTag(package.repoRoot, package.tag, rollbackErr);
+        }
+        std::fprintf(stderr, "error: publish integrity check failed: %s\n", err.c_str());
+        return 1;
+    }
+
+    std::string index = tridentIndexEndpoint();
+    if (!index.empty() &&
+        !indexRegisterName(index, package.manifest.name, package.modulePath, err)) {
+        std::fprintf(stderr,
+            "error: package tag and checksum were published, but optional index registration "
+            "failed: %s\n", err.c_str());
+        return 1;
+    }
+
+    std::string writtenAttestation;
+    if (!signKey.empty()) {
+        writtenAttestation = attestationOut.empty()
+            ? defaultAttestationPath(package, identity) : attestationOut;
+        if (!writeSignedAttestation(package, identity, signKey, artifact,
+                                    writtenAttestation, err)) {
+            std::fprintf(stderr,
+                "error: package tag and checksum were published, but attestation signing "
+                "failed: %s\n", err.c_str());
+            return 1;
+        }
+    }
+
+    std::printf("published %s@%s\n", package.modulePath.c_str(),
+                formatSemVer(package.version).c_str());
+    std::printf("  tag: %s (%s)\n", package.tag.c_str(), package.commit.c_str());
+    std::printf("  hash: sha256:%s\n", package.contentHash.c_str());
+    if (!index.empty())
+        std::printf("  index: %s -> %s\n", package.manifest.name.c_str(),
+                    package.modulePath.c_str());
+    if (!writtenAttestation.empty())
+        std::printf("  attestation: %s\n", writtenAttestation.c_str());
+    return 0;
+}
+
+int cmdYank(const std::string& moduleSpec) {
+    std::string path, err;
+    Version version;
+    if (!parseVersionedSpec(moduleSpec, path, version, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 2;
+    }
+    std::string index = tridentIndexEndpoint();
+    if (!index.empty() && isFriendlyPackageName(path)) {
+        std::string resolved;
+        bool found = false;
+        if (!indexResolveName(index, path, resolved, found, err) || !found) {
+            if (err.empty()) err = "package name '" + path + "' is not registered";
+            std::fprintf(stderr, "error: %s\n", err.c_str());
+            return 1;
+        }
+        path = resolved;
+    }
+    ModuleId mod{path, version.major <= 1 ? 1 : version.major};
+    if (!checksumDbYank(checksumDbPath(), mod, version, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("yanked %s@%s (existing locks remain valid)\n", path.c_str(),
+                formatSemVer(version).c_str());
+    return 0;
+}
+
+int cmdAttest(const std::string& manifestArg, const std::string& modulePath,
+              const std::string& privateKey, const std::string& identity,
+              const std::string& artifact, const std::string& outputPath) {
+    if (privateKey.empty() || identity.empty()) {
+        std::fprintf(stderr, "error: attest requires --key <private.pem> and --identity <name>\n");
+        return 2;
+    }
+    PackageSnapshot package;
+    std::string err;
+    if (!inspectPackage(manifestArg, "", modulePath, /*requireClean=*/true, package, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    std::string destination = outputPath.empty()
+        ? defaultAttestationPath(package, identity) : outputPath;
+    if (!writeSignedAttestation(package, identity, privateKey, artifact, destination, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("%s\n", destination.c_str());
+    return 0;
+}
+
+int cmdAuditRecord(const std::string& manifestArg, const std::string& moduleSpec,
+                   const std::string& auditor, const std::string& outputPath) {
+    if (auditor.empty()) {
+        std::fprintf(stderr, "error: audit-record requires --auditor <name>\n");
+        return 2;
+    }
+    std::string manifestPath, err;
+    ProjectManifest pm;
+    if (!loadManifestForCommand(manifestArg, manifestPath, pm, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    std::string path;
+    Version requested;
+    if (!parseVersionedSpec(moduleSpec, path, requested, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 2;
+    }
+    Lockfile lock;
+    if (!readLockForCommand(manifestPath, lock, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    const LockedModule* selected = nullptr;
+    for (const LockedModule& module : lock.modules) {
+        Version version;
+        std::string parseErr;
+        if (module.mod.path == path && parseSemVer(module.selected, version, parseErr) &&
+            compareSemVer(version, requested) == 0) {
+            selected = &module;
+            break;
+        }
+    }
+    if (!selected) {
+        std::fprintf(stderr, "error: %s@%s is not present in %s\n", path.c_str(),
+                     formatSemVer(requested).c_str(), lockfilePathFor(manifestPath).c_str());
+        return 1;
+    }
+    AuditRecord record{path, formatSemVer(requested), selected->hash, auditor};
+    std::string destination = outputPath.empty()
+        ? dirOf(manifestPath) + "trident.audits.toml" : outputPath;
+    if (!appendAuditRecord(destination, record, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("recorded audit by %s for %s@%s in %s\n", auditor.c_str(), path.c_str(),
+                formatSemVer(requested).c_str(), destination.c_str());
     return 0;
 }

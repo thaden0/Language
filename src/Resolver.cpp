@@ -6182,17 +6182,18 @@ std::string Resolver::resolveType(TypeRef* t, Scope* scope) {
     return t->canonical;
 }
 
-// Descend through an expression to resolve the TypeRefs a `match` carries — its
-// arm patterns, and (recursively) any declarations in an arm body. The
+// Descend through an expression to resolve TypeRefs carried in expression
+// position: explicit Call type arguments and `match` arm patterns, plus
+// (recursively) any declarations in an arm body. The
 // statement-level pass otherwise never reaches these: a `match` reaching a
 // statement position is wrapped in an `ExprStmt` (or sits in a Var initializer /
 // return / etc.), so a union-typed `Var` declared *inside* an arm block never
 // had its type resolved, leaving the union's members unresolved (canonical "")
-// and misfiring the inner match's exhaustiveness check. Only `match` arm
-// patterns/bodies are resolved here; `is`/`inject` targets stay on the checker's
-// existing lazy path, so programs with no nested match are unaffected.
+// and misfiring the inner match's exhaustiveness check. `is`/`inject` targets
+// stay on the checker's existing lazy path.
 void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
     if (!e) return;
+    for (TypeRefPtr& t : e->explicitTypeArgs) resolveType(t.get(), scope);
     if (e->kind == ExprKind::Match) {
         resolveExprTypes(e->a.get(), scope);         // subject
         for (MatchArm& arm : e->arms) {
@@ -6204,7 +6205,7 @@ void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
         }
         return;
     }
-    // Generic descent: find matches nested anywhere inside the expression.
+    // Generic descent: find expression-carried types nested anywhere.
     resolveExprTypes(e->a.get(), scope);
     resolveExprTypes(e->b.get(), scope);
     resolveExprTypes(e->c.get(), scope);
@@ -6378,6 +6379,10 @@ void Resolver::resolveMember(Stmt* m, Scope* classScope) {
     if (m->type) resolveType(m->type.get(), scope);
     for (Param& p : m->params)
         if (p.type) resolveType(p.type.get(), scope);
+    // Fields and other member declarations may carry initializer expressions.
+    // Their embedded type syntax (including call-site `::<...>` arguments)
+    // must resolve in the same generic/class scope as the declaration itself.
+    resolveExprTypes(m->init.get(), scope);
     if (m->memberBody) resolveStmtTypes(m->memberBody.get(), scope);
 }
 

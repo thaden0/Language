@@ -67,6 +67,7 @@ private:
     ExprPtr parseParenOrLambda();
     ExprPtr parseMatch();
     std::vector<ExprPtr> parseArgs();          // ( a, b, c )
+    std::vector<TypeRefPtr> parseExplicitTypeArgs(); // ::<T, U>
     std::vector<ExprPtr> parseMacroArgs();     // adds scoped `...` raw strings
     bool looksLikeLambda() const;
     ExprPtr parseArrayElement();               // an array literal element, incl. $for (§5)

@@ -635,6 +635,15 @@ int main() {
                "runtime target::os stays an ordinary unresolved name");
     }
 
+    // Explicit call type arguments survive quasiquote/rule cloning and pass-2
+    // resolution. Dropping the vector leaves make() without a concrete LA-18
+    // tuple, so this CLEAN assertion is load-bearing rather than cosmetic.
+    CLEAN("namespace W { attribute Add {} rule add { match @Add on method m "
+          "inject `R value = make::<R>(1);` at top of body } } "
+          "class R { new R() { } new FromInt(int value) { } } "
+          "T make<T>(int value) => T::FromInt(value); "
+          "uses W; class K { @Add void f() { } } K k = K(); k.f();");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

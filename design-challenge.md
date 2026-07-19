@@ -64,7 +64,7 @@ Excluded:
 | `designs/atlantis/techdesign-04-di-config.md` | 5 | DI uses existing `bind` machinery, but config parsing, options validation, command dispatch, and composition-root conventions create many integration points. |
 | `designs/complete/techdesign-03-core-types.md` | 6 | Adds/finishes core value surfaces (`char`, `enum`, `Block`) with parser/checker/runtime/backend implications and ABI-sensitive gaps. |
 | `designs/complete/techdesign-08-system-natives.md` | 6 | Broad platform floor: argv/env/exit, time/random, dirs, isatty, sockets, DNS, and spawn. Testing across engines and OS behavior dominates. |
-| `designs/techdesign-package-manager.md` | 6 | Trident dependency management needs manifest semantics, Git deps, MVS, lockfiles, store layout, integrity, and publishing seams. |
+| `designs/complete/techdesign-package-manager.md` | 6 | Trident dependency management needs manifest semantics, Git deps, MVS, lockfiles, store layout, integrity, and publishing seams. |
 | `designs/atlantis/techdesign-03-serialization.md` | 6 | Compile-time generation, JSON conversion, content negotiation, DTO conventions, and metaprogramming probes make this a serious framework/compiler boundary task. |
 | `designs/atlantis/techdesign-09-views.md` | 6 | Template parser/runtime, escaping model, fragments, content negotiation, and boot diagnostics. It is framework-local, but security and UX details matter. |
 | `designs/atlantis/techdesign-01-kernel.md` | 7 | Core web kernel: middleware fold, `Context`, server bootstrap, error mapping, static files, logging, ops endpoints, SSE, and async readiness. |
