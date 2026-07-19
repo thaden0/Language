@@ -1,0 +1,38 @@
+// Track "stdlib tail methods" M2 (designs/techdesign-stdlib-tail-methods.md
+// §2): string.subStrRange(Range) -- a byte-indexed range slice over subStr,
+// shipped as a DISTINCT name rather than a subStr(Range) overload (see the
+// design's §2.1 X64Gen genCallM hazard: a same-named body-bearing overload
+// would hijack every bare self-call to subStr(int,int) inside class string
+// on the frozen --emit-elf backend). subStrRange never touches the `subStr`
+// name.
+
+string s = "Hello, World!";     // indices: H0 e1 l2 l3 o4 ,5  6 W7 o8 r9 l10 d11 !12
+
+// mid-string range
+console.writeln(s.subStrRange(7 .. 11));    // World
+
+// range touching the start
+console.writeln(s.subStrRange(0 .. 4));     // Hello
+
+// range touching the end
+console.writeln(s.subStrRange(8 .. 12));    // orld!
+
+// single-char range (start == end)
+console.writeln(s.subStrRange(7 .. 7));     // W
+
+// backwards/empty range -> "" (defined, not an error, sidesteps the
+// cross-engine negative-len native disagreement entirely)
+console.writeln(s.subStrRange(5 .. 2));     // (empty)
+
+// range extending past length() -> clamps, doesn't throw (matches subStr's
+// historical clamp; unlike Array.slice, which throws)
+console.writeln(s.subStrRange(10 .. 50));   // ld!
+
+// --- regression tripwire (§5#1 / M2 acceptance): re-exercise the existing
+// subStr-based toolkit after subStrRange lands, standing guard against the
+// hazard ever silently reappearing (e.g. if a future edit renames this back
+// into a same-named subStr overload).
+console.writeln("a,b,,c".split(","));                     // [a, b, , c]
+console.writeln("hello world".replace("o", "0"));         // hell0 w0rld
+console.writeln("abcabcabc".indexOfFrom("abc", 1));        // 3
+console.writeln("   hi  ".trimStart() + "|");              // hi  |

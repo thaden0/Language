@@ -987,9 +987,9 @@ sanctioned way to strip it from CRLF input.
 |---|---|
 | core (native) | `length()`, `charAt(int)`, `subStr(int start, int len)`, `indexOf(string)`, `toInt() -> int?`, `toFloat() -> float?`, `byteAt(int) -> int`, `toUpper()`, `toLower()`, `trim()`, `contains(string)`, `startsWith(string)`, `endsWith(string)`, `toString()` |
 | char (Track 03) | `at(int i) -> char` (native; decodes the scalar **starting at byte offset `i`** — O(1), pairs with the byte-counted `length()`; a mid-sequence byte offset → `RuntimeException` "not a scalar boundary"), `chars() -> Array<char>` (native; full UTF-8 decode — O(n) time *and* allocation; strict RFC 3629 — overlongs, surrogates, and code points > U+10FFFF are all rejected; ill-formed bytes decode to U+FFFD per the WHATWG maximal-subpart rule, never a throw — data is not a programming error) |
-| search | `lastIndexOf(string)`, `indexOfFrom(string, int from)` (not an `indexOf` overload — a same-class overload would ride the arity-blind by-name fallback prelude bodies fall back to, bug.md #13), `count(string)` (`""` → 0) |
+| search | `lastIndexOf(string)`, `indexOfFrom(string, int from)` (not an `indexOf` overload — a same-class overload would ride the arity-blind by-name fallback prelude bodies fall back to, bug.md #13), `indexOfAny(Array<string> needles) -> int` (earliest index at which ANY needle occurs, `-1` if none do incl. empty `needles`; POSITION wins, not needle-array order; `""` in `needles` → `0` always, `indexOf("")` is `0` on every engine), `count(string)` (`""` → 0) |
 | split/join | `split(string sep)` (empty `sep` → array of 1-char strings; keeps empty segments), `splitLines()` (splits `\n`, trims one trailing `\r` per line) |
-| transform | `replace(string from, string to)`, `padStart(int, string)`, `padEnd(int, string)`, `repeat(int)` (`<= 0` → `""`), `trimStart()`, `trimEnd()`, `removePrefix(string)`, `removeSuffix(string)`, `reverse()` (UTF-8-correct — reverses **scalars**, not bytes) |
+| transform | `replace(string from, string to)`, `padStart(int, string)`, `padEnd(int, string)`, `repeat(int)` (`<= 0` → `""`), `trimStart()`, `trimEnd()`, `removePrefix(string)`, `removeSuffix(string)`, `reverse()` (UTF-8-correct — reverses **scalars**, not bytes), `subStrRange(Range) -> string` (byte-indexed range slice over `subStr`; see callout below) |
 | queries | `isEmpty()`, `isBlank()` (`trim().isEmpty()`), `equalsIgnoreCase(string)` |
 
 **`toInt()`/`toFloat()` are strict, optional-returning parses** (Track 04
@@ -1023,6 +1023,22 @@ backend's lanes, same as `toInt`/`toFloat`.
 the `é` intact — a byte reverse would shred every multi-byte sequence. Ill-formed
 bytes normalize to U+FFFD first (the `chars()` policy below), so reversal of
 ill-formed input is lossy by design; for byte-faithful work use `Block`.
+
+**`subStrRange(Range r) -> string`** is a byte-indexed range slice, matching
+`subStr(start, len)` exactly — `Range` has no unit of its own, so this is the
+byte-indexed core, not a new rune-indexed slice (see Bytes vs scalars, below).
+`Range` is inclusive-inclusive, so `len = r.end - r.start + 1`. Deliberately
+**not** a `subStr(Range)` overload: a same-named body-bearing overload added
+to `class string` would hijack every existing bare self-call to
+`subStr(int,int)` inside the class on the frozen `--emit-elf` backend
+(name-only, arity-blind `X64Gen::genCallM` dynamic dispatch —
+`designs/techdesign-stdlib-tail-methods.md` §2.1), silently corrupting
+`split`/`replace`/`padStart`/`trimStart`/etc. on that one engine. A backwards
+or empty range (`r.end < r.start`) is a defined `""` on every engine,
+decided before the native `subStr`'s own cross-engine negative-`len`
+disagreement is ever reached. An out-of-range `r.end` (`>= length()`) clamps
+rather than throwing — matches `subStr`'s historical clamp, unlike
+`Array.slice`, which throws on OOB.
 
 **Bytes vs scalars.** The byte-indexed world (`length()`, `indexOf`, `subStr`,
 `charAt`, `byteAt`) stays the primary, O(1) index world; `chars()` is the
@@ -1121,7 +1137,7 @@ substituted in and its body's inferred return type binds the rest); see
 | queries | `where(pred)` / `filter(pred)`, `any(pred)`, `all(pred)`, `count(pred)`, `contains(T)`, `indexOf(T)`, `indexWhere(pred)` (-1 miss), `find(pred)` → `T?` |
 | transforms | `map<U>(fn)` / `select<U>(fn)`, `reduce<A>(seed, fn)`, `flatMap<U>(fn)`, `forEach(fn)`, `reverse()`, `take(int)`, `skip(int)`, `takeWhile(pred)`, `skipWhile(pred)`, `concat(Array<T>)`, `unique()` (dedup by `==`; **not** `distinct` — that's a reserved member-modifier keyword), `withIndex()` → `Array<Pair<int,T>>`, `groupBy<K>(fn)` → `Map<K, Array<T>>` |
 | pure updates | `insertAt(int, T)`, `removeAt(int)`, `with(int i, T v)` (index-set, distinct overload from `Map.with`'s key-set — same vocabulary, no clash), `slice(int from, int len)` (throws on OOB, unlike `string.subStr`'s clamp) — all bounds errors throw `RuntimeException` |
-| sorting | `sort((T,T)=>int cmp)` (**stable** merge sort — equal-key relative order preserved), `sortBy<K>(fn)` (duck-typed `<` on `K`; a `K` without `<` is an instantiation-time error), `minBy<K>(fn)` → `T?`, `maxBy<K>(fn)` → `T?` |
+| sorting | `sort((T,T)=>int cmp)` (**stable** merge sort — equal-key relative order preserved), `sortBy<K>(fn)` (duck-typed `<` on `K`; a `K` without `<` is an instantiation-time error), `minBy<K>(fn)` → `T?`, `maxBy<K>(fn)` → `T?`, `orderBy<K>(fn)` → `OrderedArray<T>` (multi-key sort entry point — see §6.3.6) |
 | relational | `join<U>(Array<U>, (T,U)=>bool)` → `Array<Pair<T,U>>`; `groupJoin<U>(...)` → `Array<Pair<T,Array<U>>>`; `zip<U>(Array<U>)` → `Array<Pair<T,U>>` (length = shorter of the two) |
 | strings | `joinToString(string sep)`, `concatAll()` (native; O(total) — sum lengths, one allocation, memcpy each part; Track 04 M4). Declared on `Array<T>` generically (no specialization exists) but only meaningful, and only ever called, on an `Array<string>` — it's the engine behind `StringBuilder.toString()`. Excluded from the frozen ELF backend's lanes, same as `toInt`/`toFloat`/`byteAt`. |
 | iteration / lazy | `iterator()` → `IIterator<T>` (protocol uniformity — §6.4.8; `for..in` over an array keeps its fast path), `asSeq()` → `Seq<T>` (the bridge into the lazy pipeline — §6.4.9) |
@@ -1158,6 +1174,35 @@ under 0.1s on each); the oracle and IR interpreter remain quadratic for self-app
 — a separate, pre-existing gap in their shared native call path (bug.md), not something this
 class's shape triggers. `(<<)` does not currently lower on the emit-C++ backend for
 user-defined classes (bug.md) — use `.add(...)` there; `--run`/`--ir`/LLVM all support it.
+
+### 6.3.6 `OrderedArray<T>` — multi-key stable sort (`orderBy`/`thenBy`)
+
+```
+class OrderedArray<T> : IIterable<T> {
+    OrderedArray<T> thenBy<K>((T) => K key);   // tie-break WITHIN runs only
+    Array<T> toArray();
+    int length();
+    bool isEmpty();
+    IIterator<T> iterator();                   // direct for..in, no unwrap needed
+}
+```
+
+`Array<T>.orderBy<K>((T) => K key) -> OrderedArray<T>` is the entry point;
+`.thenBy<K>(fn)` chains an arbitrary number of secondary keys, each one
+tie-breaking only within groups still tied on every earlier key —
+`arr.orderBy(p => p.lastName).thenBy(p => p.firstName)`. `orderBy` is
+`thenBy`'s one-run degenerate case (same algorithm, same stability guarantee,
+not a separate implementation). `thenBy` does not exist on plain `Array<T>` —
+only on `OrderedArray<T>` — so there is no method a caller could invoke on an
+unsorted array expecting stray tie-break behavior; get a plain `Array<T>`
+back via `.toArray()`, or iterate the wrapper directly.
+
+Pure, in-language, zero-native — the same wrapper mold as `Set<T>` (§6.4.7):
+narrow read surface over native operations, `Array<T>.sort`'s stability
+reused rather than a hand-rolled segmented sort. Not meant to be
+hand-constructed (same norm as `RangeIterator`/`ArrayIterator` — no
+`private`/module-visibility keyword exists in the language yet); produced by
+`orderBy`/`thenBy`.
 
 ### 6.4.4 Regex engine core (Track 10)
 
