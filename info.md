@@ -326,6 +326,36 @@ as-implemented reference, and the git history):
   (`lvThreadCopy`/`lv_flatten`) — a disposable stream rejects naming the type, a plain
   in-memory one still crosses; pins in `tests/corpus/tasks/spawn_{disposable,plain}_stream_*`.
   Design + `techdesign-terminal-floor.md` §8-q1 (closed) in `designs/complete/`.
+- **`InStream<T> : IIterable<T>` (D-B) — LANDED 2026-07-19** (§13,
+  `techdesign-http-and-streams-maturity.md`): the stream substrate's last v1
+  gap closes — `for (T x in stream)` now works directly, and `stream.asSeq()`
+  joins the same lazy `Seq<T>` pipeline arrays get. `hasNext()` genuinely
+  **parks** on an internal waiter `Promise<bool>` that the next `push`/`close`
+  resolves — the same suspension surface `await` uses (no new native, no new
+  IR op), so it needs true suspension and is oracle/IR/LLVM only. Also lands
+  `pullOrNone()` (the honest non-blocking pull SU-1's hand-off deferred) and
+  fixes `pull`/`pullOrNone`/iteration to drain whatever is already buffered
+  before recognizing end-of-stream (SU-1's `pull()` itself is UNCHANGED —
+  closed still wins unconditionally there, pinned by `unsub_inmem.lev` — the
+  drain rule is new surface, not a retcon of that contract). Prelude-only, no
+  native/IR/ABI change, **except** one small `CGen.cpp` reachability fix:
+  emit-C++'s by-name method index over-marked `InStream`/`StreamSeq`'s
+  `iterator()` (and, transitively, `StreamIterator.hasNext()`'s `await`,
+  which this backend cannot lower) reachable in ANY program that merely
+  constructs a stream, even one that never iterates — the SU-1
+  `TaskGroup::close`/`sysTaskCancel` lesson recurring on a different
+  reachability path (the eager "every instantiated class pulls in all its
+  members" walk, not the by-name-dispatch one SU-1 gated); fixed by excluding
+  the stream-iteration-protocol method names from both marking paths, relying
+  on the by-name/instantiation gate SU-1 already built for everything that
+  genuinely needs it. D-A (HTTP client pooling) and D-C's in-language DNS
+  resolver remain deferred — neither trigger has fired (`techdesign-http-and-
+  streams-maturity.md` §0/§4). **Found+filed `known_bugs_2.md` #90** (P2, NOT
+  fixed — pre-existing, unrelated, out of scope): LLVM leaks ~128B/iteration
+  when a class-field `Array<T>` is mutated via `.add()`/`.skip()` across two
+  separate method calls (e.g. `StreamBuffer.push()` then `.pull()`); bisected
+  against the pre-D-B tree and reduced to a repro with no stream involvement
+  at all. `fuzz/task_churn/park_inside_callback.lev` is XFAIL-LLVM against it.
 
 
 **Backend status — read this before citing a backend.** The **pure x86-64 / ELF backend
@@ -1487,9 +1517,12 @@ a claimed stream is a loud error. Queue vs broadcast is the streams-vs-events di
 kept honest (§11: one word never means two things).
 
 Extraction: `reader >>` (the value-returning extract) is `reader.pull()`; pull on an empty
-in-memory stream is a loud error (system streams will block instead once the runtime loop
-exists). `sysReadLine` returning `""` signals end of input — an interim convention that a
-Result-shaped signal replaces.
+stream is a loud error — a caller that wants to wait instead of throwing has two options
+(D-B, `techdesign-http-and-streams-maturity.md`): drive the stream through `for..in`/
+`IIterable<T>` (`hasNext()` parks on the event loop until data arrives or the stream
+closes — real suspension, LA-30, not a spin), or poll explicitly with `pullOrNone()`
+(`None` = nothing right now, no park). `sysReadLine` returning `""` signals end of input —
+an interim convention that a Result-shaped signal replaces.
 
 Four types over one substrate:
 

@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | #88, #89 |
 | P1       | #83, #86 |
-| P2       | — |
+| P2       | #90 |
 | P3       | — |
 | P3       | — |
 
@@ -334,3 +334,77 @@ therefore demonstrates only the plain-comparison/arithmetic shapes (which
 reify correctly through `Query<E>`) and does **not** include a whitelisted
 call, with this bug cited inline — logged in
 `designs/expr-reification/techdesign-03-verification.md` §10.
+
+---
+
+## #90 [P2] — LLVM leaks ~128B per iteration when a class field `Array<T>` is mutated (`.add()`/`.skip()`) by two *separate* method calls, even though the same mutation inline or through one method does not leak
+
+**Markers:** P2.2 (output is byte-identical and correct on every engine —
+oracle/IR/LLVM all agree, `--mem-verify`'s root-set stays constant in N — only
+LLVM's escaping-tier live-at-exit grows linearly with N; not P0.3/P1.1 since
+nothing is silently wrong *value*-wise, only resource accounting).
+
+Found via `fuzz/task_churn/` while implementing
+`designs/complete/techdesign-http-and-streams-maturity.md` (D-B): a churn program that
+calls `StreamBuffer.push()` then `StreamBuffer.pull()`/`pullRaw()` in a loop
+(the ordinary shape — a producer method and a consumer method mutating the
+same buffered `Array` field across two calls) leaked ~384B/iteration on
+`--engine llvm`. Bisected with `git stash` to confirm it predates this
+branch's changes entirely, then reduced to a repro with no relation to
+streams at all:
+
+```
+class Box {
+    Array<int> items;
+    void push(int v) { items = items.add(v); }
+    int pop() { int v = items.first(); items = items.skip(1); return v; }
+}
+void iterate(int seed) {
+    Box b = Box();
+    b.push(seed);
+    int v = b.pop();
+}
+void run(int n) { for (int i in 1..n) iterate(i); }
+run(@N@);
+```
+
+`fuzz/churn_leak.py --engine llvm` on this shape: `live-at-exit` grows
+~128B/iteration (N=1 → 768B, N=20 → 3200B) while the `--mem-verify` oracle
+root set stays constant — a leak, not genuine retention. Two negative
+controls isolate the trigger precisely:
+
+- **Same field, same two methods, `.add()`+`.first()`+`.skip()` all inlined
+  into ONE function body instead of two methods (`Box`'s field accessed
+  directly as `b.items = b.items.add(...)` etc. inside `iterate()` itself,
+  no `push()`/`pop()` methods)** — flat, no leak.
+- **A bare local `Array<int>` variable (not a field) mutated by
+  `.add()`/`.first()`/`.skip()` inline in one function** — DOES leak, same
+  rate — so the trigger is not "crossing a method boundary" alone; a bare
+  local reassigned through the COW `add`/`skip` pair also leaks, while the
+  *same operations threaded through an object field, done inline in one
+  function*, does not.
+
+The common factor across the leaking shapes (two-methods-on-a-field,
+bare-local-inline) versus the one that doesn't (field-inline-in-one-function)
+points at the LLVM backend's refcount/release codegen for a value
+reassigned via `arr = arr.add(x)` / `arr = arr.skip(n)` (copy-on-write Array
+ops returning a *new* backing store) — the old backing store's release
+appears to be dropped on some but not all of these paths. Not isolated
+further (`src/LlvmGen.cpp`'s Array COW lowering / `runtime/lv_runtime.c`'s
+array release path is the likely region; out of this design's scope to dig
+into further).
+
+**Root-cause pointer:** not confirmed; likely `src/LlvmGen.cpp`'s codegen
+for `Op::Call` on `Array.add`/`Array.skip` (or the COW release path in
+`runtime/lv_runtime.c`) failing to emit/hit the old-backing-store release on
+some call shapes. `--mem-verify`'s reachability oracle staying flat while
+the escaping-tier meter grows is the standard leak signature this project's
+churn nets already use to attribute (`fuzz/churn_leak.py`'s own module
+docstring).
+
+**Workaround:** none needed at the language level — output is correct on
+every engine; this is resource-only. `fuzz/task_churn/park_inside_callback.lev`
+(added by D-B, exercises exactly the `push()`-then-`pull()`-across-a-park
+shape that surfaced this) is marked `XFAIL` citing this entry rather than
+gated out of the corpus, so it converges to a guarded PASS automatically
+once #90 is fixed (`fuzz/churn_leak.py`'s XFAIL/XPASS convention).
