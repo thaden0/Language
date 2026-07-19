@@ -7,6 +7,13 @@ generic-class/struct machinery behind `Pair`, ordinary operator-overload and
 struct-recursive `Map`-key rule, and the landed dense/columnar `Array<struct>` layout
 (`designs/complete/techdesign-columnar-arrays.md`). No new natives, no new IR ops, no
 backend edits.
+**Related track (delivers the columnar tier):**
+`designs/techdesign-generic-value-struct-columnar.md` — per-instantiation shape
+monomorphization that upgrades generic value-struct arrays (including these tuples) from
+row-major dense to columnar. **Independent, not a hard dependency** (§7): this design
+stands alone and delivers row-major dense tuple arrays by itself; if that track lands
+first, the tuples reach the columnar tier the instant they flip to structs, with no
+tuple-specific work.
 **Source (the ask):** `designs/requests/accepted/request-tuple-triple.md`.
 **Source (the evidence):** `designs/complete/research-triple.md` — the precedent survey
 and the class/struct option analysis. Two follow-up investigations extended it and are
@@ -279,10 +286,15 @@ one id shared by every instantiation of a generic class, so `Pair<int,int>` and
 **Net: `Array<Pair<int,int>>` (as a struct) is row-major dense, not columnar.** Getting it
 columnar needs per-instantiation monomorphization of eligible generic value structs —
 mint a distinct symbol+classId per concrete `(class, args)` with substituted field
-canonicals, and thread the concrete `Type` (not the bare symbol) from `Checker.cpp:787`
-through the three `Lower.cpp` sites. That is a real track, sized well beyond "add a tuple,"
-and is **explicitly not undertaken here**. It is the natural next step if profiling shows
-the row-major tuple arrays want the further 2× and column-selectivity.
+canonicals, and route construction + array typing to it. That is designed in full as its
+own track: **`designs/techdesign-generic-value-struct-columnar.md`**, which rides the
+existing LA-18 specialization cloner (`src/Checker.cpp:4521`) and requires **no**
+`lv_abi.h` change (the descriptor emitter already describes any symbol with scalar slots).
+It is **explicitly not undertaken here** and is sized well beyond "add a tuple." Per the
+owner's sequencing it is intended to land **before** this ticket, so the tuples reach the
+columnar tier the moment they flip to structs (§10 of that doc; the two tracks are
+independent — see this design's header). If instead this ticket lands first, the tuple
+arrays are row-major dense in the interim and upgrade to columnar when that track lands.
 
 ### 7.2 Why anonymous tuples are the *cleaner* columnar path (and still deferred)
 
