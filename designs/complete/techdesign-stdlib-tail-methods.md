@@ -435,5 +435,71 @@ blocks the others or is blocked on anything new") — any can land first.
 
 ## 9. Implementation log
 
-*(empty — fill in at landing time, per this repo's own convention: date,
-engines validated, any deviation from this design and why, bugs found/filed.)*
+**2026-07-19 — all three milestones (M1/M2/M3) landed as designed, no
+deviations from the shipped shape.**
+
+- `string.indexOfAny` landed beside `indexOfFrom` (`src/Resolver.cpp`).
+  `tests/corpus/strings_ext.ext` extended with the M1 acceptance cases
+  (distinct-position earliest-wins, order-independence, no-match, empty
+  `needles`, `""` in `needles`); `.expected` updated to match.
+- `string.subStrRange(Range)` landed beside `subStr`'s native declaration,
+  as a distinct name per §2.2 — never an overload. New
+  `tests/corpus/strings_subrange.lev` covers the M2 acceptance cases (mid,
+  start-touching, end-touching, single-char, backwards/empty, past-`length()`)
+  plus the regression tripwire re-exercising `split`/`replace`/`indexOfFrom`/
+  `trimStart`.
+- `Array<T>.orderBy<K>` / `OrderedArray<T>.thenBy<K>` / `OrderedArrayIterator<T>`
+  landed exactly as designed (`orderBy` = `thenBy`'s one-run degenerate case).
+  New `tests/corpus/arrays_orderby.lev` covers all of M3's acceptance rows
+  (a)-(g), including the stability-proof case (§6 M3c): a 6-record roster
+  with a repeated primary key and, within it, a repeated secondary key,
+  proving both that different-primary-key groups never interleave and that
+  records tied on **both** keys keep their original input order.
+- **P1 (generic-inference-on-a-new-class probe):** ran as the real feature
+  rather than a separate toy probe — `orderBy`/`thenBy` on `OrderedArray<T>`,
+  a brand-new user-defined generic class, type-checked and ran correctly on
+  first full build across the oracle, IR, emit-C++, and LLVM engines once a
+  transcription bug (below) was fixed. The lambda-last `genericReturn`
+  mechanism generalized cleanly to a non-collection receiver class; no
+  checker changes were needed. STOP condition (§8, P1 branch) not triggered.
+- **P2 (X64Gen `genCallM` hazard, confirmatory):** **not run**, per the
+  project's standing policy that the frozen backend is never run, verified,
+  or tested, in any circumstance, including confirmatory probes such as this
+  one. §2.1's hazard finding rests on the design's own direct source reading
+  of `X64Gen.cpp:2180-2235` alone; `subStrRange` was shipped as a distinct
+  name on that basis, which is sufficient by construction regardless of
+  whether the probe would have reproduced the hazard.
+- **Bug found + fixed during implementation (not filed to bug.md — caught
+  and fixed before landing, no red state ever committed):** the design's own
+  §3.2 code block writes `sorted.select(pr => pr.second)` — a single-param
+  lambda argument with no parens around `pr`. This does not parse as a
+  lambda in this language (bare single-identifier-arrow is invalid callarg
+  syntax; confirmed with a minimal repro outside the prelude, which fails
+  loudly with parser diagnostics). Inside the prelude specifically it parsed
+  without a diagnostic into something else entirely and only surfaced at
+  runtime, as `Uncaught RuntimeException: cannot resolve call target 'fn'`
+  (from `Array.map`'s own parameter name, three frames away from the actual
+  mistake) — worth flagging for whoever next touches prelude-source
+  parsing/validation, since a silent wrong-parse with no diagnostic at the
+  point of the mistake is a sharper edge than an ordinary parse error would
+  be. Fixed by parenthesizing: `sorted.select((pr) => pr.second)`. No
+  design-level consequence — the algorithm itself was unaffected, this was
+  purely a transcription-into-code error.
+- **Engines validated:** oracle (`--run`), IR (`--ir`), emit-C++
+  (`--emit-cpp` via `run_native.sh`), and LLVM (`--native-obj` via
+  `run_native_llvm.sh`) — all four green, byte-identical against the
+  `.expected` files, for all three new/extended corpus files. The frozen
+  `--emit-elf` backend was intentionally never run (see P2 above); the new
+  `.lev` corpus files (`strings_subrange.lev`, `arrays_orderby.lev`) use the
+  `.lev` extension per repo convention, which also means the ELF-only
+  `run_elf.sh` glob (`*.ext`) does not pick them up — `strings_ext.ext`'s
+  `indexOfAny` extension does still ride the shared `tests/corpus/` ELF lane
+  since it's a pre-existing `.ext` file, consistent with M1 needing no
+  backend-specific exclusion (plain in-language code over an
+  already-covered native).
+- `docs/reference.md` §6.1 (search row + `subStrRange` callout paragraph +
+  transform-row entry) and §6.3 (sorting row + new §6.3.6 `OrderedArray<T>`
+  subsection) updated per §7.
+- No new natives, no backend edits outside the ones explicitly excluded by
+  design (X64Gen/CGen/LlvmGen/RuntimeNatives/lv_runtime.c/lv_abi.h all
+  untouched) — the zero-new-natives prime directive held throughout.
