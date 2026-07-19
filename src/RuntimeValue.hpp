@@ -392,6 +392,15 @@ inline Value arithPrim(TokenKind op, const Value& l, const Value& r,
     if (l.kind == VKind::None || r.kind == VKind::None) {
         if (op == TokenKind::EqEq)   return vbool(l.kind == r.kind);
         if (op == TokenKind::BangEq) return vbool(l.kind != r.kind);
+        // Relational ops on a None-valued optional operand: pinned false,
+        // never a real ordering (designs/expr-reification/techdesign-01 §3.1).
+        // Previously fell through to vvoid() — a Void-kind bool local then
+        // misdispatched .toString() through the empty-free-function native
+        // path (Eval.cpp's `bv.kind == VKind::Void && e->resolved` NS::fn
+        // heuristic), printing "" instead of "false".
+        if (op == TokenKind::Lt || op == TokenKind::Gt ||
+            op == TokenKind::Le || op == TokenKind::Ge)
+            return vbool(false);
         return vvoid();
     }
     // Bool equality/inequality compares .b — never populated in the int

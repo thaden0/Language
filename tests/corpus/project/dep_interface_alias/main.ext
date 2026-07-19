@@ -1,0 +1,15 @@
+// Regression floor: implementing a dependency's interface with the member's
+// return/param types spelled through the dependency's alias (`A::Data::Foo`)
+// must satisfy the interface's in-package bare requirement (`Foo`) — the two
+// spellings resolve to the identical class. No `uses A::Data;` + bare-spelling
+// workaround required.
+namespace B {
+    class Impl : A::Data::IThing {
+        A::Data::Foo make(A::Data::Foo seed) { return A::Data::Foo(seed.v + 1); }
+    }
+}
+void main() {
+    B::Impl impl = B::Impl();
+    A::Data::Foo f = impl.make(A::Data::Foo(6));
+    console.writeln(f.v);
+}

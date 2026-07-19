@@ -6448,6 +6448,25 @@ static Slot substituteSlotGenerics(Slot s,
     return s;
 }
 
+// `canonical` text is built from the REFERENCE SITE's spelling
+// (Resolver::resolveType bakes in `path`/`name` as written, not the resolved
+// symbol's own identity), so a dependency's class named through an alias
+// (`A::Data::Foo`) and the same class named bare from inside its own package
+// (`Foo`, as an interface declared in that package spells it) produce
+// different canonical strings for the identical Symbol. Recurses through
+// generic arguments so `Promise<A::Data::Foo>` also matches a required
+// `Promise<Foo>`, not just the bare non-generic case.
+static bool namedTypeSameSymbol(const TypeRef* a, const TypeRef* b) {
+    if (!a || !b || a->kind != TypeKind::Named || b->kind != TypeKind::Named)
+        return false;
+    if (!a->resolvedSymbol || a->resolvedSymbol != b->resolvedSymbol) return false;
+    if (a->generics.size() != b->generics.size()) return false;
+    for (size_t i = 0; i < a->generics.size(); ++i)
+        if (!namedTypeSameSymbol(a->generics[i].get(), b->generics[i].get()))
+            return false;
+    return true;
+}
+
 // F6: covariant return satisfaction is intentionally Resolver-local and
 // intentionally narrow.  The declaration's resolved symbol proves that the
 // provided return is a declared class/interface type; the canonical strings
@@ -6462,6 +6481,12 @@ bool Resolver::returnAssignable(const Slot& provided, const Slot& required) cons
 
     Symbol* providedSym = provided.decl->type->resolvedSymbol;
     if (!providedSym || providedSym->kind != SymbolKind::Class) return false;
+
+    // Same declared type under a different spelling: satisfied regardless of
+    // the (possibly stale/unrelated) covariant-base walk below, which exists
+    // for a genuine subclass return, not spelling variance of one class.
+    if (required.decl && namedTypeSameSymbol(provided.decl->type.get(), required.decl->type.get()))
+        return true;
 
     std::string requiredCanon = required.retCanon;
     constexpr std::string_view optionalSuffix = " | None";
@@ -6526,6 +6551,27 @@ bool Resolver::returnAssignable(const Slot& provided, const Slot& required) cons
         }
     }
     return false;
+}
+
+// Same idea as returnAssignable's identity fallback, but for the PARAMETER
+// list that gates interface-satisfaction candidacy in the first place: a
+// provided method whose params are spelled through an alias (`A::Data::Foo`)
+// must still be recognized as matching an interface requirement spelled bare
+// (`Foo`, as written inside its own package) — a plain paramsCanon string
+// compare treats the two spellings as different types.
+static bool paramsAssignable(const Slot& provided, const Slot& required) {
+    if (provided.paramsCanon == required.paramsCanon) return true;
+    if (!provided.decl || !required.decl ||
+        provided.decl->params.size() != required.decl->params.size())
+        return false;
+    for (size_t i = 0; i < provided.decl->params.size(); ++i) {
+        const TypeRefPtr& pt = provided.decl->params[i].type;
+        const TypeRefPtr& rt = required.decl->params[i].type;
+        if (!pt || !rt) return false;
+        if (pt->canonical == rt->canonical) continue;
+        if (!namedTypeSameSymbol(pt.get(), rt.get())) return false;
+    }
+    return true;
 }
 
 void Resolver::buildShape(Symbol* cls) {
@@ -6593,7 +6639,7 @@ void Resolver::buildShape(Symbol* cls) {
         const Slot* nearMiss = nullptr;
         for (const Slot& s : slots) {
             if (s.name != req.name) continue;
-            if (s.isMethod && req.isMethod && s.paramsCanon == req.paramsCanon) {
+            if (s.isMethod && req.isMethod && paramsAssignable(s, req)) {
                 if (returnAssignable(s, req)) { ok = true; break; }
                 if (!nearMiss) nearMiss = &s;
             } else if (s.canonical == req.canonical) {

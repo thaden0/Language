@@ -1,0 +1,7 @@
+name = "dep_nested_const"
+entry = "main"
+sources = ["main.ext"]
+
+[[dep]]
+path = "depb"
+as = "P"

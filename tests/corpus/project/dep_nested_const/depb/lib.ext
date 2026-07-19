@@ -1,0 +1,5 @@
+namespace P {
+    namespace K {
+        public const int FLAG = 512;
+    }
+}

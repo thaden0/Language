@@ -19,8 +19,8 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #83 |
-| P2       | #90 |
+| P1       | — |
+| P2       | — |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -100,120 +100,36 @@ a plain `.lev` source file without editing the compiler or the prelude.
 
 ---
 
-## #83 [P1] — implementing a dependency's interface requires bare (uses-imported) member types, and `uses` is package-global via source concatenation
+#86, #88, #89 fixed — see git history for their resolutions.
 
-**Markers:** P1.2 (the only workaround is per-use: every future driver/consumer
-track — Track 06 ORM, `atlantis-postgres`, any package implementing a C3/atlantis
-interface — must independently know and re-apply the pattern).
+#83 fixed 2026-07-19 (item 1 of 2): `Resolver::returnAssignable`/a new
+`paramsAssignable` now compare a method's return/param types by resolved
+Symbol identity (recursing through generic arguments) before falling back to
+the covariant-base walk, so an alias-qualified member type (`A::Data::Foo`)
+and the interface's in-package bare name (`Foo`) satisfy each other — no
+`uses` + bare-spelling workaround needed anymore.
 
-Two linked resolver behaviors surface when a package (B) implements an interface
-declared in a dependency (A):
+Item 2 ("`uses` behaves package-global") turned out not to be a defect on
+inspection: per-file `uses` scoping is deliberate, existing design (each
+source file's top-level imports overlay only that file, `Sema::fileScopeFor`
+in `Symbols.hpp`), and two existing regression tests
+(`tests/corpus/project/{uses_leak_err,use_leak_err}`) assert exactly this
+non-leaking behavior as required — reverting it to package-global would
+regress that prior fix. The documented workaround (put `uses` in every file
+that needs it) is simply correct usage, not a standing defect.
 
-1. **Alias-qualified member types fail interface satisfaction.** If B spells a
-   method's return/param type as `A::Data::Foo`, the checker reports
-   `Promise<A::Data::Foo>` is *not assignable to* the interface's required
-   `Promise<Foo>` — even for a non-generic `A::Data::Foo` vs `Foo`. The
-   alias-qualified type and the interface's in-package bare name are treated as
-   distinct identities. **Workaround:** `uses A::Data;` and spell member types
-   **bare** (`Foo`); the interface-inheritance clause itself may stay qualified
-   (`class Impl : A::Data::IThing`).
-
-2. **`uses` behaves package-global.** Source files in a package are concatenated
-   (the "file boundaries dissolve" invariant), so a bare name resolves only if
-   **every** file that contributes to the namespace carries the `uses` — a single
-   sibling file lacking `uses A::Data;` makes the bare names in *other* files read
-   as `unknown type`. **Workaround:** put the `uses` line in *every* `.lev` file of
-   the package, even files that do not themselves reference the imported types.
-
-Minimal repro: pkgA `namespace A { namespace Data { class Foo{…} interface IThing{ Promise<Foo> make(); } } }`;
-pkgB `uses A::Data; namespace B { class Impl : A::Data::IThing { Promise<A::Data::Foo> make(){…} } }`
-→ "not assignable to required `Promise<Foo>`". Changing `A::Data::Foo` → `Foo`
-(bare) compiles. Adding a second pkgB file that declares `namespace B { … }`
-without its own `uses A::Data;` reintroduces `unknown type Foo` in the first file.
-
-**Root cause pointer:** (1) type-identity comparison keys on the alias-qualified
-symbol path rather than the canonical class; (2) `uses` scope is applied per
-translation-unit-fragment but bare-name lookup runs over the merged namespace.
-Both are worked around throughout `packages/atlantis-mysql/` (bare C3 types +
-`uses Atlantis::Data;` in all eight src files); a fix would let drivers name C3
-types either way. **Debt sites:** every file in `packages/atlantis-mysql/src/`
-(8 files) + `packages/atlantis-mysql/tests/{loopback,pool}/main.lev`.
-
----
-
-#86, #88, #89 fixed — see git history (commits prefixed `bug.md #N`) for
-their resolutions.
-
----
-
-## #90 [P2] — LLVM leaks ~128B per iteration when a class field `Array<T>` is mutated (`.add()`/`.skip()`) by two *separate* method calls, even though the same mutation inline or through one method does not leak
-
-**Markers:** P2.2 (output is byte-identical and correct on every engine —
-oracle/IR/LLVM all agree, `--mem-verify`'s root-set stays constant in N — only
-LLVM's escaping-tier live-at-exit grows linearly with N; not P0.3/P1.1 since
-nothing is silently wrong *value*-wise, only resource accounting).
-
-Found via `fuzz/task_churn/` while implementing
-`designs/complete/techdesign-http-and-streams-maturity.md` (D-B): a churn program that
-calls `StreamBuffer.push()` then `StreamBuffer.pull()`/`pullRaw()` in a loop
-(the ordinary shape — a producer method and a consumer method mutating the
-same buffered `Array` field across two calls) leaked ~384B/iteration on
-`--engine llvm`. Bisected with `git stash` to confirm it predates this
-branch's changes entirely, then reduced to a repro with no relation to
-streams at all:
-
-```
-class Box {
-    Array<int> items;
-    void push(int v) { items = items.add(v); }
-    int pop() { int v = items.first(); items = items.skip(1); return v; }
-}
-void iterate(int seed) {
-    Box b = Box();
-    b.push(seed);
-    int v = b.pop();
-}
-void run(int n) { for (int i in 1..n) iterate(i); }
-run(@N@);
-```
-
-`fuzz/churn_leak.py --engine llvm` on this shape: `live-at-exit` grows
-~128B/iteration (N=1 → 768B, N=20 → 3200B) while the `--mem-verify` oracle
-root set stays constant — a leak, not genuine retention. Two negative
-controls isolate the trigger precisely:
-
-- **Same field, same two methods, `.add()`+`.first()`+`.skip()` all inlined
-  into ONE function body instead of two methods (`Box`'s field accessed
-  directly as `b.items = b.items.add(...)` etc. inside `iterate()` itself,
-  no `push()`/`pop()` methods)** — flat, no leak.
-- **A bare local `Array<int>` variable (not a field) mutated by
-  `.add()`/`.first()`/`.skip()` inline in one function** — DOES leak, same
-  rate — so the trigger is not "crossing a method boundary" alone; a bare
-  local reassigned through the COW `add`/`skip` pair also leaks, while the
-  *same operations threaded through an object field, done inline in one
-  function*, does not.
-
-The common factor across the leaking shapes (two-methods-on-a-field,
-bare-local-inline) versus the one that doesn't (field-inline-in-one-function)
-points at the LLVM backend's refcount/release codegen for a value
-reassigned via `arr = arr.add(x)` / `arr = arr.skip(n)` (copy-on-write Array
-ops returning a *new* backing store) — the old backing store's release
-appears to be dropped on some but not all of these paths. Not isolated
-further (`src/LlvmGen.cpp`'s Array COW lowering / `runtime/lv_runtime.c`'s
-array release path is the likely region; out of this design's scope to dig
-into further).
-
-**Root-cause pointer:** not confirmed; likely `src/LlvmGen.cpp`'s codegen
-for `Op::Call` on `Array.add`/`Array.skip` (or the COW release path in
-`runtime/lv_runtime.c`) failing to emit/hit the old-backing-store release on
-some call shapes. `--mem-verify`'s reachability oracle staying flat while
-the escaping-tier meter grows is the standard leak signature this project's
-churn nets already use to attribute (`fuzz/churn_leak.py`'s own module
-docstring).
-
-**Workaround:** none needed at the language level — output is correct on
-every engine; this is resource-only. `fuzz/task_churn/park_inside_callback.lev`
-(added by D-B, exercises exactly the `push()`-then-`pull()`-across-a-park
-shape that surfaced this) is marked `XFAIL` citing this entry rather than
-gated out of the corpus, so it converges to a guarded PASS automatically
-once #90 is fixed (`fuzz/churn_leak.py`'s XFAIL/XPASS convention).
+#90 fixed 2026-07-19: root cause was `src/LlvmGen.cpp`'s `Op::CallDyn`
+codegen for a `consumed` (COW self-append, `x = x.method(...)`) receiver —
+it voided the caller's window slot without releasing it, on the assumption
+the callee takes the receiver's fate. True for a hand-written native row
+(e.g. "add", which explicitly frees/reuses a shared receiver itself); false
+for a call to an ordinary IN-LANGUAGE function (e.g. the prelude's
+`Array<T>.skip`), which retains/releases its own copy of the parameter
+independently and never touches the caller's reference — leaking exactly one
+reference per COW self-append call to a real function. Fixed by releasing
+the receiver explicitly at both in-language call sites (direct call and
+by-name dynamic dispatch) in `Op::CallDyn`; native rows are unaffected (they
+already handle their own consumed contract). Verified flat at N=1/20/100 on
+the original repro, `fuzz/task_churn/park_inside_callback.lev` (promoted from
+XFAIL-LLVM to a plain regression floor), and a new
+`tests/corpus/churn/field_cow_across_methods.ext` churn-leak floor.

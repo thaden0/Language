@@ -1,0 +1,9 @@
+// Regression floor: a `const` in a dependency's NESTED namespace, read by its
+// fully-qualified path, must resolve to the same value as reading it through
+// `uses` + a bare name — not silently read as empty/0.
+uses P;
+uses P::K;
+void main() {
+    console.writeln((P::K::FLAG).toString());
+    console.writeln(FLAG.toString());
+}

@@ -1466,13 +1466,16 @@ Value Evaluator::eval(Expr* e) {
                     return memberRead(bv.obj, std::string(e->text), "");
                 return vnone();
             }
-            // namespace-qualified global: std::read
-            if (e->a->kind == ExprKind::Name) {
-                Symbol* ns = sema_.global->lookup(e->a->text);
-                if (ns && ns->kind == SymbolKind::Namespace) {
-                    auto g = globals_.find(std::string(e->text));
-                    if (g != globals_.end()) return g->second;
-                }
+            // namespace-qualified global: std::read. A bare-Name check here
+            // only reached a single hop (`NS::member`), so a const in a
+            // NESTED namespace read via its fully-qualified path
+            // (`NS::Inner::member`) fell through to memberTarget/vvoid()
+            // below — the same single-hop gap resolveFunction/ctorTarget
+            // already closed for calls/construction (bug #37/#46) via
+            // resolveNsChain.
+            if (resolveNsChain(sema_.global, e->a.get())) {
+                auto g = globals_.find(std::string(e->text));
+                if (g != globals_.end()) return g->second;
             }
             std::shared_ptr<Object> obj; std::string name, source;
             if (memberTarget(e, obj, name, source)) return memberRead(obj, name, source);
