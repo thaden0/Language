@@ -23,6 +23,14 @@ console.writeln("abcabcabc".indexOfFrom("abc", 1));      // 3
 console.writeln("abcabcabc".indexOfFrom("abc", 0 - 5));  // 0 (negative clamps to 0)
 console.writeln("abcabcabc".indexOfFrom("zzz", 2));      // -1
 
+// indexOfAny (designs/techdesign-stdlib-tail-methods.md §1): earliest index
+// at which ANY needle occurs; POSITION wins, not needle-array order.
+console.writeln("the quick brown fox".indexOfAny(["fox", "quick", "brown"]));  // 4 ("quick")
+console.writeln("the quick brown fox".indexOfAny(["fox", "brown"]));           // 10 ("brown" occurs before "fox" despite being listed second)
+console.writeln("the quick brown fox".indexOfAny(["zzz", "yyy"]));             // -1 (no match)
+console.writeln("the quick brown fox".indexOfAny([]));                        // -1 (empty needles)
+console.writeln("the quick brown fox".indexOfAny(["zzz", ""]));                // 0 ("" in needles always wins)
+
 // padStart / padEnd / repeat
 console.writeln("5".padStart(3, "0"));          // 005
 console.writeln("5".padEnd(3, "0"));            // 500
