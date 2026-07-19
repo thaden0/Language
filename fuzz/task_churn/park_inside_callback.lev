@@ -1,0 +1,42 @@
+// XFAIL-LLVM: known_bugs_2.md #90 — LLVM leaks ~128B/iter when a class-field
+// Array<T> is mutated (.add()/.skip()) across two SEPARATE method calls (here:
+// StreamBuffer.push() then .pullRaw()); pre-existing, unrelated to D-B (bisected
+// against the pre-D-B tree with `git stash`, reduced to a repro with no stream
+// involvement at all — see the bug entry). Output is correct on every engine;
+// this is resource-only, so the design lands with this XFAIL rather than
+// gated out of the corpus, and converges to a guarded PASS once #90 is fixed.
+//
+// D-B/DM-3 churn (techdesign-http-and-streams-maturity.md §5#6): "re-entrant
+// loop pumping" — parking inside a loop-dispatched callback nests dispatch.
+// Each iteration: a fresh stream's `for..in` genuinely PARKS — hasNext()
+// awaits a not-yet-resolved waiter Promise, since the buffer starts empty and
+// the stream isn't closed yet — and is woken by a Timer(0) callback that
+// pushes the one item then closes the stream. This is real suspend/resume
+// through the task scheduler (LA-30), not a pump-spin: it proves the
+// per-iteration waiter Promise, the closure the Timer captures, and the
+// parked task's own stack all return to the allocator with NOTHING left live
+// (module #90's pre-existing field-Array leak), N iterations running. Only
+// `sink` is a program-lifetime root, so live-at-exit must stay flat as N
+// grows once #90 is fixed.
+class Holder { Array<int> data; }
+void iterate(int seed) {
+    Holder h = Holder();
+    h.data = h.data.add(seed);
+    StreamBuffer<int> b = StreamBuffer();
+    InStream<int> s = InStream(b);
+    Timer t = std::after(0);
+    t.subscribe((n) => { b.push(seed); b.close(); });
+    Array<int> got = [];
+    for (int x in s) got = got.add(x);
+    var hh = h;
+    int junk = hh.data.length() + got.length();
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        iterate(i);
+        sink = sink + i;
+    }
+    console.writeln(sink);
+}
+run(@N@);
