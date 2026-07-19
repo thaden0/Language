@@ -276,6 +276,12 @@ Promise<void> run() {
     console.writeln("stats=" + stats.at(0).userId.toString() + ":" +
                     stats.at(0).postCount.toString() + "," +
                     stats.at(1).userId.toString() + ":" + stats.at(1).postCount.toString());
+    // the design's own rows<T> spelling, via LA-32's turbofish
+    pool.push(ResultSet(statCols, [mkRow(statCols, dbv().add(4).add(8))]));
+    Array<UserStat> stats2 = await db.rows::<UserStat>(
+        "SELECT userId, COUNT(*) AS postCount FROM posts GROUP BY userId", []);
+    console.writeln("stats2=" + stats2.at(0).userId.toString() + ":" +
+                    stats2.at(0).postCount.toString());
 
     // ---- §4.5 transact: commit + rollback + nested guard ----
     int got = await db.transact((tx) => {

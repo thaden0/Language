@@ -624,11 +624,21 @@ namespace Atlantis {
                 => this.__q(sql, params);
 
             // ==== §6.3 the dense lane ======================================
-            // T is method-level (LA-18); the witness argument carries T since
-            // explicit generic call arguments are not in the language (M0
-            // finding, P8) — `db.rows(sql, [], UserStat())`.
+            // T is method-level (LA-18). Two spellings: the witness form
+            // (`db.rows(sql, [], UserStat())`, from before LA-32) and — since
+            // LA-32's turbofish landed 2026-07-19 mid-track — the design's own
+            // `rows<T>` shape, called `db.rows::<UserStat>(sql, [])`.
             Promise<Array<T>> rows<T>(string sql,
                     Array<string | int | float | bool | None> params, T witness) {
+                Atlantis::Data::ResultSet rs = await this.__q(sql, params);
+                Array<T> out = [];
+                for (Atlantis::Data::Row r in rs.rows) {
+                    out = out.add(T::FromRow(r));
+                }
+                return Promise(out);
+            }
+            Promise<Array<T>> rows<T>(string sql,
+                    Array<string | int | float | bool | None> params) {
                 Atlantis::Data::ResultSet rs = await this.__q(sql, params);
                 Array<T> out = [];
                 for (Atlantis::Data::Row r in rs.rows) {

@@ -33,6 +33,8 @@ viaSql=sqlrow
 sql mismatch throws: yes
 [sql] SELECT userId, COUNT(*) AS postCount FROM posts GROUP BY userId :: []
 stats=1:5,2:9
+[sql] SELECT userId, COUNT(*) AS postCount FROM posts GROUP BY userId :: []
+stats2=4:8
 [sql] BEGIN
 [sql] COMMIT
 tx result=5
