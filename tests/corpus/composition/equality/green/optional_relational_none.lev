@@ -1,0 +1,17 @@
+// Regression floor for bug #87: relational (</<=/>/>=) comparison of a
+// None-valued optional against a literal must yield a real bool (false),
+// not void — void stringifies to "" while a real false prints "false".
+// Control flow over the same comparison already took the right branch
+// before the fix; only .toString() exposed the mis-tagged result.
+class Rec { int? maybeAge; new Rec(int? a) { maybeAge = a; } }
+void probe() {
+    Rec r1 = Rec(None);
+    bool a = r1.maybeAge < 10;
+    bool b = r1.maybeAge <= 10;
+    bool c = r1.maybeAge > 10;
+    bool d = r1.maybeAge >= 10;
+    bool e = r1.maybeAge == 10;
+    console.writeln("lt=" + a.toString() + " le=" + b.toString() + " gt=" +
+                     c.toString() + " ge=" + d.toString() + " eq=" + e.toString());
+}
+probe();

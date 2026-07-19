@@ -2454,6 +2454,11 @@ void lvrt_arith(int32_t op, LvValue* out, const LvValue* l, const LvValue* r) {
     if (l->tag == LV_NONE || r->tag == LV_NONE) {
         if (op == LV_OP_EQ) { out->tag = LV_BOOL; out->payload = (l->tag == r->tag); return; }
         if (op == LV_OP_NE) { out->tag = LV_BOOL; out->payload = (l->tag != r->tag); return; }
+        /* bug.md #87: relational ops on a None operand are false, not void
+         * (void stringifies to "" instead of "false"). */
+        if (op == LV_OP_LT || op == LV_OP_LE || op == LV_OP_GT || op == LV_OP_GE) {
+            out->tag = LV_BOOL; out->payload = 0; return;
+        }
         out->tag = LV_VOID; out->payload = 0; return;
     }
     if (l->tag == LV_STR || r->tag == LV_STR) {
