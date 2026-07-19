@@ -46,13 +46,16 @@ As-built verification:
 - AArch64 and Win32 runtime archives compiled; the cross corpus passed under
   QEMU and Wine, and a Win32 filesystem round trip executed successfully under
   Wine;
-- the full 247-test CTest run plus a clean target-specific Windows rerun left
-  every one of the 246 active tests green. The sole remaining failure is
+- the initial full 247-test CTest run plus a clean target-specific Windows
+  rerun left every one of the 246 active tests green. Its only red result was
   `corpus_churn_leak`'s frozen-ELF `field_cow_across_methods.ext` case. An
   isolated build of untouched `origin/master` at `4d4bcad` reproduced the exact
-  `16640 -> 128640` byte result (`+160` bytes per iteration), proving it is
-  pre-existing. `info.md` explicitly excludes frozen ELF from project targets
-  and states that no design or task is gated on an ELF finding.
+  `16640 -> 128640` byte result (`+160` bytes per iteration), proving it was
+  pre-existing. During final master sync, upstream commit `180c7ac` classified
+  that exact case as `XFAIL-ELF` under `info.md`'s frozen-backend policy; the
+  post-merge `corpus_churn_leak` test passes. `info.md` explicitly excludes
+  frozen ELF from project targets and states that no design or task is gated
+  on an ELF finding.
 
 No required active test was skipped. The only as-built verification nuance was
 that the AArch64 and Windows cross tests had to be invoked with target-specific
