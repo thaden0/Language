@@ -1045,6 +1045,31 @@ int main() {
               "void f() { apply::<int, string>(1, (x) => 2); }",
               "lambda body has type 'int', expected 'string'");
 
+    // LA-32 §4.6: a turbofish with no `(args)` is a pinned generic VALUE
+    // reference — it composes with LA-25 eta-expansion into a concrete closure.
+    CLEAN("T identity<T>(T value) => value; "
+          "void f() { var g = identity::<int>; int r = g(5); }");
+    CLEAN("T identity<T>(T value) => value; "
+          "void f() { (int) => int g = identity::<int>; g(5); }");
+    CLEAN("namespace N { T pick<T>(T a, T b) => a; } "
+          "void f() { var g = N::pick::<string>; g(\"a\", \"b\"); }");
+    CLEAN("class Maker { U make<U>(U x) => x; } "
+          "void f() { Maker m = Maker(); var g = m.make::<int>; g(1); }");
+    CLEAN("T identity<T>(T value) => value; "
+          "int apply((int) => int fn, int x) => fn(x); "
+          "void f() { apply(identity::<int>, 3); }");
+    // The static type is the SUBSTITUTED callable type — a matching target binds
+    // cleanly (function-type parameter variance is otherwise lenient in v1).
+    CLEAN("T identity<T>(T value) => value; "
+          "void f() { (int) => int g = identity::<int>; int r = g(2); }");
+    // An UNPINNED generic reference stays an error, now suggesting the turbofish.
+    ERROR_HAS("T identity<T>(T value) => value; void f() { var g = identity; }",
+              "supply explicit type arguments");
+    // Arity is enforced on the value-reference form too.
+    ERROR_HAS("T identity<T>(T value) => value; "
+              "void f() { var g = identity::<int, string>; }",
+              "expects 1 explicit type argument, got 2");
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

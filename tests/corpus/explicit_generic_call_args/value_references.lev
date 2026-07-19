@@ -1,0 +1,35 @@
+// LA-32 §4.6 — pinned generic VALUE references. A turbofish with no following
+// `(args)` supplies the concrete type tuple LA-25 §8.6 needs, so a reference to
+// a generic callable becomes one concrete eta-expansion closure. Type-erased
+// like every other closure, so this is an oracle/IR/LLVM/emit-C++ differential
+// that also round-trips through --expand.
+T identity<T>(T value) => value;
+namespace Helpers { T pick<T>(T a, T b) => a; }
+class Maker { U make<U>(U x) => x; }
+
+// A higher-order consumer proving a pinned reference is an ordinary value.
+int applyTwice((int) => int fn, int seed) => fn(fn(seed));
+
+void run() {
+    // Bare free-function reference, pinned.
+    var f = identity::<int>;
+    console.writeln(f(5));                       // 5
+
+    // Static type is the substituted `(int) => int`.
+    (int) => int g = identity::<int>;
+    console.writeln(g(7));                        // 7
+
+    // Passed as a value to a function-typed parameter.
+    console.writeln(applyTwice(identity::<int>, 4));   // 4
+
+    // Namespaced generic function reference.
+    var h = Helpers::pick::<string>;
+    console.writeln(h("a", "b"));                 // a
+
+    // Bound instance-method reference, pinned.
+    Maker m = Maker();
+    var b = m.make::<int>;
+    console.writeln(b(21));                       // 21
+}
+
+run();
