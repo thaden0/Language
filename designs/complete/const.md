@@ -123,12 +123,13 @@ for (const string a in args) { ... }         // per-iteration binding
 
 Per slot kind, the initialization window is:
 
-1. **Locals** — the declaration initializer, exactly. `const int x;` (no initializer) is
-   a **compile error**: bare declaration auto-constructs (§3 of info.md), and
-   auto-constructing a const would freeze the default forever — a provably useless slot.
-   Refusing provably-useless code is an error, not a special case (same family as "no
-   applicable overload"). (Definite-single-assignment relaxation — `const int x; if (c)
-   x = 1; else x = 2;` — is §9 Open Question 1; the flow engine could support it later.)
+1. **Locals** — the declaration initializer, exactly, **or** (OQ1, landed) a single
+   definite assignment when the local is declared write-open. A bare typed `const int x;`
+   is no longer auto-constructed: its write view stays open until a single definite
+   assignment closes it (`const int x; if (c) x = 1; else x = 2;`), with a read-before-
+   assign error guaranteeing no path observes the un-assigned slot. `const x;` with
+   neither type nor initializer is still a **compile error** (nothing to infer). See
+   [`techdesign-const-system-extensions.md`](techdesign-const-system-extensions.md) §2.
 2. **Fields** — the field initializer plus **the declaring class's own constructor
    bodies** (the synthesized `$init` and each `new`). Multiple writes *within* the window
    are fine (C# readonly semantics — the window is what's enforced, not once-ness).
@@ -291,23 +292,26 @@ itself the point.
 
 1. **Definite single assignment for locals** (`const int x; if (c) x = 1; else x = 2;`)
    — the flow-narrowing engine could carry it; deferred to keep v1 to one rule, one
-   window. *Resolution designed as OQ1 in
-   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §2
-   (checker-only definite-assignment analysis); not yet implemented.*
+   window. **Implemented** as OQ1 of
+   [`designs/complete/techdesign-const-system-extensions.md`](techdesign-const-system-extensions.md) §2
+   — a checker-only definite-assignment analysis riding the flow engine: a bare typed
+   `const T x;` local is write-open until a single definite assignment closes its window;
+   a read before that is an error, and the window cannot span a loop/try/non-exhaustive
+   match (§2.3). Zero runtime/IR/backend surface (const stays front-end-only).
 2. **Sectional `const:`** — access modifiers have a sectional form (§2 of info.md); a
    const section for blocks of constants is plausible sugar. **Implemented** as OQ2 of
-   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §3
+   [`designs/complete/techdesign-const-system-extensions.md`](techdesign-const-system-extensions.md) §3
    — pure parser sugar over the existing access-section loop; `const:` and `public:`/
    `private:` are orthogonal sticky axes, and a per-member `var` overrides the section.
 3. **Interface const requirements** — see §4; declined in favor of get-view contracts.
    Ruling recorded at
-   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §4.1
+   [`designs/complete/techdesign-const-system-extensions.md`](techdesign-const-system-extensions.md) §4.1
    (a value-stability need is answered by a stability contract on the *view*, never by
    `const` on the backing slot — that reintroduces const-contagion).
 4. **Deep-freeze** — explicitly out of scope, likely forever: the value axis (structs,
    pure collections) is the language's answer to immutable *data*; a gated `freeze`
    would be a fourth mechanism duplicating it. Ruling recorded at
-   [`designs/techdesign-const-system-extensions.md`](../techdesign-const-system-extensions.md) §4.2
+   [`designs/complete/techdesign-const-system-extensions.md`](techdesign-const-system-extensions.md) §4.2
    (a cross-thread need routes to the concurrency design's immutable *reference* wrapper).
 5. **Naming** — `const` is an abbreviation in a full-words-trajectory language (§9 of
    info.md). Like `std` and `env`, it has crossed into term-of-art status, and the

@@ -77,6 +77,17 @@ private:
     void importOne(Stmt* usesStmt, Scope* into);   // resolve one `uses` into `into`
     void useOne(Stmt* useStmt, Scope* into);       // resolve one selective `use` into `into`
     bool hasImports(const std::vector<StmtPtr>& items) const;  // any `uses`/`use` directly here?
+    bool hasFactoryBinds(const std::vector<StmtPtr>& items) const;  // any factory `bind` directly here?
+    // Record each direct-child factory `bind` into `scope->binds`, keyed by the
+    // bound type's canonical string (block-scoped-use §3.2(b)). First-declared
+    // wins on a duplicate (reported here) — the same grain the Checker's bind
+    // stack used.
+    void fillBinds(const std::vector<StmtPtr>& items, Scope* scope);
+    // Fill the declaration-scope bind tables: top-level factory binds into
+    // `global` (program-wide, §4.3), each namespace body's into its own scope.
+    // Recurses through namespaces only — block binds are filled per-block in the
+    // Block case of resolveStmtTypes.
+    void fillDeclBinds(std::vector<StmtPtr>& items, Scope* scope);
 
     // resolve
     void resolveTypesIn(std::vector<StmtPtr>& items, Scope* scope);
@@ -84,6 +95,9 @@ private:
     void resolveStmtTypes(Stmt* s, Scope* scope);
     void resolveExprTypes(Expr* e, Scope* scope);
     std::string resolveType(TypeRef* t, Scope* scope);
+    // 005 R2/R3: reclassify a `::`-qualified `match`-arm value pattern to a type
+    // pattern when the leaf resolves to a type (not an enum member / const).
+    void reclassifyMatchArm(MatchArm& arm, Scope* scope);
 
     // shapes
     void buildShape(Symbol* cls);

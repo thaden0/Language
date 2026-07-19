@@ -1,0 +1,4 @@
+// LA-31 Stage 2 §8.3 — a non-whitelisted call is rejected (E2 + generated allow-list).
+class User { string name; new User(string n) { name = n; } }
+string useIt(expr::Expr<(User)=>bool> e) { return "x"; }
+console.writeln(useIt((u) => u.name.toUpper() == "X"));

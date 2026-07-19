@@ -35,6 +35,7 @@ namespace Sonar {
 
         new OverlayHost(IComponent child, bool scrim) {
             scrim_ = scrim;
+            paintsBackground_ = false;   // D03 §6: non-scrim mode is transparent
             this.add(child);   // Container.add: setParent + __sonarAttach
         }
 

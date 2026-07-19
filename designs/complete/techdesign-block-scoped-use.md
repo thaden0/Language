@@ -1,6 +1,15 @@
 # Block-scoped `use`/`uses` — resolving the deferred per-block symbol-scope substrate — Technical Design
 
-**Status:** ACTIVE — promoted out of deferral 2026-07-17 (was `deferal-block-scoped-use.md`).
+**Status:** LANDED 2026-07-18 — implemented on master; moved to `designs/complete/`.
+Implementation summary at the head of §7. One conscious deviation, flagged for the owner:
+§3.2's suggestion that the Checker *stop replacing* `scope_` with the Resolver-built chain
+was **not** taken — §1.2.4 is explicitly benign today, and rerouting the ~15 `scope_->lookup`
+sites carried divergence risk that M2's own STOP condition warned against. The substrate is
+unified (one `Scope` object, both tables; one `BlockScopeGuard`); the resolve-time-parented
+chain remains the in-block name-resolution authority, exactly what the frozen test suite
+exercises. §3.3's interpretive pin (nearest-wins ∘ specific-beats-bulk) is implemented and
+locked by new disambiguating tests, and awaits owner sign-off (M4 gate).
+Was `deferal-block-scoped-use.md`; ACTIVE — promoted out of deferral 2026-07-17.
 Premise re-verified against master that day: the substrate is **still unbuilt** — `Stmt::importScope`
 and the Checker's `bindScopes_` remain two separate mechanisms, `blockScope` does not exist, and the
 Lowerer still carries its private `blockImportScopes_`. System-binds Channel 1 (`use NS::T;`
@@ -491,6 +500,30 @@ mapping old-name → new-name.
 ---
 
 ## 7. Milestones, timeline, STOP conditions
+
+**Implementation record (2026-07-18, agent1 branch).** All four milestones landed;
+the full active-backend suite (187 ctest targets: treewalk, IR, ir-verify, mem-verify,
+emit-C++, LLVM, composition, regex, project, meta — ELF/X64/qemu/wine excluded as frozen)
+is **byte-identical to the pre-work baseline**. Concretely:
+- **M1** — `Scope::binds` + `localBind` (`src/Symbols.hpp`); `importScope → blockScope`
+  rename across Ast/Resolver/Checker/Lower (grep gate clean); Resolver Block case gained
+  the unconditional reset (§3.2 a), `hasFactoryBinds`, and post-child-walk `fillBinds`.
+  Landed dormant (tables built, Checker still the sole reader) for a zero-risk step.
+- **M2** — new `src/LexicalStack.hpp` (`LexicalFrame`/`LexicalStack`) + `BlockScopeGuard`
+  (nested in Checker). `bindScopes_`, `pushBindScope`/`popBindScope`, and the Lowerer's
+  `blockImportScopes_` deleted (grep gate clean); bind lookup now walks the shared scope
+  tables + a per-frame Channel-1 activation overlay; duplicate-bind detection moved to the
+  Resolver's `fillBinds`; namespace/global bind tables filled by `fillDeclBinds`. The
+  generic snapshot (`callableBindScopes_`) preserved as a frame-vector. **Deviation:**
+  `scope_`-replacement kept for names (see status header).
+- **M3** — runner globs already accepted `*.lev` (S6 pre-satisfied on all active lanes;
+  only frozen ELF/X64/cross runners stay `.ext`). New corpus tests (four backends each):
+  `block_use_shadowing.lev` (S1), `block_use_overload_merge.lev` (S4),
+  `block_bind_shared_scope.lev` (bind+use in one scope). S3(b) pinned in `test_meta.cpp`
+  (comptime-spliced block import: materializes + confined). S5 out-of-scope-`use` note
+  implemented (error-path only) with presence/absence checkertests.
+- **M4** — this doc moved to `designs/complete/`; resolution pointers added to
+  `imports.md` §9 and `system-binds.md` §7.2's coordination point.
 
 Single implementation agent, existing branch only (three-branch rule), push to master
 per the guardrail when each milestone's gate is green. Dates assume start 2026-07-07.

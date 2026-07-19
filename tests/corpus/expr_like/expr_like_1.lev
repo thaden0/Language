@@ -1,0 +1,37 @@
+// LA-31 Stage 1 §2.4 — string.like / string.ilike unit corpus.
+// One row per (text, pattern); prints the `like` then the `ilike` result.
+// Pins SQL-LIKE anchored full-string matching: `%` any run (incl. empty),
+// `_` exactly one byte, `\` escapes the next byte to a literal, empty pattern
+// matches only "", trailing `%` collapses, byte-level `_` (23/24) and
+// ASCII-only fold (25). Backslash patterns use standard `\\` escapes.
+
+void row(string tag, string text, string pat) {
+    console.writeln(tag + "L:" + text.like(pat).toString());
+    console.writeln(tag + "I:" + text.ilike(pat).toString());
+}
+
+row("01", "hello", "hello");
+row("02", "hello", "h%");
+row("03", "hello", "%llo");
+row("04", "hello", "h_llo");
+row("05", "hello", "h__lo");
+row("06", "hello", "%");
+row("07", "", "%");
+row("08", "", "");
+row("09", "hello", "");
+row("10", "HELLO", "hello");
+row("11", "Hello", "h%O");
+row("12", "50%", "50\\%");
+row("13", "505", "50\\%");
+row("14", "a_b", "a\\_b");
+row("15", "axb", "a\\_b");
+row("16", "a\\", "a\\");
+row("17", "a", "a\\");
+row("18", "ab", "a\\");
+row("19", "abc", "a%c");
+row("20", "ac", "a%c");
+row("21", "abcbc", "a%bc");
+row("22", "hello", "hello%%%");
+row("23", "héllo", "h_llo");
+row("24", "héllo", "h__llo");
+row("25", "HÉllo", "hÉllo");

@@ -2,6 +2,7 @@
 #include "Ast.hpp"
 #include "Diagnostic.hpp"
 #include "Ir.hpp"
+#include "LexicalStack.hpp"
 #include "Symbols.hpp"
 #include <set>
 
@@ -88,11 +89,11 @@ private:
     // when it actually pushed usings.
     void lowerUsingCleanupGroups(size_t watermark);
     // Block-scoped import overlays (bug.md #1): while lowering a block that
-    // carries a `uses`/`use` importScope (bug.md #8's model), that scope is
-    // pushed here so namespace re-derivation sees block imports exactly like
-    // the checker does (nearest block first, then the file overlay, then
-    // global).
-    std::vector<Scope*> blockImportScopes_;
+    // carries a `uses`/`use` blockScope (bug.md #8's model), that scope is
+    // pushed onto the shared per-block lexical stack (block-scoped-use §3.2) so
+    // namespace re-derivation sees block imports exactly like the checker does
+    // (nearest block first, then the file overlay, then global).
+    LexicalStack lexical_;
     // The namespace symbol `name` resolves to at `offset`, through block
     // overlays -> file overlay -> global; null if unbound or shadowed by a
     // non-namespace binding (the refuse-to-guess rule).

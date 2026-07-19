@@ -1,6 +1,6 @@
 # Deferral resolution — UTF-8 `chars()` & the string ops blocked on it
 
-**Status:** ACTIVE — promoted out of deferral 2026-07-17 (was
+**Status:** COMPLETE — landed 2026-07-19 (see §9 log); promoted out of deferral 2026-07-17 (was
 `deferal-utf8-chars-string-ops.md`); **every gate is now open.** Track 03 `char` landed in
 full on all four active engines (oracle/IR/emit-C++/LLVM) including the LV_CHAR ABI addendum —
 so the §3.4 lane plan's "LLVM gated on the addendum" is satisfied and D3 collapses into D1/D2
@@ -347,4 +347,59 @@ the strings story (byte world primary, `chars()` the explicit scalar door).
 
 ## 9. Implementation log
 
-(empty — design only; D0 probe results land here first)
+- 2026-07-19 — LANDED (D0–D2; D3 rides along because LV_CHAR already landed).
+
+  **D0 probes.** P3 first (it decides the rest): `\xNN` escapes DO place raw
+  ill-formed bytes into a string literal — no lexer/parser normalization — so the
+  corpus authors §3.2 cases as plain literals (no `std::byteToString` build-up).
+  P1 is moot: `chars()`/`at()` were found **already implemented as natives** on
+  all four lanes (RuntimeNatives.cpp, CGen.cpp, lv_runtime.c), so there is no
+  in-language decoder to time. P2 is subsumed — the pre-existing `Array<char>`
+  plumbing (add/at/reverse/for-in/==) is what `reverse()` composes over and it is
+  green.
+
+  **The reconcile call (design header's "reconcile any existing native against
+  §3.1/§3.2").** The landed natives were a *lenient* decoder — it admitted
+  overlongs (`C0 AF`→U+002F), **surrogates** (`ED A0 80`→U+D800), and
+  **> U+10FFFF** (`F4 90 80 80`→U+110000), and split a truncated tail into two
+  U+FFFD. That is exactly the "overlong-encoding smuggling security wart" of §5#1
+  and violates the normative §3.2 table. Decision: **keep the native homes but
+  make all three decoders strict**, rather than rewrite to the §3.3-primary
+  in-language body. Rationale: the natives already run byte-identically on all
+  four lanes (including the LLVM lane the in-language route was partly meant to
+  reach, now that LV_CHAR has landed); the header explicitly sanctions reconcile
+  over assume-absence; and §3.2 says each native copy is "a transliteration, not
+  a reinterpretation" of one table — which is exactly what the three now are.
+  `utf8DecodeAt` (RuntimeValue.hpp — shared by oracle/IR *and* the comptime char
+  literal decode in Eval/Lower), `u8dec` (CGen), and `lv_utf8_decode_at`
+  (lv_runtime.c) were rewritten to the tightened-second-byte table with
+  WHATWG maximal-subpart replacement (`len` advances by the maximal valid
+  subpart → exactly one U+FFFD per ill-formed sequence, resume at the breaking
+  byte).
+
+  **D1 — `chars()`.** Now strict per §3.2 on all four lanes. New corpus
+  `tests/corpus/chars/chars_utf8.lev` pins every §3.2 row by scalar *code*
+  (unambiguous ASCII `.expected`): ASCII/é/€/astral 𝄞, lone-continuation,
+  truncated-3-byte (one FFFD not two), overlong `C0 AF`, surrogate `ED A0 80`,
+  `F5 41` resume, `F4 90 80 80` out-of-range, empty; plus scalar-vs-byte counts
+  (`"héllo"` → 6 bytes / 5 scalars), the round-trip law across all four plane
+  widths, and the `for (char c in s.chars())` iteration idiom.
+
+  **D2 — `reverse()`.** `string reverse() => chars().reverse().joinToString("")`
+  replaces the `Resolver.cpp` deferral comment (handoff duty a). Corpus
+  `tests/corpus/chars/reverse.lev` (ASCII, empty, single, palindrome, multi-byte
+  `désert`→`treséd` with é intact, astral `𝄞x`→`x𝄞`, double-reverse identity).
+  reference.md §6.1 updated (handoff duty b): `reverse()` row added, the
+  "not offered yet" paragraph replaced by the live method + a bytes-vs-scalars
+  idiom table + the normative decode/round-trip pins; the char row notes the
+  strict-RFC-3629 rejection; info.md gains the one-sentence scalar-door note.
+
+  **D3 — LLVM.** Not gated after all: the LV_CHAR ABI addendum landed 2026-07-10,
+  so `corpus_chars_llvm` was already live and now runs the strict decoder too —
+  green, byte-identical to oracle/IR/emit-C++. The P1 native-fallback `lvrt_str_chars`
+  described in §3.3 was already present; it just needed its shared decoder tightened.
+
+  **Verification:** all four `corpus_chars_*` lanes green (treewalk/ir/cpp/llvm);
+  every §3.2 pinned row and the round-trip law hold identically across engines.
+  No behavior drift in the wider string/regex/json corpus (the decoder is only
+  reached by `chars`/`at`/char-literal decode; regex is byte-oriented).

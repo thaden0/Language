@@ -1,4 +1,4 @@
 name = "sonar"
-sources = ["src/*.lev", "src/layout/*.lev", "src/components/*.lev", "src/templates/*.lev", "src/dom/*.lev"]
+sources = ["src/*.lev", "src/layout/*.lev", "src/components/*.lev", "src/templates/*.lev", "src/dom/*.lev", "src/dom/templates/*.lev"]
 assets = ["themes/*.toml"]
 version = "0.2.0"

@@ -1,0 +1,3 @@
+tree=Bin(&&,Field(active),Call(like,Field(name),[Lit("A%")])) binds=0 site=0
+fnAda=true
+fnBob=false

@@ -1,0 +1,6 @@
+class C { int f; new C() { } }
+C c = C();
+match (c) {
+    C::f => console.writeln("x");
+    else => console.writeln("y");
+};

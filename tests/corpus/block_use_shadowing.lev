@@ -1,0 +1,20 @@
+// block-scoped-use §3.3 / P1: the pinned lookup contract — nearest-wins composed
+// with specific-beats-bulk, plus confinement. This disambiguates the two
+// readings of the deferral sentence (§3.3 rationale, S1): an inner bulk `uses`
+// does NOT "always lose" to an outer selective `use` — nearest-wins is
+// unconditional. (Uses distinct classes so name binding, not overload-set
+// merging, is what's exercised — §3.3's asymmetry.)
+namespace N { class W { string tag() => "N"; } }
+namespace M { class W { string tag() => "M"; } }
+
+void innerBulkVsOuterSelective() {
+    use N::W;                          // outer (function) block: bare `W` is N::W
+    console.writeln(W().tag());        // N
+    {
+        uses M;                        // inner block bulk dumps M::W
+        console.writeln(W().tag());    // M — inner bulk SHADOWS the outer selective `use`
+    }
+    console.writeln(W().tag());        // N — inner import confined; outer restored
+}
+
+innerBulkVsOuterSelective();           // N, M, N

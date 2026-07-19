@@ -1,0 +1,14 @@
+Field(active)
+Lit(s:A%)
+Bind(3)
+Bin(&&,Field(active),Bind(0))
+Un(!,Field(hidden))
+Call(like,Field(name),#1)
+Assign(age,Lit(i:40))
+Node
+Lit(s:txt)
+Lit(i:7)
+Lit(f:2.500000)
+Lit(b:true)
+Lit(none)
+mixed:s:x|i:1|f:2.500000|b:false|none

@@ -509,6 +509,16 @@ int main(int argc, char** argv) {
                 std::printf("%s", printProgram(program).c_str());
             } else
             if (mode == Expand) {
+                // LA-31 R1: `--expand` now runs the full Checker before printing,
+                // so it shows every checker rewrite (method-ref eta-lambdas, LA-31
+                // expr::Expr constructions, named-arg/default normalization). An
+                // ill-typed program fails --expand with the ordinary diagnostics
+                // (flushed below) and a non-zero exit, exactly like a compile;
+                // --ast-after-rules stays the pre-Checker debugging hatch.
+                Checker checker(R->sema(), file, sink);
+                checker.run(program, &R->preludeProgram());
+            }
+            if (mode == Expand && !sink.hasErrors()) {
                 // Phase 4 §6: source-shaped re-emit, with a `// from rule …`
                 // comment above each injected block (located by whether its span
                 // falls inside a firing's quasiquote template span).

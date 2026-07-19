@@ -1,7 +1,9 @@
 #pragma once
 #include "Ast.hpp"
 #include "Diagnostic.hpp"
+#include "LexicalStack.hpp"
 #include "Symbols.hpp"
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -107,18 +109,42 @@ private:
     // Flow-narrowing overlay: path ("x", "req.host") -> narrowed type. Consulted
     // before declared types; erased when the path (or a prefix) is assigned.
     std::unordered_map<std::string, Type> narrow_;
-    // bind/inject DI (§12.5): a stack of per-lexical-scope, type-keyed factory
-    // bindings (canonical type -> the `bind` Stmt). Nearest-wins on lookup. These
-    // live ONLY here, never dumped into the shared scope tables (owner ruling,
-    // system-binds.md §5) — bulk `uses` must never activate a namespace's binds.
-    std::vector<std::unordered_map<std::string, const Stmt*>> bindScopes_;
+    // const.md OQ1 — definite single assignment (the dual of narrowing). A
+    // `const` local declared without an initializer is "write-open": recorded
+    // here (name -> the loop/try nesting depth at its declaration) until it is
+    // definitely assigned. The first plain assignment on a path closes the
+    // window (erases the entry); every later write hits the ordinary const
+    // write-error. A read while still open is "read before definitely
+    // assigned". An if/else or match join UNIONS the arms' still-open sets (a
+    // const closes only if it closed on every arm — set intersection of the
+    // assigned sets). Assigning inside a deeper loop/try than the declaration
+    // cannot be the single init (§2.3) and is an error. Saved/restored around
+    // branches exactly like narrow_; a frame's names are dropped from it at
+    // scope exit (exitEnvScope) so a still-open const never leaks past its
+    // scope or into the next function.
+    struct PendingConst { int loopDepth = 0; int tryDepth = 0; };
+    std::unordered_map<std::string, PendingConst> constPending_;
+    // Depth of `try` bodies currently open (catch bodies excluded) — the `try`
+    // analogue of loopDepth_, for the §2.3 "the window can't span a try" rule.
+    int tryDepth_ = 0;
+    // Set only while typing an assignment's bare-Name LHS, so the write target
+    // itself isn't mis-flagged as a read-before-definite-assignment (OQ1).
+    bool typingLhs_ = false;
+    // bind/inject DI (§12.5): the per-block lexical stack. Factory bindings are
+    // registered by the Resolver into each scope's type-keyed `binds` table
+    // (designs/complete/techdesign-block-scoped-use.md §3.2); this stack just walks the
+    // open frames nearest-wins, layering a `use NS::T;`-activated Channel-1 bind
+    // (system-binds.md §5.3) on top per frame. Binds are NEVER dumped into the
+    // shared `names` table (owner ruling, system-binds.md §5) — they live in the
+    // separate `Scope::binds`, which a bulk `uses` (names-only) can't activate.
+    LexicalStack lexical_;
 
     // system-binds.md §5.2 (Channel 1): (namespace symbol) -> (bind's key,
-    // same string pushBindScope uses) -> that namespace's top-level factory
+    // same string fillBinds uses) -> that namespace's top-level factory
     // `bind` for the type. Built once, read-only, by buildNamespaceBindIndex
     // over BOTH the prelude's and the program's namespace bodies (walking is
     // not checking — the pass never descends into a factory body, preserving
-    // [[leviathan-prelude-not-checked]]). pushBindScope consults it to
+    // [[leviathan-prelude-not-checked]]). pushLexicalScope consults it to
     // activate a `use NS::T;`-stamped bind (§5.3).
     std::unordered_map<const Symbol*, std::unordered_map<std::string, const Stmt*>>
         namespaceBinds_;
@@ -143,8 +169,9 @@ private:
     std::unordered_map<std::string, Stmt*> specializationsByKey_;
     std::unordered_map<const Stmt*, Scope*> callableScopes_;
     std::unordered_map<const Stmt*, Symbol*> callableClasses_;
-    std::unordered_map<const Stmt*,
-        std::vector<std::unordered_map<std::string, const Stmt*>>> callableBindScopes_;
+    // The lexical bind frames in scope at a generic callable's definition, so a
+    // later-materialized specialization sees the same binds (LA-18 §12.5).
+    std::unordered_map<const Stmt*, std::vector<LexicalFrame>> callableBindScopes_;
     Stmt* activeSpecialization_ = nullptr;
     int activeSpecializationDepth_ = 0;
     std::unordered_set<const Expr*> diagnosedGenericStatic_;
@@ -234,6 +261,64 @@ private:
                            Symbol* ctorClass, const std::string& recvCanon,
                            const Type& retType);
 
+    // ---- LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md) ----
+    // The prelude's `expr::Expr<F>` class and its `expr` namespace, looked up
+    // once (lazily). exprClass_ stays null if the prelude lacks them (never in
+    // practice — Stage 1 landed the surface), which disables the whole hook.
+    Symbol* exprClass_ = nullptr;
+    Symbol* exprNamespace_ = nullptr;
+    bool exprLookedUp_ = false;
+    Symbol* exprClass();                       // resolve on first use
+    Symbol* exprNodeClass(const char* name);   // a class in the `expr` namespace
+    // R4: per-compilation reification-site counter, source-walk order, from 0.
+    int exprSiteCounter_ = 0;
+    // R1 idempotence: the lambda nodes that ARE a synthesized construction's
+    // first argument — the hook skips these so re-checking never re-reifies.
+    std::unordered_set<const Expr*> reifiedLambdas_;
+    // Synthesized literal/op/identifier text for reified nodes is interned into
+    // the PROGRAM's arena (`Program::synthNames`), not the checker's — the
+    // rewritten AST outlives the Checker (e.g. `--expand` prints it after the
+    // Checker is destroyed), so its string_views must too. A deque never
+    // invalidates the views taken into its elements.
+    Program* progMut_ = nullptr;
+    std::string_view ownText(std::string s);
+    // §2.1: if `pt` (a declared param/var/field/return TypeRef) is an
+    // Expr-target — `expr::Expr<Fn>` with Fn a function type — return Fn's
+    // TypeRef; else null. isExprTargetType is the resolved-Type form used in
+    // overload scoring (§2.2).
+    const TypeRef* exprTargetFn(const TypeRef* pt);
+    bool isExprTargetType(const Type& t);
+    // §3/§4: check `lambda`'s body against Fn, reify it, and rewrite `lambda`
+    // in place into the `expr::Expr(...)` construction. Returns the `Expr<Fn>`
+    // type, or an Error type on a reject (E1/E2/etc. already emitted). Only
+    // call when `lambda->kind == Lambda` and `fnRef` is a function TypeRef.
+    Type reifyLambda(Expr* lambda, const TypeRef* fnRef);
+    // The recursive body walk (§3.3): returns the constructed `expr::` node
+    // AST, or null on a reject (emits E2 at the offending span). ReifyCtx is
+    // defined in Checker.cpp.
+    struct ReifyCtx;
+    ExprPtr reifyNode(const Expr* e, ReifyCtx& ctx);
+    // The receiver of a whitelisted `Array<T>.contains` — a captured Array
+    // chain reifies to `Bind(slot)` whose binds value is the None marker (R17).
+    ExprPtr reifyArrayReceiver(const Expr* e, ReifyCtx& ctx);
+    // A DbValue-shaped checked type: string|int|float|bool, or a union all of
+    // whose members are those plus None (the binds element union, R17).
+    bool isDbValueType(const Type& t) const;
+    // A focused deep clone for the leaf grammar reification captures/literals
+    // ever contain (Name/This/Member chains, *Lit leaves) — span-carrying (H6).
+    ExprPtr cloneForReify(const Expr* e) const;
+    // Build an `expr::<cls>(args...)` construction Call (the Rules.cpp:549 idiom).
+    ExprPtr makeExprNode(const char* cls, std::vector<ExprPtr> args, SourceSpan sp);
+    // Build the binds array argument (§4 step 3): `[]` when empty, else an
+    // immediately-invoked closure that snapshots each capture into a
+    // union-typed slot and returns the `Array<string|int|float|bool|None>`
+    // (the only landed shape that types as the DbValue union — a bare uniform
+    // literal is Array<int>, invariantly un-assignable; see the log).
+    ExprPtr buildBindsExpr(ReifyCtx& ctx, SourceSpan sp);
+    // E2 reject: emit the diagnostic at `span`, the generated allow-list line,
+    // and a note at the lambda site; returns null for the caller to propagate.
+    ExprPtr reifyReject(const char* construct, SourceSpan span, ReifyCtx& ctx);
+
     // Walk a lambda's body with its parameters bound to `paramTypes` (falling
     // back to declared types / unknown), returning the body's inferred return
     // type (expr body: its type; block body: the uniform Return type, else
@@ -270,11 +355,33 @@ private:
     const Stmt* pickInjecting(const std::vector<const Stmt*>& cands,
                               std::vector<Type>& argTypes, Expr* call, bool& ok,
                               bool& diagnosed);
-    // bind/inject scope management. pushBindScope pre-scans a body's direct
-    // factory `bind`s (dup-in-scope = error), so binds are visible block-wide.
-    void pushBindScope(const std::vector<StmtPtr>& items);
-    void popBindScope();
+    // bind/inject lexical management. Push a frame referencing `scope` (whose
+    // `binds` the Resolver already filled — dup-in-scope is reported there), then
+    // validate that body's factory `bind`s reject value types (bug.md #23) and
+    // activate its `use NS::T;` Channel-1 binds (§5.3) into the frame's overlay.
+    void pushLexicalScope(Scope* scope, const std::vector<StmtPtr>& items);
+    void popLexicalScope();
     const Stmt* lookupBind(const std::string& canonical);   // nearest-wins
+
+    // RAII for a block's lexical lifecycle (block-scoped-use §3.2): swaps `scope_`
+    // to the block's own scope for names, pushes an `env_` frame for locals, and
+    // pushes the bind frame — one guard replacing the four hand-paired ops.
+    struct BlockScopeGuard {
+        Checker& c;
+        Scope* savedScope;
+        BlockScopeGuard(Checker& c, Stmt* block) : c(c), savedScope(c.scope_) {
+            if (block->blockScope) c.scope_ = block->blockScope;
+            c.env_.emplace_back();
+            c.pushLexicalScope(block->blockScope, block->body);
+        }
+        ~BlockScopeGuard() {
+            c.popLexicalScope();
+            c.exitEnvScope();
+            c.scope_ = savedScope;
+        }
+        BlockScopeGuard(const BlockScopeGuard&) = delete;
+        BlockScopeGuard& operator=(const BlockScopeGuard&) = delete;
+    };
 
     // Generic call inference/substitution (uniform for methods and functions).
     // When `call`/`lambdaWalked` are supplied, lambda arguments are checked
@@ -303,6 +410,10 @@ private:
     void applyFacts(const std::vector<Fact>& facts, bool thenSide,
                     std::unordered_map<std::string, Type>& saved);
     void invalidatePath(const std::string& path);
+    // OQ1: pop the top env_ frame, first dropping its names from constPending_
+    // so a write-open const that reached end of scope (permitted, §2.2 step 5)
+    // doesn't linger and mis-flag a later same-named binding.
+    void exitEnvScope();
 
     // helpers
     Type primType(const char* name) const;   // int/string/bool/float class type
@@ -312,6 +423,11 @@ private:
     Type* localLookup(std::string_view name);
     LocalBinding* localBinding(std::string_view name);
     Type error(SourceSpan span, std::string msg);
+    // block-scoped-use §5/S5 (error path only): if `name` is imported by a
+    // `use`/`uses` confined to some block of the current function (or a
+    // top-level block), append a note that the import is lexically scoped —
+    // turning a bare "unknown name" into a pointed diagnostic.
+    void noteBlockScopedImport(std::string_view name);
 
     // designs/complete/techdesign-class-method-dispatch.md §4.1: a program-wide index —
     // (T, "name\x1f canonical-sig") present iff some strict subclass of T

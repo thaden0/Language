@@ -270,7 +270,10 @@ the subject in that arm), a **value/range** (`0 =>`, `1..9 =>`), or **`else`**. 
 wins. Bodies are `=> expr;` or `=> { block }`; `match` is an expression (arms yield a value)
 or a statement (no trailing `;`). Exhaustive over a closed union (no `else` needed); an open
 hierarchy requires `else`. Lowers to the same `is`/`IsType` test as `catch` and `is` — one
-type-dispatch path. (`match` is a reserved word.)
+type-dispatch path. A `::`-qualified name in arm position resolves by symbol: a
+namespace-qualified **type** is a type pattern; an enum member or namespace-qualified
+constant is a value pattern; a name that is both is a compile error. (`match` is a reserved
+word.)
 
 ### 3.2 Primary expressions
 Lambdas take an expression body (`(x) => x + 1`) **or a statement block**
@@ -955,10 +958,10 @@ sanctioned way to strip it from CRLF input.
 | category | members |
 |---|---|
 | core (native) | `length()`, `charAt(int)`, `subStr(int start, int len)`, `indexOf(string)`, `toInt() -> int?`, `toFloat() -> float?`, `byteAt(int) -> int`, `toUpper()`, `toLower()`, `trim()`, `contains(string)`, `startsWith(string)`, `endsWith(string)`, `toString()` |
-| char (Track 03) | `at(int i) -> char` (native; decodes the scalar **starting at byte offset `i`** — O(1), pairs with the byte-counted `length()`; a mid-sequence byte offset → `RuntimeException` "not a scalar boundary"), `chars() -> Array<char>` (native; full UTF-8 decode; invalid bytes decode to U+FFFD, never a throw — data is not a programming error) |
+| char (Track 03) | `at(int i) -> char` (native; decodes the scalar **starting at byte offset `i`** — O(1), pairs with the byte-counted `length()`; a mid-sequence byte offset → `RuntimeException` "not a scalar boundary"), `chars() -> Array<char>` (native; full UTF-8 decode — O(n) time *and* allocation; strict RFC 3629 — overlongs, surrogates, and code points > U+10FFFF are all rejected; ill-formed bytes decode to U+FFFD per the WHATWG maximal-subpart rule, never a throw — data is not a programming error) |
 | search | `lastIndexOf(string)`, `indexOfFrom(string, int from)` (not an `indexOf` overload — a same-class overload would ride the arity-blind by-name fallback prelude bodies fall back to, bug.md #13), `count(string)` (`""` → 0) |
 | split/join | `split(string sep)` (empty `sep` → array of 1-char strings; keeps empty segments), `splitLines()` (splits `\n`, trims one trailing `\r` per line) |
-| transform | `replace(string from, string to)`, `padStart(int, string)`, `padEnd(int, string)`, `repeat(int)` (`<= 0` → `""`), `trimStart()`, `trimEnd()`, `removePrefix(string)`, `removeSuffix(string)` |
+| transform | `replace(string from, string to)`, `padStart(int, string)`, `padEnd(int, string)`, `repeat(int)` (`<= 0` → `""`), `trimStart()`, `trimEnd()`, `removePrefix(string)`, `removeSuffix(string)`, `reverse()` (UTF-8-correct — reverses **scalars**, not bytes) |
 | queries | `isEmpty()`, `isBlank()` (`trim().isEmpty()`), `equalsIgnoreCase(string)` |
 
 **`toInt()`/`toFloat()` are strict, optional-returning parses** (Track 04
@@ -987,9 +990,31 @@ native has no plumbing to land on (Track 04 M3); `byteToString` throws the
 same way for `b` outside `0..255`. Also excluded from the frozen ELF
 backend's lanes, same as `toInt`/`toFloat`.
 
-`reverse()` is deliberately not offered as a `string` method: a byte reverse is
-wrong for UTF-8 content. With Track 03's `chars()` landed, the scalar-correct
-idiom is `s.chars().reverse().joinToString("")`.
+**`reverse()`** is UTF-8-correct: it reverses **scalars, not bytes**
+(`chars().reverse().joinToString("")`), so `"désert".reverse() == "treséd"` with
+the `é` intact — a byte reverse would shred every multi-byte sequence. Ill-formed
+bytes normalize to U+FFFD first (the `chars()` policy below), so reversal of
+ill-formed input is lossy by design; for byte-faithful work use `Block`.
+
+**Bytes vs scalars.** The byte-indexed world (`length()`, `indexOf`, `subStr`,
+`charAt`, `byteAt`) stays the primary, O(1) index world; `chars()` is the
+explicit opt-in to the scalar world, and the two counts are never conflated:
+
+| idiom | meaning |
+|---|---|
+| `s.length()` | byte count (`"héllo".length() == 6`) |
+| `s.chars().length()` | scalar count (`"héllo".chars().length() == 5`) |
+| `s.chars().at(i)` | the i-th scalar — O(n); the O(1) byte-offset form is `s.at(byteOffset)` |
+| `for (char c in s.chars())` | scalar iteration (strings are not directly iterable — the `Array` is explicit) |
+
+**Normative decode (RFC 3629 / Unicode).** `chars()` and `at()` decode 1–4 byte
+sequences and **reject** overlong encodings, surrogate code points
+(U+D800–U+DFFF), values above U+10FFFF, and truncated sequences. Ill-formed input
+never throws: each ill-formed sequence emits **one** U+FFFD and decoding resumes
+at the first byte that broke it (WHATWG maximal-subpart rule) — e.g. `C0 AF`
+(overlong `/`) → `[U+FFFD, U+FFFD]`, `E2 82` truncated → `[U+FFFD]` (one, not
+two), `F0 9D 84 9E` → `[U+1D11E]` (one astral scalar). **Round-trip law:** for
+any well-formed `s`, `s.chars().joinToString("") == s`.
 
 **Char engine coverage & back-compat (Track 03 §1).** `char`, `std::charFromCode`,
 and `string.at`/`chars` ship on the **oracle, IR, emit-C++, and LLVM engines**

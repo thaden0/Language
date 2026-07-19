@@ -1,0 +1,67 @@
+== edit ==
+typed: [hello] cur=0,5
+split: [hello\nworld] cur=1,5
+insert col0: [hello\nXworld] cur=1,1
+backspace: [hello\nworld] cur=1,0
+join: [helloworld] cur=0,5
+delete-fwd: [helloorld] cur=0,5
+== nav ==
+setText: [abc\ndef\nghi] cur=0,0
+right x3 (line end): [abc\ndef\nghi] cur=0,3
+right wraps down: [abc\ndef\nghi] cur=1,0
+left wraps up: [abc\ndef\nghi] cur=0,3
+end: [abc\ndef\nghi] cur=0,3
+doc end: [abc\ndef\nghi] cur=2,3
+doc home: [abc\ndef\nghi] cur=0,0
+== word ==
+word-left 1: [the quick brown] cur=0,10
+word-left 2: [the quick brown] cur=0,4
+word-right 1: [the quick brown] cur=0,9
+== sticky ==
+start: [hello\nhi\nworld] cur=0,5
+down (short line): [hello\nhi\nworld] cur=1,2
+down (sticky restored): [hello\nhi\nworld] cur=2,5
+== cells ==
+0
+1
+3
+4
+1
+2
+3
+== paste ==
+paste 3 lines: [x\ny\nz] cur=2,1
+3
+== scroll ==
+initial: scroll=0,0
+after End (x follows): scroll=4,0
+after doc-end (y follows): scroll=1,2
+after doc-home: scroll=0,0
+== gutter ==
+2
+3
+== cursorPos ==
+2,1
+4,1
+== readonly ==
+edits ignored: [locked] cur=0,0
+nav still live: [locked] cur=0,6
+== mouse ==
+click 3,1: [hello\nworld\nthere] cur=1,3
+click out-of-range: [hello\nworld\nthere] cur=2,5
+== validate ==
+false
+must not be empty
+true
+== dom ==
+start
+start
+a\nb\nc
+1
+<textarea id="editor">a
+b
+c</textarea>
+1
+ro
+2
+x

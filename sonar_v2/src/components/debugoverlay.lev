@@ -13,6 +13,10 @@ namespace Sonar {
     class DebugOverlay : Component, Styleable {
         int maxLines_ = 8;
 
+        // D03 §6: the debug overlay paints its text directly over the live tree
+        // and must never clear its box (it would blank whatever it floats above).
+        new DebugOverlay() { paintsBackground_ = false; }
+
         DebugOverlay lines(int n) {
             maxLines_ = n < 1 ? 1 : n;
             invalidate();
