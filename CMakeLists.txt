@@ -469,6 +469,63 @@ add_test(NAME corpus_bool_cmp_ir
 add_test(NAME corpus_bool_cmp_cpp
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/bool_cmp")
+# LA-31 Stage 1 (designs/expr-reification/techdesign-01-prelude.md): the expr::
+# reification prelude surface — node taxonomy construction (§3.3), string.like/
+# ilike unit rows (§2.4), and the hand-built-tree + expr::eval walker proof
+# (§3.2). oracle + IR + LLVM full (the LLVM legs live in the LLVM_FOUND block
+# below); no cpp/ELF lanes by design (§1: emit-C++ not required for the expr
+# corpus, ELF frozen). Own directories keep them off the top-level scan so
+# corpus_native/corpus_elf_full never compile them.
+add_test(NAME corpus_expr_prelude_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/expr_prelude")
+add_test(NAME corpus_expr_prelude_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_prelude")
+add_test(NAME corpus_expr_like_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/expr_like")
+add_test(NAME corpus_expr_like_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_like")
+add_test(NAME corpus_expr_eval_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/expr_eval")
+add_test(NAME corpus_expr_eval_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_eval")
+# LA-31 Stage 2 — the reifier: lambda literals in expr::Expr<F> positions reify
+# to walkable trees + snapshotted binds + a per-compilation siteId. Own corpus
+# dir (kept off the top-level scan, matching Stage 1's posture: emit-C++ not
+# required, ELF never gates). LLVM leg alongside its siblings below.
+add_test(NAME corpus_expr_reify_treewalk
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
+add_test(NAME corpus_expr_reify_ir
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
+                 $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
+# The four reification-reject smokes (§8.3/§8.4): each is a hard compile error
+# carrying the exact named diagnostic the negative corpus greps.
+add_test(NAME expr_reify_reject_block
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_smoke_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_smoke_block.lev"
+                 "cannot reify block body: outside the LA-31 reifiable subset")
+add_test(NAME expr_reify_reject_call
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_smoke_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_smoke_call.lev"
+                 "reifiable calls: string.like/1, string.ilike/1, string.startsWith/1, string.endsWith/1, string.contains/1, Array.contains/1")
+add_test(NAME expr_reify_reject_value
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_smoke_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_smoke_value.lev"
+                 "only a lambda literal can be reified to expr::Expr<F>")
+add_test(NAME expr_reify_reject_ambig
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_smoke_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/expr_reify_smoke_ambig.lev"
+                 "ambiguous lambda argument: matches both a function parameter and an expr::Expr parameter")
 # Track 03 §2 — enum: value struct + members + code()/toString()/==/fromCode +
 # exhaustive match. Desugar-only (no VKind, no ABI, no X64Gen edits), so it is
 # FULL-COVERAGE on all four non-frozen engines; enums.lev runs byte-identical on
@@ -650,6 +707,12 @@ add_test(NAME corpus_bound_method_refs_expand
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/bound_method_refs")
+# LA-31 Stage 2 §8.5: --expand shows the expr::Expr(...) construction and the
+# emitted source recompiles byte-identically (no double reification, R1).
+add_test(NAME corpus_expr_reify_expand
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify")
 # LA-18: concrete AST/IR copies for generic `T::member` on class + struct
 # tuples, including LA-25 value-position composition, transitive demand, and a
 # non-overridden generic instance method. Specializations are ordinary
@@ -1137,6 +1200,27 @@ if (LLVM_FOUND)
   add_test(NAME corpus_math_transcendental_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/math_transcendental"
+                   ${LANG_LVRT_SOURCES})
+  # LA-31 Stage 1: LLVM legs of the expr:: prelude surface — byte-identical to
+  # the oracle/IR .expected (corpus_expr_{prelude,like,eval}_{treewalk,ir}).
+  # The union-in-class-field taxonomy is the tripwire this LLVM lane guards.
+  add_test(NAME corpus_expr_prelude_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_prelude"
+                   ${LANG_LVRT_SOURCES})
+  add_test(NAME corpus_expr_like_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_like"
+                   ${LANG_LVRT_SOURCES})
+  add_test(NAME corpus_expr_eval_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_eval"
+                   ${LANG_LVRT_SOURCES})
+  # LA-31 Stage 2 — the reifier's LLVM leg (union-array binds + closure + node
+  # constructions end-to-end; the layout tripwire the design's §7 pins).
+  add_test(NAME corpus_expr_reify_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/expr_reify"
                    ${LANG_LVRT_SOURCES})
   # http/async/sockets/stale_stream bind fixed loopback ports (8092/8093/8095);
   # serialize the net-binding LLVM lanes with the other engines' full-corpus

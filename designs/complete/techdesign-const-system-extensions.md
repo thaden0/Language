@@ -1,12 +1,11 @@
 # `const` System Extensions
 
-**Status: OQ2 + OQ3/OQ4 landed (2026-07-16); OQ1 designed, not yet implemented.**
-Promoted out of deferral 2026-07-17 (was `deferal-const-system-extensions.md`) — with three of
-four items discharged (§8), **OQ1 (definite single assignment, §2) is the live remaining
-milestone**, checker-only, riding the existing flow-narrowing engine. Its §7 sequencing rule
-("when a program actually wants the `if/else`-init pattern") is retired by the promotion; it is
-now ordinarily schedulable. The §2.3 exclusion fence and §7 STOP conditions stand unchanged.
-**Date:** 2026-07-07 (design); 2026-07-16 (OQ2/M-doc landed — see §8).
+**Status: ALL FOUR items discharged. OQ2 + OQ3/OQ4 landed 2026-07-16; OQ1 (definite
+single assignment) landed 2026-07-18 (§8).** Promoted out of deferral 2026-07-17 (was
+`deferal-const-system-extensions.md`). With OQ1's checker-only definite-assignment
+analysis in, this design is fully implemented; the §2.3 exclusion fence (loops / try /
+non-exhaustive match) and the §7 STOP conditions held exactly as written.
+**Date:** 2026-07-07 (design); 2026-07-16 (OQ2/M-doc landed); 2026-07-18 (OQ1 landed) — see §8.
 **Resolves / tracks:** the four open questions logged at the tail of the landed
 `const` feature — [`designs/complete/const.md` §9](designs/complete/const.md)
 (lines 289–303) plus the §4 interface note (lines 181–184). `const` itself
@@ -368,10 +367,39 @@ Pure front-end sugar, zero AST-enum/IR/Eval/Lower/backend edits (§5 invariant h
 - **M-doc:** `const.md` §9.1–§9.4 now point here — §9.2 marked **Implemented**, §9.3/§9.4
   record the declined-ruling reconsideration criteria (§4.1/§4.2).
 
-**Remaining: M-OQ1 (definite single assignment).** Not started. It is the substantive
-milestone — a checker-only definite-assignment analysis (§2.2) with the {loop, try, match}
-exclusion fence (§2.3, a STOP condition per problem #4) and a thorough read-before-assign /
-double-assign compile-reject corpus. The lowering precondition is verified: a **non-const**
-no-init local assigned on both `if/else` arms already lowers correctly on `--run`/`--ir`,
-so OQ1 adds no backend surface (const is erased after the checker). Sequenced "when a
-program actually wants the `if/else`-init pattern" (§7); non-blocking.
+**2026-07-18 — M-OQ1 (definite single assignment) landed.** Checker-only, zero
+AST-enum/IR/Eval/Lower/backend edits (§5 invariant held — `isConst` appears in neither
+`Eval.cpp` nor `Lower.cpp`, verified by grep).
+
+- **Checker** (`src/Checker.cpp` / `.hpp`): a `constPending_` map (name → the loop/try
+  nesting depth at declaration) beside `narrow_`, plus a `tryDepth_` counter and a
+  `typingLhs_` flag. Touched at exactly the four flow sites the design named:
+  - **Declaration** (`check`'s `StmtKind::Var`): a bare typed `const T x;` LOCAL is
+    recorded write-open instead of erroring; `const x;` (no type) and any bare const
+    outside a function body (and a `using` decl, which is `const` but resource-scoped)
+    keep the "needs an initializer" error.
+  - **Assignment** (`typeOfBinary`): the first plain `x = …` on a path closes the window
+    (erases the pending entry) and is permitted; a compound `x += …` is read-before-assign;
+    an assignment from a deeper loop/try than the declaration is the §2.3 error; every
+    later write falls through to the ordinary `constBlockedWrite` const error.
+  - **Read** (`typeOfInner`'s `Name` case): reading a still-open const is
+    "read before it is definitely assigned" — suppressed only while typing the write
+    target itself (`typingLhs_`).
+  - **Branch join** (`If` and `Match`): each arm runs from the pre-branch open set; the
+    post-join open set is the UNION of the arms' still-open sets (closed ⇔ closed on
+    every arm). A missing `else` / non-exhaustive `match` joins in the pre-branch set, so
+    nothing closes. `try` bodies increment `tryDepth_` so the window can't span them; a
+    frame's names are dropped from `constPending_` at scope exit (`exitEnvScope`, wired
+    into every `env_` pop) so a still-open const never leaks past its scope or into the
+    next function.
+- **Differential acceptance (the §7 STOP oracle):** the positive corpus lowers
+  **identically** under `--run`, `--ir`, and `--emit-cpp` (all three actively-maintained
+  engines agree). Pure front-end feature confirmed; the invariant holds.
+- **Tests:** positive corpus `tests/corpus/const_da.lev` (+`.expected`, auto-globbed by
+  `corpus_treewalk`/`corpus_ir`) exercises if/else-init, match-init, straight-line init,
+  and a write-open optional assigned-both-arms-then-narrowed. `test_checker.cpp` gains a
+  DA suite pinning the compile-rejects (read-before-assign straight-line / one-armed-if /
+  one-arm-only; double-assign; compound; loop; `while`; `try`; non-exhaustive `match`) and
+  the clean cases (if/else-init, match+else-init, narrowing composition, block-nesting,
+  declared-but-unused). The former `const int x;`-is-an-error checker case flipped to
+  CLEAN (§2.2 step 5: declared-but-unused write-open is dead, not wrong).

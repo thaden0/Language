@@ -1,0 +1,4 @@
+q0 tree=Bin(&&,Field(active),Call(like,Field(name),[Lit("A%")])) site=0
+q1 tree=Bin(>=,Field(age),Bind(0)) binds=[18] site=1 fn=true
+q2 tree=Bin(>=,Field(age),Bind(0)) binds=[21] fn=true
+field tree=Field(active) fn=true

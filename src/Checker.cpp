@@ -1,5 +1,7 @@
 #include "Checker.hpp"
+#include <algorithm>
 #include <functional>
+#include <iterator>
 
 namespace {
 
@@ -286,10 +288,17 @@ struct SpecializationCloner {
 // lambda is its own fresh scope with no captures (info.md §15: "these
 // closures capture nothing"), so identical names across different lambdas
 // never collide.
+//
+// LA-31 R1: these names must be re-lexable, because `--expand` now runs the
+// Checker and prints these eta-lambdas as ordinary source that the round-trip
+// harness recompiles. A `$` prefix is reserved for quasiquote holes and fails
+// re-lexing, so use a `__mr`-prefixed identifier (a user collision inside the
+// exact synthesized lambda scope is not reachable — the body references only
+// these params and the receiver).
 const std::string& methodRefParamName(size_t i) {
     static const std::vector<std::string> names = [] {
         std::vector<std::string> v;
-        for (int i = 0; i < 24; ++i) v.push_back("$mr" + std::to_string(i));
+        for (int i = 0; i < 24; ++i) v.push_back("__mr" + std::to_string(i));
         return v;
     }();
     return names.at(i);
@@ -707,6 +716,17 @@ void Checker::invalidatePath(const std::string& path) {
     }
 }
 
+// OQ1: leaving a scope drops any of its locals still recorded as write-open
+// consts. A const that reaches end of scope still open is simply dead, not
+// wrong (§2.2 step 5); dropping it here also keeps constPending_ from leaking a
+// stale name into an outer/shadowing binding or the next function body.
+void Checker::exitEnvScope() {
+    if (!env_.empty() && !constPending_.empty())
+        for (const auto& kv : env_.back())
+            constPending_.erase(std::string(kv.first));
+    env_.pop_back();
+}
+
 // ---------------------------------------------------------------------------
 //  expression typing
 // ---------------------------------------------------------------------------
@@ -822,7 +842,18 @@ Type Checker::typeOfInner(const Expr* e) {
                 auto n = narrow_.find(std::string(e->text));
                 if (n != narrow_.end()) return n->second;
             }
-            if (Type* local = localLookup(e->text)) return *local;
+            if (LocalBinding* lb = localBinding(e->text)) {
+                // OQ1: reading a write-open const before it is definitely
+                // assigned is an error — the safety property that makes
+                // suppressing its default-construction sound (no path observes
+                // the un-assigned slot). Suppressed while typing the write
+                // target of the assignment that is about to close the window.
+                if (lb->isConst && !typingLhs_ &&
+                    constPending_.count(std::string(e->text)))
+                    return error(e->span, "const '" + std::string(e->text) +
+                                 "' is read before it is definitely assigned");
+                return lb->type;
+            }
             // implicit member of `this`
             if (thisClass_) {
                 auto fields = slotsNamed(thisClass_->shape, e->text);
@@ -1006,8 +1037,17 @@ Type Checker::typeOfInner(const Expr* e) {
             bool hasElse = false;
             bool sawNaNArm = false;       // struct-equality §6 (packet 07): dup check
             Type result; bool haveResult = false, uniform = true;
+            // OQ1: definite assignment across the arms — the match analogue of
+            // the if/else join (§2.3). Each arm starts from the pre-match open
+            // set; a const is definitely assigned after the match iff it closed
+            // on EVERY arm, so the post-join open set is the UNION of the arms'
+            // still-open sets. A non-exhaustive match (no `else`) has an implicit
+            // fall-through arm that assigns nothing, so `pendingBefore` joins in.
+            std::unordered_map<std::string, PendingConst> pendingBefore = constPending_;
+            std::unordered_map<std::string, PendingConst> pendingJoin;
             for (const MatchArm& arm : e->arms) {
                 std::unordered_map<std::string, Type> saved = narrow_;
+                constPending_ = pendingBefore;
                 if (arm.isElse) {
                     hasElse = true;
                 } else if (arm.type) {            // TYPE pattern: narrow the subject
@@ -1055,11 +1095,15 @@ Type Checker::typeOfInner(const Expr* e) {
                     ? (check(const_cast<Stmt*>(arm.bodyBlock.get())), unknown())
                     : typeOf(arm.bodyExpr.get());
                 narrow_ = saved;
+                for (const auto& kv : constPending_) pendingJoin.insert(kv);
                 if (arm.bodyExpr) {
                     if (!haveResult) { result = bt; haveResult = true; }
                     else if (bt.canonical != result.canonical) uniform = false;
                 }
             }
+            if (!hasElse)
+                for (const auto& kv : pendingBefore) pendingJoin.insert(kv);
+            constPending_ = std::move(pendingJoin);
             // Exhaustiveness: a closed union must be fully covered; otherwise an
             // `else` is required (an open hierarchy / scalar can't be exhaustive).
             if (!hasElse) {
@@ -1839,6 +1883,13 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                 Expr* a = e->list[i].get();
                 const TypeRef* pt = ctor->params[i].type.get();
                 if (a->kind == ExprKind::Lambda) {
+                    // LA-31 §2.2: an `expr::Expr<Fn>` constructor parameter
+                    // reifies the lambda in place, just like a function argument.
+                    if (const TypeRef* fn = exprTargetFn(pt)) {
+                        reifyLambda(a, fn);
+                        lambdaWalked[i] = 1;
+                        continue;
+                    }
                     std::vector<Type> ptypes;
                     if (pt && pt->kind == TypeKind::Function)
                         for (const TypeRefPtr& fp : pt->funcParams)
@@ -2028,7 +2079,14 @@ Type Checker::typeOfBinary(const Expr* e) {
             narrow_.erase(it);
         }
     }
+    // OQ1: a bare-Name assignment target is a write position, so suppress the
+    // read-before-definite-assignment check while typing it — the DA block below
+    // is the single place that decides a pending const's fate for BOTH `x = ...`
+    // (closes the window) and `x += ...` (reads first, so it reports the
+    // read-before-assign there, not here — this avoids a duplicate diagnostic).
+    typingLhs_ = assignment && e->a->kind == ExprKind::Name;
     Type lt = typeOf(e->a.get());
+    typingLhs_ = false;
     if (restoreNarrowLhs) narrow_ = savedNarrowLhs;
     methodRefsAllowed_ = savedMethodRefsAllowed;
 
@@ -2087,6 +2145,39 @@ Type Checker::typeOfBinary(const Expr* e) {
         error(e->span, "cannot mutate field '" + fieldNameOf(e->a.get()) +
               "' in a non-mutating method of value type '" +
               std::string(thisClass_->name) + "'; mark the method `mutating`");
+
+    // const.md OQ1: definite single assignment. A write to a still-open const
+    // local (declared without an initializer, §2.2) is handled here BEFORE the
+    // ordinary const write-error below, because the FIRST plain assignment on a
+    // path is the permitted initialization that closes the window. Everything
+    // after it — a second write, a compound write (which reads first), or a
+    // write from inside a deeper loop/try than the declaration (§2.3) — is an
+    // error; once closed, the name leaves constPending_ and falls through to the
+    // ordinary "cannot assign to const" path.
+    if ((e->op == TokenKind::Eq || isCompoundAssign(e->op)) &&
+        e->a->kind == ExprKind::Name) {
+        auto pc = constPending_.find(std::string(e->a->text));
+        if (pc != constPending_.end()) {
+            std::string nm(e->a->text);
+            if (isCompoundAssign(e->op))
+                return error(e->a->span, "const '" + nm +
+                             "' is read before it is definitely assigned");
+            if (loopDepth_ > pc->second.loopDepth)
+                return error(e->a->span, "cannot assign to const '" + nm +
+                             "' inside a loop body; a const's single-assignment "
+                             "window cannot span a loop (const.md §2.3)");
+            if (tryDepth_ > pc->second.tryDepth)
+                return error(e->a->span, "cannot assign to const '" + nm +
+                             "' inside a 'try' body; a const's single-assignment "
+                             "window cannot span a 'try' (const.md §2.3)");
+            if (!assignable(rt, lt))
+                return error(e->span, "cannot assign '" + rt.canonical + "' to '" +
+                             lt.canonical + "'");
+            constPending_.erase(pc);            // the window closes on this path
+            invalidatePath(pathOf(e->a.get()));
+            return lt;
+        }
+    }
 
     // const.md: reject a write to a const slot up front, for both plain
     // (`x = v`) and compound (`x += v`) assignment — supersedes Bug 7's ad
@@ -2439,6 +2530,11 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
         int omitted = 0;
     } best;
 
+    // LA-31 §2.2 / E3: per applicable candidate, which lambda-LITERAL argument
+    // positions matched an `expr::Expr<Fn>` parameter vs a FuncRef parameter.
+    struct CandTie { int score; std::vector<int> exprTargetArgs; std::vector<int> funcRefArgs; };
+    std::vector<CandTie> ties;
+
     std::string soleFailure;
     for (const Stmt* c : cands) {
         Binding cur;
@@ -2485,6 +2581,7 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
         }
 
         int score = 0;
+        std::vector<int> curExprTargetArgs, curFuncRefArgs;
         for (size_t pi = 0; pi < c->params.size() && applicable; ++pi) {
             int ai = cur.supplied[pi];
             if (ai < 0) continue;                            // omitted values do not score
@@ -2501,7 +2598,20 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             // could never satisfy.
             if (call->list[static_cast<size_t>(ai)]->kind == ExprKind::Lambda ||
                 isDeferredMethodRefArg(call->list[static_cast<size_t>(ai)].get())) {
-                if (pt.kind == TKind::FuncRef) { score += 1; continue; }
+                bool isLit = call->list[static_cast<size_t>(ai)]->kind == ExprKind::Lambda;
+                if (pt.kind == TKind::FuncRef) {
+                    if (isLit) curFuncRefArgs.push_back(ai);
+                    score += 1; continue;
+                }
+                // LA-31 §2.2 (R2): a lambda LITERAL is applicable against an
+                // `expr::Expr<Fn>` parameter at the same tier, if arities match.
+                if (isLit)
+                    if (const TypeRef* fn = exprTargetFn(p))
+                        if (fn->funcParams.size() ==
+                            call->list[static_cast<size_t>(ai)]->params.size()) {
+                            curExprTargetArgs.push_back(ai);
+                            score += 1; continue;
+                        }
                 applicable = false;
                 continue;
             }
@@ -2526,10 +2636,54 @@ const Stmt* Checker::pickInjecting(const std::vector<const Stmt*>& cands,
             continue;
         }
         cur.score = score;
+        ties.push_back({score, std::move(curExprTargetArgs), std::move(curFuncRefArgs)});
         if (!best.candidate || cur.score > best.score ||
             (cur.score == best.score && cur.omitted < best.omitted))
             best = std::move(cur);                            // exact ties: first-declared
     }
+
+    // LA-31 E3 (§2.2): a lambda literal that matched a FuncRef parameter in one
+    // top-tier candidate and an `expr::Expr` parameter in another is ambiguous —
+    // this overrides the declaration-order tiebreak. Post-hoc over ties only; the
+    // scoring numbers themselves are untouched (bug #34 adjacency, H1).
+    if (best.candidate) {
+        for (const CandTie& t : ties) {
+            if (t.score != best.score) continue;
+            for (int ei : t.exprTargetArgs)
+                for (const CandTie& u : ties) {
+                    if (u.score != best.score) continue;
+                    for (int fi : u.funcRefArgs)
+                        if (fi == ei) {
+                            error(call->list[static_cast<size_t>(ei)]->span,
+                                  "ambiguous lambda argument: matches both a function "
+                                  "parameter and an expr::Expr parameter; extract a typed "
+                                  "local to select");
+                            ok = false; diagnosed = true;
+                            return nullptr;
+                        }
+                }
+        }
+    }
+
+    // LA-31 E1 (§2.2/R16): a NON-literal argument that landed in an
+    // `expr::Expr<Fn>` parameter of the chosen candidate — a lambda-typed value,
+    // a `C::m` reference, etc. FuncRef is universally assignable, so scoring did
+    // not reject it; name it rather than silently (mis)accepting a non-reifiable
+    // value. Only a lambda literal can reify (R16).
+    if (best.candidate)
+        for (size_t pi = 0; pi < best.candidate->params.size(); ++pi) {
+            int ai = best.supplied[pi];
+            if (ai < 0) continue;
+            if (!exprTargetFn(best.candidate->params[pi].type.get())) continue;
+            const Expr* a = call->list[static_cast<size_t>(ai)].get();
+            if (a->kind == ExprKind::Lambda) continue;   // a literal reifies
+            // Only a lambda-typed VALUE is the error; passing an already-typed
+            // `expr::Expr<F>` value through is an ordinary value pass.
+            if (argTypes[static_cast<size_t>(ai)].kind != TKind::FuncRef) continue;
+            error(a->span, "only a lambda literal can be reified to expr::Expr<F>");
+            ok = false; diagnosed = true;
+            return nullptr;
+        }
 
     if (!best.candidate) {
         ok = false;
@@ -2815,8 +2969,641 @@ Type Checker::checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTyp
     }
     loopDepth_ = savedLoopDepth;
     returnType_ = savedRt; returnTypeRef_ = savedRtr;
-    env_.pop_back();
+    exitEnvScope();
     return ret;
+}
+
+// ===========================================================================
+//  LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md)
+// ===========================================================================
+
+// R6: the one whitelist register — drives both the accept path (§3.3 Call row)
+// and the E2 "reifiable calls: …" allow-list line (generated, never hand-kept).
+namespace {
+struct ExprCallRow { const char* name; enum Recv { Str, ArrayT } recv; int arity; };
+constexpr ExprCallRow kExprWhitelist[] = {
+    {"like",       ExprCallRow::Str,    1},
+    {"ilike",      ExprCallRow::Str,    1},
+    {"startsWith", ExprCallRow::Str,    1},
+    {"endsWith",   ExprCallRow::Str,    1},
+    {"contains",   ExprCallRow::Str,    1},
+    {"contains",   ExprCallRow::ArrayT, 1},
+};
+std::string whitelistAllowLine() {
+    std::string s = "reifiable calls: ";
+    for (size_t i = 0; i < std::size(kExprWhitelist); ++i) {
+        const ExprCallRow& r = kExprWhitelist[i];
+        if (i) s += ", ";
+        s += (r.recv == ExprCallRow::Str ? "string." : "Array.");
+        s += r.name; s += "/"; s += std::to_string(r.arity);
+    }
+    return s;
+}
+// The reify op set (§3.3): whitelisted binary/unary spellings. opSymbol above
+// covers everything except the short-circuit boolean pair.
+const char* reifyOp(TokenKind k) {
+    if (k == TokenKind::AmpAmp) return "&&";
+    if (k == TokenKind::PipePipe) return "||";
+    return opSymbol(k);
+}
+bool reifyBinaryOk(TokenKind k) {
+    switch (k) {
+        case TokenKind::EqEq: case TokenKind::BangEq: case TokenKind::Lt:
+        case TokenKind::Gt:   case TokenKind::Le:     case TokenKind::Ge:
+        case TokenKind::AmpAmp: case TokenKind::PipePipe:
+        case TokenKind::Plus: case TokenKind::Minus: case TokenKind::Star:
+        case TokenKind::Slash: case TokenKind::Percent: return true;
+        default: return false;
+    }
+}
+const char* exprKindConstruct(ExprKind k) {
+    switch (k) {
+        case ExprKind::Await:   return "await";
+        case ExprKind::Lambda:  return "nested lambda";
+        case ExprKind::Is:      return "'is' expression";
+        case ExprKind::Match:   return "'match' expression";
+        case ExprKind::Index:   return "indexing";
+        case ExprKind::Range:   return "range";
+        case ExprKind::Ternary: return "conditional expression";
+        default:                return nullptr;   // caller uses "unsupported construct"
+    }
+}
+}  // namespace
+
+// The reifier's per-site state (§3.1): the lambda's Field roots, the ordered
+// bind table (canonical spelling -> slot; insertion order = slot order, R5),
+// the set-shape flag, and the lambda site span for the E2 note.
+struct Checker::ReifyCtx {
+    std::vector<std::string> paramNames;
+    struct BindEntry { std::string key; ExprPtr capture; bool storeNone; };
+    std::vector<BindEntry> binds;
+    bool setShaped = false;
+    SourceSpan siteSpan;
+    // canonical spelling -> slot; a repeat spelling shares the slot (R5).
+    int findOrAddSlot(std::string key, ExprPtr capture, bool storeNone) {
+        for (size_t i = 0; i < binds.size(); ++i)
+            if (binds[i].key == key) return static_cast<int>(i);
+        binds.push_back({std::move(key), std::move(capture), storeNone});
+        return static_cast<int>(binds.size()) - 1;
+    }
+};
+
+std::string_view Checker::ownText(std::string s) {
+    progMut_->synthNames.push_back(std::move(s));
+    return progMut_->synthNames.back();
+}
+
+Symbol* Checker::exprClass() {
+    if (!exprLookedUp_) {
+        exprLookedUp_ = true;
+        Symbol* ns = sema_.global ? sema_.global->lookup("expr") : nullptr;
+        if (ns && ns->kind == SymbolKind::Namespace && ns->scope) {
+            exprNamespace_ = ns;
+            if (const std::vector<Symbol*>* v = ns->scope->localLookup("Expr"))
+                for (Symbol* s : *v)
+                    if (s->kind == SymbolKind::Class) { exprClass_ = s; break; }
+        }
+    }
+    return exprClass_;
+}
+
+Symbol* Checker::exprNodeClass(const char* name) {
+    if (!exprClass()) return nullptr;            // also fills exprNamespace_
+    if (!exprNamespace_ || !exprNamespace_->scope) return nullptr;
+    if (const std::vector<Symbol*>* v = exprNamespace_->scope->localLookup(name))
+        for (Symbol* s : *v) if (s->kind == SymbolKind::Class) return s;
+    return nullptr;
+}
+
+// §2.1: an Expr-target is `expr::Expr<Fn>` with a single function-typed generic
+// argument. Return Fn's (Function) TypeRef, else null.
+const TypeRef* Checker::exprTargetFn(const TypeRef* pt) {
+    if (!pt || pt->kind != TypeKind::Named) return nullptr;
+    if (pt->generics.size() != 1) return nullptr;
+    Symbol* ec = exprClass();
+    if (!ec || pt->resolvedSymbol != ec) return nullptr;
+    const TypeRef* fn = pt->generics[0].get();
+    return (fn && fn->kind == TypeKind::Function) ? fn : nullptr;
+}
+
+// The resolved-Type form (overload scoring, §2.2): a Class of `expr::Expr` with
+// one FuncRef generic argument.
+bool Checker::isExprTargetType(const Type& t) {
+    Symbol* ec = exprClass();
+    return ec && t.kind == TKind::Class && t.sym == ec && t.args.size() == 1 &&
+           t.args[0].kind == TKind::FuncRef;
+}
+
+bool Checker::isDbValueType(const Type& t) const {
+    auto isBase = [](const std::string& c) {
+        return c == "string" || c == "int" || c == "float" || c == "bool";
+    };
+    if (t.kind == TKind::Union) {
+        for (const Type& m : t.unionMembers)
+            if (!isBase(m.canonical) && m.canonical != "None") return false;
+        return !t.unionMembers.empty();
+    }
+    return isBase(t.canonical);
+}
+
+// A span-carrying deep clone over the leaf grammar reification ever clones:
+// Name/This, Member (`.`/`::`) chains, and *Lit leaves (H6). Anything else is
+// copied structurally best-effort (never reached by a valid capture/literal).
+ExprPtr Checker::cloneForReify(const Expr* e) const {
+    if (!e) return nullptr;
+    auto c = std::make_unique<Expr>(e->kind);
+    c->span = e->span;
+    c->text = e->text;
+    c->op = e->op;
+    c->colon = e->colon;
+    c->optChain = e->optChain;
+    c->isRawSegment = e->isRawSegment;
+    c->isRawString = e->isRawString;
+    c->isQuasiPayload = e->isQuasiPayload;
+    c->singleQuoted = e->singleQuoted;
+    c->charLit = e->charLit;
+    c->resolved = e->resolved;
+    c->resolvedClass = e->resolvedClass;
+    c->a = cloneForReify(e->a.get());
+    c->b = cloneForReify(e->b.get());
+    c->c = cloneForReify(e->c.get());
+    for (const ExprPtr& el : e->list) c->list.push_back(cloneForReify(el.get()));
+    return c;
+}
+
+ExprPtr Checker::makeExprNode(const char* cls, std::vector<ExprPtr> args,
+                              SourceSpan sp) {
+    auto call = std::make_unique<Expr>(ExprKind::Call);
+    call->span = sp;
+    auto callee = std::make_unique<Expr>(ExprKind::Member);
+    callee->span = sp; callee->colon = true; callee->text = cls;   // static literal
+    auto ns = std::make_unique<Expr>(ExprKind::Name);
+    ns->span = sp; ns->text = "expr";
+    callee->a = std::move(ns);
+    call->a = std::move(callee);
+    call->list = std::move(args);
+    return call;
+}
+
+// A string literal node carrying `content` (op spelling / member name / call
+// name) as an ordinary quoted, escape-decodable literal.
+static ExprPtr reifyStringLit(std::string_view content, SourceSpan sp,
+                              std::deque<std::string>& arena) {
+    std::string q = "\"";
+    for (char ch : content) {
+        if (ch == '\\' || ch == '"') q += '\\';
+        q += ch;
+    }
+    q += "\"";
+    arena.push_back(std::move(q));
+    auto s = std::make_unique<Expr>(ExprKind::StringLit);
+    s->span = sp; s->text = arena.back();
+    return s;
+}
+
+// Build one `Array<Elem>`-valued argument out of `elems`, where each element's
+// static type is a SUBTYPE of Elem: empty -> a raw `[]` literal (assignable to
+// any Array); non-empty -> an immediately-invoked closure that appends each
+// element into a declared `Array<Elem>` and returns it. A bare non-empty
+// literal is invariantly un-assignable here (a uniform `[Lit]` is `Array<Lit>`,
+// a uniform `[int]` is `Array<int>`); this is the one landed shape that widens.
+// `elemType` is a fully-resolved TypeRef for `Elem`.
+namespace {
+TypeRefPtr cloneResolvedTypeRef(const TypeRef* t) {
+    if (!t) return nullptr;
+    auto r = std::make_unique<TypeRef>(t->kind);
+    r->span = t->span;
+    r->path = t->path;
+    r->name = t->name;
+    r->canonical = t->canonical;
+    r->resolvedSymbol = t->resolvedSymbol;
+    for (const TypeRefPtr& g : t->generics) r->generics.push_back(cloneResolvedTypeRef(g.get()));
+    for (const TypeRefPtr& m : t->members) r->members.push_back(cloneResolvedTypeRef(m.get()));
+    for (const TypeRefPtr& p : t->funcParams) r->funcParams.push_back(cloneResolvedTypeRef(p.get()));
+    if (t->funcRet) r->funcRet = cloneResolvedTypeRef(t->funcRet.get());
+    return r;
+}
+}  // namespace
+
+// Build `Array<elemType>` (fully resolved) as a TypeRef for a synthesized decl.
+static TypeRefPtr arrayOfTypeRef(TypeRefPtr elemType, Symbol* arraySym,
+                                 SourceSpan sp) {
+    auto arr = std::make_unique<TypeRef>(TypeKind::Named);
+    arr->span = sp; arr->name = "Array";
+    arr->resolvedSymbol = arraySym;
+    arr->canonical = "Array<" + elemType->canonical + ">";
+    arr->generics.push_back(std::move(elemType));
+    return arr;
+}
+
+// §4 step 3 helper. `arrayTypeRef` is the fully-resolved `Array<Elem>` decl type.
+static ExprPtr buildTypedArrayImpl(std::vector<ExprPtr> elems,
+                                   TypeRefPtr arrayTypeRef, SourceSpan sp,
+                                   std::deque<std::string>& arena) {
+    if (elems.empty()) {
+        auto arr = std::make_unique<Expr>(ExprKind::Array);   // raw [] — assignable
+        arr->span = sp;
+        return arr;
+    }
+    // A plain identifier (no `$`, which the lexer reserves for quasiquote holes)
+    // so the printed IIFE re-lexes cleanly on the --expand round-trip. Each IIFE
+    // is its own lambda scope, so reusing one name across them never collides.
+    arena.push_back("__lvReifyArr");
+    std::string_view slot = arena.back();
+    auto block = std::make_unique<Stmt>(StmtKind::Block);
+    block->span = sp;
+    // Array<Elem> $reify$a = [];
+    auto decl = std::make_unique<Stmt>(StmtKind::Var);
+    decl->span = sp; decl->name = slot;
+    decl->type = std::move(arrayTypeRef);
+    { auto empty = std::make_unique<Expr>(ExprKind::Array); empty->span = sp;
+      decl->init = std::move(empty); }
+    block->body.push_back(std::move(decl));
+    // $reify$a = $reify$a.add(<elem>);   (one per element)
+    for (ExprPtr& el : elems) {
+        auto assign = std::make_unique<Expr>(ExprKind::Binary);
+        assign->span = sp; assign->op = TokenKind::Eq;
+        auto lhs = std::make_unique<Expr>(ExprKind::Name); lhs->span = sp; lhs->text = slot;
+        assign->a = std::move(lhs);
+        auto call = std::make_unique<Expr>(ExprKind::Call); call->span = sp;
+        auto callee = std::make_unique<Expr>(ExprKind::Member);
+        callee->span = sp; callee->text = "add";
+        auto recv = std::make_unique<Expr>(ExprKind::Name); recv->span = sp; recv->text = slot;
+        callee->a = std::move(recv);
+        call->a = std::move(callee);
+        call->list.push_back(std::move(el));
+        assign->b = std::move(call);
+        auto st = std::make_unique<Stmt>(StmtKind::ExprStmt);
+        st->span = sp; st->expr = std::move(assign);
+        block->body.push_back(std::move(st));
+    }
+    // return $reify$a;
+    auto ret = std::make_unique<Stmt>(StmtKind::Return);
+    ret->span = sp;
+    { auto r = std::make_unique<Expr>(ExprKind::Name); r->span = sp; r->text = slot;
+      ret->expr = std::move(r); }
+    block->body.push_back(std::move(ret));
+    // (() => { <block> })()
+    auto lam = std::make_unique<Expr>(ExprKind::Lambda);
+    lam->span = sp; lam->block = std::move(block);
+    auto iife = std::make_unique<Expr>(ExprKind::Call);
+    iife->span = sp; iife->a = std::move(lam);
+    (void)arena;
+    return iife;
+}
+
+ExprPtr Checker::reifyReject(const char* construct, SourceSpan span, ReifyCtx& ctx) {
+    sink_.error(span, std::string("cannot reify ") + construct +
+                      ": outside the LA-31 reifiable subset");
+    sink_.note(span, whitelistAllowLine());
+    sink_.note(ctx.siteSpan, "in this lambda reified to expr::Expr<F>");
+    return nullptr;
+}
+
+// The Array<T>.contains receiver (R17): a captured Array chain -> `Bind(slot)`
+// whose binds value is the None marker (the DbValue union cannot carry an
+// Array). Any other shape here is a reject.
+ExprPtr Checker::reifyArrayReceiver(const Expr* e, ReifyCtx& ctx) {
+    std::string key = pathOf(e);
+    if (key.empty()) return reifyReject("capture of a non-value type", e->span, ctx);
+    // A param-rooted chain cannot be an Array capture (params are Field roots,
+    // never Bind); only a captured chain reaches here.
+    int slot = ctx.findOrAddSlot(key, cloneForReify(e), /*storeNone=*/true);
+    auto n = std::make_unique<Expr>(ExprKind::IntLit);
+    n->span = e->span; n->text = ownText(std::to_string(slot));
+    return makeExprNode("Bind", [&]{ std::vector<ExprPtr> v; v.push_back(std::move(n)); return v; }(), e->span);
+}
+
+ExprPtr Checker::reifyNode(const Expr* e, ReifyCtx& ctx) {
+    if (!e) return nullptr;
+    SourceSpan sp = e->span;
+    auto one = [](ExprPtr x) { std::vector<ExprPtr> v; v.push_back(std::move(x)); return v; };
+    switch (e->kind) {
+        case ExprKind::IntLit:
+        case ExprKind::FloatLit:
+        case ExprKind::BoolLit:
+            return makeExprNode("Lit", one(cloneForReify(e)), sp);
+        case ExprKind::StringLit:
+            // A plain literal (incl. the single-segment `isRawSegment` shape the
+            // parser emits for any non-interpolated string) reifies as Lit. A
+            // genuinely interpolated string is a Binary(+) of segments and a
+            // `.toString()` call — that call is rejected by the whitelist below.
+            return makeExprNode("Lit", one(cloneForReify(e)), sp);
+        case ExprKind::Name: {
+            if (e->text == "None") {
+                auto none = std::make_unique<Expr>(ExprKind::Name);
+                none->span = sp; none->text = "None";
+                return makeExprNode("Lit", one(std::move(none)), sp);
+            }
+            for (const std::string& p : ctx.paramNames)
+                if (e->text == p)                        // a bare Field root: the
+                    return reifyReject("bare lambda parameter", sp, ctx);   // whole record isn't a value
+            // A captured bare local/param-of-enclosing -> Bind.
+            Type t = typeOf(e);
+            if (!isDbValueType(t)) return reifyReject("capture of a non-value type", sp, ctx);
+            int slot = ctx.findOrAddSlot(pathOf(e), cloneForReify(e), false);
+            auto n = std::make_unique<Expr>(ExprKind::IntLit);
+            n->span = sp; n->text = ownText(std::to_string(slot));
+            return makeExprNode("Bind", one(std::move(n)), sp);
+        }
+        case ExprKind::This:
+            return reifyReject("capture of a non-value type", sp, ctx);
+        case ExprKind::Member: {
+            // Determine chain shape: descend a-links.
+            bool anyColon = false;
+            const Expr* root = e;
+            std::vector<std::string_view> segs;   // outer-most first
+            for (const Expr* p = e; p && p->kind == ExprKind::Member; p = p->a.get()) {
+                if (p->colon) anyColon = true;
+                segs.push_back(p->text);
+                root = p->a.get();
+            }
+            if (anyColon) {
+                // Enum member `E::M` -> Lit(<carrier>): resolved to an enum-member
+                // const global (Track 03 §2). Match on the stamped decl pointer.
+                if (program_ && e->resolved)
+                    for (const EnumDesugar& ed : program_->enumDesugars)
+                        for (const EnumDesugar::Member& m : ed.members)
+                            if (m.global == e->resolved) {
+                                auto n = std::make_unique<Expr>(ExprKind::IntLit);
+                                n->span = sp; n->text = ownText(std::to_string(m.carrier));
+                                return makeExprNode("Lit", one(std::move(n)), sp);
+                            }
+                return reifyReject("unsupported construct 'qualified member'", sp, ctx);
+            }
+            std::reverse(segs.begin(), segs.end());   // root -> outer
+            bool paramRooted = root && root->kind == ExprKind::Name &&
+                [&]{ for (const std::string& p : ctx.paramNames) if (root->text == p) return true; return false; }();
+            if (paramRooted) {
+                std::vector<ExprPtr> path;
+                for (std::string_view s : segs)
+                    path.push_back(reifyStringLit(s, sp, progMut_->synthNames));
+                auto arr = std::make_unique<Expr>(ExprKind::Array);
+                arr->span = sp; arr->list = std::move(path);   // Array<string> — direct
+                return makeExprNode("Field", one(std::move(arr)), sp);
+            }
+            // A captured chain (this.x, cfg.minAge, capturedObj.field) -> Bind.
+            Type t = typeOf(e);
+            if (!isDbValueType(t)) return reifyReject("capture of a non-value type", sp, ctx);
+            int slot = ctx.findOrAddSlot(pathOf(e), cloneForReify(e), false);
+            auto n = std::make_unique<Expr>(ExprKind::IntLit);
+            n->span = sp; n->text = ownText(std::to_string(slot));
+            return makeExprNode("Bind", one(std::move(n)), sp);
+        }
+        case ExprKind::Unary: {
+            if (e->op != TokenKind::Bang && e->op != TokenKind::Minus)
+                return reifyReject("unsupported construct 'unary'", sp, ctx);
+            ExprPtr inner = reifyNode(e->a.get(), ctx);
+            if (!inner) return nullptr;
+            std::vector<ExprPtr> args;
+            args.push_back(reifyStringLit(reifyOp(e->op), sp, progMut_->synthNames));
+            args.push_back(std::move(inner));
+            return makeExprNode("Un", std::move(args), sp);
+        }
+        case ExprKind::Binary: {
+            if (e->op == TokenKind::Eq || isCompoundAssign(e->op))
+                return reifyReject("assignment outside a set-shaped lambda", sp, ctx);
+            if (!reifyBinaryOk(e->op))
+                return reifyReject("unsupported construct 'binary'", sp, ctx);
+            ExprPtr l = reifyNode(e->a.get(), ctx);
+            if (!l) return nullptr;
+            ExprPtr r = reifyNode(e->b.get(), ctx);
+            if (!r) return nullptr;
+            std::vector<ExprPtr> args;
+            args.push_back(reifyStringLit(reifyOp(e->op), sp, progMut_->synthNames));
+            args.push_back(std::move(l));
+            args.push_back(std::move(r));
+            return makeExprNode("Bin", std::move(args), sp);
+        }
+        case ExprKind::Call: {
+            const Expr* callee = e->a.get();
+            if (!callee || callee->kind != ExprKind::Member || callee->colon)
+                return reifyReject("unsupported construct 'call'", sp, ctx);
+            std::string_view name = callee->text;
+            const Expr* recv = callee->a.get();
+            Type rt = typeOf(recv);
+            bool isStr = rt.canonical == "string";
+            bool isArr = rt.kind == TKind::Class && rt.sym && rt.sym->name == "Array";
+            const ExprCallRow* row = nullptr;
+            for (const ExprCallRow& r : kExprWhitelist) {
+                if (name != r.name) continue;
+                if (r.arity != static_cast<int>(e->list.size())) continue;
+                if (r.recv == ExprCallRow::Str && isStr) { row = &r; break; }
+                if (r.recv == ExprCallRow::ArrayT && isArr) { row = &r; break; }
+            }
+            if (!row) {
+                std::string what = "non-whitelisted call '" + std::string(name) + "'";
+                return reifyReject(ownText(what).data(), sp, ctx);
+            }
+            ExprPtr recvNode = (row->recv == ExprCallRow::ArrayT)
+                                   ? reifyArrayReceiver(recv, ctx)
+                                   : reifyNode(recv, ctx);
+            if (!recvNode) return nullptr;
+            std::vector<ExprPtr> argNodes;
+            for (const ExprPtr& a : e->list) {
+                ExprPtr an = reifyNode(a.get(), ctx);
+                if (!an) return nullptr;
+                argNodes.push_back(std::move(an));
+            }
+            // Array<expr::Node> args (widened via the IIFE builder).
+            Symbol* nodeSym = exprNodeClass("Node");
+            auto nodeElem = std::make_unique<TypeRef>(TypeKind::Named);
+            nodeElem->span = sp; nodeElem->name = "Node";
+            nodeElem->path = {"expr"};
+            nodeElem->resolvedSymbol = nodeSym;
+            nodeElem->canonical = "expr::Node";
+            TypeRefPtr arrTy = arrayOfTypeRef(std::move(nodeElem),
+                                              scope_ ? scope_->lookup("Array") : nullptr, sp);
+            ExprPtr argsArr = buildTypedArrayImpl(std::move(argNodes), std::move(arrTy),
+                                                  sp, progMut_->synthNames);
+            std::vector<ExprPtr> args;
+            args.push_back(reifyStringLit(name, sp, progMut_->synthNames));
+            args.push_back(std::move(recvNode));
+            args.push_back(std::move(argsArr));
+            return makeExprNode("Call", std::move(args), sp);
+        }
+        default: {
+            const char* c = exprKindConstruct(e->kind);
+            if (c) return reifyReject(c, sp, ctx);
+            return reifyReject("unsupported construct", sp, ctx);
+        }
+    }
+}
+
+// §4 step 3: the binds array argument — a DbValue-union Array.
+ExprPtr Checker::buildBindsExpr(ReifyCtx& ctx, SourceSpan sp) {
+    std::vector<ExprPtr> elems;
+    for (ReifyCtx::BindEntry& b : ctx.binds) {
+        if (b.storeNone) {                       // Array-typed capture (R17)
+            auto none = std::make_unique<Expr>(ExprKind::Name);
+            none->span = sp; none->text = "None";
+            elems.push_back(std::move(none));
+        } else {
+            elems.push_back(std::move(b.capture));
+        }
+    }
+    if (elems.empty()) {
+        auto arr = std::make_unique<Expr>(ExprKind::Array); arr->span = sp;
+        return arr;
+    }
+    // Array<string|int|float|bool|None> element type, fully resolved.
+    auto u = std::make_unique<TypeRef>(TypeKind::Union);
+    u->span = sp;
+    const char* members[] = {"string", "int", "float", "bool", "None"};
+    for (const char* m : members) {
+        auto mr = std::make_unique<TypeRef>(TypeKind::Named);
+        mr->span = sp; mr->name = m;
+        mr->resolvedSymbol = scope_ ? scope_->lookup(m) : nullptr;
+        mr->canonical = m;
+        u->members.push_back(std::move(mr));
+    }
+    u->canonical = "string | int | float | bool | None";
+    TypeRefPtr arrTy = arrayOfTypeRef(std::move(u),
+                                      scope_ ? scope_->lookup("Array") : nullptr, sp);
+    return buildTypedArrayImpl(std::move(elems), std::move(arrTy), sp, progMut_->synthNames);
+}
+
+// §3/§4: reify `lambda` against `fnRef` (Fn) and rewrite it in place into the
+// `expr::Expr(...)` construction. Returns the concrete `expr::Expr<Fn>` type or
+// an Error type on a reject (already emitted).
+Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef) {
+    Symbol* ec = exprClass();
+    if (!ec || !fnRef || fnRef->kind != TypeKind::Function || !progMut_)
+        return unknown();                        // hook mis-fired; leave as-is
+    if (reifiedLambdas_.count(lambda)) return unknown();   // idempotence (R1)
+
+    // Fn param/return types.
+    std::vector<Type> paramTypes;
+    for (const TypeRefPtr& p : fnRef->funcParams) paramTypes.push_back(fromTypeRef(p.get()));
+    Type fnRet = fromTypeRef(fnRef->funcRet.get());
+    if (lambda->params.size() != paramTypes.size())
+        return error(lambda->span,
+                     "lambda has " + std::to_string(lambda->params.size()) +
+                     " parameter(s) but expr::Expr<F> expects " +
+                     std::to_string(paramTypes.size()));
+
+    // Bind params (Field roots) in a fresh body scope — the CLOSURE leg is
+    // checked here, and the reify walk reads the same checked types.
+    ReifyCtx ctx;
+    ctx.siteSpan = lambda->span;
+    ctx.setShaped = fnRet.canonical == "int";      // R10
+    env_.emplace_back();
+    for (size_t i = 0; i < lambda->params.size(); ++i) {
+        const Param& p = lambda->params[i];
+        Type pt = p.type ? fromTypeRef(p.type.get()) : paramTypes[i];
+        ctx.paramNames.push_back(std::string(p.name));
+        env_.back()[p.name] = {std::move(pt), p.isConst};
+    }
+    Type savedRt = returnType_; const TypeRef* savedRtr = returnTypeRef_;
+    int savedLoop = loopDepth_;
+    std::vector<Type>* savedLr = lambdaReturns_;
+    returnType_ = Type{}; returnTypeRef_ = nullptr; loopDepth_ = 0; lambdaReturns_ = nullptr;
+
+    ExprPtr tree;
+    bool blockBody = lambda->block != nullptr;
+    if (blockBody) {
+        reifyReject("block body", lambda->span, ctx);          // R9
+    } else if (lambda->a) {
+        Type bodyType = typeOf(lambda->a.get());               // closure leg check
+        if (bodyType.kind == TKind::Error) {
+            // The ordinary checker already rejected the body — no reify diag.
+        } else if (ctx.setShaped && lambda->a->kind == ExprKind::Binary &&
+                   lambda->a->op == TokenKind::Eq) {
+            // R10 set-shape: `u.field = <expr>` as the entire body.
+            const Expr* asn = lambda->a.get();
+            const Expr* lhs = asn->a.get();
+            // LHS must be a param-rooted field chain (-> Field).
+            bool anyColon = false; const Expr* root = lhs;
+            std::vector<std::string_view> segs;
+            for (const Expr* p = lhs; p && p->kind == ExprKind::Member; p = p->a.get()) {
+                if (p->colon) anyColon = true;
+                segs.push_back(p->text); root = p->a.get();
+            }
+            bool paramRooted = !anyColon && lhs->kind == ExprKind::Member &&
+                root && root->kind == ExprKind::Name &&
+                [&]{ for (const std::string& pn : ctx.paramNames) if (root->text == pn) return true; return false; }();
+            if (!paramRooted) {
+                reifyReject("mutation of a capture", lhs->span, ctx);
+            } else {
+                std::reverse(segs.begin(), segs.end());
+                std::vector<ExprPtr> path;
+                for (std::string_view s : segs) path.push_back(reifyStringLit(s, lhs->span, progMut_->synthNames));
+                auto arr = std::make_unique<Expr>(ExprKind::Array); arr->span = lhs->span;
+                arr->list = std::move(path);
+                ExprPtr target = makeExprNode("Field",
+                    [&]{ std::vector<ExprPtr> v; v.push_back(std::move(arr)); return v; }(), lhs->span);
+                ExprPtr rhs = reifyNode(asn->b.get(), ctx);
+                if (rhs) {
+                    std::vector<ExprPtr> args;
+                    args.push_back(std::move(target));
+                    args.push_back(std::move(rhs));
+                    tree = makeExprNode("Assign", std::move(args), lambda->span);
+                }
+            }
+        } else {
+            tree = reifyNode(lambda->a.get(), ctx);
+        }
+    }
+
+    returnType_ = savedRt; returnTypeRef_ = savedRtr;
+    loopDepth_ = savedLoop; lambdaReturns_ = savedLr;
+    env_.pop_back();
+
+    if (!tree) return Type{TKind::Error, nullptr, "", {}, nullptr, {}};
+
+    int siteId = exprSiteCounter_++;             // R4
+    SourceSpan sp = lambda->span;
+
+    // §4: move the Lambda's fields into a fresh node (construction argument 1),
+    // then rewrite the ORIGINAL node in place into the construction Call.
+    auto lamNode = std::make_unique<Expr>(ExprKind::Lambda);
+    lamNode->span = sp;
+    lamNode->params = std::move(lambda->params);
+    lamNode->a = std::move(lambda->a);
+    lamNode->block = std::move(lambda->block);
+    reifiedLambdas_.insert(lamNode.get());       // R1 idempotence guard
+
+    ExprPtr bindsArr = buildBindsExpr(ctx, sp);
+    auto siteLit = std::make_unique<Expr>(ExprKind::IntLit);
+    siteLit->span = sp; siteLit->text = ownText(std::to_string(siteId));
+
+    // Resolve the sub-node argument trees (stamps every construction's
+    // resolved/resolvedClass for the engines); arg1's body was resolved above.
+    typeOf(tree.get());
+    typeOf(bindsArr.get());
+
+    // Find the 4-arg Expr constructor for the outer construction's stamp.
+    const Stmt* ctor = nullptr;
+    if (ec->decl)
+        for (const StmtPtr& m : ec->decl->body)
+            if (m->kind == StmtKind::Member && m->isCtor && m->params.size() == 4) { ctor = m.get(); break; }
+
+    // Rewrite `lambda` in place -> expr::Expr(<lambda>, <tree>, <binds>, <siteId>).
+    auto callee = std::make_unique<Expr>(ExprKind::Member);
+    callee->span = sp; callee->colon = true; callee->text = "Expr";
+    { auto ns = std::make_unique<Expr>(ExprKind::Name); ns->span = sp; ns->text = "expr";
+      callee->a = std::move(ns); }
+    lambda->kind = ExprKind::Call;
+    lambda->text = std::string_view();
+    lambda->op = TokenKind::End;
+    lambda->colon = false;
+    lambda->params.clear();
+    lambda->block = nullptr;
+    lambda->a = std::move(callee);
+    lambda->list.clear();
+    lambda->list.push_back(std::move(lamNode));
+    lambda->list.push_back(std::move(tree));
+    lambda->list.push_back(std::move(bindsArr));
+    lambda->list.push_back(std::move(siteLit));
+    lambda->resolved = ctor;
+    lambda->resolvedClass = ec;
+    lambda->argsNormalized = true;
+
+    // The concrete site type: expr::Expr<Fn>.
+    Type r{TKind::Class, ec, "expr::Expr<" + std::string(fnRef->canonical) + ">",
+           {}, nullptr, {}};
+    r.args.push_back(fromTypeRef(fnRef));
+    return r;
 }
 
 // The return Type of a (possibly generic) method/function call: bind class
@@ -2853,6 +3640,14 @@ Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
                 continue;
             }
             if (a->kind != ExprKind::Lambda) continue;
+            // LA-31 §2.2: an `expr::Expr<Fn>` parameter reifies the lambda in
+            // place (this is the call-argument arrival path; the body is checked
+            // once, here, with Fn's param types — the same lambda-last deferral).
+            if (const TypeRef* fn = exprTargetFn(pt)) {
+                reifyLambda(a, fn);
+                (*lambdaWalked)[i] = 1;
+                continue;
+            }
             std::vector<Type> ptypes;
             if (pt && pt->kind == TypeKind::Function)
                 for (const TypeRefPtr& fp : pt->funcParams)
@@ -2978,6 +3773,21 @@ void Checker::specializationOverloadMissing(const Expr* call, const char* what,
 }
 
 Type Checker::typeInitExpr(const Expr* e, const TypeRef* expected) {
+    // LA-31 §2.3: arrival path 2 — an `expr::Expr<Fn>` expected-type position
+    // (local/global bind, `return`, class field initializer, R12). A lambda
+    // literal reifies; a non-literal lambda-typed value is E1 (R16). Ordered
+    // before construction/method-ref handling so a `C::m` reference falls to E1
+    // naturally (it is not a lambda literal).
+    if (e) if (const TypeRef* fn = exprTargetFn(expected)) {
+        if (e->kind == ExprKind::Lambda)
+            return reifyLambda(const_cast<Expr*>(e), fn);
+        Type vt = typeOf(e);
+        if (vt.kind == TKind::FuncRef)
+            return error(e->span,
+                         "only a lambda literal can be reified to expr::Expr<F>");
+        // Otherwise fall through — an ordinary type-mismatch is reported by the
+        // caller against `expected`.
+    }
     // Track 03 §1: a single-scalar single-quoted literal at a `char`-expected
     // site (declared type on a var/field, a `char` return, or a `char?` union)
     // re-types to char.
@@ -3126,10 +3936,24 @@ void Checker::check(Stmt* s) {
         }
         case StmtKind::Var: {
             invalidatePath(std::string(s->name));
-            if (s->isConst && !s->init)
-                error(s->span, "const '" + std::string(s->name) +
-                      "' needs an initializer (its write view is the declaration, "
-                      "once)");
+            // OQ1: a bare `const T x;` LOCAL with a declared type is no longer a
+            // hard error — its write view stays open until the flow engine proves
+            // a single definite assignment (constPending_). Two things still
+            // error: an inferred `const x;` (no type, no init — nothing to infer),
+            // and any bare const outside a function body (globals/fields keep the
+            // "needs an initializer" rule, enforced on their own decl paths).
+            bool writeOpenConst = false;
+            if (s->isConst && !s->init) {
+                // A `using` decl is `const` too (Parser), but it manages a
+                // block-scoped resource — a deferred definite assignment makes no
+                // sense for it, so it keeps requiring an initializer outright.
+                if (s->inferred || env_.empty() || s->isUsing)
+                    error(s->span, "const '" + std::string(s->name) +
+                          "' needs an initializer (its write view is the declaration, "
+                          "once)");
+                else
+                    writeOpenConst = true;
+            }
             Type initT = s->init
                 ? typeInitExpr(s->init.get(), s->inferred ? nullptr : s->type.get())
                 : unknown();
@@ -3156,6 +3980,8 @@ void Checker::check(Stmt* s) {
                 }
             }
             if (!env_.empty()) env_.back()[s->name] = {declared, s->isConst};
+            if (writeOpenConst)
+                constPending_[std::string(s->name)] = {loopDepth_, tryDepth_};
             break;
         }
         case StmtKind::Break:
@@ -3186,10 +4012,19 @@ void Checker::check(Stmt* s) {
             analyzeCond(s->expr.get(), facts, false);
             std::unordered_map<std::string, Type> saved;
             applyFacts(facts, true, saved);
+            // OQ1: definite assignment across the branch. Each arm starts from
+            // the pre-`if` open set; a const is definitely assigned after the
+            // `if` iff it closed on BOTH arms, i.e. the post-join open set is the
+            // UNION of the two arms' still-open sets. A missing `else` arm assigns
+            // nothing, so `pendingBefore` stands in for it — nothing closes.
+            std::unordered_map<std::string, PendingConst> pendingBefore = constPending_;
             check(s->thenBranch.get());
+            std::unordered_map<std::string, PendingConst> pendingThen = constPending_;
             narrow_ = saved;
+            constPending_ = pendingBefore;
             applyFacts(facts, false, saved);
             check(s->elseBranch.get());
+            for (const auto& kv : pendingThen) constPending_.insert(kv);
             narrow_ = saved;
             break;
         }
@@ -3213,7 +4048,7 @@ void Checker::check(Stmt* s) {
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
-            env_.pop_back();
+            exitEnvScope();
             break;
         case StmtKind::ForIn: {
             Type iter = typeOf(s->expr.get());
@@ -3259,7 +4094,7 @@ void Checker::check(Stmt* s) {
             ++loopDepth_;
             check(s->thenBranch.get());
             --loopDepth_;
-            env_.pop_back();
+            exitEnvScope();
             break;
         }
         case StmtKind::ExprStmt:
@@ -3274,12 +4109,19 @@ void Checker::check(Stmt* s) {
             break;
         }
         case StmtKind::Try:
+            // OQ1 §2.3: a `try` body cannot host a const's single definite
+            // assignment — a throw may precede the write, so the `catch`/post-
+            // `try` join treats the try arm as NOT definitely-assigning. Marking
+            // the body's try-depth makes an in-`try` write to an outer write-open
+            // const an error (typeOfBinary), keeping the window from spanning it.
+            ++tryDepth_;
             check(s->thenBranch.get());
+            --tryDepth_;
             for (const CatchClause& c : s->catches) {
                 env_.emplace_back();
                 if (!c.name.empty()) env_.back()[c.name] = fromTypeRef(c.type.get());
                 check(c.body.get());
-                env_.pop_back();
+                exitEnvScope();
             }
             break;
         case StmtKind::Bind: {
@@ -3792,7 +4634,7 @@ void Checker::checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass) {
     for (const Param& p : fn->params)
         env_.back()[p.name] = {fromTypeRef(p.type.get()), p.isConst};
     check(fn->memberBody.get());
-    env_.pop_back();
+    exitEnvScope();
     thisClass_ = nullptr;
     curMember_ = nullptr;
 }
@@ -3844,7 +4686,7 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
                             error(m->init->span, "cannot initialize field '" +
                                   std::string(m->name) + " : " + ft.canonical +
                                   "' with '" + it.canonical + "'");
-                        env_.pop_back();
+                        exitEnvScope();
                         thisClass_ = nullptr;
                     }
                 }
@@ -3997,6 +4839,7 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
 
 void Checker::run(Program& program, const Program* prelude) {
     program_ = &program;            // Track 03 §2: enum metadata for `::` typing
+    progMut_ = &program;            // LA-31: reified nodes' text lives in the AST arena
     markSpecializationSites(program);
     buildNamespaceBindIndex(prelude, program);   // system-binds.md §5.2
     pushLexicalScope(sema_.global, program.items);   // §12.5: file/top-level binds propagate to the body
@@ -4018,6 +4861,8 @@ void Checker::checkComptimeRoot(const Expr* e, Scope* scope) {
     lambdaReturns_ = nullptr;
     env_.clear();
     narrow_.clear();
+    constPending_.clear();
+    tryDepth_ = 0;
     comptimeRoot_ = true;   // item Q: `target::` is live in comptime roots
     typeOf(e);
     comptimeRoot_ = false;

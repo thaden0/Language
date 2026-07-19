@@ -1,0 +1,52 @@
+// techdesign-utf8-chars-string-ops.md §3.2 — the NORMATIVE UTF-8 decode
+// semantics, pinned byte-for-byte so every engine (oracle/IR/emit-C++/LLVM) is
+// held to them differentially. Well-formed sequences decode to their scalar;
+// ill-formed input decodes to U+FFFD (65533) per the WHATWG maximal-subpart
+// rule — never a throw. `\xNN` escapes place the raw ill-formed bytes directly
+// (probe P3). Ill-formed rows print scalar CODES (unambiguous ASCII) as
+// `count:code,code,...`; well-formed rows also pin scalar-vs-byte counts and the
+// round-trip law `chars().joinToString("") == s`.
+
+// count + comma-joined scalar codes of s.chars()
+string codes(string s) {
+    Array<char> cs = s.chars();
+    string line = cs.length().toString() + ":";
+    int i = 0;
+    while (i < cs.length()) {
+        line = line + cs.at(i).code().toString();
+        if (i + 1 < cs.length()) line = line + ",";
+        i = i + 1;
+    }
+    return line;
+}
+
+void main() {
+    // --- §3.2 pinned decode table (well-formed) ------------------------------
+    console.writeln(codes("A"));                    // 1:65      ASCII
+    console.writeln(codes("é"));                    // 1:233     C3 A9
+    console.writeln(codes("€"));                    // 1:8364    E2 82 AC
+    console.writeln(codes("\xF0\x9D\x84\x9E"));     // 1:119070  astral 𝄞 (U+1D11E), 4 bytes -> 1 scalar
+
+    // --- §3.2 pinned decode table (ill-formed -> U+FFFD, maximal subpart) -----
+    console.writeln(codes("\x80"));                 // 1:65533   lone continuation
+    console.writeln(codes("\xE2\x82"));             // 1:65533   truncated 3-byte at EOF: ONE, not two
+    console.writeln(codes("\xC0\xAF"));             // 2:65533,65533  overlong '/': C0 never-lead, then AF lone cont.
+    console.writeln(codes("\xED\xA0\x80"));         // 3:65533,65533,65533  surrogate: ED breaks at A0, then two lone cont.
+    console.writeln(codes("\xF5\x41"));             // 2:65533,65  F5 never-lead, resume keeps the 'A'
+    console.writeln(codes("\xF4\x90\x80\x80"));     // 4:65533,65533,65533,65533  > U+10FFFF rejected at 90
+    console.writeln(codes(""));                     // 0:        empty -> []
+
+    // --- scalar count vs byte count (never conflated) ------------------------
+    console.writeln("héllo".length());              // 6   bytes
+    console.writeln("héllo".chars().length());      // 5   scalars
+
+    // --- round-trip law: for well-formed s, chars().joinToString("") == s -----
+    console.writeln("héllo".chars().joinToString("") == "héllo");   // true
+    console.writeln("aé€𝄞z".chars().joinToString("") == "aé€𝄞z");    // true (all four plane widths)
+
+    // --- scalar iteration idiom (techdesign-07 §4.2 forward ref) -------------
+    string acc = "";
+    for (char c in "café".chars()) { acc = acc + c.code().toString() + " "; }
+    console.writeln(acc);                           // 99 97 102 233
+}
+main();
