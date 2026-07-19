@@ -201,6 +201,21 @@ private:
     bool callableTypeParam(std::string_view name) const;
     bool classTypeParam(std::string_view name) const;
 
+    // techdesign-generic-value-struct-columnar.md: monomorphize a columnar-
+    // eligible instantiation of a generic value struct (e.g. `Pair<int,int>`) to
+    // its own Symbol carrying concrete scalar shape slots and — via a distinct
+    // Symbol identity — its own runtime classId, so `Array<Pair<int,int>>` can go
+    // columnar. Returns the specialized symbol, or null if `generic`/`args` is not
+    // an all-scalar (hence columnar-eligible) value-struct instantiation, in which
+    // case the caller keeps the shared generic symbol (boxed/row-major, unchanged).
+    // The specialized symbol SHARES the generic's decl, so its methods dispatch to
+    // the already-emitted generic bodies; only the shape (field canonicals) and the
+    // symbol identity differ. Native-codegen concern only — the oracle is untouched
+    // (it never reads Expr::valueClass, the sole routing channel). Memoized so all
+    // eligible `Pair<int,int>` values resolve to ONE symbol (keyEquals identity, §5).
+    Symbol* specializeValueStruct(Symbol* generic, const std::vector<Type>& args);
+    std::unordered_map<std::string, Symbol*> valueStructSpecs_;
+
     // walking
     void walk(std::vector<StmtPtr>& items, Scope* scope);
     void checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass);

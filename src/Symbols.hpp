@@ -1,6 +1,7 @@
 #pragma once
 #include "Ast.hpp"
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -355,6 +356,26 @@ struct Sema {
         for (const Scope* fs : fileScopes)
             if (fs == sc) return true;
         return false;
+    }
+
+    // Symbols minted AFTER resolution — the checker monomorphizes columnar-eligible
+    // generic value structs (techdesign-generic-value-struct-columnar.md) from a
+    // `const Sema&`. They live in a `mutable` append-only arena (const minting
+    // methods), owned by the same Sema that outlives codegen, and are reached only
+    // through IR `Op` symbol pointers — never registered in any scope, so name
+    // resolution is unaffected. The deque keeps `Symbol::name` (a string_view)
+    // backing addresses stable across growth, which a vector would not.
+    mutable std::deque<std::string> nameArena_;
+    mutable std::vector<std::unique_ptr<Symbol>> lateSymbols_;
+    std::string_view intern(std::string s) const {
+        nameArena_.push_back(std::move(s));
+        return nameArena_.back();
+    }
+    Symbol* newLateSymbol(SymbolKind k, std::string_view name, const Stmt* decl) const {
+        lateSymbols_.push_back(std::make_unique<Symbol>());
+        Symbol* s = lateSymbols_.back().get();
+        s->kind = k; s->name = name; s->decl = decl;
+        return s;
     }
 
     Symbol* newSymbol(SymbolKind k, std::string_view name, const Stmt* decl = nullptr) {

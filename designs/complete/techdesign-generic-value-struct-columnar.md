@@ -1,6 +1,11 @@
 # Columnar for generic value structs — per-instantiation shape monomorphization
 
-**Status:** ready for review (pre-implementation). **Date:** 2026-07-19.
+**Status:** LANDED 2026-07-19 — eligible all-scalar instantiations of a generic value
+struct now go columnar on LLVM-native; full suite green (4 engines × `--columnar`/
+`--no-columnar`, ELF/X64 frozen backend, churn-leak, checker/eval). Implemented by an
+Opus-class agent. See the implementation log (§12) for the as-built approach, which
+deliberately simplifies the plan below (§1/§4) without changing the observable contract.
+**Date:** 2026-07-19.
 **Difficulty:** L. **Risk:** MED/HIGH — it mints a new *kind* of specialization (class
 shapes, not just callables) and threads an instantiation-specific classId through
 construction and the runtime layout flip. Milestones carry STOP checkpoints (§9).
@@ -331,3 +336,80 @@ inherits the top tier immediately.
   linkage and engine neutrality (§9).
 - Lands the columnar tier for the tuples and for every concrete-scalar generic struct; the
   tuple design (`techdesign-triple.md`) inherits it for free if sequenced first (§10).
+
+---
+
+## 12. Implementation log (as built, 2026-07-19)
+
+The landed implementation reaches the same observable contract as §1/§4 by a **simpler,
+lower-risk route** than the cloner+`buildShape`+demand-queue plan. The §9 STOP protocol was
+not tripped: the single-classId linkage (§1.1) and engine neutrality (§5) both held on the
+first pass, and no `lv_abi.h` / resolver invariant needed changing. Net diff: **~113 lines**
+across four files, no new AST fields, no new ABI, no runtime edit, no CGen/X64Gen edit.
+
+**What changed vs. the plan — and why it is equivalent:**
+
+1. **Eager monomorphization instead of the LA-18 demand queue (§3, §4.1).** The plan cloned
+   the class `Stmt` through `SpecializationCloner` and re-`checkFunction`'d it. Instead,
+   `Checker::specializeValueStruct(generic, args)` (`src/Checker.cpp`) mints the specialized
+   `Symbol` **on demand inside `typeOf`**, the first time an eligible concrete `C<τ…>` value
+   struct is typed. No demand queue, no clone, no re-check. It is memoized on
+   `(generic ptr, arg-canonical tuple)` (`valueStructSpecs_`), which delivers the §5
+   single-symbol identity invariant directly (verified: exactly one `$spec.P2<int,int>` per
+   program; `Map<P2<int,int>,_>` keys compare correctly on all engines).
+
+2. **Substitute the generic's already-built shape instead of `buildShape` on a clone
+   (§4.2).** The generic's `Shape` is already built by the resolver. The specialized shape is
+   that shape with each **non-method field slot's `canonical` substituted** through
+   `{param→arg.canonical}`; eligibility is the existing `columnarTypecodeOf(...)!=0` test
+   applied to the substituted canonical (a heap/param-bound-to-`string` field ⇒ ineligible ⇒
+   keep the generic symbol, boxed). This is exactly the observable result §4.2 wanted ("slots
+   have canonical `int`") without invoking the resolver from the checker — avoiding the
+   cross-pass seam the plan glossed. Method slots are copied verbatim.
+
+3. **Share the generic's `decl` for methods (§4.4).** The specialized `Symbol` sets
+   `decl = generic->decl`, so `collectMembersLG`/`fieldKeysOf`/`collectBases` all resolve to
+   the generic's **already-emitted** method bodies and bases. The class-info + method-table +
+   descriptor rows for the specialized classId are therefore emitted by `emitClassRegistration`/
+   `emitColumnarDescriptors` **with zero backend change** — they iterate `clsIds`, and the
+   specialized symbol enters `clsIds` automatically via `classIdOf(in.sym)` at the stamped
+   `NewObject`. Dispatch (`==`, `toString`, `Of`) on a `P2<int,int>` resolves through the
+   specialized classId's table to the generic's fnIndexes. No cloned methods, no new IR
+   functions.
+
+4. **One routing channel: `Expr::valueClass` (native-only).** The checker points
+   `valueClass` at the specialized symbol for eligible instantiations (`typeOf`, the same
+   site that already carried `t.sym`). The lowerer's construction `NewObject` stamp
+   (`src/Lower.cpp` `lowerCall`) prefers `valueClass` over `ctorClass`, and the fused `ColGet`
+   / gather sites already keyed on `valueClass` — so they specialize for free. Because the
+   **oracle never reads `valueClass`**, engine neutrality (§5) is automatic and required no
+   care: the oracle keeps constructing under the generic symbol, native stamps the specialized
+   classId, and the differential corpus proves byte-identical output. (Consequently the
+   for-in-gather fast path, whose gate reads the declared loop-var `TypeRef::resolvedSymbol`
+   rather than `valueClass`, still fires correctly for these arrays via the runtime gather
+   path and is leak-flat under `corpus_churn_leak_columnar_llvm` — confirmed green — even
+   though its symbol resolves to the generic; no further routing was needed.)
+
+**Ownership plumbing.** Specialized symbols are minted from a `const Sema&`, so `Sema` gained
+a `mutable` append-only arena (`lateSymbols_` + `nameArena_` for stable `string_view` name
+backing) with `const` minting methods (`newLateSymbol`/`intern`, `src/Symbols.hpp`). These
+symbols live as long as the `Sema` (owned by the `Resolver`, which outlives codegen) and are
+never registered in a scope, so name resolution is untouched — they are reached only through
+IR `Op::….sym` pointers.
+
+**Tests.** `tests/corpus/columnar/generic_columnar.lev` (+`.expected`) is the neutrality
+contract per §8: `Array<P2<int,int>>` column-selective fused scan + gather + for-in, an
+`Array<P3<int,int,bool>>` three-column scan, a `Map<P2<int,int>,string>` key (§5 identity),
+and an ineligible `Array<P2<int,string>>` boxed control — byte-identical across
+oracle/IR/emit-C++/LLVM under both `--columnar` and `--no-columnar`. `lv_col_eligible`
+returns 1 for the specialized classId on native (disassembly-verified); escaping-tier peak
+drops under `--columnar` (2496→1376 bytes on the spike), confirming the SoA flip. Full
+regression: `corpus_columnar`, `corpus_native`, `corpus_llvm`, `corpus_elf{,_core,_full}`,
+`corpus_churn_leak{,_columnar_llvm}`, `runtime_selftest`, `checkertests`, `evaltests`,
+`corpus_treewalk`, `corpus_ir` — 100% green.
+
+**Deferred (unchanged from §2 non-goals / §10).** Pair/Triple are still prelude *classes*;
+flipping them to structs is the separate `techdesign-triple.md` track, which inherits this
+tier the instant it lands. Nested-struct fields and the column-selective aggregate bench
+(§8) remain future work. emit-C++/X64 keep their dense (layout-unobservable) representation —
+columnar SoA is an LLVM-native + runtime optimization, exactly as in the base columnar design.

@@ -785,8 +785,20 @@ Type Checker::typeOf(const Expr* e) {
             t.kind == TKind::Class && t.sym && !t.sym->isPrimitive &&
             !t.sym->isInterface() && t.sym->isValue;
         // techdesign-columnar: carry the concrete struct symbol for the lowerer.
-        const_cast<Expr*>(e)->valueClass =
-            const_cast<Expr*>(e)->definiteValueStruct ? t.sym : nullptr;
+        // techdesign-generic-value-struct-columnar: for an eligible instantiation
+        // of a generic value struct (`Pair<int,int>`), carry the MONOMORPHIZED
+        // symbol instead of the shared generic one, so the lowerer stamps the
+        // instantiation's own classId (→ columnar) and reads its concrete-scalar
+        // shape. Ineligible/non-generic value structs keep `t.sym`, unchanged.
+        // `valueClass` is a native-codegen-only channel (the oracle never reads
+        // it), which is what keeps engine neutrality (§5) automatic.
+        Symbol* vc = nullptr;
+        if (const_cast<Expr*>(e)->definiteValueStruct) {
+            vc = t.sym;
+            if (!t.args.empty())
+                if (Symbol* spec = specializeValueStruct(t.sym, t.args)) vc = spec;
+        }
+        const_cast<Expr*>(e)->valueClass = vc;
     }
     return t;
 }
@@ -3772,6 +3784,64 @@ void Checker::recordSpecialization(
     d.tuple = std::move(tuple); d.scope = callableScopes_[fn];
     d.cls = callableClasses_[fn]; d.instantiationSpan = call->span; d.depth = depth;
     specializationDemands_.push_back(std::move(d));
+}
+
+Symbol* Checker::specializeValueStruct(Symbol* generic, const std::vector<Type>& args) {
+    // Only user value structs with type parameters are candidates. Interfaces,
+    // primitives, reference classes, and the native collections are never columnar.
+    if (!generic || !generic->isValue || generic->isPrimitive || !generic->decl ||
+        generic->isInterface())
+        return nullptr;
+    const std::vector<std::string_view>& params = generic->decl->generics;
+    if (params.empty() || params.size() != args.size()) return nullptr;
+    if (!generic->shape.built) return nullptr;
+
+    // Memoize on (generic, arg-canonical tuple) so every eligible `Pair<int,int>`
+    // resolves to ONE symbol (the §5 keyEquals identity invariant). Ineligible
+    // instantiations cache a null so we don't re-test them.
+    std::string key = std::to_string(reinterpret_cast<uintptr_t>(generic));
+    for (const Type& a : args) key += "\x1f" + a.canonical;
+    auto found = valueStructSpecs_.find(key);
+    if (found != valueStructSpecs_.end()) return found->second;
+
+    std::unordered_map<std::string_view, std::string> sub;
+    for (size_t i = 0; i < params.size(); ++i) sub[params[i]] = args[i].canonical;
+
+    // Build the substituted shape. Every non-method field slot must substitute to
+    // a plain columnar scalar (int/float/bool/char) — that is exactly the
+    // columnarEligibleStruct line, evaluated against the monomorphized shape. A
+    // field whose type is a nested/heap type (e.g. `Array<A>`, or a param bound to
+    // `string`) leaves the instantiation ineligible: keep the generic symbol.
+    Shape shape;
+    bool anyField = false;
+    for (const Slot& s : generic->shape.slots) {
+        Slot out = s;
+        if (!s.isMethod) {
+            std::string canon = s.canonical;
+            auto it = sub.find(s.canonical);   // a field typed directly `A` (whole spelling)
+            if (it != sub.end()) canon = it->second;
+            if (columnarTypecodeOf(canon) == 0) { valueStructSpecs_[key] = nullptr; return nullptr; }
+            out.canonical = canon;
+            anyField = true;
+        }
+        shape.slots.push_back(std::move(out));
+    }
+    if (!anyField) { valueStructSpecs_[key] = nullptr; return nullptr; }
+
+    std::string name = "$spec." + std::string(generic->name) + "<";
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) name += ", ";
+        name += args[i].canonical;
+    }
+    name += ">";
+    Symbol* spec = sema_.newLateSymbol(SymbolKind::Class, sema_.intern(name), generic->decl);
+    spec->isValue = true;
+    spec->isPrimitive = false;
+    spec->scope = generic->scope;   // shared decl → same method/base lookups
+    shape.built = true;
+    spec->shape = std::move(shape);
+    valueStructSpecs_[key] = spec;
+    return spec;
 }
 
 void Checker::genericStaticMissing(const Expr* site, Symbol* concrete,

@@ -1,0 +1,67 @@
+// techdesign-generic-value-struct-columnar §8: a columnar-eligible instantiation
+// of a GENERIC value struct (`P2<int,int>`, `P3<int,int,bool>`) must store
+// columnar on native — the monomorphized shape has concrete scalar slots and its
+// own classId. Output must be byte-identical on oracle/IR/emit-C++/LLVM, with
+// --columnar on AND off. An ineligible instantiation (`P2<int,string>`, heap
+// field) stays boxed and is a neutrality control.
+struct P2<A, B> {
+    A first;
+    B second;
+    new Of(A a, B b) { first = a; second = b; }
+}
+struct P3<A, B, C> {
+    A a;
+    B b;
+    C c;
+    new Of(A x, B y, C z) { a = x; b = y; c = z; }
+}
+void run() {
+    // ---- Array<P2<int,int>>: build-by-append, then a COLUMN-SELECTIVE scan
+    // (reads only `first` → fused ColGet) and a whole-struct gather. ----
+    Array<P2<int, int>> ps;
+    for (int i in 0..5) { ps = ps.add(P2::Of(i * 10, 100 + i)); }
+
+    int sumFirst = 0;
+    for (int i in 0 .. 5) { sumFirst = sumFirst + ps[i].first; }
+    console.writeln(sumFirst);            // 0+10+20+30+40+50 = 150
+
+    P2<int, int> x = ps[3];               // gather whole struct
+    console.writeln(x.first);             // 30
+    console.writeln(x.second);            // 103
+
+    int both = 0;                         // for-in gather over every field
+    for (P2<int, int> e in ps) { both = both + e.first + e.second; }
+    console.writeln(both);                // 150 + (100..105=615) = 765
+
+    console.writeln(ps.length());         // 6
+
+    // ---- Array<P3<int,int,bool>>: a three-column eligible instantiation. ----
+    Array<P3<int, int, bool>> ts;
+    for (int i in 0..4) { ts = ts.add(P3::Of(i, i * i, i % 2 == 0)); }
+    int sq = 0;
+    int trues = 0;
+    for (int i in 0 .. 4) {
+        sq = sq + ts[i].b;                // fused column read of `b`
+        if (ts[i].c) { trues = trues + 1; }
+    }
+    console.writeln(sq);                  // 0+1+4+9+16 = 30
+    console.writeln(trues);               // i in {0,2,4} => 3
+
+    // ---- P2<int,int> as a Map key: exercises the synthesized field-wise (==)
+    // dispatched on the specialized classId (the §5 identity check). ----
+    Map<P2<int, int>, string> m;
+    m = m.with(P2::Of(1, 1), "one");
+    m = m.with(P2::Of(2, 4), "two");
+    console.writeln(m.at(P2::Of(1, 1)));  // one
+    console.writeln(m.at(P2::Of(2, 4)));  // two
+    console.writeln(m.has(P2::Of(9, 9))); // false
+
+    // ---- Ineligibility control: P2<int,string> has a heap field, stays boxed;
+    // must produce the same output regardless of layout mode. ----
+    Array<P2<int, string>> qs;
+    qs = qs.add(P2::Of(7, "seven"));
+    qs = qs.add(P2::Of(8, "eight"));
+    console.writeln(qs[0].second);        // seven
+    console.writeln(qs[1].first);         // 8
+}
+run();
