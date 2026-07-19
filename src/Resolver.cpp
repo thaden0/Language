@@ -178,6 +178,27 @@ class string {
     bool isEmpty();
     string charAt(int i);
     string subStr(int start, int len);
+    // Byte-indexed range slice — matches subStr(start, len) exactly (Range has
+    // no unit of its own; this is "the same value used as a slice argument",
+    // applied to the byte-indexed core per the Bytes-vs-scalars rule, not a
+    // new rune-indexed slice). Range is inclusive-inclusive (class Range's own
+    // ctor), so len = end - start + 1.
+    //
+    // Deliberately NOT named `subStr` (not an overload) -- a same-named
+    // body-bearing overload would hijack every existing bare self-call to
+    // subStr(int,int) inside this class on the frozen --emit-elf backend
+    // (name-only, arity-blind X64Gen::genCallM dynamic dispatch;
+    // designs/techdesign-stdlib-tail-methods.md §2.1). Same shape of fix
+    // Track 04 used for indexOf/indexOfFrom.
+    //
+    // Empty/backwards ranges (end < start) are a defined "" on every engine,
+    // decided uniformly here before the native subStr's own cross-engine
+    // negative-len disagreement is ever reached. Out-of-bounds end inherits
+    // subStr's historical clamp-not-throw (unlike Array.slice, which throws).
+    string subStrRange(Range r) {
+        int len = r.end - r.start + 1;
+        return len <= 0 ? "" : subStr(r.start, len);
+    }
     string toUpper();
     string toLower();
     string trim();
@@ -216,6 +237,21 @@ class string {
         if (f > length()) return -1;
         int r = subStr(f, length() - f).indexOf(sub);
         return r < 0 ? -1 : r + f;
+    }
+
+    // Earliest index at which ANY needle occurs, or -1 if none do (incl. an
+    // empty needles array). Does not report WHICH needle matched; a caller
+    // that needs the identity can re-check each needle's indexOf against the
+    // returned position. Order-independence: the POSITION found is what's
+    // minimized, not needle array order. `""` in needles -> 0 always (indexOf
+    // on an empty pattern is 0 on every engine), a defined edge case.
+    int indexOfAny(Array<string> needles) {
+        int best = -1;
+        for (string needle in needles) {
+            int p = indexOf(needle);
+            if (p >= 0 && (best < 0 || p < best)) best = p;
+        }
+        return best;
     }
 
     int lastIndexOf(string sub) {
@@ -636,6 +672,15 @@ class Array<T> : IIterable<T> {
     Array<T> sortBy<K>((T) => K key) {
         return sort((a, b) => key(a) < key(b) ? 0 - 1 : (key(b) < key(a) ? 1 : 0));
     }
+    // orderBy is the K=1-run degenerate case of thenBy: everything starts in
+    // one run (no key applied yet), so thenBy's own run-refinement collapses
+    // to exactly a stable sort by `key` -- same algorithm, same correctness
+    // guarantee as multi-key chains, zero duplicated sort logic.
+    OrderedArray<T> orderBy<K>((T) => K key) {
+        Array<int> allRun0 = [];
+        for (int i in 0 .. length() - 1) allRun0 = allRun0.add(0);
+        return OrderedArray(this, allRun0).thenBy(key);
+    }
     T? minBy<K>((T) => K key) {
         if (isEmpty()) return None;
         T best = first();
@@ -686,6 +731,69 @@ class ArrayIterator<T> : IIterator<T> {
     Array<T> a;
     int i = 0;
     new ArrayIterator(Array<T> src) { a = src; }
+    bool hasNext() => i < a.length();
+    T next() { T v = a.at(i); i = i + 1; return v; }
+}
+
+// A pure, in-language, zero-native wrapper over a sorted Array<T> -- exactly
+// Set<T>'s mold. Carries a run id per element (a plain, type-erased int,
+// monotonically assigned in current order) so that thenBy can tell "was
+// already tied on every earlier key" from "differs on an earlier key"
+// without growing a new generic parameter per chained call. Produced by
+// Array.orderBy / OrderedArray.thenBy -- not meant to be hand-constructed
+// (same norm as RangeIterator/ArrayIterator, technically public but
+// protocol-internal; no private/module-visibility keyword exists).
+class OrderedArray<T> : IIterable<T> {
+    Array<T> items;
+    Array<int> runId;   // runId[i] == runId[i-1]  <=>  items[i-1]/items[i]
+                         // tie on every key applied so far
+    new OrderedArray(Array<T> its, Array<int> ids) { items = its; runId = ids; }
+
+    // Reuses the already-proven-stable Array.sort rather than a hand-rolled
+    // segmented sort: tag each element with its EXISTING run id, sort tagged
+    // pairs comparing run id first -- key() is never even evaluated for a
+    // cross-run pair, so cross-run order literally cannot be touched, not
+    // just "usually preserved" -- then recompute a finer run partition.
+    OrderedArray<T> thenBy<K>((T) => K key) {
+        Array<Pair<int, T>> tagged = [];
+        for (int i in 0 .. items.length() - 1) {
+            tagged = tagged.add(Pair::Of(runId.at(i), items.at(i)));
+        }
+        Array<Pair<int, T>> sorted = tagged.sort((p, q) => {
+            if (p.first < q.first) return 0 - 1;
+            if (q.first < p.first) return 1;
+            K ka = key(p.second);
+            K kb = key(q.second);
+            return ka < kb ? 0 - 1 : (kb < ka ? 1 : 0);
+        });
+        Array<T> newItems = sorted.select((pr) => pr.second);
+        Array<int> newRunId = [];
+        int counter = 0;
+        for (int i in 0 .. sorted.length() - 1) {
+            if (i > 0) {
+                Pair<int, T> prev = sorted.at(i - 1);
+                Pair<int, T> cur = sorted.at(i);
+                bool sameOldRun = prev.first == cur.first;
+                K kprev = key(prev.second);
+                K kcur = key(cur.second);
+                bool tiedOnKey = !(kprev < kcur) && !(kcur < kprev);
+                if (!(sameOldRun && tiedOnKey)) counter = counter + 1;
+            }
+            newRunId = newRunId.add(counter);
+        }
+        return OrderedArray(newItems, newRunId);
+    }
+
+    Array<T> toArray() => items;
+    int length() => items.length();
+    bool isEmpty() => items.isEmpty();
+    IIterator<T> iterator() => OrderedArrayIterator(this);
+}
+
+class OrderedArrayIterator<T> : IIterator<T> {
+    Array<T> a;
+    int i = 0;
+    new OrderedArrayIterator(OrderedArray<T> src) { a = src.items; }
     bool hasNext() => i < a.length();
     T next() { T v = a.at(i); i = i + 1; return v; }
 }
@@ -6074,17 +6182,18 @@ std::string Resolver::resolveType(TypeRef* t, Scope* scope) {
     return t->canonical;
 }
 
-// Descend through an expression to resolve the TypeRefs a `match` carries — its
-// arm patterns, and (recursively) any declarations in an arm body. The
+// Descend through an expression to resolve TypeRefs carried in expression
+// position: explicit Call type arguments and `match` arm patterns, plus
+// (recursively) any declarations in an arm body. The
 // statement-level pass otherwise never reaches these: a `match` reaching a
 // statement position is wrapped in an `ExprStmt` (or sits in a Var initializer /
 // return / etc.), so a union-typed `Var` declared *inside* an arm block never
 // had its type resolved, leaving the union's members unresolved (canonical "")
-// and misfiring the inner match's exhaustiveness check. Only `match` arm
-// patterns/bodies are resolved here; `is`/`inject` targets stay on the checker's
-// existing lazy path, so programs with no nested match are unaffected.
+// and misfiring the inner match's exhaustiveness check. `is`/`inject` targets
+// stay on the checker's existing lazy path.
 void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
     if (!e) return;
+    for (TypeRefPtr& t : e->explicitTypeArgs) resolveType(t.get(), scope);
     if (e->kind == ExprKind::Match) {
         resolveExprTypes(e->a.get(), scope);         // subject
         for (MatchArm& arm : e->arms) {
@@ -6096,7 +6205,7 @@ void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
         }
         return;
     }
-    // Generic descent: find matches nested anywhere inside the expression.
+    // Generic descent: find expression-carried types nested anywhere.
     resolveExprTypes(e->a.get(), scope);
     resolveExprTypes(e->b.get(), scope);
     resolveExprTypes(e->c.get(), scope);
@@ -6270,6 +6379,10 @@ void Resolver::resolveMember(Stmt* m, Scope* classScope) {
     if (m->type) resolveType(m->type.get(), scope);
     for (Param& p : m->params)
         if (p.type) resolveType(p.type.get(), scope);
+    // Fields and other member declarations may carry initializer expressions.
+    // Their embedded type syntax (including call-site `::<...>` arguments)
+    // must resolve in the same generic/class scope as the declaration itself.
+    resolveExprTypes(m->init.get(), scope);
     if (m->memberBody) resolveStmtTypes(m->memberBody.get(), scope);
 }
 
@@ -6448,6 +6561,25 @@ static Slot substituteSlotGenerics(Slot s,
     return s;
 }
 
+// `canonical` text is built from the REFERENCE SITE's spelling
+// (Resolver::resolveType bakes in `path`/`name` as written, not the resolved
+// symbol's own identity), so a dependency's class named through an alias
+// (`A::Data::Foo`) and the same class named bare from inside its own package
+// (`Foo`, as an interface declared in that package spells it) produce
+// different canonical strings for the identical Symbol. Recurses through
+// generic arguments so `Promise<A::Data::Foo>` also matches a required
+// `Promise<Foo>`, not just the bare non-generic case.
+static bool namedTypeSameSymbol(const TypeRef* a, const TypeRef* b) {
+    if (!a || !b || a->kind != TypeKind::Named || b->kind != TypeKind::Named)
+        return false;
+    if (!a->resolvedSymbol || a->resolvedSymbol != b->resolvedSymbol) return false;
+    if (a->generics.size() != b->generics.size()) return false;
+    for (size_t i = 0; i < a->generics.size(); ++i)
+        if (!namedTypeSameSymbol(a->generics[i].get(), b->generics[i].get()))
+            return false;
+    return true;
+}
+
 // F6: covariant return satisfaction is intentionally Resolver-local and
 // intentionally narrow.  The declaration's resolved symbol proves that the
 // provided return is a declared class/interface type; the canonical strings
@@ -6462,6 +6594,12 @@ bool Resolver::returnAssignable(const Slot& provided, const Slot& required) cons
 
     Symbol* providedSym = provided.decl->type->resolvedSymbol;
     if (!providedSym || providedSym->kind != SymbolKind::Class) return false;
+
+    // Same declared type under a different spelling: satisfied regardless of
+    // the (possibly stale/unrelated) covariant-base walk below, which exists
+    // for a genuine subclass return, not spelling variance of one class.
+    if (required.decl && namedTypeSameSymbol(provided.decl->type.get(), required.decl->type.get()))
+        return true;
 
     std::string requiredCanon = required.retCanon;
     constexpr std::string_view optionalSuffix = " | None";
@@ -6526,6 +6664,27 @@ bool Resolver::returnAssignable(const Slot& provided, const Slot& required) cons
         }
     }
     return false;
+}
+
+// Same idea as returnAssignable's identity fallback, but for the PARAMETER
+// list that gates interface-satisfaction candidacy in the first place: a
+// provided method whose params are spelled through an alias (`A::Data::Foo`)
+// must still be recognized as matching an interface requirement spelled bare
+// (`Foo`, as written inside its own package) — a plain paramsCanon string
+// compare treats the two spellings as different types.
+static bool paramsAssignable(const Slot& provided, const Slot& required) {
+    if (provided.paramsCanon == required.paramsCanon) return true;
+    if (!provided.decl || !required.decl ||
+        provided.decl->params.size() != required.decl->params.size())
+        return false;
+    for (size_t i = 0; i < provided.decl->params.size(); ++i) {
+        const TypeRefPtr& pt = provided.decl->params[i].type;
+        const TypeRefPtr& rt = required.decl->params[i].type;
+        if (!pt || !rt) return false;
+        if (pt->canonical == rt->canonical) continue;
+        if (!namedTypeSameSymbol(pt.get(), rt.get())) return false;
+    }
+    return true;
 }
 
 void Resolver::buildShape(Symbol* cls) {
@@ -6593,7 +6752,7 @@ void Resolver::buildShape(Symbol* cls) {
         const Slot* nearMiss = nullptr;
         for (const Slot& s : slots) {
             if (s.name != req.name) continue;
-            if (s.isMethod && req.isMethod && s.paramsCanon == req.paramsCanon) {
+            if (s.isMethod && req.isMethod && paramsAssignable(s, req)) {
                 if (returnAssignable(s, req)) { ok = true; break; }
                 if (!nearMiss) nearMiss = &s;
             } else if (s.canonical == req.canonical) {

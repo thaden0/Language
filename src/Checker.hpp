@@ -298,9 +298,21 @@ private:
                                    const std::string& retCanon) const;
     // §4.2: perform the eta-expansion AST rewrite (Member -> Lambda) once a
     // single candidate is chosen; returns the synthesized function Type.
+    // LA-32 §4.6: `subst`, when non-null, is a turbofish-pinned type-parameter
+    // map (`identity::<int>`) — the synthesized closure's signature renders the
+    // SUBSTITUTED parameter types (concrete `(int) => int`, not `(T) => T`).
     Type rewriteAsMethodRef(Expr* e, const Stmt* target, Symbol* recvClass,
                            Symbol* ctorClass, const std::string& recvCanon,
-                           const Type& retType);
+                           const Type& retType,
+                           const std::unordered_map<std::string_view, Type>* subst = nullptr);
+
+    // LA-32 §4.6: resolve a turbofish-pinned reference to a GENERIC callable in
+    // value position (`identity::<int>`, `T::method::<U>`, `obj.method::<U>`) to
+    // a concrete eta-expansion closure. Seeds from `e->explicitTypeArgs` (arity-
+    // checked via filterExplicitCandidates) and reuses rewriteAsMethodRef with
+    // the substitution. Returns Error (already diagnosed) on an arity mismatch.
+    Type pinnedGenericRef(Expr* e, const Stmt* fn, Symbol* recvClass,
+                          Symbol* ctorClass, const std::string& recvCanon);
 
     // ---- LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md) ----
     // The prelude's `expr::Expr<F>` class and its `expr` namespace, looked up
@@ -373,8 +385,8 @@ private:
     // Instantiate a (possibly generic) class from a chosen constructor + target.
     // Errors at `span` when a type argument has no inference source (§9).
     Type inferConstruction(Symbol* cls, const Stmt* ctor,
-                           const std::vector<Type>& args, const TypeRef* expected,
-                           SourceSpan span);
+                           const std::vector<Type>& args, const Expr* call,
+                           const TypeRef* expected, SourceSpan span);
 
     // Overload resolution: choose among same-named candidates by argument types
     // (arity + applicability + most-specific, first-declared breaking ties).
@@ -391,12 +403,31 @@ private:
     std::vector<const Stmt*> ctorOverloads(Symbol* cls, std::string_view label);
     std::vector<const Stmt*> functionOverloads(std::string_view name);
 
+    // When a Call carries `::<...>`, validate/filter the already-resolved
+    // declaration category by its binding owner's generic arity. A non-null
+    // `constructionParams` means the owner is one class shared by every ctor;
+    // otherwise each callable candidate owns its own generic list.
+    bool filterExplicitCandidates(
+        const Expr* call, std::vector<const Stmt*>& cands,
+        const std::vector<std::string_view>* constructionParams,
+        std::string_view ownerName);
+
+    // Receiver bindings first, then authoritative explicit bindings. The
+    // returned occupied entries are first-binding-wins inputs for unify().
+    std::unordered_map<std::string_view, Type> callGenericSeed(
+        const Expr* call, const Stmt* candidate,
+        const std::vector<std::string_view>* explicitParams = nullptr,
+        Symbol* receiverClass = nullptr, const Type* receiver = nullptr) const;
+
     // Unified call binding: map positional/named args per candidate, fill each
     // omitted parameter from its default or lexical bind, choose by type score
     // then fewest fills, and normalize the call to a full positional list.
     const Stmt* pickInjecting(const std::vector<const Stmt*>& cands,
                               std::vector<Type>& argTypes, Expr* call, bool& ok,
-                              bool& diagnosed);
+                              bool& diagnosed,
+                              const std::vector<std::string_view>* explicitParams = nullptr,
+                              Symbol* receiverClass = nullptr,
+                              const Type* receiver = nullptr);
     // bind/inject lexical management. Push a frame referencing `scope` (whose
     // `binds` the Resolver already filled — dup-in-scope is reported there), then
     // validate that body's factory `bind`s reject value types (bug.md #23) and

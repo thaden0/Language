@@ -389,15 +389,18 @@ void interpSignalCleanup();
 inline Value arithPrim(TokenKind op, const Value& l, const Value& r,
                        std::string* err = nullptr) {
     // None equality first: None equals only None (never a present value).
-    // bug.md #87: the four ordering operators must also short-circuit here —
-    // any None operand makes a relational comparison false (never void, which
-    // stringifies to "" instead of "false" though it happens to branch like
-    // false too, masking the bug from every check except .toString()).
     if (l.kind == VKind::None || r.kind == VKind::None) {
         if (op == TokenKind::EqEq)   return vbool(l.kind == r.kind);
         if (op == TokenKind::BangEq) return vbool(l.kind != r.kind);
-        if (op == TokenKind::Lt || op == TokenKind::Le ||
-            op == TokenKind::Gt || op == TokenKind::Ge) return vbool(false);
+        // Relational ops on a None-valued optional operand: pinned false,
+        // never a real ordering (designs/expr-reification/techdesign-01 §3.1).
+        // Previously fell through to vvoid() — a Void-kind bool local then
+        // misdispatched .toString() through the empty-free-function native
+        // path (Eval.cpp's `bv.kind == VKind::Void && e->resolved` NS::fn
+        // heuristic), printing "" instead of "false".
+        if (op == TokenKind::Lt || op == TokenKind::Gt ||
+            op == TokenKind::Le || op == TokenKind::Ge)
+            return vbool(false);
         return vvoid();
     }
     // Bool equality/inequality compares .b — never populated in the int

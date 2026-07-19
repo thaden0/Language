@@ -144,6 +144,15 @@ int main() {
     CHECK(resolve("namespace M { class W { } } use M::Nope;").hadError);    // unknown member
     CHECK(resolve("use Nope::W;").hadError);                                // unknown namespace
 
+    // Explicit call type arguments resolve in expression position, including
+    // qualification and an enclosing class type parameter in a field init.
+    CHECK(!resolve("namespace N { class Item { } } class Box<T> { } "
+                   "void f() { Box<N::Item> b = Box::<N::Item>(); }").hadError);
+    CHECK(!resolve("class Box<T> { } class Holder<T> { "
+                   "Box<T> value = Box::<T>(); }").hadError);
+    CHECK(resolve("T id<T>(T value) => value; "
+                  "void f() { id::<Missing>(1); }").hadError);
+
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

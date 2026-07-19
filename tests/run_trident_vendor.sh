@@ -89,10 +89,11 @@ else
     echo "FAIL vendor_app (--vendor build did not produce an executable)"; fail=1
 fi
 
-# --- a build without --vendor and without the git redirect fails offline
-#     (sanity: proves --vendor is what made the prior build network-free,
-#     not that trident silently ignores VCS deps) ---
+# --- a COLD build without --vendor and without the git redirect fails
+#     offline (a warm content-addressed store is intentionally network-free
+#     too, so remove only that cache for this sanity check). ---
 rm -rf build
+rm -rf "$TRIDENT_HOME/store"
 if PATH="$work/fakebin:$PATH" "$trident" build . --leviathan "$leviathan" \
         >"$work/nonvendor.out" 2>"$work/nonvendor.err"; then
     echo "FAIL vendor_app (a non-vendor build with git blocked should have failed)"; fail=1

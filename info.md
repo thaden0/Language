@@ -19,12 +19,21 @@ convention; the dangerous surface is opt-in and visible.
 
 ## 0. Last Updated
 
-**Audited against the implementation on 2026-07-12.** This section is the running log of
+**Audited against the implementation on 2026-07-19.** This section is the running log of
 what has landed and what has changed; the numbered sections below carry the detail.
 
 **Landed since the last full pass** (all cross-checked against `docs/reference.md`, the
 as-implemented reference, and the git history):
 
+- **Explicit generic type arguments at call sites** (2026-07-19) — the canonical,
+  unambiguous turbofish spelling is `callee::<T, U>(args)`, after the complete callee (including
+  namespace, constructor label, or receiver method). Exact arity is required; explicit
+  bindings are authoritative and filter overloads before substituted value checking. The same
+  turbofish with no `(args)` is a pinned generic **value reference** (`var f = identity::<int>;`)
+  that composes with method references (LA-25) into a concrete closure; an unpinned generic
+  reference is an error suggesting the turbofish. The list is checker-only, preserved by
+  rules/specialization/reifier clones and `--expand`, and adds no runtime or ABI payload.
+  Tree-walk/IR/emit-C++/LLVM are covered (`docs/reference.md` §2.5/§3.3).
 - **Harpoon — the standard unit test library, COMPLETE** (`designs/complete/techdesign-unit-test-library.md`,
   2026-07-15) — the assertion vocabulary (`assertEqual`/`assertNotEqual`/`assertSame`/
   `assertTrue`/`assertFalse`/`assertNone`/`assertSome`/`assertThrows`/`fail`, all
@@ -978,14 +987,23 @@ class Array<T> {
 
 Type arguments are **inferred when recoverable** (from the target type, from constructor
 arguments, from argument types — including through containers, `Array<U>` from `Array<Tag>`)
-and **required when not**. Explicit `<...>` remains available. Generics are **invariant**
-(`Array<int>` is not `Array<string>`); the raw (unparameterized) form is compatible with any
-instantiation.
+and **required when not**. Type positions use `Name<T, U>`; call positions use the distinct
+turbofish spelling `callee::<T, U>(args)`. The explicit tuple is exact-arity and authoritative:
+it binds class parameters for construction, callable parameters for functions/methods, and
+filters overloads before substituted value checking. The same turbofish with **no `(args)`** is a
+pinned generic **value reference** (`var f = identity::<int>;`) — it supplies the concrete tuple a
+bare reference to a generic callable lacks, composing with method references (LA-25) into one
+concrete closure; an *unpinned* generic reference (`var f = identity;`) is an error suggesting the
+turbofish. Generics are **invariant** (`Array<int>` is not `Array<string>`); the raw
+(unparameterized) form is compatible with any instantiation.
 
 ```
 MyClass<int, string> myClass = MyClass();   // inferred from the target type
 Promise<int> p = Promise(n * n);            // T inferred from the constructor argument
 string s = identity("hi");                  // R inferred from the call argument
+var empty = Box::<int>();                    // T explicitly pinned at construction
+string t = identity::<string>("hi");         // R explicitly pinned for this call
+var f = identity::<int>;                      // pinned generic value reference (a closure)
 ```
 
 ### Higher-kinded types (implemented, gated)
@@ -1410,7 +1428,7 @@ string sign(int n) => match (n) {
 - Body-is-one-statement applies everywhere a body appears (methods, accessors, binds, loops):
   a block `{ }`, `=> expr;` (arrow is `return`), a bare statement, or `;`.
 
-## 12.8 Projects, multi-file builds, and the package manager — **[Phase 1 built]**
+## 12.8 Projects, multi-file builds, and the package manager — **[built]**
 
 *Status:* implemented, then **split into two binaries** (`designs/complete/proposal-project-system.md`,
 `designs/complete/techdesign-toolchain.md`). A project is **the two-source prelude gather (§12)
@@ -1454,11 +1472,12 @@ dev     = false
   merge as usual.
 - **`assets`** declares the build inputs a comptime `import()` (§16.5, LA-20) may read —
   literals, globs, or `**` recursive globs — hashed by trident and carried in the plan.
-- **`[[dep]]`** is **Phase 1: local-path dependencies** — `path` names a local directory
-  holding its own `trident.toml`, recursively gathered into the same whole-program unit (a
-  dependency is just more source fed into the same gather, §1/§6). A non-directory `path` is a
-  VCS module (requires `version`); VCS fetch, MVS selection, a lockfile, and the content-addressed
-  store live in `trident` (`designs/techdesign-package-manager.md`). `dev = true` is a
+- **`[[dep]]`** accepts local paths and VCS modules. A local `path` names a directory holding its
+  own `trident.toml`; a non-directory path such as `github.com/acme/json` requires `version` and
+  resolves by MVS. VCS sources are pinned by `trident.lock`, verified against the tamper-evident
+  checksum log, and deduplicated in `$TRIDENT_HOME/store/<sha256>/`. `trident vendor` + `--vendor`
+  is the network-free path; `$TRIDENT_PROXY` is an optional static cache and `$TRIDENT_INDEX` an
+  optional first-wins name→VCS-path map. Neither service is mandatory. `dev = true` is a
   development-only dep, excluded from shippable-artifact modes.
 - **`as`** aliases a dependency's exported namespaces into a synthesized local namespace
   (`uses Client;` reaches a dep declared `as = "Client"`), so a consumer never has to know the
@@ -1472,6 +1491,10 @@ dev     = false
 ```
 trident build [dir]                      # resolve trident.toml -> plan -> leviathan --plan --build-native
 trident run   [dir]                      # ...compile and execute (tree-walk oracle)
+trident add/remove/update/lock/fetch/why # edit, pin, fetch, and explain the MVS graph
+trident vendor | audit                   # hermetic copy; hash + optional trust-policy verification
+trident publish [--tag vX.Y.Z]           # immutable git tag + checksum + optional index/attestation
+trident yank <path>@<version>            # block new selection; existing locks remain valid
 leviathan --plan build/plan.lvplan       # compile a whole project from trident's resolved plan
 leviathan --imports file.ext             # dump the file -> imports provenance map (P-4)
 leviathan --graph file.ext               # dump the `uses` include graph + build order (P-3)
@@ -2067,8 +2090,9 @@ kind is under the ARC discipline; the one remaining asterisk is true reference c
 (§15, §19 #10). Still boxed: `Array<T>`
 elements generally — the dense/columnar layout (§9 value
 types) beyond arrays of plain structs is the next major work. The project/file system (§12.8)
-and Phase-1 package manager (local-path deps, phantom-dep prevention, `as` aliasing) are also
-implemented and share this same front end.
+and full Trident package manager (local + VCS deps, MVS/lock/store/integrity, vendoring,
+publish/yank, optional proxy/index, and provenance policy) are also implemented and share this
+same front end.
 
 ---
 
@@ -2097,10 +2121,11 @@ implemented and share this same front end.
   corpus is 13/13 guarded programs green at +0 bytes (one declared XFAIL, §15). The one
   remaining asterisk is true reference cycles (observed via timer-callback capture; not yet
   collected — §19 #10).
-- **Project/file system + Phase-1 package manager** (§12.8): manifests, glob sources, function-
-  or file-shaped entry points, local-path deps, `as` aliasing, phantom-dependency prevention —
-  now split across the **`trident`** (package manager, owns `trident.toml`) and **`leviathan`**
-  (pure compiler, consumes a build plan) binaries; the old language-literal `project.mf` is gone.
+- **Project/file system + package manager** (§12.8): manifests, glob sources, function- or
+  file-shaped entry points, local/VCS deps, MVS, lock/store/integrity, publish/yank, optional
+  services, `as` aliasing, and phantom-dependency prevention — split across **`trident`**
+  (package manager, owns `trident.toml`) and **`leviathan`** (pure compiler, consumes a build
+  plan); the old language-literal `project.mf` is gone.
 - **`char`, `Block`, `enum` value/reference types** (Track 03, §9): the object mask applied to a
   Unicode scalar, the gated fixed-length byte buffer, and the closed int-carried value type — all
   on the four active engines (no ELF lane; X64Gen frozen).

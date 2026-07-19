@@ -1,11 +1,11 @@
 #include "fetch.hpp"
 #include "manifest.hpp"
 #include "semver.hpp"
+#include "source_set.hpp"
 #include "store.hpp"
 #include "vcs.hpp"
 #include <cstdlib>
 #include <fstream>
-#include <glob.h>
 #include <sstream>
 
 namespace {
@@ -23,45 +23,6 @@ bool readWholeFile(const std::string& path, std::string& out) {
 void removeTree(const std::string& dir) {
     std::string cmd = "rm -rf -- '" + dir + "'";
     std::system(cmd.c_str());
-}
-
-// Mirrors resolve.cpp's expandSources (glob expansion of a manifest's
-// `sources` list relative to a base dir). Deliberately duplicated rather
-// than shared: that version also does whole-project file dedup, which does
-// not apply to expanding one already-fetched module's own source list.
-bool expandModuleSources(const std::string& base, const std::vector<std::string>& sources,
-                         std::vector<std::string>& out, std::string& err) {
-    for (const std::string& rel : sources) {
-        std::string pattern = base + rel;
-        if (rel.find_first_of("*?[") == std::string::npos) {
-            out.push_back(pattern);
-            continue;
-        }
-        glob_t g;
-        int rc = glob(pattern.c_str(), GLOB_MARK, nullptr, &g);
-        if (rc == GLOB_NOMATCH) {
-            globfree(&g);
-            err = "source pattern '" + rel + "' matched no files";
-            return false;
-        }
-        if (rc != 0) {
-            globfree(&g);
-            err = "failed to expand source pattern '" + rel + "'";
-            return false;
-        }
-        for (size_t i = 0; i < g.gl_pathc; ++i) {
-            std::string p = g.gl_pathv[i];
-            if (!p.empty() && p.back() == '/') continue;   // GLOB_MARK flags dirs
-            out.push_back(p);
-        }
-        globfree(&g);
-    }
-    return true;
-}
-
-std::string relTo(const std::string& base, const std::string& path) {
-    if (path.compare(0, base.size(), base) == 0) return path.substr(base.size());
-    return path;
 }
 
 // Shallow-clone `remote`@`tag` and parse its trident.toml. On success, the
@@ -112,16 +73,11 @@ bool GitProvider::materialize(const ModuleId& mod, const Version& version,
     ProjectManifest pm;
     if (!cloneTagAndReadManifest(remote, tag, checkoutDir, pm, err)) return false;
 
-    std::string base = checkoutDir + "/";
-    std::vector<std::string> paths;
-    if (!expandModuleSources(base, pm.sources, paths, err)) {
+    std::vector<StoreFile> files;
+    if (!collectDeclaredSources(checkoutDir, pm.sources, files, err)) {
         removeTree(checkoutDir);
         return false;
     }
-
-    std::vector<StoreFile> files;
-    files.reserve(paths.size());
-    for (const std::string& p : paths) files.push_back({relTo(base, p), p});
 
     bool ok = materializeToStore(files, storeDir, contentHash, err);
     removeTree(checkoutDir);
@@ -137,7 +93,9 @@ bool GitProvider::versions(const ModuleId& mod, std::vector<Version>& out, std::
     for (const std::string& t : tags) {
         Version v;
         std::string perr;
-        if (parseSemVer(t, v, perr) && v.major == mod.major) out.push_back(v);
+        if (!parseSemVer(t, v, perr)) continue;
+        bool sameIdentity = mod.major <= 1 ? v.major <= 1 : v.major == mod.major;
+        if (sameIdentity) out.push_back(v);
     }
     return true;
 }

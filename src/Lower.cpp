@@ -2025,9 +2025,14 @@ int Lowerer::lowerExpr(Expr* e) {
                 F().code[jEnd].a = (int)F().code.size();
                 return r;
             }
-            if (e->a->kind == ExprKind::Name) {          // NS::global (std::read)
-                // through block/file import overlays too (bug.md #1)
-                if (namespaceSym(e->a->text, e->span.offset)) {
+            {                                             // NS::global (std::read)
+                // through block/file import overlays too (bug.md #1). A
+                // bare-Name-only check here reached just one hop, so a const
+                // in a NESTED namespace read via its fully-qualified path
+                // (`NS::Inner::member`) fell through to "not yet lowerable"
+                // — namespaceChainSym is the same nested-chain resolver
+                // already used for `NS::Inner::fn()` calls above.
+                if (namespaceChainSym(e->a.get(), e->span.offset)) {
                     auto g = mod_->globalIndex.find(std::string(e->text));
                     if (g != mod_->globalIndex.end()) {
                         int r = newReg();

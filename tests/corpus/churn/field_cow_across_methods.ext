@@ -1,0 +1,25 @@
+// Churn corpus (ARC leak net): a class-field Array<T> self-appended
+// (`items = items.add(...)`/`items = items.skip(...)`) across two SEPARATE
+// method calls on the same object. `skip` is an in-language (prelude)
+// method, not a native row — the CallDyn receiver window's consumed
+// (COW self-append) contract only elides the caller's release when the
+// callee is a native row that explicitly frees/reuses the receiver itself;
+// an ordinary in-language callee retains/releases its OWN copy and never
+// touches the caller's reference, so the caller must still release it.
+// Only `sink` survives, so live-at-exit is constant in N.
+// @N@ is substituted by fuzz/churn_leak.py.
+class Box {
+    Array<int> items;
+    void push(int v) { items = items.add(v); }
+    int pop() { int v = items.first(); items = items.skip(1); return v; }
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Box b = Box();
+        b.push(i);
+        sink = sink + b.pop();
+    }
+    console.writeln(sink);
+}
+run(@N@);

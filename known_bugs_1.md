@@ -97,3 +97,5 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
+
+No open entries.

@@ -1,10 +1,13 @@
-// XFAIL-LLVM: known_bugs_2.md #90 — LLVM leaks ~128B/iter when a class-field
-// Array<T> is mutated (.add()/.skip()) across two SEPARATE method calls (here:
-// StreamBuffer.push() then .pullRaw()); pre-existing, unrelated to D-B (bisected
-// against the pre-D-B tree with `git stash`, reduced to a repro with no stream
-// involvement at all — see the bug entry). Output is correct on every engine;
-// this is resource-only, so the design lands with this XFAIL rather than
-// gated out of the corpus, and converges to a guarded PASS once #90 is fixed.
+// Regression floor (fixed 2026-07-19): a class-field Array<T> mutated
+// (.add()/.skip()) across two SEPARATE method calls (here: StreamBuffer.push()
+// then .pullRaw()) used to leak ~128B/iter on LLVM — `Op::CallDyn`'s COW
+// self-append optimization (`consumed`) voided the receiver window slot
+// without releasing it, assuming the callee would consume/free that
+// reference; true for a hand-written native row ("add"'s own rc-aware
+// release), false for a call to an ordinary in-language function (`skip`),
+// which retains/releases its OWN copy of the receiver and never touches the
+// caller's reference (LlvmGen.cpp's Op::CallDyn now releases explicitly for
+// both in-language call shapes).
 //
 // D-B/DM-3 churn (techdesign-http-and-streams-maturity.md §5#6): "re-entrant
 // loop pumping" — parking inside a loop-dispatched callback nests dispatch.
@@ -14,10 +17,9 @@
 // pushes the one item then closes the stream. This is real suspend/resume
 // through the task scheduler (LA-30), not a pump-spin: it proves the
 // per-iteration waiter Promise, the closure the Timer captures, and the
-// parked task's own stack all return to the allocator with NOTHING left live
-// (module #90's pre-existing field-Array leak), N iterations running. Only
-// `sink` is a program-lifetime root, so live-at-exit must stay flat as N
-// grows once #90 is fixed.
+// parked task's own stack all return to the allocator with NOTHING left live.
+// Only `sink` is a program-lifetime root, so live-at-exit stays flat as N
+// grows.
 class Holder { Array<int> data; }
 void iterate(int seed) {
     Holder h = Holder();

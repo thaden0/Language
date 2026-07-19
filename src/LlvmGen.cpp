@@ -2459,10 +2459,27 @@ struct Gen {
                         break;
                     }
                     case Op::CallDyn: {
+                        // A direct/dynamic call's callee is an ORDINARY in-language
+                        // function: it retains its own copy of each parameter on
+                        // entry and releases it at its own exit (§15 ARC, entry
+                        // setup above) — a self-contained +1/-1 that never touches
+                        // the CALLER's reference. That's a different contract from
+                        // a hand-written native row (e.g. "add" above), which
+                        // explicitly frees/reuses a `consumed` receiver itself.
+                        // `consumed` (in.b, COW self-append) only elides the
+                        // CALLER's own release on the assumption the callee took
+                        // the receiver's fate — true for a native row, false for
+                        // an in-language callee, which leaves that one reference
+                        // owned by nobody (leaked) once the shared tail below
+                        // voids the window slot without releasing it. Release it
+                        // here for both in-language call shapes (direct + by-name
+                        // dynamic dispatch); the native-rows path further below
+                        // keeps handling its own consumed contract unchanged.
                         if (in.decl && mod.byDecl.count(in.decl)) {   // resolved: direct call
                             std::vector<llvm::Value*> args{regs[in.a]};
                             for (int k = 0; k < in.d; ++k) args.push_back(regs[in.c + k]);
                             b.CreateCall(fns[mod.byDecl.at(in.decl)], args);
+                            if (in.b) b.CreateCall(rtRelease, {regs[in.c]});
                         } else {   // unresolved: name-based callm (X64Gen::genCallM)
                             // in-language methods of the effective class first...
                             auto cands = callmCandidates(in.sname, in.d - 1);
@@ -2480,6 +2497,7 @@ struct Gen {
                                         args.push_back(k < in.d - 1 ? regs[in.c + 1 + k]
                                                                     : callRetScratch);
                                     b.CreateCall(fns[fi], args);
+                                    if (in.b) b.CreateCall(rtRelease, {regs[in.c]});
                                     b.CreateBr(doneBB);
                                     b.SetInsertPoint(next);
                                 }

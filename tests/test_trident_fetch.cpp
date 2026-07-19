@@ -40,6 +40,11 @@ std::string fixtureRepo() {
 
 static void test_find_git() {
     CHECK(!findGit().empty());
+    CHECK(modulePathFromRemote("https://github.com/acme/json.git") ==
+          "github.com/acme/json");
+    CHECK(modulePathFromRemote("git@github.com:acme/json.git") ==
+          "github.com/acme/json");
+    CHECK(modulePathFromRemote("file:///tmp/json.git") == "/tmp/json.git");
 }
 
 static void test_list_tags() {

@@ -1,0 +1,6 @@
+namespace A {
+    namespace Data {
+        public class Foo { public int v = 0; new Foo(int vv) { v = vv; } }
+        public interface IThing { Foo make(Foo seed); }
+    }
+}

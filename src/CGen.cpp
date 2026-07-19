@@ -394,8 +394,8 @@ static V ar(int op, const V& l, const V& r) {
     if (l.k == 8 || r.k == 8) {                                          // None
         if (op == 1) return vb(l.k == r.k);
         if (op == 2) return vb(l.k != r.k);
-        // bug.md #87: relational ops on a None operand are false, not void
-        // (void stringifies to "" instead of "false").
+        // Relational ops on a None operand: pinned false, mirrors arithPrim
+        // (RuntimeValue.hpp).
         if (op == 7 || op == 8 || op == 9 || op == 10) return vb(false);
         return V{};
     }

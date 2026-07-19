@@ -50,7 +50,7 @@ int cmdWhy(const std::string& manifestArg, const std::string& path);
 // checksum DB and the lock's own pinned hash (resolveVcsDeps, resolve.cpp) —
 // a mismatch is reported as a failed audit (exit 1) naming the module and
 // both hashes; a clean run prints one "OK" line per module and exits 0.
-int cmdAudit(const std::string& manifestArg);
+int cmdAudit(const std::string& manifestArg, const std::string& policyPath = "");
 
 // `trident vendor [manifest-or-dir]` (techdesign-package-manager.md §6 P2.2,
 // GT4). Requires an existing, consistent trident.lock. Resolves it (a normal,
@@ -59,3 +59,19 @@ int cmdAudit(const std::string& manifestArg);
 // into `<manifest-dir>/vendor/<path>[@vN]/` — the layout `--vendor`
 // (VendorProvider, resolve.cpp) reads back with zero network access.
 int cmdVendor(const std::string& manifestArg);
+
+// P2.3/GT5 publishing and yank-never-delete policy.
+int cmdPublish(const std::string& manifestArg, const std::string& tag,
+               const std::string& modulePath, const std::string& signKey,
+               const std::string& identity, const std::string& artifact,
+               const std::string& attestationOut);
+int cmdYank(const std::string& moduleSpec);
+
+// P2.4/GT6 provenance/audit-record authoring. `attest` signs the current
+// package's canonical source hash. `audit-record` records a human review of
+// one exact locked module hash in a shareable TOML file.
+int cmdAttest(const std::string& manifestArg, const std::string& modulePath,
+              const std::string& privateKey, const std::string& identity,
+              const std::string& artifact, const std::string& outputPath);
+int cmdAuditRecord(const std::string& manifestArg, const std::string& moduleSpec,
+                   const std::string& auditor, const std::string& outputPath);

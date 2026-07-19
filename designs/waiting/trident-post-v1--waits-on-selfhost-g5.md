@@ -1,25 +1,23 @@
 # Deferral Tracker — Trident Post-v1 / Post-Self-Host Deferrals
 
-**Status:** deferral tracker + resolution designs — **NOT ready for implementation.**
-Every item in this document is gated on an explicit trigger milestone (§2); starting any
-of them early without an owner ruling is a STOP event (§9). **Date:** 2026-07-06.
+**Status:** active deferral tracker — **D-C landed early by explicit owner direction on
+2026-07-19; D-A, D-B's scale/cycle remainder, and D-D's broader discoverability remain
+gated.** Starting a remaining item early without an owner ruling is a STOP event (§9).
+**Date:** 2026-07-06.
 **Scope:** the package-manager / project-system work items that were *deliberately*
 deferred past v1 and past the self-host milestone, with the stated reasons, the risks of
 the deferral, and the recommended resolution path for each when its trigger fires.
 **Builds on:** `designs/complete/techdesign-toolchain.md` (the Trident/Leviathan split),
-`designs/techdesign-package-manager.md` (P2 — GT2/GT3 landed 2026-07-06; GT4 landed 2026-07-15),
+`designs/complete/techdesign-package-manager.md` (P2 — GT2–GT6 complete as of 2026-07-19),
 `designs/requests/accepted/proposal-package-manager.md` and `designs/complete/proposal-project-system.md` (the source
 deferrals, cited by exact line below), `designs/complete/techdesign-portable-backend.md` (the
 self-host gate G5 this document keys on).
 
-> **One-line thesis.** Four deferrals — **(A) workspaces**, **(B) the registry-facing
-> remainder of external deps**, **(C) publishing & optional services**, **(D) registry
-> discoverability** — are *correctly* deferred: none blocks a build from a complete
-> `trident.lock` + git access, none blocks the compiler's bootstrap, and each gets
-> materially cheaper or better-informed after self-host (2027-01-15). This document
-> exists so the deferrals stay *deliberate* (with owners, triggers, and resolution
-> designs) instead of becoming forgotten debt or, worse, being improvised early by an
-> implementation agent.
+> **One-line thesis.** This tracker originally held four deferrals — **(A) workspaces**,
+> **(B) the registry-facing remainder of external deps**, **(C) publishing & optional
+> services**, **(D) broader registry discoverability**. The owner's 2026-07-19 package-
+> manager implementation directive pulled D-C forward and closed it at GT5; the other
+> three stay deliberate, triggered work rather than forgotten debt or ad-hoc scope.
 
 ---
 
@@ -30,14 +28,14 @@ self-host gate G5 this document keys on).
 - It **is** the single tracker for the post-v1 Trident deferrals: what was deferred,
   where the deferral was decided (exact file:line), why it is legitimate, what can go
   wrong while it waits, and the recommended path when it unblocks.
-- It is **not** an implementation-ready milestone doc. When a trigger fires (§2), the
+- It is **not** an implementation-ready milestone doc. When a remaining trigger fires (§2), the
   affected section here gets promoted into its own techdesign (the
-  `proposal → techdesign` promotion pattern `designs/techdesign-package-manager.md` itself
+  `proposal → techdesign` promotion pattern `designs/complete/techdesign-package-manager.md` itself
   followed), and *that* doc carries acceptance gates. Nothing in this file authorizes
-  writing code today.
+  new D-A/D-B/D-D code today; D-C's one-time owner override is logged in §10.
 - **Naming (authoritative):** the package manager is **`trident`** (manifest default
   `trident.toml`, lockfile default `trident.lock` — defaults, not hardcoded names, per
-  `designs/techdesign-package-manager.md` §0.5); the compiler is **`leviathan`**; sources
+  `designs/complete/techdesign-package-manager.md` §0.5); the compiler is **`leviathan`**; sources
   are **`.lev`**. Older spellings in the proposals (`lang deps`, `project.ext`,
   `.lvproj`, `project.lock`) are superseded and appear below only inside quoted source
   text.
@@ -48,12 +46,12 @@ self-host gate G5 this document keys on).
 |---|---|---|---|
 | **D-A** | Monorepo / workspace orchestration (`members`/`targets`) | `designs/requests/accepted/proposal-package-manager.md:434` — "**Monorepo/workspace orchestration** (v1) \| Deferred; the manifest leaves room (a future `members`/`targets` field) without committing now (mirrors Doc 3 §8 Q6)." Mirror: `designs/complete/proposal-project-system.md:554–555` (§8 Q6: "out of scope for v1; the manifest schema leaves room (a `[targets]`-style extension)"). | No fixed date. Trigger: the first real multi-target consumer — earliest realistic one is this repo itself once the compiler is rewritten in Leviathan (post-G5, ~2027-Q1/Q2). |
 | **D-B** | External deps / registry lockfile — the registry-facing remainder | `designs/complete/proposal-project-system.md:548–550` (§8 Q4): "**`deps` / external packages:** deferred (§3.6). When it lands: named specifiers + a lockfile + optional registry, **never** raw URLs (Deno's proven mistake, §3.2). Acyclic package graph, hard error on cycle (§4.5)." Rationale at §3.6 (`:179–184`). | The *mechanism* half (VCS-path specifiers + `trident.lock` + MVS) already landed at **GT3, 2026-07-06**. The remainder — named (index-resolved) specifiers, ecosystem-scale lock guarantees, the cycle-policy ruling — rides D-D / P2.4, post-self-host. |
-| **D-C** | Publishing & optional services (P2.3: `publish`/`yank` + caching proxy + thin index) | `designs/techdesign-package-manager.md:195` (§2 roadmap, P2.3 row): gate GT5, target "**2027-02-15 (post self-host; explicitly deferred, non-blocking)**." Detail at §6 (`:506–512`), seams at §9 (`:574–583`). | **2027-02-15**, explicitly after self-host (G5, 2027-01-15). Prerequisite: **P2.2 (GT4, checksum DB / vendor / audit) — landed 2026-07-15, ahead of its 2026-11-30 target (§10)**; the remaining gate is G5 itself. |
+| **D-C** | Publishing & optional services (P2.3: `publish`/`yank` + caching proxy + thin index) | `designs/complete/techdesign-package-manager.md:195` (§2 roadmap, P2.3 row): gate GT5, originally targeted "**2027-02-15 (post self-host; explicitly deferred, non-blocking)**." Detail at §6 (`:506–512`), seams at §9 (`:574–583`). | **Done 2026-07-19** by explicit owner implementation directive: GT5 green, services remain optional (§10). |
 | **D-D** | Registry discoverability (the searchable thin index) | `designs/requests/accepted/proposal-package-manager.md:624–626` (§11 open Q2): "Do we ever need the searchable name index, or do VCS paths suffice forever? **Defer (Phase 4)**; Deno's reversal says *some* discoverability helps, but don't over-build early (§3.1)." Also §8.6 Phase 4 (`:503–505`): "added only when the ecosystem is big enough to want it." | Phase 4 / GT5 window at the earliest (post-self-host), and even then **measured** — built only when ecosystem signals justify it (§6.3). |
 
 ### 0.3 STOP protocol (model escalation)
 
-This tracker inherits `designs/techdesign-package-manager.md` §0.3 **verbatim** — its five
+This tracker inherits `designs/complete/techdesign-package-manager.md` §0.3 **verbatim** — its five
 non-negotiable triggers (a)–(e) (no dep logic in `leviathan`; no build-plan contract
 change; no install-time code execution; no mandatory central registry; MVS is the only
 selector) apply to any future work item promoted out of this document. §9 adds the
@@ -86,16 +84,16 @@ design.
 Ground truth, so the deferrals are read against reality and not against stale proposal
 text:
 
-- **P2.0–P2.1e are complete; GT2 and GT3 are met** (`designs/techdesign-package-manager.md`
+- **P2.0–P2.1e are complete; GT2 and GT3 are met** (`designs/complete/techdesign-package-manager.md`
   §10, final entry). Trident today: VCS deps by path + git tag, MVS selection
   (`tools/trident/mvs.cpp`), SHA-256 content-addressed store (`~/.trident/store/`,
   `$TRIDENT_HOME` override), `trident.lock` write/read/staleness + lock-verbatim builds,
   CLI `add/remove/update/lock/fetch/why`, all offline-tested (56/56 ctest green at GT3).
-- **P2.2 (GT4 — checksum DB, `trident vendor`, `trident audit`) was the next actual
-  step, not started** (target 2026-11-30) as of this section's 2026-07-06 verification.
-  It is **pre-self-host and load-bearing**, and is therefore *not* one of this
-  document's deferrals — but D-B and D-C both depend on it (§2.2). **Update
-  2026-07-17: GT4 landed 2026-07-15, ahead of target — see §10.**
+- **P2.2 through P2.4 are complete.** GT4 landed 2026-07-15; the owner's 2026-07-19
+  implementation directive then pulled P2.3/GT5 and P2.4/GT6 forward. Publishing, yank,
+  the static proxy/exact-name index, signed attestations, shared audit records, and trust
+  policy are implemented without making any service mandatory. See the package design's
+  §10 acceptance log and this tracker's §10 update.
 - **Self-host is gate G5** of the portable-backend plan: stage-2 compiler rebuilds
   itself as stage-3 with identical output, full corpus green under the self-built
   compiler — "start ~2026-11; **self-hosted 2027-01-15**"
@@ -116,21 +114,20 @@ text:
 ```
 P2.2  GT4 (checksum DB + vendor + audit)      LANDED 2026-07-15   ← was "next actual step"; done
   │
-  ├────────────► D-C  P2.3 publish/yank/proxy/index (GT5)   2027-02-15
+  ├────────────► D-C  P2.3 publish/yank/proxy/index (GT5)   LANDED 2026-07-19 (owner override)
   │                     │
-  │                     └────► D-D  thin index (discoverability)   measured, GT5 window at earliest
+  │                     └────► D-D  broader searchable discovery   still measured/triggered
   │                              │
-  │                              └────► D-B remainder: named specifiers (`trident add json`)
+  │                              └────► D-B remainder: ecosystem-scale trust infrastructure
   │
 Self-host G5 (portable backend P5)            2027-01-15
   │
-  ├────────────► gates D-C's start (P2.3 is "post self-host; explicitly deferred, non-blocking")
   └────────────► creates D-A's first real consumer (this repo becomes multi-package)
 ```
 
 ### 2.2 Why P2.2 comes first (and is not a deferral)
 
-`designs/techdesign-package-manager.md` §2's sequencing note is explicit: "GT3 and GT4 land
+`designs/complete/techdesign-package-manager.md` §2's sequencing note is explicit: "GT3 and GT4 land
 before self-host and are the load-bearing ones (deterministic builds + integrity).
 Publishing, proxy, and index (GT5) are deliberately scheduled *after* self-host and kept
 **optional** so they never block the compiler's own bootstrap." Two of this document's
@@ -144,7 +141,8 @@ deferrals lean on GT4 directly:
   during the entire deferral window (§7, problem X-3).
 
 **Rule:** no D-item may start before GT4 is green, and D-C may not start before G5 is
-green, without an owner ruling (§9).
+green, without an owner ruling (§9). The explicit 2026-07-19 directive is that ruling;
+the original sequencing rationale above remains the historical reason for the default.
 
 ---
 
@@ -221,7 +219,7 @@ implemented from this sketch:
 | # | Problem | Recommended solution |
 |---|---|---|
 | P-A1 | **Workspace build-graph complexity creep** — member graphs invite shared caches, partial rebuilds, task pipelines, and eventually a build *system* inside trident. | Hard scope rule in the promoted design: a workspace is *N ordinary projects + one shared lock + a build order*. Anything smarter (artifact caching, task running) is out — the §7 exclusions table of the proposal (no task runner) already forbids the slippery slope. |
-| P-A2 | **A fetched module that is itself a workspace.** P2.1a's log already flags the adjacent gap: "a git-fetched module declaring a genuinely local (monorepo-style) sub-path is out of scope for P2.1" (`designs/techdesign-package-manager.md` §10, P2.1a entry). If deps can be workspaces, module identity ("which member did I import?") needs an answer. | Recommend: a *published* module is always a single package — `publish` (D-C) refuses a manifest with `[workspace]`, and a workspace member is published from its own member manifest. This keeps `ModuleId = (vcs-path, major)` unchanged. Revisit only with evidence. |
+| P-A2 | **A fetched module that is itself a workspace.** P2.1a's log already flags the adjacent gap: "a git-fetched module declaring a genuinely local (monorepo-style) sub-path is out of scope for P2.1" (`designs/complete/techdesign-package-manager.md` §10, P2.1a entry). If deps can be workspaces, module identity ("which member did I import?") needs an answer. | Recommend: a *published* module is always a single package — `publish` (D-C) refuses a manifest with `[workspace]`, and a workspace member is published from its own member manifest. This keeps `ModuleId = (vcs-path, major)` unchanged. Revisit only with evidence. |
 | P-A3 | **Lock divergence between root and members** — a member built standalone resolves against its own lock; built in the workspace, against the shared one. | Precedence rule fixed in the promoted design: inside a workspace, the root lock is authoritative and a member-local lock is an error (loud, naming the fix), mirroring the existing edited-but-unlocked loud-error style (§3.4 of the P2 design). |
 | P-A4 | **Phantom-dep erosion** — members casually `uses` each other's namespaces because "it's all one repo." | No change needed: the existing rule (you may only `uses` what your own manifest declares) applies per member unchanged. State it explicitly in the promoted design's acceptance tests. |
 
@@ -248,15 +246,15 @@ chain, and its **mechanism half has since been discharged** — P2.0–P2.1e (GT
 hash-manifest-shaped), and MVS, exactly along Q4's "named specifiers + a lockfile"
 line. What legitimately **remains deferred** is the registry-facing remainder:
 
-1. **Named specifiers in the friendly sense** — `trident add json` resolving a *name*
-   to a VCS path. This is the optional thin index's job and rides D-D (post-self-host).
-   Today's specifiers are VCS paths, which is by design (`designs/requests/accepted/proposal-package-manager.md`
-   §3.1) and already honors "never raw URLs": a VCS path is a versioned module identity
-   fed to MVS + lock + hash, not a Deno-style raw URL import pasted into source.
+1. **Friendly exact-name specifiers are discharged** — as of 2026-07-19, `trident add
+   json` can resolve an exact first-wins name to a VCS path through the optional index,
+   then persists the path. Broader search/ranking remains D-D and metric-gated. VCS paths
+   continue to honor "never raw URLs": they are versioned module identities fed to MVS +
+   lock + hash, not Deno-style source imports.
 2. **Ecosystem-scale lockfile guarantees** — the lock's hashes verified against a
    *shared* tamper-evident record. The local baseline is P2.2 (GT4, next step, not
    deferred); the at-scale form (Merkle transparency log) is P2.4, explicitly
-   "ecosystem-scale-gated" (`designs/techdesign-package-manager.md:196`).
+   "ecosystem-scale-gated" (`designs/complete/techdesign-package-manager.md:196`).
 3. **The cycle-policy ruling** — Q4/§4.5 demand "acyclic package graph, hard error on
    cycle"; the implemented MVS is deliberately cycle-tolerant (§1). ~~Unresolved
    conflict.~~ **Resolved 2026-07-18: owner upheld the literal text (§10);
@@ -278,7 +276,8 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
 
 1. **Ratify GT3 as Q4's mechanism discharge** in the promoted design (one paragraph —
    the lock + MVS + specifiers exist; cite the P2 log). No re-litigation.
-2. **Named specifiers land as index sugar, lowering at manifest-write time.**
+2. **Named specifiers land as index sugar, lowering at manifest-write time.** **Landed
+   2026-07-19:**
    `trident add json` asks the (optional, D-D) index for `json → github.com/thaden0/json`,
    then writes the **VCS path** into `trident.toml` exactly as `trident add
    github.com/thaden0/json` would. The manifest and lock never contain index-dependent
@@ -316,9 +315,13 @@ line. What legitimately **remains deferred** is the registry-facing remainder:
 
 ## 5. D-C — Publishing & optional services (P2.3: `publish`/`yank` + proxy + thin index)
 
+**Status update:** landed 2026-07-19 under the explicit owner directive recorded in §10.
+The text below preserves the original deferment rationale and resolution design; the
+completed package-manager design's §10 records the as-built behavior and gate evidence.
+
 ### 5.1 The deferment, verbatim
 
-`designs/techdesign-package-manager.md:195` (§2 roadmap, P2.3 row) — scope: "`trident
+`designs/complete/techdesign-package-manager.md:195` (§2 roadmap, P2.3 row) — scope: "`trident
 publish` (validate + git tag + optional index register), `trident yank`, the optional
 caching proxy (`$TRIDENT_PROXY`), the optional thin name→path index." Gate GT5:
 
@@ -354,7 +357,7 @@ honoring the proposal's 'phase the network away, build the registry last' ethos
 
 ### 5.3 Resolution path (when G5 lands; target 2027-02-15)
 
-Promote §6's P2.3 bullet of `designs/techdesign-package-manager.md` into a milestone doc
+Promote §6's P2.3 bullet of `designs/complete/techdesign-package-manager.md` into a milestone doc
 with these load-bearing points carried forward:
 
 1. **`trident publish [--tag vX.Y.Z]`** = validate manifest + clean tree → `git tag` →
@@ -466,30 +469,31 @@ Problems that exist *because* the items wait, independent of any one item:
 
 | When | What | Status/gate |
 |---|---|---|
-| now → ~~2026-11-30~~ **landed 2026-07-15** | **P2.2 / GT4** (checksum DB, `vendor`, `audit`) — the next actual step; prerequisite to D-B/D-C; **not deferred**. | **Done** — landed 2026-07-15 ahead of target (`designs/techdesign-package-manager.md` §2/§10; this file §10). |
+| now → ~~2026-11-30~~ **landed 2026-07-15** | **P2.2 / GT4** (checksum DB, `vendor`, `audit`) — the next actual step; prerequisite to D-B/D-C; **not deferred**. | **Done** — landed 2026-07-15 ahead of target (`designs/complete/techdesign-package-manager.md` §2/§10; this file §10). |
 | now-ish (no code) | **Owner ruling on the cycle policy** (§4.3.3) — a decision, not an implementation. | **Made 2026-07-18 (§10): literal §4.5 upheld — hard error on require-cycle.** Promoted to `designs/techdesign-trident-cycle-policy.md` (gate G-CYC1); implementation pending, must land before the ~2026-11 freeze. |
-| ~2026-11 → **2027-01-15** | **Self-host window (portable backend P5 → G5).** All four deferrals frozen hard — no trident scope may compete with the bootstrap. | G5 per `designs/complete/techdesign-portable-backend.md:143`. |
-| **2027-01-15** | **G5 lands → this tracker's review trigger.** Re-read this doc; promote D-C to a milestone techdesign. | Append review to §10. |
-| **2027-02-15** | **D-C / P2.3 / GT5** — publish, yank, proxy, index wiring; optionality CI proof. | Gate text at `designs/techdesign-package-manager.md:194`. |
+| ~2026-11 → **2027-01-15** | **Self-host window (portable backend P5 → G5).** Remaining Trident deferrals freeze hard — no new scope may compete with the bootstrap. | G5 per `designs/complete/techdesign-portable-backend.md:143`; landed D-C surfaces remain stable. |
+| **2027-01-15** | **G5 lands → this tracker's review trigger.** Re-read D-A, D-B, and D-D against real consumers/metrics. | Append review to §10. |
+| **2026-07-19 (pulled forward)** | **D-C / P2.3 / GT5** — publish, yank, proxy, exact-name index wiring; optionality CI proof. | **Done** by explicit owner directive; gate evidence in the completed package design §10. |
 | post-GT5, metric-gated | **D-D** — thin index when §6.3's metrics fire; then **D-B remainder** (named specifiers ride the index). | Measured; no scheduled date by design. |
 | first multi-target consumer (earliest ~2027-Q1/Q2, the self-hosted repo) | **D-A** — workspaces (`members` first, `targets` if demanded). | Consumer-gated; no scheduled date by design. |
-| as-needed (ecosystem-scale) | P2.4 provenance / transparency-log scale-up (D-B item 2's far end). | Explicitly unscheduled (GT6). |
+| **GT6 landed 2026-07-19; scale-up remains as-needed** | P2.4 signed provenance/audit policy is done; transparency-log scale-up remains D-B item 2's far end. | Local trusted-policy gate is green; ecosystem service remains unscheduled. |
 
 ---
 
 ## 9. STOP conditions (consolidated — escalation, not judgment calls)
 
-Inherits `designs/techdesign-package-manager.md` §0.3 triggers (a)–(e) verbatim. In
+Inherits `designs/complete/techdesign-package-manager.md` §0.3 triggers (a)–(e) verbatim. In
 addition, for the items in this tracker, a Sonnet-class agent must **STOP, log in §10,
 and escalate to a Fable-class model** before:
 
-- **(f)** starting **any** D-item before its §8 trigger (GT4 for all; G5 for D-C;
-  metrics for D-D; a real consumer for D-A) without a recorded owner ruling;
+- **(f)** starting any **remaining** D-item before its §8 trigger (metrics for D-D; a real
+  consumer for D-A; the stated scale/cycle triggers for D-B) without a recorded owner
+  ruling. D-C's early start is discharged by the 2026-07-19 directive recorded in §10;
 - **(g)** any workspace (D-A) design that changes the build-plan contract, makes
   `leviathan` workspace-aware, or produces anything other than N ordinary plans;
 - **(h)** any change that makes a build from a complete `trident.lock` + git access
   require the proxy, the index, publish infrastructure, or any network service — the
-  optionality invariant (`designs/techdesign-package-manager.md:195`,
+  optionality invariant (`designs/complete/techdesign-package-manager.md:195`,
   `designs/requests/accepted/proposal-package-manager.md:449–450`) is permanent;
 - **(i)** an index that hosts code, gates publishing, or maps names to anything other
   than VCS paths;
@@ -517,7 +521,7 @@ verify ground truth, record state changes, and escalate the standing owner decis
 STOP conditions (f)–(k) all honored; zero D-item code written.
 
 - **GT4 is green, 4.5 months ahead of target.** P2.2 (checksum DB, `trident vendor`,
-  `trident audit`) landed **2026-07-15** (`designs/techdesign-package-manager.md` §10,
+  `trident audit`) landed **2026-07-15** (`designs/complete/techdesign-package-manager.md` §10,
   final entry) — the §2.2 precondition "no D-item may start before GT4 is green" is now
   satisfied for all four D-items; the *binding* gates that remain are G5 for D-C,
   post-GT5 metrics for D-D (and the D-B remainder that rides it), and a real
@@ -526,7 +530,7 @@ STOP conditions (f)–(k) all honored; zero D-item code written.
   `selectVersions` still cycle-tolerant at `tools/trident/mvs.cpp:40` (invariant
   comment `:45–48`). §0.2/§1/§2.1/§8 updated in place to record the landing.
 - **All source-doc references corrected for the `docs/` → `designs/` moves** (the cited
-  files live at `designs/techdesign-package-manager.md`,
+  files live at `designs/complete/techdesign-package-manager.md`,
   `designs/requests/accepted/proposal-package-manager.md`,
   `designs/complete/proposal-project-system.md`,
   `designs/complete/techdesign-toolchain.md`, and
@@ -589,3 +593,20 @@ explicitly fenced out), must land before the ~2026-11 self-host freeze. **STOP (
 discharged for work performed inside that design's §0.3 constraints** — cycle-related
 changes outside that shape still escalate. P-B3 closes when G-CYC1 is logged green here.
 No code was written in this session; the design promotion pattern (§0.1) was followed.
+
+**2026-07-19 — explicit owner implementation directive pulled P2.3/P2.4 forward; D-C
+closed at GT5.** The owner directly requested implementation of the full active package-
+manager design and archival on completion. That instruction is the recorded ruling required
+by STOP (f), superseding D-C's calendar/G5 delay without relaxing any permanent invariant.
+The completed implementation and evidence are authoritative in
+`designs/complete/techdesign-package-manager.md` §10: immutable publish/tag/checksum,
+yank-never-delete, optional file/HTTP(S) proxy, optional first-wins exact-name index,
+verified warm-store offline builds, signed source/artifact attestations, shared audit
+records, and trusted audit/attestation policy. GT5 and GT6 are green; focused Trident
+coverage is 12/12 and all 219 repository test targets passed (the optional QEMU lane
+needed the installed cross sysroot supplied through `LVRT_SYSROOT`). No `src/` or
+`runtime/` file changed, no service became mandatory, MVS remains the selector, and no
+install-time code execution was introduced. D-C is therefore complete. D-A, D-B's
+ecosystem-scale/cycle remainder, and D-D's broader searchable discovery stay in this
+tracker under their existing triggers; the exact-name index shipped for GT5 does not by
+itself authorize registry search/ranking scope.

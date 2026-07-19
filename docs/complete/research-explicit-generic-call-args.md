@@ -1,8 +1,9 @@
 # Research: Explicit Generic Type Arguments on a Call/Construction Callee
 
-**Status:** research input for a future tech design. Not a design; carries no rulings — the
-options in §5 are presented for the owner to decide jointly, per the project's "no
-deferrals in designs" convention (a design consuming this doc must pin one before writing).
+**Status:** archived research input, consumed by
+`designs/complete/techdesign-explicit-generic-call-args.md`. Not a design; carries no rulings —
+the options in §5 were presented for the owner to decide jointly, per the project's "no
+deferrals in designs" convention.
 **Trigger:** `designs/expr-reification/techdesign-02-reifier.md`, Stage 2 implementation log
 (2026-07-19, landed today), ruling **R8 forced deviation** — LA-31's reifier wanted to emit
 `expr::Expr<(User)=>bool>(<lambda>, <tree>, [<binds>], <siteId>)` with an explicit concrete

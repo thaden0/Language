@@ -5,6 +5,7 @@
 #include "hash.hpp"
 #include "lock.hpp"
 #include "mvs.hpp"
+#include "proxy.hpp"
 #include "semver.hpp"
 #include "store.hpp"
 #include "Diagnostic.hpp"
@@ -212,12 +213,11 @@ std::set<std::string> scanExportedNamespaces(const std::string& text) {
     return out;
 }
 
-// Infer each dep's `kind` (techdesign-package-manager.md §4 P2.0-1): a
 // Recursively load local-path dependencies. Each Local dep's `path` is a
 // local directory holding its own manifest; its sources gather into the same
-// project (deps are just more source, §1/§6). Vcs deps (§4 P2.0-1) are
-// recognized here but skipped — P2.1 resolves them via MVS + the git
-// provider (docs/techdesign-package-manager.md §5). `visited` guards
+// project (deps are just more source, §1/§6). Vcs deps are recognized here
+// but skipped — resolveVcsDeps handles them later via MVS + the selected
+// Git/Proxy provider. `visited` guards
 // cycles/dups among Local deps.
 bool loadDepsRec(const std::vector<Dependency>& deps, const std::string& base,
                  const std::string& parentModule, std::set<std::string>& visited,
@@ -226,7 +226,7 @@ bool loadDepsRec(const std::vector<Dependency>& deps, const std::string& base,
                  std::map<std::string, std::set<std::string>>& moduleDeps,
                  std::string& err) {
     for (const Dependency& d : deps) {
-        if (d.kind == DepKind::Vcs) continue;   // not yet resolved — P2.1
+        if (d.kind == DepKind::Vcs) continue;   // handled by resolveVcsDeps
 
         std::string depDir = base + d.path;
         if (depDir.empty() || depDir.back() != '/') depDir += '/';
@@ -348,23 +348,69 @@ bool inferAndValidateDependencyKinds(std::vector<Dependency>& deps,
 
 namespace {
 
-// Do `rootRequires` all appear in `lock` at a version >= their minimum
-// (§3.4's consistency check)? A lighter check than full MVS-equivalence —
-// it trusts the lock's own transitive `requires` edges were correct when
-// written (by a real `trident lock` run) rather than re-verifying them, but
-// it does catch the common "bumped a direct dep, forgot to re-lock" case,
-// with zero network access.
-bool lockSatisfiesRootRequires(const Lockfile& lock, const std::vector<Require>& rootRequires) {
-    for (const Require& r : rootRequires) {
-        bool found = false;
-        for (const LockedModule& m : lock.modules) {
-            if (!(m.mod == r.mod)) continue;
-            Version sel;
-            std::string perr;
-            if (parseSemVer(m.selected, sel, perr) && compareSemVer(sel, r.min) >= 0) found = true;
-            break;
+bool parseRequireEdge(const std::string& text, Require& out);
+
+// Re-run MVS over the lock's cached edge graph, without provider I/O. This
+// proves the locked module set and exact selections are still the unique MVS
+// result for the current root requirements: bumped/lowered/removed roots and
+// orphaned old modules are all stale. The cached edge graph itself was
+// produced by the explicit `trident lock` operation and committed with it.
+bool lockSatisfiesRootRequires(const Lockfile& lock,
+                               const std::vector<Require>& rootRequires,
+                               std::string& err) {
+    struct CachedModule {
+        Version selected;
+        std::vector<Require> requires_;
+    };
+    std::map<ModuleId, CachedModule> cached;
+    for (const LockedModule& module : lock.modules) {
+        CachedModule value;
+        std::string parseErr;
+        if (!parseSemVer(module.selected, value.selected, parseErr)) {
+            err = "lock has invalid selected version for '" + serializeModuleId(module.mod) + "'";
+            return false;
         }
-        if (!found) return false;
+        for (const std::string& edge : module.requires_) {
+            Require require;
+            if (!parseRequireEdge(edge, require)) {
+                err = "lock has invalid require edge '" + edge + "'";
+                return false;
+            }
+            value.requires_.push_back(require);
+        }
+        if (!cached.emplace(module.mod, std::move(value)).second) {
+            err = "lock contains duplicate module '" + serializeModuleId(module.mod) + "'";
+            return false;
+        }
+    }
+
+    std::map<ModuleId, Version> minimums;
+    std::vector<Require> queue(rootRequires.begin(), rootRequires.end());
+    for (size_t i = 0; i < queue.size(); ++i) {
+        const Require& require = queue[i];
+        auto min = minimums.find(require.mod);
+        bool increased = min == minimums.end() || compareSemVer(require.min, min->second) > 0;
+        if (!increased) continue;
+        minimums[require.mod] = require.min;
+        auto module = cached.find(require.mod);
+        if (module == cached.end()) {
+            err = "lock is missing required module '" + serializeModuleId(require.mod) + "'";
+            return false;
+        }
+        for (const Require& child : module->second.requires_) queue.push_back(child);
+    }
+
+    if (minimums.size() != cached.size()) {
+        err = "lock contains modules no longer reachable from the manifest";
+        return false;
+    }
+    for (const auto& [mod, minimum] : minimums) {
+        auto module = cached.find(mod);
+        if (module == cached.end() || compareSemVer(module->second.selected, minimum) != 0) {
+            err = "lock selection for '" + serializeModuleId(mod) +
+                  "' is not the current MVS minimum";
+            return false;
+        }
     }
     return true;
 }
@@ -448,6 +494,26 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
         rootRequires.push_back(r);
     }
     if (rootRequires.empty()) {
+        // In the all-deps-visible modes, removing the final VCS dependency
+        // also makes a formerly non-empty lock stale. Production modes may
+        // legitimately have only dev deps filtered out, so they ignore that
+        // same lock rather than misdiagnosing it.
+        if (includeDevDeps && !lockPath.empty()) {
+            std::string text;
+            if (readWholeFile(lockPath, text)) {
+                Lockfile lock;
+                std::string lerr;
+                if (!parseLockfile(lockPath, text, lock, lerr)) {
+                    vr.err = lerr + " — run `trident lock`";
+                    return vr;
+                }
+                if (!lock.modules.empty()) {
+                    vr.err = "trident.lock is stale: the manifest no longer has VCS "
+                             "dependencies — run `trident lock`";
+                    return vr;
+                }
+            }
+        }
         vr.ok = true;   // no Vcs deps (or all dev-filtered) — nothing to do,
         return vr;       // and no git prerequisite for a project with none
     }
@@ -468,9 +534,14 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
     // separate choice of WHERE the final materialize() step below reads
     // from — GitProvider normally, or VendorProvider under `--vendor`.
     GitProvider gitProvider;
+    std::string proxyEndpoint = tridentProxyEndpoint();
+    ProxyProvider proxyProvider(proxyEndpoint);
+    ModuleProvider& sourceProvider = proxyEndpoint.empty()
+        ? static_cast<ModuleProvider&>(gitProvider)
+        : static_cast<ModuleProvider&>(proxyProvider);
     VendorProvider vendorProvider(vendorDir);
     ModuleProvider& fetchProvider = vendorDir.empty()
-        ? static_cast<ModuleProvider&>(gitProvider) : static_cast<ModuleProvider&>(vendorProvider);
+        ? sourceProvider : static_cast<ModuleProvider&>(vendorProvider);
 
     // §3.4: "trident build/run/check use the lock verbatim when it is
     // present and consistent... never a silent re-resolve." A non-empty
@@ -489,8 +560,16 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
         std::string lockText;
         Lockfile lock;
         std::string lerr;
-        if (readWholeFile(lockPath, lockText) && parseLockfile(lockPath, lockText, lock, lerr) &&
-            lockSatisfiesRootRequires(lock, rootRequires)) {
+        bool lockExists = readWholeFile(lockPath, lockText);
+        if (lockExists && !parseLockfile(lockPath, lockText, lock, lerr)) {
+            vr.err = lerr + " — run `trident lock`";
+            return vr;
+        }
+        if (lockExists && !lockSatisfiesRootRequires(lock, rootRequires, lerr)) {
+            vr.err = "trident.lock is stale: " + lerr + " — run `trident lock`";
+            return vr;
+        }
+        if (lockExists) {
             for (const LockedModule& m : lock.modules) {
                 BuildListEntry e;
                 e.mod = m.mod;
@@ -517,12 +596,32 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
                     "--vendor";
             return vr;
         }
-        MvsResult mvs = selectVersions(rootRequires, gitProvider);
+        MvsResult mvs = selectVersions(rootRequires, sourceProvider);
         if (!mvs.ok) {
             vr.err = mvs.err;
             return vr;
         }
         selected.assign(mvs.buildList.begin(), mvs.buildList.end());
+
+        // P2.3/GT5: yanks affect NEW MVS selection only. The lock-verbatim
+        // branch above deliberately skips this policy check, preserving the
+        // design's yank-never-delete rule for existing reproducible builds.
+        for (const BuildListEntry& e : selected) {
+            bool yanked = false;
+            std::string yerr;
+            if (!checksumDbIsYanked(checksumDbPath(), e.mod, e.selected, yanked, yerr)) {
+                vr.err = "cannot check yank policy for " + e.mod.path + "@" +
+                         formatSemVer(e.selected) + ": " + yerr;
+                return vr;
+            }
+            if (yanked) {
+                vr.err = e.mod.path + "@" + formatSemVer(e.selected) +
+                         " is yanked and cannot be selected by a new resolution; "
+                         "an existing consistent trident.lock may continue to use it "
+                         "(run `trident why " + e.mod.path + "` to inspect the chain)";
+                return vr;
+            }
+        }
     }
 
     // Materialize every selected entry — idempotent (store.cpp): a cache
@@ -536,8 +635,27 @@ VcsResolution resolveVcsDeps(const ProjectManifest& manifest, bool includeDevDep
     // a loud error, never a silent acceptance.
     for (BuildListEntry e : selected) {
         std::string storeDir, contentHash, merr;
-        if (!fetchProvider.materialize(e.mod, e.selected, storeDir, contentHash, merr)) {
-            vr.err = "materializing " + e.mod.path + "@" + formatSemVer(e.selected) + ": " + merr;
+        bool warmStoreHit = false;
+        if (usedLock && vendorDir.empty()) {
+            auto pinned = lockHashByModule.find(e.mod);
+            if (pinned != lockHashByModule.end()) {
+                storeDir = storeRoot() + "/" + pinned->second;
+                struct stat st;
+                if (::stat(storeDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                    if (!verifyStoreEntry(storeDir, pinned->second, merr)) {
+                        vr.err = "verifying cached " + e.mod.path + "@" +
+                                 formatSemVer(e.selected) + ": " + merr;
+                        return vr;
+                    }
+                    contentHash = pinned->second;
+                    warmStoreHit = true;
+                }
+            }
+        }
+        if (!warmStoreHit &&
+            !fetchProvider.materialize(e.mod, e.selected, storeDir, contentHash, merr)) {
+            vr.err = "materializing " + e.mod.path + "@" + formatSemVer(e.selected) +
+                     ": " + merr;
             return vr;
         }
         e.storeDir = storeDir;

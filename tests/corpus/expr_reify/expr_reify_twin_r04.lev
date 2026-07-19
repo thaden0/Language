@@ -52,7 +52,7 @@ void dumpSite(string label, expr::Node tree, Array<string | int | float | bool |
     console.writeln(label + "site:siteId=" + site.toString());
 }
 
-expr::Expr<(User)=>bool> e0 = expr::Expr((u) => u.age >= 18 && u.age < 65,
+expr::Expr<(User)=>bool> e0 = expr::Expr::<(User)=>bool>((u) => u.age >= 18 && u.age < 65,
     expr::Bin("&&", expr::Bin(">=", expr::Field(["age"]), expr::Lit(18)),
                      expr::Bin("<", expr::Field(["age"]), expr::Lit(65))), [], 0);
 dumpSite("s0", e0.tree, e0.binds, e0.siteId);
