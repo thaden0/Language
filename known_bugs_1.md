@@ -21,7 +21,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | P0       | #87 |
 | P1       | #82 |
 | P2       | — |
-| P3       | #90, #92 |
+| P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
 separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two files).
@@ -183,91 +183,3 @@ Stage 3's differential corpus therefore pins only the `==`/`!=` None-operand
 rows (doc 01 §3.1's semantics for those two operators, which are unaffected)
 and excludes a `<`-against-None row pending this fix
 (`designs/expr-reification/techdesign-03-verification.md` §10 implementation log).
-
----
-
-## #90 [P3] — an `IIterable<int>`-typed parameter bound to a `Range` argument iterates as empty (sums to 0) on the frozen ELF backend only
-
-**Markers:** P3.2 (only frozen-backend (`X64Gen`/ELF) behavior is affected —
-oracle, `--ir`, emit-C++, and LLVM all agree on the correct sum; found
-running `tests/corpus/iterator.lev` through `run_elf.sh` while grounding
-`techdesign-labeled-break-continue.md`, unrelated to that design's own
-changes — confirmed pre-existing by running the identical corpus file
-against a clean pre-change tree).
-
-Repro (`tests/corpus/iterator.lev`, already in the shared corpus):
-```
-int sumOf(IIterable<int> src) {
-    int t = 0;
-    for (int x in src) t = t + x;
-    return t;
-}
-void run() {
-    Range rng = 1 .. 5;
-    console.writeln(sumOf(rng));   // expected 15
-}
-run();
-```
-`--emit-elf` prints `0`; every other engine prints `15`. The same file's
-`sumOf(xs)` (a user `LinkedList<int> : IIterable<int>`) and `sumOf(arr)`
-(an `Array<int>`) both print correctly on ELF — only the `Range`-as-
-`IIterable<int>` case is wrong, isolating the defect to `Range`'s iterator-
-protocol dispatch specifically (`iterator()`/`hasNext()`/`next()` via
-`CallDyn`) rather than the generic pass-through parameter or the `for..in`
-protocol desugar in general, both of which the LinkedList case already
-exercises correctly on the same backend.
-
-**Root-cause pointer (not investigated further — frozen file):** likely
-`Range` has no ELF-native `iterator()`/`hasNext()`/`next()` implementation
-wired for the protocol path (`X64Gen.cpp`), since `Range`'s *direct*
-`for (int x in 1..5)` fast path never needs one (techdesign-07 §2's
-built-in-fast-path branch handles it without ever calling the protocol
-methods) — only the erased-parameter case forces the protocol path, and
-that path silently falls through to a zero-iteration default rather than
-failing loud.
-**Workaround:** none needed at the language level — avoid passing a bare
-`Range` where an `IIterable<int>`-typed parameter forces the protocol path
-if targeting `--emit-elf`; every other backend is unaffected. Per the
-X64Gen freeze (no new X64Gen work, ever), this is filed for visibility only.
-
----
-
-## #92 [P3] — reference-identity `==`/`!=` on two class instances prints an empty line, not `true`/`false`, on the frozen ELF backend only
-
-**Markers:** P3.2 (only frozen-backend (`X64Gen`/ELF) behavior is affected —
-oracle, `--ir`, and emit-C++ all agree on the correct booleans; found running
-`tests/corpus/core/class_identity.lev` through `run_elf.sh` (`corpus_elf_core`)
-while grounding `techdesign-labeled-break-continue.md`, unrelated to that
-design's own changes — confirmed pre-existing by running the identical
-corpus file against a clean pre-change tree).
-
-Repro (`tests/corpus/core/class_identity.lev`, already in the shared corpus):
-```
-class Box { int value = 0; }
-Box a = Box();
-Box alias = a;
-Box other = Box();
-console.writeln(a == alias);   // expected true
-console.writeln(a != alias);   // expected false
-console.writeln(a == other);   // expected false
-console.writeln(a != other);   // expected true
-```
-`--emit-elf` prints four EMPTY lines; every other engine prints `true` /
-`false` / `false` / `true`. A plain `console.writeln(true)` /
-`console.writeln(false)` on the same ELF binary prints correctly (verified
-with a minimal companion repro), isolating the defect to the bool VALUE a
-class-identity `==`/`!=` comparison produces specifically — not `console
-.writeln`'s bool-printing path in general.
-
-**Root-cause pointer (not investigated further — frozen file):** likely
-`X64Gen.cpp`'s codegen for reference-identity comparison (`==`/`!=` on two
-class-typed operands, presumably a pointer-equality op distinct from the
-value-struct/primitive comparison paths that ARE printing correctly) leaves
-the result register untagged as a proper ELF bool value, so the print path
-reads garbage/empty instead of the tag `console.writeln` expects.
-**Workaround:** none needed at the language level — avoid printing the
-direct result of a class-identity `==`/`!=` comparison if targeting
-`--emit-elf` (assign through an `if`/ternary to a literal `true`/`false`
-first as a workaround, if ever needed); every other backend is unaffected.
-Per the X64Gen freeze (no new X64Gen work, ever), this is filed for
-visibility only.

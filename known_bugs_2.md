@@ -21,7 +21,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | P0       | #88, #89 |
 | P1       | #83, #86 |
 | P2       | — |
-| P3       | #91 |
+| P3       | — |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -334,39 +334,3 @@ therefore demonstrates only the plain-comparison/arithmetic shapes (which
 reify correctly through `Query<E>`) and does **not** include a whitelisted
 call, with this bug cited inline — logged in
 `designs/expr-reification/techdesign-03-verification.md` §10.
-
----
-
-## #91 [P3] — `char::code()` on a supplementary-plane (4-byte UTF-8) scalar prints nothing on the frozen ELF backend only
-
-**Markers:** P3.2 (only frozen-backend (`X64Gen`/ELF) behavior is affected —
-oracle, `--ir`, emit-C++, and LLVM all agree on the correct codepoint; found
-running `tests/corpus/string_literal_tail.lev` through `run_elf.sh` while
-grounding `techdesign-labeled-break-continue.md`, unrelated to that design's
-own changes — confirmed pre-existing by running the identical corpus file
-against a clean pre-change tree).
-
-Repro (`tests/corpus/string_literal_tail.lev`, already in the shared corpus):
-```
-char smiley = '\u{1F600}';     // an emoji, U+1F600 — 4-byte UTF-8
-console.writeln(smiley.code());   // expected 128512
-```
-`--emit-elf` prints an empty line; every other engine prints `128512`. The
-same file's ASCII (`\u{41}`) and BMP 3-byte (`\u{20AC}`, the euro sign)
-`\u{...}` escapes decode and print correctly on ELF — only a supplementary-
-plane (4-byte) scalar's `.code()` read is wrong, isolating the defect to
-`char::code()`'s native handling of 4-byte UTF-8 sequences specifically,
-not `\u{...}` literal decoding in general (the literal itself must decode
-correctly, since `smiley` prints as the correct glyph earlier in the same
-file — line 10, `console.writeln("\u{1F600}")`, is not among the failing
-lines).
-
-**Root-cause pointer (not investigated further — frozen file):** likely
-`char::code()`'s native ELF implementation (`X64Gen.cpp`) only decodes the
-1-3-byte UTF-8 lead-byte patterns (ASCII/2-byte/3-byte, i.e. up to U+FFFF)
-and falls through to an empty/zero read on a 4-byte lead byte (`0xF0`-`0xF4`)
-rather than failing loud.
-**Workaround:** none needed at the language level — avoid reading
-`.code()` on a supplementary-plane `char` if targeting `--emit-elf`; every
-other backend is unaffected. Per the X64Gen freeze (no new X64Gen work,
-ever), this is filed for visibility only.
