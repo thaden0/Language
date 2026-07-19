@@ -178,3 +178,17 @@ snapshot goldens per state. Differential oracle/IR/LLVM; emit-C++ compile-only.
 ## 11. Implementation log
 
 - 2026-07-15 — design written; not started.
+- 2026-07-19 — implemented (all milestones M1–M4). `sonar_v2/src/components/textarea.lev` is the
+  new leaf; `<textarea>` registered in `dom/registry.lev`; attr appliers (`value`/`readOnly`/
+  `tabWidth`/`gutter`, no `maxLength` per §6) in `dom/builder.lev`; `value`/`text` narrowing-ladder
+  rows + the new `cursor` event wired in `dom/node.lev`; serializer `leafText` row in
+  `dom/document.lev`. One-function cursor math (`cellAt`/`scalarAtCell`) drives paint, scroll
+  clamping (rides `Scrollable.scrollTo` with a live `contentSize` from the longest-line cache),
+  sticky column, `cursorPos` (box-relative), and mouse hit-mapping. Differential test
+  `sonar_v2/tests/dom-textarea/` (edit/nav/word/sticky/CJK-cells/paste-CRLF/scroll/gutter/
+  cursorPos/readOnly/mouse/validate/DOM-round-trip) passes byte-identical on oracle+IR+LLVM;
+  emit-C++ takes the standard DOM async-gap compile skip. Recon migration note filed in
+  `examples/recon/RESEARCH.md` (owner-approved swap left for a dedicated change, per M4).
+  Deviation from §1's fluent sketch: getter/`setX` naming (`setText`/`setValue`) follows the
+  repo's landed component convention (ContentBar/Input) rather than a same-name getter+setter
+  overload; `readOnly`/`tabWidth`/`gutter`/`validator` fluent setters kept as designed.

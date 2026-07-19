@@ -63,6 +63,7 @@ namespace Sonar { namespace Dom {
         string value() {
             IComponent c = raw_;
             if (c is Input)      return c.value;
+            if (c is TextArea)   return c.text();
             if (c is CheckBox)   return c.checked ? "true" : "false";
             if (c is RadioGroup) return c.selected.toString();
             if (c is Text)       return c.text;
@@ -73,6 +74,7 @@ namespace Sonar { namespace Dom {
         DomNode value(string v) {
             IComponent c = raw_;
             if (c is Input)      { c.setValue(v);              return this; }
+            if (c is TextArea)   { c.setText(v);               return this; }
             if (c is CheckBox)   { c.setChecked(v == "true");  return this; }
             if (c is RadioGroup) { int? idx = v.toInt(); if (idx != None) c.selectRow(idx); return this; }
             if (c is Text)       { c.text(v);                  return this; }
@@ -89,6 +91,7 @@ namespace Sonar { namespace Dom {
             if (c is MenuItem)   return c.label;
             if (c is ContentBar) return c.left();
             if (c is Input)      return c.value;
+            if (c is TextArea)   return c.text();
             if (c is Modal)      return c.title;
             if (c is CheckBox)   return c.label;
             throw SonarException("node <" + doc_.tagOf(raw_) + "> has no text");
@@ -100,6 +103,7 @@ namespace Sonar { namespace Dom {
             if (c is MenuItem)   { c.label(v);    return this; }
             if (c is ContentBar) { c.setLeft(v);  return this; }
             if (c is Input)      { c.setValue(v); return this; }
+            if (c is TextArea)   { c.setText(v);  return this; }
             if (c is Modal)      { c.setTitle(v); return this; }
             if (c is CheckBox)   { c.setLabel(v); return this; }
             throw SonarException("node <" + doc_.tagOf(raw_) + "> has no settable text");
@@ -166,7 +170,12 @@ namespace Sonar { namespace Dom {
             if (event == "mouse")  { if (c is Component) c.onMouse((e) => handler());  return this; }
             if (event == "paste")  { if (c is Component) c.onPaste((e) => handler());  return this; }
             if (event == "press")  { if (c is Button)    c.onPress(handler);           return this; }
-            if (event == "change") { if (c is Input)     c.onChange((s) => handler()); return this; }
+            if (event == "change") {
+                if (c is Input)    c.onChange((s) => handler());
+                if (c is TextArea) c.onChange((s) => handler());
+                return this;
+            }
+            if (event == "cursor") { if (c is TextArea) c.onCursor((l, col) => handler()); return this; }
             if (event == "submit") { if (c is Input)     c.onSubmit((s) => handler()); return this; }
             if (event == "toggle") { if (c is CheckBox)  c.onToggle((b) => handler()); return this; }
             if (event == "select") {
@@ -177,7 +186,7 @@ namespace Sonar { namespace Dom {
             if (event == "dismiss") { if (c is Modal) c.onDismiss(handler); return this; }
             throw SonarException("node <" + doc_.tagOf(raw_)
                 + "> has no event '" + event
-                + "' (known: key mouse paste press change submit toggle select dismiss)");
+                + "' (known: key mouse paste press change cursor submit toggle select dismiss)");
         }
 
         // ---- popover (D03 §5) ----------------------------------------------

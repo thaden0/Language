@@ -43,6 +43,7 @@ namespace Sonar { namespace Dom {
             this.reg("span", () => Text(),        (c) => c is Text);
             this.reg("text", () => Text(),        (c) => c is Text);
             this.reg("input", () => Input(),      (c) => c is Input);
+            this.reg("textarea", () => TextArea(),(c) => c is TextArea);
             this.reg("button", () => Button(),    (c) => c is Button);
             this.reg("checkbox", () => CheckBox(),(c) => c is CheckBox);
             this.reg("radiogroup", () => RadioGroup(), (c) => c is RadioGroup);
@@ -68,8 +69,8 @@ namespace Sonar { namespace Dom {
             this.reg("flex", () => FlexContainer(), (c) => (c is FlexContainer) && !(c is Bar));
             this.reg("bar",  () => Bar(),           (c) => false);
             this.reg("contentbar", () => Bar(),     (c) => c is Bar);
-            // Deferred rows (documented): textarea (D06), grid (GridBox needs
-            // (rows,cols) — no nullary factory), list (ListView source-bound).
+            // Deferred rows (documented): grid (GridBox needs (rows,cols) — no
+            // nullary factory), list (ListView source-bound).
         }
 
         IComponent create(string tag) {
