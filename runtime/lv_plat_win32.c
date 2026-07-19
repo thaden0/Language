@@ -1,12 +1,11 @@
 /* Track B — Windows platform floor (B-M5, doc-2 §5 table + §7).
  *
- * STATUS: PRE-LAND, COMPILE-UNVERIFIED. Written to spec on a host with no
- * MinGW-w64 toolchain (see the 2026-07-05 B-M5 log in doc-2 §10). It is in NO
- * default CMake target — it compiles only when `runtime/build-triple.sh
- * x86_64-pc-windows-gnu` (or another `*-windows-*`/`*-mingw*` triple) selects
- * it in place of lv_plat_posix.c. The POSIX floor and the green suite are
- * therefore untouched. First person with a MinGW toolchain: compile + run the
- * core corpus under wine and close the acceptance in §10.
+ * STATUS: IMPLEMENTED AND CROSS-VERIFIED. It is not in a default CMake target;
+ * `runtime/build-triple.sh x86_64-pc-windows-gnu` (or another
+ * `*-windows-*`/`*-mingw*` triple) selects it in place of lv_plat_posix.c.
+ * The MinGW runtime archive, core corpus, and filesystem round trip compile
+ * and execute under Wine as of 2026-07-19. Native-Windows release
+ * certification remains a separate environment-specific gate.
  *
  * It implements the SAME lv_plat.h interface as lv_plat_posix.c, with the same
  * caller-visible contracts (portable open bits, nonblocking-accept -1==none,
@@ -273,6 +272,108 @@ int lv_plat_stat_isdir(const char* path) {
  * parity with the POSIX floor / oracle sysMkdir. */
 int lv_plat_mkdir(const char* path) {
     return CreateDirectoryA(path, NULL) ? 0 : -1;
+}
+
+/* LLVM filesystem/directory parity. This floor follows the repository's
+ * existing ANSI-path convention; migrating the entire floor to UTF-16 is a
+ * separate compatibility change. */
+static void lv_dir_discard(char** names, size_t count) {
+    if (names) {
+        for (size_t i = 0; i < count; i++) free(names[i]);
+        free(names);
+    }
+}
+
+static int lv_dir_append(char*** names, size_t* count, size_t* capacity,
+                         const char* name) {
+    if ((uint64_t)*count >= (uint64_t)INT64_MAX) return -1;
+    if (*count == *capacity) {
+        size_t next;
+        if (*capacity == 0) {
+            next = 16;
+        } else {
+            if (*capacity > SIZE_MAX / 2) return -1;
+            next = *capacity * 2;
+        }
+        if (next > SIZE_MAX / sizeof(char*)) return -1;
+        char** grown = (char**)realloc(*names, next * sizeof(char*));
+        if (!grown) return -1;
+        *names = grown;
+        *capacity = next;
+    }
+
+    size_t len = strlen(name);
+    if (len == SIZE_MAX) return -1;
+    char* copy = (char*)malloc(len + 1);
+    if (!copy) return -1;
+    memcpy(copy, name, len + 1);
+    (*names)[(*count)++] = copy;
+    return 0;
+}
+
+int lv_plat_remove(const char* path) {
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return -1;
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY)
+        return RemoveDirectoryA(path) ? 0 : -1;
+    return DeleteFileA(path) ? 0 : -1;
+}
+
+int lv_plat_rename(const char* from, const char* to) {
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+}
+
+int lv_plat_listdir(const char* path, LvDirEntries* out) {
+    if (!out) return -1;
+    out->names = NULL;
+    out->count = 0;
+
+    size_t path_len = strlen(path);
+    if (path_len > SIZE_MAX - 3) return -1;
+    char* pattern = (char*)malloc(path_len + 3);
+    if (!pattern) return -1;
+    memcpy(pattern, path, path_len);
+    pattern[path_len] = '\\';
+    pattern[path_len + 1] = '*';
+    pattern[path_len + 2] = '\0';
+
+    WIN32_FIND_DATAA data;
+    HANDLE search = FindFirstFileA(pattern, &data);
+    free(pattern);
+    if (search == INVALID_HANDLE_VALUE) return -1;
+
+    char** names = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    int append_failed = 0;
+    do {
+        if (strcmp(data.cFileName, ".") == 0 ||
+            strcmp(data.cFileName, "..") == 0)
+            continue;
+        if (lv_dir_append(&names, &count, &capacity, data.cFileName) != 0) {
+            append_failed = 1;
+            break;
+        }
+    } while (FindNextFileA(search, &data));
+
+    DWORD iteration_error = append_failed ? ERROR_NOT_ENOUGH_MEMORY : GetLastError();
+    BOOL closed = FindClose(search);
+    if (append_failed || iteration_error != ERROR_NO_MORE_FILES || !closed) {
+        lv_dir_discard(names, count);
+        return -1;
+    }
+
+    out->names = names;
+    out->count = (int64_t)count;
+    return 0;
+}
+
+void lv_plat_listdir_free(LvDirEntries* entries) {
+    if (!entries) return;
+    size_t count = entries->count > 0 ? (size_t)entries->count : 0;
+    lv_dir_discard(entries->names, count);
+    entries->names = NULL;
+    entries->count = 0;
 }
 
 void lv_plat_set_nonblock(int fd) {

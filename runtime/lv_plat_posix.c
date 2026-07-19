@@ -12,12 +12,15 @@
 #include "lv_plat.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -295,6 +298,95 @@ int lv_plat_stat_isdir(const char* path) {
  * so an already-existing path reports -1 too). */
 int lv_plat_mkdir(const char* path) {
     return mkdir(path, 0755) == 0 ? 0 : -1;
+}
+
+/* LLVM filesystem/directory parity. The staging table and every copied name
+ * are call-owned so concurrent listings share no state. Keep the allocator
+ * helpers here: no directory API or staging ownership leaks above lv_plat.h. */
+static void lv_dir_discard(char** names, size_t count) {
+    if (names) {
+        for (size_t i = 0; i < count; i++) free(names[i]);
+        free(names);
+    }
+}
+
+static int lv_dir_append(char*** names, size_t* count, size_t* capacity,
+                         const char* name) {
+    if ((uint64_t)*count >= (uint64_t)INT64_MAX) return -1;
+    if (*count == *capacity) {
+        size_t next;
+        if (*capacity == 0) {
+            next = 16;
+        } else {
+            if (*capacity > SIZE_MAX / 2) return -1;
+            next = *capacity * 2;
+        }
+        if (next > SIZE_MAX / sizeof(char*)) return -1;
+        char** grown = (char**)realloc(*names, next * sizeof(char*));
+        if (!grown) return -1;
+        *names = grown;
+        *capacity = next;
+    }
+
+    size_t len = strlen(name);
+    if (len == SIZE_MAX) return -1;
+    char* copy = (char*)malloc(len + 1);
+    if (!copy) return -1;
+    memcpy(copy, name, len + 1);
+    (*names)[(*count)++] = copy;
+    return 0;
+}
+
+int lv_plat_remove(const char* path) {
+    if (unlink(path) == 0) return 0;
+    int unlink_error = errno;
+    if (unlink_error == EISDIR || unlink_error == EPERM)
+        return rmdir(path) == 0 ? 0 : -1;
+    return -1;
+}
+
+int lv_plat_rename(const char* from, const char* to) {
+    return rename(from, to) == 0 ? 0 : -1;
+}
+
+int lv_plat_listdir(const char* path, LvDirEntries* out) {
+    if (!out) return -1;
+    out->names = NULL;
+    out->count = 0;
+
+    DIR* dir = opendir(path);
+    if (!dir) return -1;
+
+    char** names = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0)
+            continue;
+        if (lv_dir_append(&names, &count, &capacity, entry->d_name) != 0) {
+            (void)closedir(dir);
+            lv_dir_discard(names, count);
+            return -1;
+        }
+    }
+
+    if (closedir(dir) != 0) {
+        lv_dir_discard(names, count);
+        return -1;
+    }
+    out->names = names;
+    out->count = (int64_t)count;
+    return 0;
+}
+
+void lv_plat_listdir_free(LvDirEntries* entries) {
+    if (!entries) return;
+    size_t count = entries->count > 0 ? (size_t)entries->count : 0;
+    lv_dir_discard(entries->names, count);
+    entries->names = NULL;
+    entries->count = 0;
 }
 
 static void lv_set_nonblock_fd(int fd) {

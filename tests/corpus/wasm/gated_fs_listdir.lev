@@ -1,0 +1,2 @@
+Array<string>? entries = std::sysListDir("/tmp");
+console.writeln((entries == None).toString());

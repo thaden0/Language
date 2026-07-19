@@ -633,6 +633,11 @@ void    lvrt_sysopen(LvValue* out, const LvValue* path, const LvValue* flagBits)
 void    lvrt_sysclose(const LvValue* fd);
 void    lvrt_sysstat(LvValue* out, const LvValue* path, const LvValue* field);
 void    lvrt_sysmkdir(LvValue* out, const LvValue* path);
+void    lvrt_sysremove(LvValue* out, const LvValue* path);
+void    lvrt_sysrename(LvValue* out, const LvValue* from, const LvValue* to);
+/* Fresh boxed Array<string> at rc 0, or LV_NONE. Each string is retained once
+ * by the array; compiled callers retain the returned array for their dest. */
+void    lvrt_syslistdir(LvValue* out, const LvValue* path);
 void    lvrt_sysread(LvValue* out, const LvValue* fd, const LvValue* max);
 /* Track 03 M4 — zero-copy Block I/O overloads (§6.6.5). Borrow the Block; read/
  * recv fill from offset 0, write/send take a [off,off+len) window; bounds

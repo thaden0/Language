@@ -1,0 +1,1 @@
+wasm-browser: 'File' is not available on this target (no filesystem in a browser)

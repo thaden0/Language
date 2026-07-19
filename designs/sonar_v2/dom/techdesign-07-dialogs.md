@@ -169,21 +169,14 @@ scripts), snapshots via TestRenderer, differential oracle/IR/LLVM.
   listing/nav/path-jump/select-resolve/cancel/no-selection/filter; save new-
   name/empty-name/activate-fills-name/overwrite-yes/overwrite-no; vanished-
   entry re-list; startDir memory across shows; resolve-once under a double-
-  Enter) passes byte-identical on **oracle + IR**. **LLVM native**: blocked,
-  pre-existing — `sysListDir`/`sysRemove`/`sysRename` have no LLVM lowering
-  today (`LlvmGen.cpp`'s native dispatch has cases for `sysStat`/`sysMkdir`
-  only; confirmed by isolating a PromptDialog-only probe, which — touching no
-  fs natives — builds and runs correctly on LLVM, so the gap is specifically
-  the Track 08 fs family, not this file's Promise/Modal/union/covariant-
-  override mechanics). Filed **`designs/requests/request-llvm-fs-dir-
-  natives.md`** (the interpreter-side implementations in
-  `src/RuntimeNatives.cpp` are the exact spec to port; `sysMkdir`'s own LLVM
-  case, one function away in the same files, is the direct template) —
-  `runtests.sh` reports `FAIL dom-dialogs (llvm codegen)` deliberately left
-  in that state rather than trimmed around (the whole corpus otherwise passes
-  oracle+IR+LLVM clean; `dom-dialogs` is the first test to need this native
-  at all). emit-C++ not attempted (expected to take the same DOM async-gap
-  skip as every other D0x-track leaf with `await`, D06 included).
+  Enter) originally passed byte-identical on **oracle + IR** while LLVM was
+  blocked by the pre-existing Track 08 filesystem gap. The accepted follow-up
+  is now implemented in **`designs/complete/techdesign-llvm-fs-dir-
+  natives.md`**: `sysListDir`/`sysRemove`/`sysRename` have LLVM lowering and
+  matching runtime/platform-floor support. The unchanged `dom-dialogs`
+  project now passes byte-identical on **oracle + IR + LLVM**; emit-C++ retains
+  the same documented DOM async/native-gap skip as the other `await`-using
+  D0x leaves.
 
   **§3 deviation (anchor-logged):** the design's own premise — "today the
   only directory test is the O(N)-listdir probe" — was already stale by

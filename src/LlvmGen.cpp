@@ -124,6 +124,9 @@ static const WasmGatedNative* wasmGatedNative(const std::string& n) {
         {"sysOpen",         "File",      "no filesystem in a browser"},
         {"sysStat",         "File",      "no filesystem in a browser"},
         {"sysMkdir",        "File",      "no filesystem in a browser"},
+        {"sysRemove",       "File",      "no filesystem in a browser"},
+        {"sysRename",       "File",      "no filesystem in a browser"},
+        {"sysListDir",      "File",      "no filesystem in a browser"},
         {"sysRead",         "read",      "no blocking reads in a browser"},
         {"sysReadLine",     "readLine",  "no blocking reads in a browser"},
         {"sysTcpConnect",   "TcpClient", "no raw sockets in a browser"},
@@ -225,7 +228,9 @@ struct Gen {
         // §2.8 exception state (A-M4): pending-throw model, no landingpads.
         rtThrowing, rtThrown, rtThrowSet, rtCatchBind, rtIssub, rtUncaught,
         // §2.7 system natives + §2.9 event loop (A-M5).
-        rtSysRead, rtSysOpen, rtSysClose, rtSysStat, rtSysMkdir, rtSysArgs, rtSysNow, rtSysMonotonic,
+        rtSysRead, rtSysOpen, rtSysClose, rtSysStat, rtSysMkdir,
+        rtSysRemove, rtSysRename, rtSysListDir,
+        rtSysArgs, rtSysNow, rtSysMonotonic,
         rtSysReadBlock, rtSysWriteBlock, rtSysSendBlock, rtSysRecvBlock,   // Track 03 M4
         rtSysTermRaw, rtSysTermRestore,
         rtSysWinSize, rtSysTermIsRaw,     // terminal-floor.md §2
@@ -393,6 +398,9 @@ struct Gen {
         rtSysClose     = fn("lvrt_sysclose", voidTy, {ptrTy});
         rtSysStat      = fn("lvrt_sysstat", voidTy, {ptrTy, ptrTy, ptrTy});
         rtSysMkdir     = fn("lvrt_sysmkdir", voidTy, {ptrTy, ptrTy});   // Track 08 F3 dirs
+        rtSysRemove    = fn("lvrt_sysremove", voidTy, {ptrTy, ptrTy});
+        rtSysRename    = fn("lvrt_sysrename", voidTy, {ptrTy, ptrTy, ptrTy});
+        rtSysListDir   = fn("lvrt_syslistdir", voidTy, {ptrTy, ptrTy});
         rtSysArgs      = fn("lvrt_sysargs", voidTy, {ptrTy});   // argv (designs/argv.md §5.1)
         rtSysNow       = fn("lvrt_sysnow", voidTy, {ptrTy});    // wall clock (Track 08 C6)
         rtSysMonotonic = fn("lvrt_sysmonotonic", voidTy, {ptrTy}); // monotonic ms (Track 08 F2)
@@ -2692,6 +2700,13 @@ struct Gen {
                             b.CreateCall(rtSysStat, {regs[in.a], arg(0), arg(1)});
                         } else if (n == "sysMkdir") {
                             b.CreateCall(rtSysMkdir, {regs[in.a], arg(0)});
+                        } else if (n == "sysRemove") {
+                            b.CreateCall(rtSysRemove, {regs[in.a], arg(0)});
+                        } else if (n == "sysRename") {
+                            b.CreateCall(rtSysRename, {regs[in.a], arg(0), arg(1)});
+                        } else if (n == "sysListDir") {
+                            b.CreateCall(rtSysListDir, {regs[in.a], arg(0)});
+                            retainDst();               // fresh Array<string> -> +1; None skips
                         } else if (n == "sysArgs") {
                             b.CreateCall(rtSysArgs, {regs[in.a]});
                             retainDst();               // fresh heap Array<string> -> +1
