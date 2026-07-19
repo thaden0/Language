@@ -1165,12 +1165,48 @@ std::string CGen::generate() {
     // in-language method by name so such a call marks its same-named candidates
     // (and pulls their declaring class into the callm dispatch table).
     std::unordered_map<std::string, std::vector<std::pair<int, Symbol*>>> methodFns;
+    // D-B/DM-3 (techdesign-http-and-streams-maturity.md §2.3): InStream/StreamSeq's
+    // `iterator()` and StreamIterator's `hasNext()`/`next()` are excluded from this
+    // by-name index entirely. Reason: `iterator`/`hasNext`/`next` are the MOST
+    // heavily-overloaded protocol names in the prelude (every IIterable/IIterator —
+    // Array, Map, Range, every Seq combinator, now streams — implements them), and
+    // `markByName` below marks a name's match on EVERY simultaneously-instantiated
+    // "possible receiver" class, not just the one a given call site actually meant
+    // (decl-less by-name CallDyn carries no receiver-type info to disambiguate —
+    // techdesign-07's C5 protocol dispatch, by design). Any program that touches
+    // arrays at all (i.e. nearly every program: CGen's `usesColl` heuristic below
+    // fires on a bare array literal) unconditionally seeds Array's own
+    // iterator()/asSeq() chain, whose Seq terminals (toArray/forEach/...) call
+    // `self.iterator()` by name — which would otherwise ALSO mark InStream's
+    // iterator() reachable (since InStream is a possible receiver the instant a
+    // program constructs ONE stream, e.g. via signal::on) even when that program
+    // never iterates a stream. StreamIterator.hasNext() awaits a Promise
+    // (Op::Await), which CGen has no case for (default: hard sink_.error — this
+    // backend has no async surface at all, techdesign-04-emitcpp-leg.md §1) — so
+    // that accidental pull turns "harmless dead code" into a hard compile failure
+    // for ANY unrelated program that merely constructs a stream (the exact SU-1
+    // TaskGroup::close/sysTaskCancel lesson, §"isPossibleRecv" below, recurring on
+    // a path that gate doesn't reach). Streams were never iterable on emit-C++
+    // before this design and still aren't (await has no lane here regardless);
+    // this exclusion's cost is that a cpp program which DOES try `for (x in
+    // stream)` gets a silent no-op miss (falls through to callnative's existing
+    // "unmatched by-name call returns a default value" behavior) instead of a
+    // clean diagnostic, rather than a new capability gap.
+    auto isStreamIterProtocolMember = [](const std::string& name, Symbol* cls) {
+        if (!cls) return false;
+        if (name == "iterator" && (cls->name == "InStream" || cls->name == "StreamSeq"))
+            return true;
+        if ((name == "hasNext" || name == "next") && cls->name == "StreamIterator")
+            return true;
+        return false;
+    };
     if (mod_.sema && mod_.sema->global)
         for (const auto& [nm, syms] : mod_.sema->global->names)
             for (Symbol* cls : syms)
                 if (cls->kind == SymbolKind::Class)
                     for (const Slot& s : cls->shape.slots)
-                        if (s.isMethod && s.decl && mod_.byDecl.count(s.decl))
+                        if (s.isMethod && s.decl && mod_.byDecl.count(s.decl) &&
+                            !isStreamIterProtocolMember(std::string(s.name), cls))
                             methodFns[std::string(s.name)].push_back({mod_.byDecl.at(s.decl), cls});
     // SU-1: a by-name (decl-less) CallDyn dispatches on the receiver's runtime
     // class. A **reference** class can be that receiver only if it was actually
@@ -1242,8 +1278,19 @@ std::string CGen::generate() {
                             instClasses.push_back(in.sym);
                             std::vector<const Stmt*> mem;
                             collectMembers(in.sym, mem);
-                            for (const Stmt* m : mem)
+                            for (const Stmt* m : mem) {
+                                // D-B/DM-3: skip the same stream-iteration-protocol
+                                // members excluded from `methodFns` above (see that
+                                // comment for the full rationale) — this is the OTHER
+                                // entry point into the same cascade: InStream/StreamSeq
+                                // being instantiated directly pulls in ALL their
+                                // members here, unconditionally, for vtable
+                                // completeness, which is just as much a false positive
+                                // for `iterator()` as the by-name path is.
+                                if (isStreamIterProtocolMember(std::string(m->name), in.sym))
+                                    continue;
                                 if (mod_.byDecl.count(m)) mark(mod_.byDecl.at(m));
+                            }
                         }
                     }
                 } else if (in.op == Op::CallDyn) {

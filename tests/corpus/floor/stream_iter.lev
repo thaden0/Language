@@ -1,0 +1,71 @@
+// D-B/DM-3 (techdesign-http-and-streams-maturity.md §2.3): InStream : IIterable<T>
+// — the prelude-only flip once StreamBuffer.close() (SU-1) plus the
+// waiter-promise blocking pull exist. Deterministic (no signals/PTY): a Timer
+// is the live producer, and true suspension (LA-30) makes the park real, not a
+// pump-spin, so this is safe to run on oracle/IR/LLVM as a plain stdout diff.
+
+// --- 1. Timer-fed for..in: delivers every tick, then close() ends the loop
+// exactly (the "5 ticks then close, loop exits" contract) — the process must
+// also EXIT afterward (close() releases the wait; nothing keeps the loop alive).
+void timerFive() {
+    std::Timer t = std::every(1);
+    InStream<int> s = t.ticks();
+    int count = 0;
+    for (int tick in s) {
+        count = count + 1;
+        console.writeln("tick " + count.toString());
+        if (count >= 5) { s.close(); t.cancel(); }
+    }
+    console.writeln("ticks done count=" + count.toString());
+}
+
+// --- 2. Exclusivity: iterator() then pull() -> error; subscribe() then
+// iterator() -> error (the consumer end is claimed exactly once, whichever
+// surface claims it first).
+void exclusivity() {
+    StreamBuffer<int> b1 = StreamBuffer();
+    InStream<int> s1 = InStream(b1);
+    IIterator<int> it1 = s1.iterator();
+    try { int v = s1.pull(); console.writeln("BUG: pull should have thrown"); }
+    catch (RuntimeException e) { console.writeln("iter-then-pull: " + e.message); }
+
+    StreamBuffer<int> b2 = StreamBuffer();
+    InStream<int> s2 = InStream(b2);
+    s2.subscribe((v) => { });
+    try { IIterator<int> it2 = s2.iterator(); console.writeln("BUG: iterator should have thrown"); }
+    catch (RuntimeException e) { console.writeln("sub-then-iter: " + e.message); }
+}
+
+// --- 3. Producer-EOF drain: push several items, THEN close — for..in must
+// still deliver everything already buffered before recognizing end-of-stream
+// (a producer's natural "here is my last item, and I'm done" shape).
+void drainOnClose() {
+    StreamBuffer<int> b = StreamBuffer();
+    InStream<int> s = InStream(b);
+    b.push(10);
+    b.push(20);
+    b.push(30);
+    b.close();
+    Array<int> got = [];
+    for (int x in s) got = got.add(x);
+    console.writeln("drained=" + got.length().toString());
+    for (int x in got) console.writeln(x);
+}
+
+// --- 4. Seq over a stream: asSeq() unlocks the same lazy pipeline arrays get
+// (techdesign-07 §3). take(n) is the caller's bound on an otherwise-infinite
+// live source (§5#4's "terminals require finite sources", no runtime guard).
+void seqOverStream() {
+    std::Timer t = std::every(1);
+    InStream<int> s = t.ticks();
+    Array<int> taken = s.asSeq().take(3).toArray();
+    t.cancel();
+    s.close();
+    console.writeln("seq-take=" + taken.length().toString());
+    for (int x in taken) console.writeln(x);
+}
+
+timerFive();
+exclusivity();
+drainOnClose();
+seqOverStream();

@@ -2678,6 +2678,8 @@ class StreamBuffer<T> {
     (T) => void handler;
     bool hasHandler = false;
     bool closed = false;                       // SU-1 §4.1: consumer-closed cutoff
+    bool claimed = false;                      // D-B/DM-3: iterator() exclusivity (parallels hasHandler)
+    Array<Promise<bool>> waiters;               // D-B/DM-3: parked hasNext() callers
 
     new StreamBuffer() { }
 
@@ -2689,21 +2691,63 @@ class StreamBuffer<T> {
         if (hasHandler) {
             var cb = handler;
             cb(v);
-        } else {
-            items = items.add(v);
+            return;
         }
+        items = items.add(v);
+        wake(true);                            // D-B/DM-3: a parked hasNext() can now proceed
     }
-    T pull() {
+    // D-B/DM-3: raw dequeue, bypassing the iterator-claim guard — StreamIterator
+    // IS the claim holder, so it must be able to drain through it. ITEMS WIN
+    // OVER CLOSED: a producer's natural "push the last item, then close()" must
+    // still deliver that item (the closed flag can already be true by the time
+    // a parked hasNext() resumes and calls next() — resolve() does not resume
+    // its awaiter synchronously, so a same-tick push-then-close can race ahead
+    // of the resume). This deliberately differs from pull() below: see there
+    // for why the two must NOT share one ordering.
+    T pullRaw() {
+        if (!isEmpty()) {
+            T v = items.first();
+            items = items.skip(1);
+            return v;
+        }
         if (closed) throw RuntimeException("stream is closed");
+        throw RuntimeException("stream is empty");
+    }
+    // UNCHANGED from SU-1 (closed wins unconditionally, even over leftover
+    // buffered items) — pinned by tests/corpus/floor/unsub_inmem.lev's
+    // "pull:stream is closed" with 2 un-pulled items still sitting in the
+    // buffer. That is a CONSUMER-close contract (the closer said done, drop
+    // everything); pullRaw()/pullOrNone() below are the producer-EOF-shaped
+    // siblings this design adds beside it, per techdesign-stream-unsubscribe.md
+    // §8's hand-off ("introduce pullOrNone beside the throwing pull").
+    T pull() {
         if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
+        if (closed) throw RuntimeException("stream is closed");
         if (isEmpty()) throw RuntimeException("stream is empty");
         T v = items.first();
         items = items.skip(1);
         return v;
     }
+    // D-B/DM-3 (§2.3 step 1): the honest non-blocking pull. None collapses
+    // "nothing buffered yet" and "closed and drained" into one outcome — a
+    // poller doesn't need the strict trichotomy the blocking iterator below
+    // does (that one gets it from waitForData's true/false, not from a value).
+    // Items win over closed, like pullRaw() (the producer-EOF drain rule).
+    T? pullOrNone() {
+        if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
+        if (!isEmpty()) {
+            T v = items.first();
+            items = items.skip(1);
+            return v;
+        }
+        return None;
+    }
     void setHandler((T) => void cb) {
         if (closed) throw RuntimeException("stream is closed");
         if (hasHandler) throw RuntimeException("consumer end is already claimed");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
         handler = cb;
         hasHandler = true;
         while (!items.isEmpty()) {
@@ -2712,9 +2756,37 @@ class StreamBuffer<T> {
             cb(v);
         }
     }
+    // D-B/DM-3: claims the consumer end for iteration — the same exclusivity
+    // rule subscribe() enforces for callbacks, on a second surface (§13: a
+    // stream has ONE consumer).
+    void claimIterator() {
+        if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is already claimed");
+        claimed = true;
+    }
+    // D-B/DM-3 (§2.3 step 2): the blocking-pull wait, built entirely on the
+    // existing Promise/await suspension surface — no new native, no new IR op.
+    // Resolves true the instant data is available (fast path: an
+    // already-ready-shaped return needs no park), false once the stream is
+    // closed with nothing left. Items win over closed (matches pullRaw()), so
+    // hasNext()/next() always agree with each other on what "left" means.
+    Promise<bool> waitForData() {
+        Promise<bool> p = Promise();
+        if (!isEmpty()) { p.resolve(true); return p; }
+        if (closed) { p.resolve(false); return p; }
+        waiters = waiters.add(p);
+        return p;
+    }
+    void wake(bool v) {
+        if (waiters.length() == 0) return;
+        Array<Promise<bool>> w = waiters;
+        waiters = waiters.skip(waiters.length());
+        for (Promise<bool> p in w) p.resolve(v);
+    }
     void close() {                             // SU-1: idempotent, never throws
         closed = true;
         hasHandler = false;                    // detach any claimed consumer
+        wake(false);                           // D-B/DM-3: wake parked hasNext() with "no more data"
     }
 }
 
@@ -2725,7 +2797,12 @@ class StreamBuffer<T> {
 // where a producer attached one; a plain in-memory stream just closes its
 // buffer). SU-1: : IDisposable so `using InStream<int> w = signal::on(sig);`
 // releases the subscription (and, on last-out, its fd/watch) on scope exit.
-class InStream<T> : IDisposable {
+// D-B/DM-3 (techdesign-http-and-streams-maturity.md §2.3 step 3): also
+// IIterable<T>, so `for (T x in stream)` works directly. Because Track 07's
+// dispatch is static-by-type through contract C5 (fast paths, then protocol)
+// and the protocol path lowers to plain CallDyn, this flip costs zero
+// checker/Eval/Lower/backend work — it is an ordinary prelude interface add.
+class InStream<T> : IDisposable, IIterable<T> {
     StreamBuffer<T> buf;
     () => void onDispose;
     bool hasDispose = false;
@@ -2733,8 +2810,23 @@ class InStream<T> : IDisposable {
     new InStream(StreamBuffer<T> b) { buf = b; }
 
     T pull() => buf.pull();
+    T? pullOrNone() => buf.pullOrNone();       // D-B/DM-3: honest non-blocking pull
     bool hasData() => !buf.isEmpty();
     void subscribe((T) => void cb) buf.setHandler(cb);
+
+    // D-B/DM-3: claims the consumer end like subscribe() does, then hands off
+    // to StreamIterator, which drives the buffer directly so it can bypass the
+    // very claim it just took (buf.pullRaw()) while external pull()/subscribe()
+    // calls made afterward still see the exclusivity error.
+    IIterator<T> iterator() {
+        buf.claimIterator();
+        return StreamIterator(buf);
+    }
+
+    // The bridge into the lazy pipeline (mirrors Array.asSeq(), techdesign-07
+    // §3): `for..in` already works via IIterable above; this additionally
+    // unlocks `.map()/.take()/.where()/...` over a live stream.
+    Seq<T> asSeq() => StreamSeq(this);
 
     void close() {
         if (hasDispose) {
@@ -2744,6 +2836,33 @@ class InStream<T> : IDisposable {
         }
         buf.close();
     }
+}
+// D-B/DM-3: the stream's protocol iterator. Holds the StreamBuffer directly
+// (not the InStream) so next() can drain via pullRaw(), bypassing the very
+// claim this iterator itself holds. hasNext() parks on the waiter-promise
+// wait — the same suspension surface `await` uses, so a live producer's next
+// push wakes it, and close() (consumer- or producer-initiated — both route
+// through the same StreamBuffer.close()) wakes it with "no more data" (the
+// "Timer-fed for..in delivers all ticks then exits at close" contract).
+class StreamIterator<T> : IIterator<T> {
+    StreamBuffer<T> buf;
+    new StreamIterator(StreamBuffer<T> b) { buf = b; }
+    bool hasNext() {
+        Promise<bool> p = buf.waitForData();
+        bool got = await p;
+        return got;
+    }
+    T next() => buf.pullRaw();
+}
+// D-B/DM-3: lets a stream join the same lazy `.map()/.take()/.where()`
+// pipeline arrays get via asSeq() — a stream is exactly as valid an
+// IIterable source. Track 07 §5#4's "terminals require finite sources"
+// applies verbatim here: an unclosed stream is an infinite source, `take(n)`
+// is the caller's bound (no runtime guard, same stance as `while (true)`).
+class StreamSeq<T> : Seq<T> {
+    InStream<T> source;
+    new StreamSeq(InStream<T> src) { source = src; }
+    IIterator<T> iterator() => source.iterator();
 }
 class OutStream<T> {
     StreamBuffer<T> buf;

@@ -51,6 +51,29 @@ if [ $have_llvm -eq 1 ] && "$bin" --build-native "$work/inmem_llvm" "$d/unsub_in
   check "unsub inmem llvm" "$IMEXP" "$("$work/inmem_llvm" 2>/dev/null | grep -v '^\[heap\]')"
 else echo "SKIP unsub inmem llvm (no liblvrt.a/linker)"; skip=$((skip+1)); fi
 
+# --- 2c. D-B/DM-3: InStream : IIterable<T> (stream iteration) -----------------
+# Timer-fed for..in delivers every tick then exits at close(); iterator/
+# subscribe/pull exclusivity; producer-EOF drains buffered items before
+# closing; asSeq() joins the lazy Seq pipeline. Deterministic (no PTY): the
+# waiter-promise blocking pull is real suspension (LA-30), not a pump-spin.
+# emit-C++: Timer is unsupported there regardless (native 'sysTimerStart',
+# pre-existing, independent of this design) — checked for the SAME honest
+# per-native rejection the signal lane gets above, not a generic construct
+# error (that generic error is exactly what the CGen by-name-exclusion fix
+# this design adds prevents: a stream-touching program must still compile on
+# emit-C++ when it never actually iterates, §5#6/§9 coordination note).
+SIEXP=$'tick 1\ntick 2\ntick 3\ntick 4\ntick 5\nticks done count=5\niter-then-pull: consumer end is claimed by an iterator\nsub-then-iter: consumer end is claimed by a subscriber\ndrained=3\n10\n20\n30\nseq-take=3\n1\n2\n3'
+check "stream iter run"  "$SIEXP" "$("$bin" --run "$d/stream_iter.lev" 2>&1)"
+check "stream iter ir"   "$SIEXP" "$("$bin" --ir  "$d/stream_iter.lev" 2>&1)"
+if [ -n "$cxx" ]; then
+  sicpp=$("$bin" --build "$work/si_cpp" "$d/stream_iter.lev" 2>&1); rc=$?
+  if [ $rc -ne 0 ] && echo "$sicpp" | grep -q "sysTimerStart"; then echo "ok   stream iter cpp rejected (Timer unsupported, honest diagnostic)"
+  else echo "FAIL stream iter cpp (expected sysTimerStart rejection, rc=$rc): $sicpp"; fail=1; fi
+else echo "SKIP stream iter cpp (no compiler)"; skip=$((skip+1)); fi
+if [ $have_llvm -eq 1 ] && "$bin" --build-native "$work/si_llvm" "$d/stream_iter.lev" 2>/dev/null; then
+  check "stream iter llvm" "$SIEXP" "$("$work/si_llvm" 2>/dev/null | grep -v '^\[heap\]')"
+else echo "SKIP stream iter llvm (no liblvrt.a/linker)"; skip=$((skip+1)); fi
+
 # --- 3. comptime hermeticity: sys*-prefixed floor calls are denied -------------
 printf 'comptime int x = std::sysWinSize(1, 0);\nconsole.writeln(x);\n' > "$work/ctw.lev"
 ct=$("$bin" --run "$work/ctw.lev" 2>&1); rc=$?
