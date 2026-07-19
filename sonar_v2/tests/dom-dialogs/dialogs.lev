@@ -1,0 +1,396 @@
+uses Sonar;
+uses Sonar::Dialogs;
+
+// Sonar DOM techdesign-07 corpus: FileDialog + PromptDialog. Scripted
+// end-to-end over a real sandbox tree built under the test's own cwd
+// (sysMkdir/File writes — the T10 runner rule: cwd = test dir), driven
+// through the real ScriptedInput + TestRenderer harness (dom-textarea/
+// dom-bindings' direct-call style covers pure logic; a Modal-based dialog
+// needs real dispatch to exercise focus/overlay/await correctly).
+//
+// Two mechanisms need special driving technique, both found the hard way
+// while building this corpus (neither is a dialogs.lev bug — both are
+// pre-existing platform behavior this is the first test to actually
+// exercise):
+//
+// 1. A bare Escape byte is ambiguous (could be the start of an Alt-combo or
+//    a CSI sequence) until either more bytes arrive or input.lev's 50ms
+//    EscTimeoutMs elapses (app.lev's armEscTimeout/onEscTimeout). A scripted
+//    test that wants to observe a real dismiss must let that real time pass
+//    — `settleTicks(ms)` below does it via the same `await`-a-timer-backed-
+//    Promise mechanism as (2), just for its own sake.
+//
+// 2. A button handler that `await`s a nested `Sonar::confirm(...)` (save-
+//    mode overwrite) PARKS the whole synchronous dispatch call — a second
+//    top-level pump() issued only AFTER that call returns can never reach
+//    it (nothing resumes a parked await except work the SAME single-
+//    threaded spin notices: a due timer). So the "answer the nested
+//    confirm" step is delivered from a `std::sysTimerStart` callback armed
+//    BEFORE the triggering key is sent (tests/corpus/tasks/
+//    order_two_awaits.lev's timer-resolves-a-parked-await shape, through
+//    real key dispatch instead of a bare Promise).
+
+void section(string s) { console.writeln("== " + s + " =="); }
+
+string showResult(string | None v) {
+    if (v != None) { string s = v; return s; }
+    return "<None>";
+}
+
+// Lets `ms` of REAL time pass by awaiting a timer-backed Promise — the only
+// way to deterministically observe the EscTimeoutMs flush (see note 1) or a
+// timer-fired continuation without a live App.run() loop.
+void settleTicks(int ms) {
+    Promise<int> tick = Promise();
+    std::sysTimerStart(ms, 0, (n) => tick.resolve(1));
+    int done = await tick;
+}
+
+void makeFile(string path, string content) {
+    using File f = File(path, std::write);
+    f.write(content);
+}
+
+void buildSandbox() {
+    std::sysMkdir("sandbox");
+    std::sysMkdir("sandbox/alpha");
+    std::sysMkdir("sandbox/Beta");
+    makeFile("sandbox/alpha/one.txt", "hi");
+    makeFile("sandbox/apple.lev", "x");
+    makeFile("sandbox/Zebra.txt", "y");
+}
+
+void main() {
+    buildSandbox();
+
+    // ======================================================================
+    section("prompt-basic");
+    App a1 = SonarTest::harness(30, 8);
+    PromptDialog p1 = PromptDialog("Rename", "New name:");
+    p1.value("start.txt");
+    Promise<string | None> r1 = p1.show();
+    a1.pumpOnce();
+    console.writeln("pending: " + (!r1.isReady()).toString());
+    // Tab order = build order: label(not focusable) input(0,focused) status
+    // (not focusable) buttons[OK(1), Cancel(2)] -> one Tab reaches OK.
+    ScriptedInput si1 = SonarTest::input();
+    si1.key("Tab");
+    SonarTest::pump(a1, si1);
+    si1.key("Enter");
+    SonarTest::pump(a1, si1);
+    console.writeln("resolved: " + showResult(r1.get()));
+    SonarTest::reset();
+
+    section("prompt-cancel-button");
+    App a2 = SonarTest::harness(30, 8);
+    PromptDialog p2 = PromptDialog("Rename", "New name:");
+    Promise<string | None> r2 = p2.show();
+    a2.pumpOnce();
+    ScriptedInput si2 = SonarTest::input();
+    si2.key("Tab"); si2.key("Tab");     // input -> OK -> Cancel
+    SonarTest::pump(a2, si2);
+    SonarTest::pump(a2, si2);
+    si2.key("Enter");
+    SonarTest::pump(a2, si2);
+    console.writeln("resolved: " + showResult(r2.get()));
+    SonarTest::reset();
+
+    section("prompt-escape");
+    App a3 = SonarTest::harness(30, 8);
+    PromptDialog p3 = PromptDialog("Rename", "New name:");
+    Promise<string | None> r3 = p3.show();
+    a3.pumpOnce();
+    ScriptedInput si3 = SonarTest::input();
+    si3.key("Escape");
+    SonarTest::pump(a3, si3);
+    settleTicks(60);
+    console.writeln("resolved: " + showResult(r3.get()));
+    SonarTest::reset();
+
+    section("prompt-validator");
+    App a4 = SonarTest::harness(30, 8);
+    PromptDialog p4 = PromptDialog("Rename", "New name:");
+    p4.validator((s) => !s.isEmpty(), "name required");
+    Promise<string | None> r4 = p4.show();
+    a4.pumpOnce();
+    ScriptedInput si4 = SonarTest::input();
+    si4.key("Enter");                 // submit empty -> validator fails
+    SonarTest::pump(a4, si4);
+    console.writeln("still pending after invalid submit: " + (!r4.isReady()).toString());
+    si4.text("ok");
+    SonarTest::pump(a4, si4);
+    si4.key("Enter");                 // submit "ok" -> passes
+    SonarTest::pump(a4, si4);
+    console.writeln("resolved: " + showResult(r4.get()));
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-listing");
+    App a5 = SonarTest::harness(60, 20);
+    FileDialog fd5 = FileDialog("open");
+    Promise<string | None> r5 = fd5.show("sandbox");
+    a5.pumpOnce();
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-nav-descend-and-up");
+    App a6 = SonarTest::harness(60, 20);
+    FileDialog fd6 = FileDialog("open");
+    Promise<string | None> r6 = fd6.show("sandbox");
+    a6.pumpOnce();
+    ScriptedInput si6 = SonarTest::input();
+    // input focused by default -> Tab to the list, Down to "alpha/", Enter.
+    si6.key("Tab");
+    SonarTest::pump(a6, si6);
+    si6.key("Down");                 // first Down always lands on row 0 ("..")
+    SonarTest::pump(a6, si6);
+    si6.key("Down");                 // row 1 = "alpha/"
+    SonarTest::pump(a6, si6);
+    si6.key("Enter");
+    SonarTest::pump(a6, si6);
+    console.writeln(SonarTest::renderer().textOnly());
+    // back up via "..": a fresh descend resets selection to none, so Down
+    // (-> row 0 = "..") then Enter is required.
+    si6.key("Down");
+    SonarTest::pump(a6, si6);
+    si6.key("Enter");
+    SonarTest::pump(a6, si6);
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-path-jump");
+    App a7 = SonarTest::harness(60, 20);
+    FileDialog fd7 = FileDialog("open");
+    Promise<string | None> r7 = fd7.show("sandbox");
+    a7.pumpOnce();
+    ScriptedInput si7 = SonarTest::input();
+    // path Input is focused by default; overwrite it and submit. Every key/
+    // text chunk gets its OWN pump (ScriptedInput delivers one queued chunk
+    // per pump — queuing several ahead of a single pump silently strands the
+    // rest, a footgun this suite hit once already).
+    si7.key("End");
+    SonarTest::pump(a7, si7);
+    for (int i in 0..6) { si7.key("Backspace"); SonarTest::pump(a7, si7); }
+    si7.text("sandbox/alpha");
+    SonarTest::pump(a7, si7);
+    si7.key("Enter");
+    SonarTest::pump(a7, si7);
+    console.writeln(SonarTest::renderer().textOnly());
+    // an invalid path shows a status row and does not navigate.
+    si7.key("End");
+    SonarTest::pump(a7, si7);
+    for (int i in 0..13) { si7.key("Backspace"); SonarTest::pump(a7, si7); }
+    si7.text("sandbox/does-not-exist");
+    SonarTest::pump(a7, si7);
+    si7.key("Enter");
+    SonarTest::pump(a7, si7);
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-select-and-resolve");
+    App a8 = SonarTest::harness(60, 20);
+    FileDialog fd8 = FileDialog("open");
+    Promise<string | None> r8 = fd8.show("sandbox");
+    a8.pumpOnce();
+    ScriptedInput si8 = SonarTest::input();
+    si8.key("Tab");                    // path input(0) -> list(1)
+    SonarTest::pump(a8, si8);
+    // "..","alpha/","Beta/","apple.lev" -> 4 Downs lands on "apple.lev".
+    for (int i in 0..3) { si8.key("Down"); SonarTest::pump(a8, si8); }
+    si8.key("Tab");                    // list(1) -> Open button(2, no name input in open mode)
+    SonarTest::pump(a8, si8);
+    si8.key("Enter");                  // press Open on the current selection
+    SonarTest::pump(a8, si8);
+    console.writeln("isReady: " + r8.isReady().toString());
+    console.writeln("resolved: " + showResult(r8.get()));
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-cancel");
+    App a9 = SonarTest::harness(60, 20);
+    FileDialog fd9 = FileDialog("open");
+    Promise<string | None> r9 = fd9.show("sandbox");
+    a9.pumpOnce();
+    ScriptedInput si9 = SonarTest::input();
+    // path(0) -> list(1) -> Open(2) -> Cancel(3)
+    for (int i in 0..2) { si9.key("Tab"); SonarTest::pump(a9, si9); }
+    si9.key("Enter");
+    SonarTest::pump(a9, si9);
+    console.writeln("isReady: " + r9.isReady().toString());
+    console.writeln("resolved: " + showResult(r9.get()));
+    SonarTest::reset();
+
+    // ======================================================================
+    section("open-no-selection");
+    App a10 = SonarTest::harness(60, 20);
+    FileDialog fd10 = FileDialog("open");
+    Promise<string | None> r10 = fd10.show("sandbox");
+    a10.pumpOnce();
+    ScriptedInput si10 = SonarTest::input();
+    // path(0) -> list(1) -> Open(2); nothing selected in the list.
+    for (int i in 0..1) { si10.key("Tab"); SonarTest::pump(a10, si10); }
+    si10.key("Enter");
+    SonarTest::pump(a10, si10);
+    console.writeln("still pending: " + (!r10.isReady()).toString());
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("filter");
+    App a11 = SonarTest::harness(60, 20);
+    FileDialog fd11 = FileDialog("open");
+    fd11.filter((n) => n.endsWith(".lev"));
+    Promise<string | None> r11 = fd11.show("sandbox");
+    a11.pumpOnce();
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("save-new-name");
+    App a12 = SonarTest::harness(60, 20);
+    FileDialog fd12 = FileDialog("save");
+    fd12.fileName("newfile.txt");
+    Promise<string | None> r12 = fd12.show("sandbox");
+    a12.pumpOnce();
+    console.writeln(SonarTest::renderer().textOnly());
+    ScriptedInput si12 = SonarTest::input();
+    for (int i in 0..1) { si12.key("Tab"); SonarTest::pump(a12, si12); }  // path -> list -> name
+    si12.key("Enter");   // submit name; target doesn't exist -> resolves directly
+    SonarTest::pump(a12, si12);
+    console.writeln("isReady: " + r12.isReady().toString());
+    console.writeln("resolved: " + showResult(r12.get()));
+    SonarTest::reset();
+
+    // ======================================================================
+    section("save-empty-name");
+    App a13 = SonarTest::harness(60, 20);
+    FileDialog fd13 = FileDialog("save");
+    Promise<string | None> r13 = fd13.show("sandbox");
+    a13.pumpOnce();
+    ScriptedInput si13 = SonarTest::input();
+    for (int i in 0..1) { si13.key("Tab"); SonarTest::pump(a13, si13); }  // -> name input (empty)
+    si13.key("Enter");
+    SonarTest::pump(a13, si13);
+    console.writeln("still pending: " + (!r13.isReady()).toString());
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("save-activate-fills-name");
+    App a14 = SonarTest::harness(60, 20);
+    FileDialog fd14 = FileDialog("save");
+    Promise<string | None> r14 = fd14.show("sandbox");
+    a14.pumpOnce();
+    ScriptedInput si14 = SonarTest::input();
+    si14.key("Tab"); SonarTest::pump(a14, si14);                          // path -> list
+    for (int i in 0..3) { si14.key("Down"); SonarTest::pump(a14, si14); } // "..","alpha/","Beta/","apple.lev"
+    si14.key("Enter");   // activate a FILE in save mode -> fills the name input, no resolve
+    SonarTest::pump(a14, si14);
+    console.writeln("still pending: " + (!r14.isReady()).toString());
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("save-overwrite-yes");
+    App a15 = SonarTest::harness(60, 20);
+    FileDialog fd15 = FileDialog("save");
+    fd15.fileName("apple.lev");
+    Promise<string | None> r15 = fd15.show("sandbox");
+    a15.pumpOnce();
+    ScriptedInput si15 = SonarTest::input();
+    for (int i in 0..1) { si15.key("Tab"); SonarTest::pump(a15, si15); }  // -> name input ("apple.lev")
+    // The overwrite confirm's Yes is auto-focused (Modal.open()'s fix) —
+    // answer it from a timer armed BEFORE the triggering Enter: the await
+    // parks the whole synchronous dispatch, so nothing queued AFTER this
+    // point in plain top-level code could ever be delivered (note 2 above).
+    std::sysTimerStart(10, 0, (n) => {
+        si15.key("Enter");
+        si15.deliverNext();
+    });
+    si15.key("Enter");   // submit "apple.lev" -> exists -> await confirm -> parks
+    SonarTest::pump(a15, si15);
+    console.writeln("isReady: " + r15.isReady().toString());
+    console.writeln("resolved: " + showResult(r15.get()));
+    SonarTest::reset();
+
+    // ======================================================================
+    section("save-overwrite-no");
+    App a16 = SonarTest::harness(60, 20);
+    FileDialog fd16 = FileDialog("save");
+    fd16.fileName("apple.lev");
+    Promise<string | None> r16 = fd16.show("sandbox");
+    a16.pumpOnce();
+    ScriptedInput si16 = SonarTest::input();
+    for (int i in 0..1) { si16.key("Tab"); SonarTest::pump(a16, si16); }
+    std::sysTimerStart(10, 0, (n) => {
+        si16.key("Tab");        // confirm: Yes(focused) -> No
+        si16.deliverNext();
+        si16.key("Enter");      // press No
+        si16.deliverNext();
+    });
+    si16.key("Enter");   // submit "apple.lev" -> exists -> await confirm -> parks
+    SonarTest::pump(a16, si16);
+    console.writeln("still pending after No: " + (!r16.isReady()).toString());
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("vanished-entry");
+    std::sysMkdir("sandbox2");
+    makeFile("sandbox2/temp.txt", "z");
+    App a17 = SonarTest::harness(60, 20);
+    FileDialog fd17 = FileDialog("open");
+    Promise<string | None> r17 = fd17.show("sandbox2");
+    a17.pumpOnce();
+    std::sysRemove("sandbox2/temp.txt");   // vanish it after listing, before activation
+    ScriptedInput si17 = SonarTest::input();
+    si17.key("Tab"); SonarTest::pump(a17, si17);                          // path -> list
+    for (int i in 0..1) { si17.key("Down"); SonarTest::pump(a17, si17); } // "..", "temp.txt"
+    si17.key("Enter");   // activate the now-vanished "temp.txt"
+    SonarTest::pump(a17, si17);
+    console.writeln("still pending: " + (!r17.isReady()).toString());
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("startdir-memory");
+    App a18 = SonarTest::harness(60, 20);
+    FileDialog fd18 = FileDialog("open");
+    Promise<string | None> rA = fd18.show("sandbox");
+    a18.pumpOnce();
+    ScriptedInput si18 = SonarTest::input();
+    si18.key("Tab"); SonarTest::pump(a18, si18);                          // path -> list
+    for (int i in 0..1) { si18.key("Down"); SonarTest::pump(a18, si18); } // "..","alpha/"
+    si18.key("Enter");                                                    // descend into sandbox/alpha
+    SonarTest::pump(a18, si18);
+    for (int i in 0..1) { si18.key("Tab"); SonarTest::pump(a18, si18); }  // list -> Open -> Cancel
+    si18.key("Enter");                                                    // cancel this session
+    SonarTest::pump(a18, si18);
+    console.writeln("first session resolved: " + showResult(rA.get()));
+    Promise<string | None> rB = fd18.show();   // no-arg: should remember "sandbox/alpha"
+    a18.pumpOnce();
+    console.writeln(SonarTest::renderer().textOnly());
+    SonarTest::reset();
+
+    // ======================================================================
+    section("resolve-once-double-enter");
+    App a19 = SonarTest::harness(60, 20);
+    FileDialog fd19 = FileDialog("open");
+    Promise<string | None> r19 = fd19.show("sandbox");
+    a19.pumpOnce();
+    ScriptedInput si19 = SonarTest::input();
+    si19.key("Tab"); SonarTest::pump(a19, si19);                          // path -> list
+    for (int i in 0..3) { si19.key("Down"); SonarTest::pump(a19, si19); } // select "apple.lev"
+    si19.key("Enter");
+    si19.key("Enter");     // a second activation queued right behind the first
+    si19.drain();          // deliver BOTH within one tick, no pump in between
+    a19.pumpOnce();
+    console.writeln("isReady: " + r19.isReady().toString());
+    console.writeln("resolved: " + showResult(r19.get()));
+    SonarTest::reset();
+
+    console.writeln("done");
+}

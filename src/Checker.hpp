@@ -292,7 +292,8 @@ private:
     // in place into the `expr::Expr(...)` construction. Returns the `Expr<Fn>`
     // type, or an Error type on a reject (E1/E2/etc. already emitted). Only
     // call when `lambda->kind == Lambda` and `fnRef` is a function TypeRef.
-    Type reifyLambda(Expr* lambda, const TypeRef* fnRef);
+    Type reifyLambda(Expr* lambda, const TypeRef* fnRef,
+                      const std::unordered_map<std::string_view, Type>* subst = nullptr);
     // The recursive body walk (§3.3): returns the constructed `expr::` node
     // AST, or null on a reject (emits E2 at the offending span). ReifyCtx is
     // defined in Checker.cpp.

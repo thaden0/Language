@@ -4,23 +4,17 @@
 // the tree walk renders a stable string per site, and siteId distinguishes
 // two `.where` sites. Zero ORM M1 code is touched by construction.
 //
-// FINDING (known_bugs_2.md #89, escalated — NOT fixed here, this stage
-// touches nothing in src/): the ask's own headline example
-// (`designs/atlantis/techdesign-06-orm.md:337`,
-// `.where((u) => u.active && u.name.like("A%"))`) does NOT compile through
-// this exact `Query<E>.where(expr::Expr<(E)=>bool>)` shape — a whitelisted
-// `Call` (`.like`/`.ilike`/`.startsWith`/`.endsWith`/`Array.contains`) inside
-// a lambda whose parameter type is a generic-substituted type parameter `E`
-// (rather than a concrete class) is wrongly rejected as "non-whitelisted".
-// The identical body reifies fine against a concrete, non-generic
-// `expr::Expr<(User)=>bool>` parameter (`expr_reify_r12_like.lev`), and plain
-// comparisons/arithmetic reify fine through this SAME generic `Query<E>` —
-// isolating the defect to the whitelist's Call-receiver type check
-// specifically. This smoke therefore demonstrates only the plain
-// comparison/arithmetic shapes below (which DO reify through `Query<E>`);
-// Track 06 M2 cannot yet adopt the ORM design's `.like`-bearing example
-// verbatim pending #89's fix.
-class User { int age; string name; new User(int a, string n) { age = a; name = n; } }
+// bug.md #89 fix: the second `.where` site below is the ask's own headline
+// example verbatim (`designs/atlantis/techdesign-06-orm.md:337`,
+// `.where((u) => u.active && u.name.like("A%"))`) through this exact
+// `Query<E>.where(expr::Expr<(E)=>bool>)` shape. It used to be rejected as
+// "non-whitelisted" because the reifier's whitelisted-Call receiver-type
+// check re-derived the receiver's type outside the generic method's E->User
+// substitution context; `reifyLambda` now takes that substitution so a
+// whitelisted call inside a generic-parameter-typed lambda resolves the same
+// as inside a concrete-class-typed one.
+class User { int age; bool active; string name;
+    new User(int a, bool ac, string n) { age = a; active = ac; name = n; } }
 
 string dv(string | int | float | bool | None v) {
     match (v) {
@@ -115,11 +109,11 @@ class Query<E> {
     }
 }
 
-// Fluent-call position, two distinct .where sites (plain comparisons — see
-// the #89 finding above for why a whitelisted Call is excluded here).
+// Fluent-call position, two distinct .where sites: a plain comparison, then
+// the ORM headline example's whitelisted-Call-inside-generic-lambda shape.
 Query<User> q = Query();
 q = q.where((u) => u.age > 18);
-q = q.where((u) => u.name == "Ada");
+q = q.where((u) => u.active && u.name.like("A%"));
 
 console.writeln("where=" + q.renderWhere());
 console.writeln("sites=" + q.renderSites());

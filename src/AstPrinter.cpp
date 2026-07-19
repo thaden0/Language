@@ -547,6 +547,28 @@ std::string srcStmtInline(const Stmt* s) {
             if (s->elseBranch) h += " else " + srcStmtInline(s->elseBranch.get());
             return h;
         }
+        case StmtKind::While:
+            return "while (" + srcExpr(s->expr.get()) + ") " + srcStmtInline(s->thenBranch.get());
+        case StmtKind::DoWhile:
+            return "do " + srcStmtInline(s->thenBranch.get()) +
+                   " while (" + srcExpr(s->expr.get()) + ");";
+        case StmtKind::For:
+            return "for (" + (s->forInit ? srcStmtInline(s->forInit.get()) : ";") +
+                   " " + (s->expr ? srcExpr(s->expr.get()) : std::string()) +
+                   "; " + (s->forStep ? srcExpr(s->forStep.get()) : std::string()) + ") " +
+                   srcStmtInline(s->thenBranch.get());
+        case StmtKind::ForIn:
+            return "for (" + (s->inferred ? std::string("var") : typeStr(s->type.get())) +
+                   " " + sv(s->name) + " in " + srcExpr(s->expr.get()) + ") " +
+                   srcStmtInline(s->thenBranch.get());
+        case StmtKind::Try: {
+            std::string h = "try " + srcStmtInline(s->thenBranch.get());
+            for (const CatchClause& c : s->catches) {
+                h += " catch (" + typeStr(c.type.get()) +
+                     (c.name.empty() ? "" : " " + sv(c.name)) + ") " + srcStmtInline(c.body.get());
+            }
+            return h;
+        }
         case StmtKind::Break:    return "break;";
         case StmtKind::Continue: return "continue;";
         case StmtKind::Throw:    return "throw " + srcExpr(s->expr.get()) + ";";

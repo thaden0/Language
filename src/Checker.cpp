@@ -42,6 +42,7 @@ const char* opSymbol(TokenKind k) {
         case TokenKind::GtGt: return ">>";
         case TokenKind::Pipe: return "|";   case TokenKind::Amp: return "&";
         case TokenKind::Caret: return "^";  case TokenKind::Tilde: return "~";
+        case TokenKind::Bang: return "!";
         default: return "?";
     }
 }
@@ -3466,16 +3467,24 @@ ExprPtr Checker::buildBindsExpr(ReifyCtx& ctx, SourceSpan sp) {
 // §3/§4: reify `lambda` against `fnRef` (Fn) and rewrite it in place into the
 // `expr::Expr(...)` construction. Returns the concrete `expr::Expr<Fn>` type or
 // an Error type on a reject (already emitted).
-Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef) {
+Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef,
+                           const std::unordered_map<std::string_view, Type>* subst) {
     Symbol* ec = exprClass();
     if (!ec || !fnRef || fnRef->kind != TypeKind::Function || !progMut_)
         return unknown();                        // hook mis-fired; leave as-is
     if (reifiedLambdas_.count(lambda)) return unknown();   // idempotence (R1)
 
-    // Fn param/return types.
+    // Fn param/return types. When this lambda arrives through a generic
+    // method's parameter (e.g. `Query<E>.where(expr::Expr<(E)=>bool>)`),
+    // `fnRef` is the method's raw, unsubstituted declaration TypeRef — `subst`
+    // carries the caller's E->User binding so the lambda parameter and any
+    // whitelisted-Call receiver typed through it resolve to the concrete type
+    // instead of degrading to unknown() (bug.md #89).
     std::vector<Type> paramTypes;
-    for (const TypeRefPtr& p : fnRef->funcParams) paramTypes.push_back(fromTypeRef(p.get()));
-    Type fnRet = fromTypeRef(fnRef->funcRet.get());
+    for (const TypeRefPtr& p : fnRef->funcParams)
+        paramTypes.push_back(subst ? substitute(p.get(), *subst) : fromTypeRef(p.get()));
+    Type fnRet = subst ? substitute(fnRef->funcRet.get(), *subst)
+                        : fromTypeRef(fnRef->funcRet.get());
     if (lambda->params.size() != paramTypes.size())
         return error(lambda->span,
                      "lambda has " + std::to_string(lambda->params.size()) +
@@ -3599,7 +3608,24 @@ Type Checker::reifyLambda(Expr* lambda, const TypeRef* fnRef) {
     lambda->resolvedClass = ec;
     lambda->argsNormalized = true;
 
-    // The concrete site type: expr::Expr<Fn>.
+    // The concrete site type: expr::Expr<Fn>. Unsubstituted call sites keep the
+    // exact prior behavior (fnRef's own canonical/FuncRef conversion); a
+    // substituted call site rebuilds both from the resolved param/return types
+    // so a generic-parameter site reports e.g. expr::Expr<(User)=>bool>, not
+    // expr::Expr<(E)=>bool> (bug.md #89).
+    if (subst) {
+        std::string paramCanon;
+        for (size_t i = 0; i < paramTypes.size(); ++i) {
+            if (i) paramCanon += ", ";
+            paramCanon += paramTypes[i].canonical;
+        }
+        std::string fnCanon = "(" + paramCanon + ") => " + fnRet.canonical;
+        Type r{TKind::Class, ec, "expr::Expr<" + fnCanon + ">", {}, nullptr, {}};
+        Type fnType{TKind::FuncRef, nullptr, fnCanon, {}, nullptr, {}};
+        fnType.ret = std::make_shared<Type>(fnRet);
+        r.args.push_back(std::move(fnType));
+        return r;
+    }
     Type r{TKind::Class, ec, "expr::Expr<" + std::string(fnRef->canonical) + ">",
            {}, nullptr, {}};
     r.args.push_back(fromTypeRef(fnRef));
@@ -3644,7 +3670,7 @@ Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
             // place (this is the call-argument arrival path; the body is checked
             // once, here, with Fn's param types — the same lambda-last deferral).
             if (const TypeRef* fn = exprTargetFn(pt)) {
-                reifyLambda(a, fn);
+                reifyLambda(a, fn, &subst);
                 (*lambdaWalked)[i] = 1;
                 continue;
             }
