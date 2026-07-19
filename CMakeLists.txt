@@ -713,6 +713,11 @@ add_test(NAME corpus_regex_engine_cpp
 add_test(NAME regex_comptime_error
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_regex_comptime_error.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/negative/regex_bad_comptime.lev")
+# 005 R4: a type used as a value in a `match` arm (`C::f =>`) is a compile error,
+# not a silent `else`. The R4 Checker backstop over the R2 resolver classifier.
+add_test(NAME match_pattern_error
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_match_pattern_error.sh"
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/negative/match_type_as_value.lev")
 # system-binds.md §6.4/§9 M3: a capability injection inside a comptime-folded
 # root has no bind in scope (comptime folding predates the checker's
 # bind-scope pass) — denied at the injection site.

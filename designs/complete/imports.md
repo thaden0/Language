@@ -391,6 +391,16 @@ of it together. Building it twice, independently, risks two incompatible scope m
 that cost more to reconcile than to have designed jointly. Until then: imports are
 file-level (this doc, v1) and binds are whatever bug.md #9 lands at file/global grain.
 
+> **RESOLVED (2026-07-18) by `designs/complete/techdesign-block-scoped-use.md`.** The
+> deferred substrate is built: `Scope` carries both an imported-name table and a
+> type-keyed `binds` table; the Resolver registers into them (`fillBinds`); one
+> `LexicalStack` + `BlockScopeGuard` replaces the four hand-paired per-block ops (and the
+> Lowerer's private import stack). Block-level `use`/`uses` and block-level `bind` now ride
+> the one object together — consolidating the two same-day feature-private mechanisms
+> §9's resolution note conceded had ended up distinct. The lookup contract (nearest-wins
+> composed with specific-beats-bulk, overload sets still merging across levels) is pinned
+> in that doc's §3.3.
+
 (As it happened: both fixes landed the same day, per §9's resolution note above, ahead
 of this feature — so `use` was implemented directly against the full ruling rather than
 staying at v1.)

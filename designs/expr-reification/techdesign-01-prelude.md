@@ -460,4 +460,53 @@ diverges here, that is a **bug-file-and-STOP**, not a workaround.
 
 ## 5. Implementation log
 
-(Append findings, deviations — there should be none — and completion note here.)
+- **Deviation from the §3.1 `expr::eval` verbatim text — no `X as T` downcast
+  operator exists in the language.** The language has no cast expression at
+  all (`Ast.hpp`'s `ExprKind` has `Is`/`Match`, no `As`; `as` is a contextual
+  keyword used only by `use ... as alias`, `docs/reference.md` §4.1/toml
+  §deps). Confirmed by direct repro: `int y = v as int;` fails to parse
+  ("unknown type 'as'"). Every `X as T` in the given eval walker sits inside
+  a `match` arm (or a nested `match` reached from one) where `match`'s own
+  landed type-narrowing already gives the arm's subject variable/parameter
+  the narrowed type (`docs/reference.md` §3.15; confirmed idiom throughout
+  the codebase, e.g. `packages/atlantis-mysql/tests/prepared/main.lev:11-15`
+  — `match (v) { int => { return "int:" + v.toString(); } ... }`, no cast).
+  Substitution applied mechanically, semantics unchanged: every `(x as T)`
+  read/local-decl became a bare read/decl of the already-narrowed `x` (e.g.
+  `(n as expr::Field).path` → `n.path`; `expr::Un u = n as expr::Un;` →
+  `expr::Un u = n;`; `int x = a as int; int y = b as int;` inside the nested
+  `int=>{match(b){int=>{...}}}` arm → `int x = a; int y = b;`). No semantic
+  decision was made — the narrowing already fully pins the value each `as`
+  was reaching for; this is a syntax correction to landed grammar, not a
+  design change. Flagged here per protocol rather than silently patched.
+- **Separately, found and filed bug #84** (`known_bugs_2.md`): a top-level
+  bare `match` statement immediately followed by another top-level statement
+  fails to parse ("expected ';'") — `Parser::parseTopLevelItemInner`'s
+  bare-expression-statement fallback lacks the `ExprKind::Match`
+  no-semicolon-required special case that `Parser::parseStatement`'s default
+  case already has. Workaround (trailing `;` after the top-level match, or
+  wrap in a function body) applied in the corpus files below; not a blocker.
+- Prelude additions (Deliverables A + B) landed as specified verbatim, no
+  deviation. `kPreludeExpr` uses the repo's existing `R"prelude(...)prelude"`
+  raw-string delimiter and plain `const char*` (not `static`) to match every
+  other segment in this file, rather than the doc's illustrative `R"LEV(...)"`
+  spelling — a styling match, not a content change. Deliverable B smoke: all 25
+  §2.4 rows verified by hand on the oracle, byte-identical on IR; the committed
+  corpus files land when the stage resumes (below).
+- **2026-07-18 (later) — STAGE PAUSED at Deliverable C, per protocol.** The
+  first hand-built-tree probe took the wrong `match` arm: a qualified
+  `expr::Field =>` pattern parses as a *value* pattern and silently never
+  matches (oracle takes `else`; IR/emit-C++ error loud). This is the doc's
+  "wrong `match` arm taken" STOP condition — filed as **#85** in
+  `known_bugs_2.md` (with **#84**, the top-level-`match` trailing-`;` parse
+  defect, found the same session). Escalated; the owner ruled: **fix the
+  compiler first**. The fix design is
+  **`techdesign-005-preprelude-fixes.md`** (this directory, stage "0.5"):
+  parser neutrality + `<`-lookahead, Resolver symbol-driven arm
+  reclassification, Checker type-value backstop, AstPrinter qualified-type
+  printing, and the #84 statement-parity fix. **Stage 1 resumes at
+  Deliverables B-corpus (§2.4 file) and C once 005 lands**, and then uses this
+  doc's code AS WRITTEN — `expr::Field =>` arms directly (no `uses expr;`
+  workaround) and top-level `match` statements with no trailing-`;`
+  workaround (plus the `as`→match-narrowing substitution logged above, which
+  stands).

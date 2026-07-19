@@ -333,6 +333,19 @@ int main() {
     // The import does NOT leak out of its block (nearest-wins, lexical).
     ERRORS("namespace M { int helper(int x) => x + 100; } "
            "void f() { { uses M; int a = helper(1); } int b = helper(2); }");
+    // block-scoped-use §5/S5: the out-of-scope use of a block-confined import
+    // gets a pointed note explaining the import is lexically scoped (function).
+    ERROR_HAS("namespace M { int helper(int x) => x + 100; } "
+              "void f() { { uses M; int a = helper(1); } int b = helper(2); }",
+              "scoped to its enclosing block");
+    // Same for a selective `use`, cited as a 'use'.
+    ERROR_HAS("namespace M { int helper(int x) => x + 100; } "
+              "void f() { { use M::helper; int a = helper(1); } int b = helper(2); }",
+              "is imported by a 'use'");
+    // Absence: a genuinely unknown name gets NO block-scope note (no false hint).
+    expect(!checkErrorContains("void f() { int b = nonesuch(3); }",
+                               "scoped to its enclosing block"),
+           "no spurious block-scope note for a genuinely unknown name");
     // An unknown namespace in a block `uses` is a loud error, not a silent no-op.
     ERRORS("void f() { uses Nope; }");
     // A top-level `uses` still makes the namespace's names visible file-wide.

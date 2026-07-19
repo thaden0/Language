@@ -142,6 +142,18 @@ int main() {
           "comptime if (false) { uses A; } "
           "else { console.writeln(\"no helper needed\"); }");
 
+    // block-scoped-use §3.2(a)/§5 P3(b): a comptime-if spliced into a nested
+    // BLOCK carries its `uses` into that block's own scope — pass 2 re-resolves
+    // the folded tree and re-materializes the block scope (the unconditional
+    // reset guarantees no stale pass-1 scope survives), so an in-block call
+    // resolves through the spliced import...
+    CLEAN("namespace A { int helper() => 1; } "
+          "void f() { comptime if (true) { uses A; console.writeln(helper()); } }");
+    // ...and the import stays confined: a call outside that block errors
+    // (the spliced block scope does not leak — confinement falls out of pop).
+    ERRORS("namespace A { int helper() => 1; } "
+           "void f() { { comptime if (true) { uses A; } } int x = helper(1); }");
+
     // --- Hermeticity (M12) and budget (M13) ----------------------------------
     ERRORS("comptime string s = std::sysReadLine(0);");
     ERRORS("comptime int n = std::sysOpen(\"/etc/passwd\", 1);");

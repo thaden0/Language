@@ -1,0 +1,20 @@
+// block-scoped-use §3.1/§4.1: one block scope carries BOTH tables — a block
+// `use` (names) and a block `bind` (type-keyed) coexist in, and are confined to,
+// the same block, proving the unified substrate (system-binds.md §7.2's "one
+// object, both tables"). The factory `Hi()` resolves through the block `use`;
+// the injected `IGreeter` resolves through the block `bind` — same scope.
+namespace Svc {
+    interface IGreeter { string hello(); }
+    class Hi : IGreeter { string hello() => "hi"; }
+}
+
+string speak(Svc::IGreeter g) => g.hello();
+
+void useAndBind() {
+    use Svc::Hi;                  // block import -> the block scope's NAMES table
+    bind Svc::IGreeter => Hi();   // block bind  -> the SAME scope's BINDS table
+    console.writeln(speak());     // hi — injected from the block bind; Hi via the block use
+}
+
+useAndBind();
+console.writeln(speak(Svc::Hi()));   // hi — outside the block, the bind is gone; pass explicitly
