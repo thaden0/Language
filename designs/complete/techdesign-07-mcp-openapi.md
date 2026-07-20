@@ -715,9 +715,10 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
   work around it — this is the more precise mechanism behind "LA-16 not landed" above, an
   LA-18 *specialization-tuple-collection* gap specifically, not a blanket absence of
   type-position splicing: `A::FromJson`/`A::Empty()` and explicit turbofish both work
-  fine), same bare-vs-quoted hole finding, and the same cross-namespace rule/attribute gap
-  (independently filed as known_bugs_2.md #99, since renumbered/reconciled against #98 —
-  same defect, one entry). Two additions:
+  fine; the lambda-inference gap itself is filed on its own as known_bugs_2.md #101,
+  renumbered from that session's #99 filing), same bare-vs-quoted hole finding, and the
+  same cross-namespace rule/attribute gap (re-confirmed by its own T7-P6 probe and folded
+  into known_bugs_2.md #98 — same defect, one entry). Two additions:
   1. **`Map<string, JsonValue>` as a class field is LLVM-safe** (probed directly —
      `packages/atlantis/tests/probes/mcp_p8_jsonvalue_map_field_llvm.lev`, oracle/IR/LLVM
      all green) — confirms `SchemaRegistry`/`OpenApi::schemas()`'s storage shape (above)
