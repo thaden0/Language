@@ -1,0 +1,42 @@
+// designs/techdesign-triple.md §8.2: a dedicated green regression proving
+// Pair/Triple behave as real value structs -- dense-array storage, copy (not
+// alias) semantics, and use as Map keys -- none of which any existing corpus
+// file exercised while Pair was still a reference class.
+void run() {
+    // (a) Array<Pair<int,int>> via withIndex: all-scalar Pair, now routed
+    // through the row-major dense path (techdesign-triple.md §2) instead of
+    // boxed.
+    Array<int> nums = [10, 20, 30];
+    Array<Pair<int, int>> wi = nums.withIndex();
+    for (Pair e in wi) console.writeln(e.first.toString() + ":" + e.second.toString());
+    // 0:10
+    // 1:20
+    // 2:30
+
+    // (b) rebind a Pair/Triple to a second variable, mutate neither:
+    // equality holds by value (copyValue's per-bind deep copy, exercised for
+    // the first time for Pair now that it is a struct).
+    Pair<int, int> p1 = Pair::Of(5, 6);
+    Pair<int, int> p2 = p1;
+    console.writeln(p1 == p2);          // true
+
+    Triple<int, int, int> t1 = Triple::Of(1, 2, 3);
+    Triple<int, int, int> t2 = t1;
+    console.writeln(t1 == t2);          // true
+
+    // (c) Pair/Triple as Map keys: field-wise key equality (keyEquals,
+    // already generic-safe and independent of the (==)-operator synthesis
+    // question).
+    Map<Pair<int, int>, string> byPair;
+    byPair[Pair::Of(1, 1)] = "one-one";
+    byPair[Pair::Of(2, 2)] = "two-two";
+    console.writeln(byPair[Pair::Of(1, 1)]);   // one-one
+    console.writeln(byPair[Pair::Of(2, 2)]);   // two-two
+
+    Map<Triple<int, int, int>, string> byTriple;
+    byTriple[Triple::Of(1, 2, 3)] = "abc";
+    byTriple[Triple::Of(4, 5, 6)] = "def";
+    console.writeln(byTriple[Triple::Of(1, 2, 3)]);   // abc
+    console.writeln(byTriple[Triple::Of(4, 5, 6)]);   // def
+}
+run();
