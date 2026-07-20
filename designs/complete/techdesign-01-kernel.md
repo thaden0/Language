@@ -915,7 +915,7 @@ spirit (kernel serves real traffic) is met; the swap is additive.
      chunks into one response (correct output; static files serve correctly on all three
      engines). **Not a STOP:** §3.4 and hurdle H-6 always treated the streaming hook as a
      Track 09 coordination ask with a documented interim, and the buffered path serves real
-     traffic. Filed `designs/requests/request-http-streaming-response.md` (three candidate
+     traffic. Filed `designs/requests/accepted/request-http-streaming-response.md` (three candidate
      shapes; the surface is stable across the swap — only `mkStreaming`'s body changes).
      Unbounded SSE-push and true 100 MB incremental streaming (part of M4/M5 acceptance)
      land with that hook.

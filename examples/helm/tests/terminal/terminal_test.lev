@@ -1,0 +1,133 @@
+// H10 golden — the VT parser (cursor motion, SGR, erase, scroll, alt screen),
+// TerminalView paint/input headless via TestRenderer (§11 snapshot doctrine,
+// the H04 EditorView precedent), and a live integration through PtyBridge +
+// a real `Pty::Deterministic` child (the H09 proc_test.lev staggered-timer
+// precedent — section headers print inside the timer callback, at fire time,
+// matching proc_test.lev's `report()` convention). Oracle + IR — `Pty` is
+// interpreter-only (G-LANG-2's terminal half; ptybridge.lev's own header
+// note).
+//
+// Line breaks in fed text use "\r\n" throughout, like a real pty's ONLCR
+// output translation would produce — VtParser (like a real VT100) only resets
+// the column on CR, never on a bare LF; feeding raw "\n" alone is a
+// deliberately different, rarer case exercised nowhere here.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+
+    void renderVt(VtParser vt, string label) {
+        TestRenderer tr = TestRenderer(vt.cols(), vt.rows());
+        tr.present(vt.screen());
+        console.writeln("-- " + label + " --");
+        console.writeln(tr.snapshot());
+    }
+
+    void renderView(TerminalView tv, int w, int h, string label) {
+        tv.arrange(Rect(Point(0, 0), Size(w, h)));
+        Surface surf = Surface(w, h);
+        tv.paint(surf);
+        TestRenderer tr = TestRenderer(w, h);
+        tr.present(surf);
+        Point? cp = tv.cursorPos();
+        if (cp != None) {
+            Point p = cp;
+            tr.setCursor(Point(tv.box.x() + p.x, tv.box.y() + p.y));
+        }
+        console.writeln("-- " + label + " --");
+        console.writeln(tr.snapshot());
+    }
+
+    void main() {
+        section("plain text, two lines");
+        VtParser vt = VtParser(4, 12);
+        vt.feed("hello\r\nworld");
+        renderVt(vt, "after feed");
+        console.writeln("cursor: " + vt.cursorRow().toString() + "," + vt.cursorCol().toString());
+
+        section("autowrap at the right edge");
+        VtParser vtw = VtParser(3, 10);
+        vtw.feed("0123456789wrapped");   // exactly 10 cols, then wraps
+        renderVt(vtw, "after 17 chars in a 10-col screen");
+
+        section("CR without LF overwrites the line");
+        VtParser vt2 = VtParser(2, 10);
+        vt2.feed("abcdef\rXY");
+        renderVt(vt2, "after CR overwrite");
+
+        section("SGR colors + reverse");
+        VtParser vt3 = VtParser(1, 10);
+        vt3.feed("\x1b[31mred\x1b[0m \x1b[7mrev\x1b[0m");
+        renderVt(vt3, "sgr");
+
+        section("cursor motion (CUP/CUD)");
+        VtParser vt4 = VtParser(4, 10);
+        vt4.feed("\x1b[3;3Hmid");          // CUP to row3,col3 (1-based) -> "mid"
+        vt4.feed("\x1b[1;1Htop");          // CUP to row1,col1 (1-based) -> "top"
+        renderVt(vt4, "after CUP writes");
+        vt4.feed("\x1b[2B");                // CUD 2 from (row0,col3, right after "top")
+        vt4.feed("Z");
+        renderVt(vt4, "after CUD+char");
+
+        section("erase (EL/ED)");
+        VtParser vt5 = VtParser(3, 8);
+        vt5.feed("aaaaaaa\r\nbbbbbbb\r\nccccccc");   // 7 chars: no autowrap at 8 cols
+        vt5.feed("\x1b[2;3H");               // row2 col3 (1-based)
+        vt5.feed("\x1b[K");                  // EL 0: erase to end of row2
+        renderVt(vt5, "after EL0");
+        vt5.feed("\x1b[1;1H\x1b[J");         // CUP home, ED 0: erase to end of screen
+        renderVt(vt5, "after ED0 from home");
+
+        section("scroll on LF past bottom");
+        VtParser vt6 = VtParser(3, 6);
+        vt6.feed("one\r\ntwo\r\nthree\r\nfour\r\n");
+        renderVt(vt6, "after 4 lines in a 3-row screen");
+
+        section("alt screen preserves primary content");
+        VtParser vt7 = VtParser(2, 8);
+        vt7.feed("primary1\r\nprimary2");
+        renderVt(vt7, "primary before alt");
+        vt7.feed("\x1b[?1049h");             // enter alt screen
+        vt7.feed("altscrn");
+        renderVt(vt7, "in alt screen");
+        vt7.feed("\x1b[?1049l");             // exit alt screen, restore cursor
+        renderVt(vt7, "back to primary");
+
+        section("TerminalView headless paint (no Pty)");
+        TerminalView tv = TerminalView(3, 12);
+        tv.setFocused(true);
+        tv.feed("hi there\r\nrow2");
+        renderView(tv, 12, 3, "after feed");
+
+        // Live Pty integration — staggered timers (proc_test.lev's own
+        // pattern); each callback prints its own "==" header at fire time.
+        TerminalView tv2 = TerminalView(2, 20);
+        tv2.setFocused(true);
+        tv2.arrange(Rect(Point(0, 0), Size(20, 2)));
+        tv2.spawnShellDeterministic("/bin/echo", ["hello", "pty"]);
+        std::after(250).subscribe((n) => {
+            section("TerminalView + Pty::Deterministic(/bin/echo)");
+            renderView(tv2, 20, 2, "after echo exits");
+            console.writeln("running: " + (tv2.running() ? "y" : "n"));
+        });
+
+        PtyBridge cat = PtyBridge::Deterministic("/bin/cat", [], 4, 20);
+        PtyEventQueue catQ = cat.start();
+        cat.write("ping\n");
+        cat.write("\x04");   // VEOF: canonical-mode cat reads until stdin EOF
+        std::after(500).subscribe((n) => {
+            section("PtyBridge direct: /bin/cat echoes input back (VEOF protocol)");
+            string acc = "";
+            int exitCode = 0 - 999;
+            for (PtyEvent e in catQ.drain()) {
+                if (e.isData()) acc = acc + e.data;
+                else exitCode = e.code;
+            }
+            console.write("data:" + acc);
+            console.writeln("exit:" + exitCode.toString());
+            console.writeln("running: " + (cat.running() ? "y" : "n"));
+        });
+    }
+
+}

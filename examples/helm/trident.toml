@@ -14,6 +14,9 @@ sources = [
     "src/panels/*.lev",
     "src/status/*.lev",
     "src/build/*.lev",
+    "src/config/*.lev",
+    "src/search/*.lev",
+    "src/terminal/*.lev",
 ]
 
 [[dep]]

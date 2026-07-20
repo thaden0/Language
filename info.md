@@ -2055,8 +2055,11 @@ active** (oracle, IR, emit-C++, LLVM) plus the **frozen, reference-only ELF back
    The pty floor (`sysPtySpawn`/`sysPtyResize` — the G-LANG-2 terminal half) followed at gate
    G-PTY2 via `runtime/lv_pty.c` + `lv_plat_pty_spawn/resize`
    (`designs/complete/techdesign-02-pty-llvm-native.md`); unlike spawn it lowers on **every**
-   target, Windows included, and degrades at runtime (`[]`) until ConPTY lands — the same
-   binary has to run on pre- and post-ConPTY floors. A
+   target, Windows included, and degrades at runtime (`[]`) rather than rejecting — the same
+   binary has to run on pre- and post-ConPTY floors. Gate G-PTY3 then landed the Windows
+   floor itself (`designs/complete/techdesign-03-pty-windows-conpty.md`): ConPTY on 1809+
+   behind a socketpair bridge, a pid→HANDLE registry, and the narrowed codegen reject —
+   `sysReap`/`sysKill` now lower on Windows, only `sysSpawn`/`sysPidfdOpen` still don't. A
    `PassBuilder` O2 module pipeline runs before object emission (`-O0`/`-O2` selectable);
    measured fast paths inline int/float `Arith`, `truth`/`Not`, fixed-offset field access,
    and checker-resolved dynamic calls rather than crossing into the runtime `.o` for each.
@@ -2211,7 +2214,10 @@ are also implemented and share this same front end.
     Moving the prelude to shipped source files is the goal — `parsePrelude()` gains a real
     file-reading seam; per-target selection (e.g. a wasm-only `kPreludeWasm`) is a packaging
     detail *within* that model (which files get shipped/loaded per target), not an alternative
-    to it. See §18.
+    to it. See §18. **SHIPPED 2026-07-19** (`designs/complete/techdesign-prelude-ship-as-files-opus.md`):
+    the eight segments ship as `prelude/*.lev`; `parsePrelude()` reads them from a resolved
+    directory (`--prelude` → `LV_PRELUDE_DIR` → next-to-binary → source tree) with a
+    build-generated embedded fallback; `wasm.lev` loads only for `wasm32*` targets.
 
 ---
 
@@ -2244,10 +2250,13 @@ closure trampoline).
   `examples/wasm-client/`. The `@extern` rules-engine bindgen (doc 06 §1) is **not built** — it
   targeted a per-method `__import` seam the reflective single-`dom_call` bridge abandoned, and a
   faithful generator needs metaprog scope beyond the bounded P4 roadmap; the hand-written `Dom`
-  prelude is the as-built binding surface. Per-target **stdlib packaging** now rides the §19 #18
-  ruling (ship as `.lev` files with a real `parsePrelude()` file-reading seam) — this track is
-  the *consumer* of that upstream refactor, which is not yet built; dev/wasm builds ride the
-  existing in-binary concat until it lands.
+  prelude is the as-built binding surface. Per-target **stdlib packaging** is now built (§19 #18,
+  `designs/complete/techdesign-prelude-ship-as-files-opus.md`): the prelude ships as `prelude/*.lev`
+  through a real `parsePrelude()` file-reading seam, and `wasm.lev` — the `Dom` surface — is
+  absent from native preludes **by selection** (only `wasm32*` targets load it). The OS-only
+  native **capability gate is unchanged**: it still traps/diagnoses the gated natives that remain
+  interleaved in the shared `std`/`rest` segments on wasm builds (R3 deliberately kept those in
+  the shared prelude rather than re-partitioning them).
 
 ---
 

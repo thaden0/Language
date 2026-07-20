@@ -643,7 +643,7 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
     (matching `@Serializable`'s own un-migrated home) because of a real, filed compiler
     bug: a rule cannot match an attribute declared in a different namespace than the rule
     itself, confirmed with a minimal sibling-namespace repro independent of nesting depth
-    or direction (**known_bugs_2.md #96**, P1). `@Tool`/`@Summary` are Track 07's own
+    or direction (**known_bugs_2.md #98**, P1). `@Tool`/`@Summary` are Track 07's own
     attributes, co-declared with their matching rules in the correct C1-amended namespace,
     so they're unaffected.
   - **§3.3's `mcpTool` rule generates METADATA ONLY, not a working `McpTool`.** The
@@ -697,7 +697,7 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
     does, confirmed `await`-able directly from a corpus program's top-level `main()`.
     Timeout → exception (M4's acceptance table) is not tested: no request-timeout knob
     exists on `HttpClient` yet.
-  - **Compiler findings**: filed `known_bugs_2.md #96` (above). Also hit, and RESOLVED
+  - **Compiler findings**: filed `known_bugs_2.md #98` (above). Also hit, and RESOLVED
     WITHOUT filing (stale local build, not a real regression): `build/leviathan` was ~20
     minutes older than the commit that fixed bugs #91/#92 (2-level nested-namespace
     rule/attribute matching) — every probe that looked like a #91 regression, including

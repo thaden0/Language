@@ -9,7 +9,7 @@
 // itself (bottom of this file): it must match `@Serializable`, still
 // declared in flat `Atlantis` by Track 03's (unmigrated) json/serializable.lev
 // — and a rule cannot match an attribute declared in a different namespace
-// than the rule itself (known_bugs_2.md #96, found by this track's T7-P6
+// than the rule itself (known_bugs_2.md #98, found by this track's T7-P6
 // probe). Interim workaround per that entry: the rule is declared in flat
 // `namespace Atlantis { ... }`, matching @Serializable's actual home today.
 namespace Atlantis {
@@ -161,7 +161,7 @@ namespace Atlantis {
         }
     }
 
-    // known_bugs_2.md #96 workaround — see the file header. This rule lives
+    // known_bugs_2.md #98 workaround — see the file header. This rule lives
     // beside Track 03's rules (flat Atlantis, matching @Serializable's real
     // home) rather than nested Atlantis::OpenApi.
     rule serializableSchema {

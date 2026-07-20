@@ -38,7 +38,7 @@ namespace Atlantis {
             // function that (a) takes a class-typed parameter (here
             // `Http::Context`) AND (b) returns from inside a `for` loop over
             // an `Array<Struct>` corrupts a LATER, unrelated heap-touching
-            // call on the LLVM backend — filed as known_bugs_1.md #97, minimal
+            // call on the LLVM backend — filed as known_bugs_1.md #99, minimal
             // repro included. The accumulator shape sidesteps it entirely.
             Array<CookiePair> pairs = parseCookieHeader(header);
             string? found = None;

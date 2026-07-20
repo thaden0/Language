@@ -28,7 +28,7 @@ Run from the repo root:
 M2 Log + AccessLog + ErrorMapper + problem+json ✓, M3 Health/BodyLimit/Deadline ✓,
 M4 StaticFiles (canonicalization/types/ETag/304/HEAD; large-file streaming is
 collect-then-send interim) ✓, M5 SSE/ChunkedBody surface ✓ (finite; unbounded push
-awaits the streaming-response hook — `designs/requests/request-http-streaming-response.md`),
+awaits the streaming-response hook — `designs/requests/accepted/request-http-streaming-response.md`),
 R10 Builder/App facade + IActionResponse ✓.
 
 **Language findings filed** (bug.md): #37 qualified/nested namespace resolution (the
@@ -306,7 +306,7 @@ failures on unrelated code). All four milestones green on oracle/IR/LLVM:
 | P3 | `mcp_p3_content_overloads.lev` | GREEN (3 engines) — `content(string)` beats `content<R>(R)`; duck-typed `.toJson()` generic fallback; `content(await promise)` unifies |
 | P4 | `mcp_p4_for_over_params.lev` | GREEN (3 engines) — `$for p in m.params : F($p.name, $p.type)` (BARE holes — quoted holes are literals, corrected from this doc's own quoted sketches, same finding as ORM's P2) |
 | P5 | `mcp_p5_splice_spellings.lev` | GREEN (3 engines) — `$m.name`/`$C.name`/`$p.type` bare-hole splicing; nested-namespace struct canonical spelling pinned as `Outer::Inner` (fully qualified, `::`-joined) |
-| P6 | `mcp_p6_two_rules_stack.lev` | **FAILED, as real** — a rule cannot match an attribute declared in a DIFFERENT namespace than the rule itself (confirmed independent of nesting depth/direction via a minimal sibling-namespace repro). Filed **known_bugs_2.md #96** [P1]. Workaround applied: `schema.lev`'s rule stays in flat `Atlantis`, matching `@Serializable`'s real (un-migrated) home |
+| P6 | `mcp_p6_two_rules_stack.lev` | **FAILED, as real** — a rule cannot match an attribute declared in a DIFFERENT namespace than the rule itself (confirmed independent of nesting depth/direction via a minimal sibling-namespace repro). Filed **known_bugs_2.md #98** [P1]. Workaround applied: `schema.lev`'s rule stays in flat `Atlantis`, matching `@Serializable`'s real (un-migrated) home |
 | P7 | `mcp_p7_multi_tool_accumulate.lev` | GREEN (3 engines) — three `@ItemProbe`-attributed methods, ctor-bottom injections accumulate in declaration order into one array field |
 
 Two EXTRA probes run beyond the design's own table, both load-bearing for M2's actual
@@ -327,7 +327,7 @@ fails to PARSE; `$p.type::FromJson(v)` (call-target position) parses but fails a
 
 ## Findings / deviations from the design text (each logged in detail in techdesign-07-mcp-openapi.md §11)
 
-- **known_bugs_2.md #96 [P1] filed**: a rule cannot match an attribute declared in a
+- **known_bugs_2.md #98 [P1] filed**: a rule cannot match an attribute declared in a
   different namespace than the rule itself (P6 above) — affects any future subsystem
   whose rule needs to match another subsystem's attribute, exactly the shape C1's own
   multi-consumer tiebreak anticipates as normal. Workaround: co-locate.
@@ -374,7 +374,7 @@ same run and are NOT Track 08's: `routing` (LLVM only) and `serialization_refusa
 (negative-case text mismatch) — confirmed via `git status` that no file under
 `src/json/` or `src/routing/` was touched this session.
 
-**LLVM finding — `known_bugs_1.md` #97 filed, likely the same family as pre-existing
+**LLVM finding — `known_bugs_1.md` #99 filed, likely the same family as pre-existing
 #95.** Bisected a genuine, minimal, independently-reproducible LLVM defect: a function
 taking a class-typed parameter (e.g. `Http::Context`) that ALSO returns from inside a
 `for` loop over `Array<Struct>` corrupts a LATER, unrelated heap-touching call. Fixed at

@@ -691,7 +691,7 @@ the session record); everything inside errorMapper so 401/403/429 render uniform
   - **LLVM lane, known pre-existing platform issue (NOT a Track 08 defect):** the native
     binary currently segfaults partway through the corpus on `Router`/`Context`
     construction sequences. Bisected to a genuine, independently-reproducible minimal
-    repro (`known_bugs_1.md` #97: a function taking a class-typed parameter that also
+    repro (`known_bugs_1.md` #99: a function taking a class-typed parameter that also
     returns from inside a `for` loop over `Array<Struct>` corrupts a later, unrelated
     heap-touching call on LLVM) and fixed at the one site this track hit
     (`cookie.lev`'s `cookieValue`). Re-verifying afterward showed the corpus still

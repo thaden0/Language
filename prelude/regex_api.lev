@@ -1,0 +1,458 @@
+
+struct RegexOptions {
+    bool ignoreCase = false;
+    bool multiline = false;
+    bool dotAll = false;
+    new RegexOptions(bool ignoreCase = false, bool multiline = false, bool dotAll = false) {
+        this.ignoreCase = ignoreCase;
+        this.multiline = multiline;
+        this.dotAll = dotAll;
+    }
+}
+
+// An unparticipating group inside a successful match is a real state
+// (alternation arms) — matched stays false, index -1, value "".
+struct Group {
+    bool matched = false;
+    int index = -1;
+    int length = 0;
+    string value = "";
+}
+
+struct Match {
+    int index = -1;
+    int length = 0;
+    string value = "";
+    Array<Group> groups = [];
+    // Internal: name -> group index, so group(name) works on a detached
+    // value with no back-pointer to the compiling Regex (doc 2 §1.2).
+    Map<string, int> nameIndex = Map();
+
+    Group groupAt(int i) => groups.at(i);   // distinct name; OOB throws like Array.at
+    Group group(int i) => groupAt(i);
+    Group? group(string name) {
+        if (!nameIndex.has(name)) return None;
+        return groupAt(nameIndex.at(name));
+    }
+}
+
+class RegexException : Exception {
+    int offset = -1;
+    new RegexException(string msg, int off) {
+        Exception::Exception(msg);
+        offset = off;
+    }
+}
+
+class Regex {
+    Array<int> program = [];
+    string patternText = "";
+    RegexOptions opts = RegexOptions();
+
+    new Regex(string pattern) {
+        patternText = pattern;
+        opts = RegexOptions();
+        program = regex::apiCompileOrThrow(pattern, "");
+    }
+    new Regex(string pattern, RegexOptions options) {
+        patternText = pattern;
+        opts = options;
+        program = regex::apiCompileOrThrow(pattern, regex::apiFlagsString(options));
+    }
+    new Regex(string pattern, string flags) {
+        patternText = pattern;
+        opts = regex::apiOptionsFromFlags(flags);
+        program = regex::apiCompileOrThrow(pattern, flags);
+    }
+    // comptime path (doc 1 §3): O(1) wrap of an already-compiled program.
+    new FromProgram(Array<int> prog) {
+        patternText = "";
+        opts = RegexOptions();
+        program = prog;
+    }
+
+    string pattern() => patternText;
+    RegexOptions options() => opts;
+    int groupCount() => regex::programGroupCount(program);
+    Array<string> groupNames() => regex::apiGroupNames(program);
+
+    bool isMatch(string s) => regex::programIsMatch(program, s);
+    bool isMatch(string s, int from) => regex::programIsMatchFrom(program, s, from);
+    Match? find(string s) => regex::apiFind(program, s, 0);
+    Match? find(string s, int from) => regex::apiFind(program, s, from);
+    Array<Match> matches(string s) => regex::apiMatches(program, s);
+    int count(string s) => regex::programCount(program, s);
+
+    // NOTE: the lambda-typed overloads are declared BEFORE their string-typed
+    // siblings — see the bug-report note by apiCachedProgram below (a lambda
+    // literal argument is wrongly scored as applicable to a `string`
+    // parameter too; declaration order is the tie-break, so the intended
+    // overload must come first). Purely a source-order workaround — the
+    // public signatures/behavior match doc 2 exactly either way.
+    string replace(string s, (Match) => string fn) => regex::apiReplaceFn(program, s, fn, -1);
+    string replace(string s, (Match) => string fn, int count) => regex::apiReplaceFn(program, s, fn, count);
+    string replace(string s, string replacement) => regex::apiReplaceLiteral(program, s, replacement, -1);
+    string replace(string s, string replacement, int count) => regex::apiReplaceLiteral(program, s, replacement, count);
+
+    Array<string> split(string s) => regex::apiSplit(program, s, -1);
+    Array<string> split(string s, int limit) => regex::apiSplit(program, s, limit);
+
+    Array<bool> isMatchAll(Array<string> rows) => regex::programIsMatchAll(program, rows);
+    Array<int> countAll(Array<string> rows) => regex::programCountAll(program, rows);
+}
+
+namespace regex {
+    // ---- flags/options plumbing --------------------------------------
+    string apiFlagsString(RegexOptions o) {
+        StringBuilder sb = StringBuilder();
+        if (o.ignoreCase) sb.add("i");
+        if (o.multiline) sb.add("m");
+        if (o.dotAll) sb.add("s");
+        return sb.toString();
+    }
+    RegexOptions apiOptionsFromFlags(string flags) {
+        bool ic = false; bool ml = false; bool da = false;
+        int i = 0;
+        while (i < flags.length()) {
+            int c = flags.byteAt(i);
+            if (c == 105) ic = true;
+            else if (c == 109) ml = true;
+            else if (c == 115) da = true;
+            i = i + 1;
+        }
+        return RegexOptions(ic, ml, da);
+    }
+
+    // ---- §2.1 error-path split: pattern-as-code throws RegexException --
+    // (compileProgram's parser throws a RuntimeException carrying "... at
+    // offset N" in its message; apiOffsetOf recovers N for the public
+    // exception type, defaulting to -1 when a message has no offset.)
+    int apiOffsetOf(string msg) {
+        string marker = "offset ";
+        int at = msg.indexOf(marker);
+        if (at < 0) return -1;
+        int i = at + marker.length();
+        int n = msg.length();
+        bool neg = false;
+        if (i < n && msg.byteAt(i) == 45) { neg = true; i = i + 1; }
+        int start = i;
+        int val = 0;
+        while (i < n) {
+            int c = msg.byteAt(i);
+            if (c < 48 || c > 57) break;
+            val = val * 10 + (c - 48);
+            i = i + 1;
+        }
+        if (i == start) return -1;
+        return neg ? 0 - val : val;
+    }
+    Array<int> apiCompileOrThrow(string pattern, string flags) {
+        try {
+            return regex::compileProgram(pattern, flags);
+        } catch (RuntimeException e) {
+            throw RegexException(e.message, regex::apiOffsetOf(e.message));
+        }
+    }
+    // pattern-as-data path: None on malformed, never a throw.
+    Regex? apiCompileSafe(string pattern, string flags) {
+        try {
+            Array<int> prog = regex::compileProgram(pattern, flags);
+            return Regex::FromProgram(prog);
+        } catch (RuntimeException e) {
+            return None;
+        }
+    }
+
+    // ---- named-group decoding (feeds Regex.groupNames() and each Match's
+    // internal nameIndex; the engine only exposes a raw (gi,len,byte...)
+    // record blob via programNameData, doc 1's additive accessor). ----
+    Map<string, int> apiNameIndex(Array<int> program) {
+        Array<int> raw = regex::programNameData(program);
+        Map<string, int> m = Map();
+        int i = 0;
+        while (i < raw.length()) {
+            int gi = raw.at(i);
+            int len = raw.at(i + 1);
+            i = i + 2;
+            StringBuilder sb = StringBuilder();
+            int j = 0;
+            while (j < len) { sb.add(std::byteToString(raw.at(i + j))); j = j + 1; }
+            i = i + len;
+            m[sb.toString()] = gi;
+        }
+        return m;
+    }
+    Array<string> apiGroupNames(Array<int> program) => regex::apiNameIndex(program).keys();
+
+    // ---- Match construction from a raw extents array (doc 1's `find`
+    // core: [] on no match, else (groupCount+1)*2 ints, pairs of
+    // start/end per group, group 0 = whole match). ----------------------
+    Match apiBuildMatchWithNames(Array<int> program, string s, Array<int> ext, Map<string, int> names) {
+        Match m;
+        m.index = ext.at(0);
+        m.length = ext.at(1) - ext.at(0);
+        m.value = s.subStr(m.index, m.length);
+        int n = regex::programGroupCount(program);
+        Array<Group> gs = [];
+        int gi = 0;
+        while (gi <= n) {
+            int st = ext.at(gi * 2);
+            int en = ext.at(gi * 2 + 1);
+            Group g;
+            if (st < 0) {
+                g.matched = false; g.index = -1; g.length = 0; g.value = "";
+            } else {
+                g.matched = true; g.index = st; g.length = en - st; g.value = s.subStr(st, en - st);
+            }
+            gs = gs.add(g);
+            gi = gi + 1;
+        }
+        m.groups = gs;
+        m.nameIndex = names;
+        return m;
+    }
+    Match apiBuildMatch(Array<int> program, string s, Array<int> ext) =>
+        regex::apiBuildMatchWithNames(program, s, ext, regex::apiNameIndex(program));
+
+    Match? apiFind(Array<int> program, string s, int from) {
+        Array<int> ext = regex::programFindFrom(program, s, from);
+        if (ext.length() == 0) return None;
+        return regex::apiBuildMatch(program, s, ext);
+    }
+    // §4 row 2: a zero-length match at i is reported, then the scan
+    // resumes at i+1 (prevents the classic infinite loop).
+    Array<Match> apiMatches(Array<int> program, string s) {
+        Map<string, int> names = regex::apiNameIndex(program);
+        Array<Match> out = [];
+        int pos = 0;
+        while (pos <= s.length()) {
+            Array<int> ext = regex::programFindFrom(program, s, pos);
+            if (ext.length() == 0) return out;
+            out = out.add(regex::apiBuildMatchWithNames(program, s, ext, names));
+            int end = ext.at(1);
+            pos = end > ext.at(0) ? end : end + 1;
+        }
+        return out;
+    }
+
+    // ---- §3 replacement-string grammar: $0.."$99 (greedy two-digit,
+    // longest valid group number wins), ${name}, $$, bare $ at end/before
+    // anything else -> literal $. Parsed once per call, before scanning.
+    // Encoded as Pair<int,string>: first < 0 -> literal text in second;
+    // first >= 0 -> substitute that group's value (unmatched -> "").
+    Array<Pair<int, string>> apiParseReplacement(Array<int> program, string repl) {
+        Map<string, int> names = regex::apiNameIndex(program);
+        int n = regex::programGroupCount(program);
+        Array<Pair<int, string>> parts = [];
+        StringBuilder lit = StringBuilder();
+        int i = 0;
+        int len = repl.length();
+        while (i < len) {
+            int c = repl.byteAt(i);
+            if (c != 36) { lit.add(std::byteToString(c)); i = i + 1; continue; }
+            if (i + 1 >= len) { lit.add("$"); i = i + 1; continue; }
+            int c1 = repl.byteAt(i + 1);
+            if (c1 == 36) { lit.add("$"); i = i + 2; continue; }
+            if (c1 == 123) {
+                int close = repl.indexOfFrom("}", i + 2);
+                if (close < 0) throw RegexException("regex: unterminated ${ in replacement", i);
+                string name = repl.subStr(i + 2, close - (i + 2));
+                if (!names.has(name)) throw RegexException("regex: unknown group name in replacement: " + name, i);
+                parts = parts.add(Pair::Of(0 - 1, lit.toString()));
+                lit = StringBuilder();
+                parts = parts.add(Pair::Of(names.at(name), ""));
+                i = close + 1;
+                continue;
+            }
+            if (c1 >= 48 && c1 <= 57) {
+                int d1 = c1 - 48;
+                int gi = d1;
+                int consumed = 2;
+                if (i + 2 < len) {
+                    int c2 = repl.byteAt(i + 2);
+                    if (c2 >= 48 && c2 <= 57) {
+                        int two = d1 * 10 + (c2 - 48);
+                        if (two <= n) { gi = two; consumed = 3; }
+                    }
+                }
+                if (gi > n) throw RegexException("regex: group reference out of range in replacement: $" + gi.toString(), i);
+                parts = parts.add(Pair::Of(0 - 1, lit.toString()));
+                lit = StringBuilder();
+                parts = parts.add(Pair::Of(gi, ""));
+                i = i + consumed;
+                continue;
+            }
+            lit.add("$");
+            i = i + 1;
+        }
+        parts = parts.add(Pair::Of(0 - 1, lit.toString()));
+        return parts;
+    }
+    string apiApplyReplacementParts(Array<Pair<int, string>> parts, Match m) {
+        StringBuilder sb = StringBuilder();
+        for (Pair<int, string> p in parts) {
+            if (p.first < 0) sb.add(p.second);
+            else sb.add(m.groups.at(p.first).value);
+        }
+        return sb.toString();
+    }
+    string apiReplaceLiteral(Array<int> program, string s, string replacement, int limit) {
+        Array<Pair<int, string>> parts = regex::apiParseReplacement(program, replacement);
+        Map<string, int> names = regex::apiNameIndex(program);
+        StringBuilder sb = StringBuilder();
+        int pos = 0;
+        int done = 0;
+        while (pos <= s.length()) {
+            if (limit >= 0 && done >= limit) break;
+            Array<int> ext = regex::programFindFrom(program, s, pos);
+            if (ext.length() == 0) break;
+            int mstart = ext.at(0); int mend = ext.at(1);
+            sb.add(s.subStr(pos, mstart - pos));
+            Match m = regex::apiBuildMatchWithNames(program, s, ext, names);
+            sb.add(regex::apiApplyReplacementParts(parts, m));
+            done = done + 1;
+            if (mend > mstart) { pos = mend; }
+            else { if (mend < s.length()) sb.add(s.subStr(mend, 1)); pos = mend + 1; }
+        }
+        int tail = pos < s.length() ? pos : s.length();
+        sb.add(s.subStr(tail, s.length() - tail));
+        return sb.toString();
+    }
+    string apiReplaceFn(Array<int> program, string s, (Match) => string fn, int limit) {
+        Map<string, int> names = regex::apiNameIndex(program);
+        StringBuilder sb = StringBuilder();
+        int pos = 0;
+        int done = 0;
+        while (pos <= s.length()) {
+            if (limit >= 0 && done >= limit) break;
+            Array<int> ext = regex::programFindFrom(program, s, pos);
+            if (ext.length() == 0) break;
+            int mstart = ext.at(0); int mend = ext.at(1);
+            sb.add(s.subStr(pos, mstart - pos));
+            Match m = regex::apiBuildMatchWithNames(program, s, ext, names);
+            sb.add(fn(m));
+            done = done + 1;
+            if (mend > mstart) { pos = mend; }
+            else { if (mend < s.length()) sb.add(s.subStr(mend, 1)); pos = mend + 1; }
+        }
+        int tail = pos < s.length() ? pos : s.length();
+        sb.add(s.subStr(tail, s.length() - tail));
+        return sb.toString();
+    }
+
+    // ---- §4 row 3: split includes captured-group text; limit bounds the
+    // piece count, remainder unsplit in the last piece. ------------------
+    Array<string> apiSplit(Array<int> program, string s, int limit) {
+        Array<string> out = [];
+        int n = regex::programGroupCount(program);
+        int pos = 0;
+        int lastEnd = 0;
+        while (pos <= s.length()) {
+            if (limit > 0 && out.length() >= limit - 1) break;
+            Array<int> ext = regex::programFindFrom(program, s, pos);
+            if (ext.length() == 0) break;
+            int mstart = ext.at(0); int mend = ext.at(1);
+            out = out.add(s.subStr(lastEnd, mstart - lastEnd));
+            int gi = 1;
+            while (gi <= n) {
+                int st = ext.at(gi * 2); int en = ext.at(gi * 2 + 1);
+                out = out.add(st < 0 ? "" : s.subStr(st, en - st));
+                gi = gi + 1;
+            }
+            lastEnd = mend;
+            pos = mend > mstart ? mend : mend + 1;
+        }
+        out = out.add(s.subStr(lastEnd, s.length() - lastEnd));
+        return out;
+    }
+
+    string escape(string literal) {
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < literal.length()) {
+            int c = literal.byteAt(i);
+            if (regex::apiIsMetaByte(c)) sb.add("\\");
+            sb.add(std::byteToString(c));
+            i = i + 1;
+        }
+        return sb.toString();
+    }
+    bool apiIsMetaByte(int c) => c == 92 || c == 46 || c == 94 || c == 36 || c == 124 ||
+        c == 40 || c == 41 || c == 91 || c == 93 || c == 123 || c == 125 || c == 42 || c == 43 || c == 63;
+
+    // ---- pattern cache: LRU, capacity 16 (C# Regex.CacheSize precedent).
+    // Namespace state is legal (concretely-typed singleton, info.md §6.6);
+    // single-threaded today (an LA-1 confinement rider, per doc 1 §2).
+    Map<string, Array<int>> apiCache = Map();
+    Array<string> apiCacheOrder = [];
+    Map<string, Array<int>> apiWithoutKey(Map<string, Array<int>> src, string key) {
+        // Rebuilds via bracket sugar rather than .without() by name — the
+        // same defensive convention Set<T>.without() already uses in this
+        // prelude for named-native-dispatch safety on every engine.
+        Map<string, Array<int>> out = Map();
+        for (Pair<string, Array<int>> e in src) if (e.first != key) out[e.first] = e.second;
+        return out;
+    }
+    Array<int> apiCachedProgram(string pattern, string flags) {
+        // NOTE: reassignment to a namespace-scoped variable must be BARE
+        // (unqualified) here, not `regex::apiCache = ...` — a qualified
+        // write to a namespace global fails to lower (info.md §12's "use
+        // ... as" write-through rule; bug.md #7's ruling on qualified
+        // writes applies the same way to a plain `NS::x = ...`). Reads stay
+        // qualified per this file's usual discipline; only writes are bare.
+        string key = pattern + std::byteToString(1) + flags;
+        if (regex::apiCache.has(key)) {
+            Array<string> reordered = [];
+            for (string k in regex::apiCacheOrder) if (k != key) reordered = reordered.add(k);
+            apiCacheOrder = reordered.add(key);
+            return regex::apiCache.at(key);
+        }
+        Array<int> prog = regex::apiCompileOrThrow(pattern, flags);
+        Map<string, Array<int>> m = regex::apiCache;
+        m[key] = prog;
+        Array<string> order = regex::apiCacheOrder.add(key);
+        if (order.length() > 16) {
+            string evict = order.at(0);
+            order = order.removeAt(0);
+            m = regex::apiWithoutKey(m, evict);
+        }
+        apiCache = m;
+        apiCacheOrder = order;
+        return prog;
+    }
+
+    // ---- §2.2 conveniences (compile-per-call semantics, backed by the
+    // LRU cache above) -----------------------------------------------------
+    Regex? compile(string pattern) => regex::apiCompileSafe(pattern, "");
+    Regex? compile(string pattern, RegexOptions options) => regex::apiCompileSafe(pattern, regex::apiFlagsString(options));
+    Regex? compile(string pattern, string flags) => regex::apiCompileSafe(pattern, flags);
+
+    bool isMatch(string s, string pattern) => regex::programIsMatch(regex::apiCachedProgram(pattern, ""), s);
+    bool isMatch(string s, string pattern, RegexOptions o) => regex::programIsMatch(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s);
+    bool isMatch(string s, string pattern, string flags) => regex::programIsMatch(regex::apiCachedProgram(pattern, flags), s);
+
+    Match? find(string s, string pattern) => regex::apiFind(regex::apiCachedProgram(pattern, ""), s, 0);
+    Match? find(string s, string pattern, RegexOptions o) => regex::apiFind(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s, 0);
+    Match? find(string s, string pattern, string flags) => regex::apiFind(regex::apiCachedProgram(pattern, flags), s, 0);
+
+    Array<Match> matches(string s, string pattern) => regex::apiMatches(regex::apiCachedProgram(pattern, ""), s);
+    Array<Match> matches(string s, string pattern, RegexOptions o) => regex::apiMatches(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s);
+    Array<Match> matches(string s, string pattern, string flags) => regex::apiMatches(regex::apiCachedProgram(pattern, flags), s);
+
+    // Lambda-typed overloads declared first — see the reorder note on
+    // Regex.replace above (same lambda-vs-string applicability bug).
+    string replace(string s, string pattern, (Match) => string fn) => regex::apiReplaceFn(regex::apiCachedProgram(pattern, ""), s, fn, -1);
+    string replace(string s, string pattern, (Match) => string fn, RegexOptions o) => regex::apiReplaceFn(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s, fn, -1);
+    string replace(string s, string pattern, (Match) => string fn, string flags) => regex::apiReplaceFn(regex::apiCachedProgram(pattern, flags), s, fn, -1);
+    string replace(string s, string pattern, string replacement) => regex::apiReplaceLiteral(regex::apiCachedProgram(pattern, ""), s, replacement, -1);
+    string replace(string s, string pattern, string replacement, RegexOptions o) => regex::apiReplaceLiteral(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s, replacement, -1);
+    string replace(string s, string pattern, string replacement, string flags) => regex::apiReplaceLiteral(regex::apiCachedProgram(pattern, flags), s, replacement, -1);
+
+    Array<string> split(string s, string pattern) => regex::apiSplit(regex::apiCachedProgram(pattern, ""), s, -1);
+    Array<string> split(string s, string pattern, RegexOptions o) => regex::apiSplit(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s, -1);
+    Array<string> split(string s, string pattern, string flags) => regex::apiSplit(regex::apiCachedProgram(pattern, flags), s, -1);
+
+    int count(string s, string pattern) => regex::programCount(regex::apiCachedProgram(pattern, ""), s);
+    int count(string s, string pattern, RegexOptions o) => regex::programCount(regex::apiCachedProgram(pattern, regex::apiFlagsString(o)), s);
+    int count(string s, string pattern, string flags) => regex::programCount(regex::apiCachedProgram(pattern, flags), s);
+}

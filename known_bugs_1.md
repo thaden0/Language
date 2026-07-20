@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #95, #97 |
+| P0       | #95, #99 |
 | P1       | #93 |
 | P2       | — |
 | P3       | — |
@@ -153,7 +153,7 @@ changes stashed (clean master `src/`), so it predates Track 06's work — the
 routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
 since regressed it. Not diagnosed further here (out of Track 06 scope).
 
-## #97 [P0] — a function taking a class-typed parameter that also returns from inside a `for` loop over `Array<Struct>` corrupts a LATER unrelated call on LLVM
+## #99 [P0] — a function taking a class-typed parameter that also returns from inside a `for` loop over `Array<Struct>` corrupts a LATER unrelated call on LLVM
 
 **Found:** 2026-07-19, implementing Atlantis Track 08 (Auth & Security),
 exercising the session-cookie strategy's `authenticate()` path on the native
