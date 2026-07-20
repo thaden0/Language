@@ -440,3 +440,83 @@ and rebuilding the analysis from scratch when a trigger *does* fire. When one fi
 the adopting milestone starts from this file's path (§1.4 / §2.4), logs its
 measurements here, and follows the A-M5→A-M6 arena precedent: mark, ratify, schedule,
 close.
+
+---
+
+## 5. Implementation log
+
+### 5.1 Phase A0 measurement — 2026-07-20 (Deferral A, mandatory gate)
+
+**Verdict: trigger T-A1 NOT fired. AST-node allocation + teardown ≈ 1.84% of
+instruction cost, vs. the ≥ 10% adoption threshold — short by ~5×. Per §1.4, the
+deferral is re-logged with numbers and no code was written. This file stays live.**
+
+**Method.** `perf` was unavailable (`kernel.perf_event_paranoid=4`, no root), so
+attribution was taken with `valgrind --tool=callgrind` (deterministic instruction
+counts, a sound proxy for the wall-time share T-A1 asks about) plus `/usr/bin/time`
+for wall/RSS. Compiler rebuilt at merge `76794f0` (today's master). `examples/curl`
+named in §1.4 no longer exists in the tree; the largest real programs are now
+`examples/helm` and `examples/recon` (≤ 489 LOC/file). A synthetic
+`~99k-line` `.lev` (1,500-class stress file: fields + methods + loops + branches)
+stood in for the "~100k-line" input; a `~13k-line` variant was used for the callgrind
+run (instruction *share* is input-size-independent).
+
+**Wall time / memory (99k-line synthetic).**
+| Pipeline | Wall | Peak RSS |
+|---|---|---|
+| parse → resolve → check (`leviathan <file>`) | 0.50 s | 311 MB |
+| parse → check → lower to IR (`--ir`) | 1.68 s | 351 MB |
+
+**Instruction-share attribution (callgrind, 553.9M I-refs total).**
+| Bucket | Share | Addressed by an AST arena? |
+|---|---|---|
+| AST-node object allocation (`make_unique<Expr/Stmt/TypeRef>` paths) | **0.73%** | yes (A2/A2-alt) |
+| AST-node teardown (`~Expr`/`~Stmt`/`~TypeRef` + vtable delete) | **1.11%** | yes (A2 skips dtors) |
+| **AST-node alloc + teardown (T-A1 numerator)** | **≈ 1.84%** | — |
+| *All* malloc/free-family (incl. Token/IR-`Inst` vectors, hashtables, strings) | 13.09% | mostly **no** — non-AST vector/hashtable/string churn a node arena does not own |
+
+**Why the full alloc-family 13% is not the arena's win.** The arena only removes
+per-AST-node malloc and the AST destructor walk (the 1.84%). The bulk of the 13% is
+`std::vector<Token>` growth, the IR `std::vector<Inst>` output, symbol-table
+hashtables, and `std::string` — none AST-node-owned. Even the full `std::pmr` route
+(A2) captures only node-*member* vectors, a minority of that 13%; the nodes-only
+fallback (A2-alt) captures essentially just the 1.84%. So no arena variant approaches
+the 10% bar.
+
+**Incidental finding (not this deferral's scope).** The genuine hot spots at `--ir`
+are algorithmic, in `src/Lower.cpp`, and untouched by any arena work:
+`Lowerer::isBaseOrSelf` **≈ 25%** (23.50% + 1.41% second instantiation) and
+`Lowerer::packedSlot` **11.0%** — together ~36% of instruction cost, both symbol-graph
+walks. If compile time ever becomes a felt cost, *these* are the targets, not
+allocation. Logged here as an observation only; no ticket filed and no change made
+(out of scope for this document, which covers the AST-arena and JIT deferrals).
+
+**Node-set stability check (T-A2).** Also unmet: the node-creation surface has *grown*
+since 2026-07-06 (Checker.cpp direct `make_unique` node sites went from 2 to ~50+;
+Rules.cpp from ~12 to ~15) and `ExprKind`/`StmtKind`/`TypeKind` remain active
+append-points across in-flight tracks (metaprog splices merged today at `76794f0`).
+Phase A1's "wait for a merge-queue lull" precondition is therefore also not satisfied.
+
+**Outcome.** Stop at A0. No A1/A2 code written. Deferral A remains the correct current
+state; re-measure when either T-A1 (a real project profiles ≥ 10%) or T-A2
+(node-set freezes for a full cycle *and* compile time is felt) fires.
+
+### 5.2 Phase B0 — 2026-07-20 (Deferral B, JIT)
+
+**Verdict: no candidate population exists to measure; T-B1 and T-B2 both unmet;
+nothing autonomously buildable. Deferral B remains deferred.**
+
+B0 requires a *real, named* workload that must run under the interpreter for
+structural reasons (REPL, runtime rule loading, embedding) **and** whose owner
+confirms AOT/`--build-native` structurally cannot serve it (T-B1a/c) — an owner input,
+not a profiler run. None is on record. Every buildable B-phase is gated upstream: B1
+(heap/value unification) explicitly needs an **owner decision** (touches differential
+harness lane #2), and B3 (Tier-1 ORC JIT) depends on B1. T-B2 (a strategic owner
+decision adopting tiered execution as a product requirement) is likewise not present.
+No code written; no way to proceed without owner direction.
+
+### 5.3 Document disposition
+
+Per §0.1 / §4, this file is *not* moved to `designs/complete/` — that move happens
+only when a deferral is **adopted and landed**. Neither trigger fired, so the file
+stays live as the rationale of record, now carrying the 2026-07-20 measurements.
