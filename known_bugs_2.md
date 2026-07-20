@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #94 |
-| P1       | — |
+| P1       | #96 |
 | P2       | — |
 | P3       | — |
 
@@ -69,6 +69,82 @@ takes the ordinary closure-value call path.
 throughout `packages/atlantis/src/orm/db.lev` (search "field-closure
 dot-call"); `packages/atlantis-mysql/src/pool.lev` (`var f = fn;`) already
 used the same idiom.
+
+---
+
+## #96 [P1] — a rule cannot match an attribute declared in a different namespace than the rule itself
+
+**Found:** 2026-07-19, Atlantis Track 07 M0 probe T7-P6
+(`packages/atlantis/tests/probes/mcp_p6_two_rules_stack.lev`), while
+validating the C1 2026-07-18 amendment's premise (rules/attributes live in
+the subsystem namespace that *consumes* them, e.g. Track 07's `schemaJson`
+rule in `Atlantis::OpenApi` matching `@Serializable`, declared in `Atlantis`).
+**Priority justification:** P1.2 — no single fix retires the risk; every
+future subsystem whose rule needs to match another subsystem's attribute
+(exactly the shape C1's own "multi-consumer" tiebreak anticipates as normal)
+must independently know to co-locate the rule in the attribute's namespace
+instead. Not P0: a workaround exists (same-namespace co-location) and no
+track is unconditionally blocked.
+
+**Repro (minimal, no nesting relationship — plain siblings):**
+
+```
+namespace SibA {
+    attribute Foo {}
+}
+namespace SibB {
+    rule ruleB {
+        match @Foo on struct S
+        inject `string __fromB() => "B";` at member of S
+    }
+}
+uses SibA;
+uses SibB;
+
+@Foo
+struct Thing { int x; }
+
+void main() {
+    Thing t = Thing();
+    console.writeln(t.__fromB());   // expected "B"
+}
+main();
+```
+
+**Expected:** `ruleB` matches `@Foo` (visible, imported via `uses SibA;`) and
+injects `__fromB` into `Thing`, printing `B`.
+**Actual:** a diagnostic (`warning: attribute '@Foo' matched no imported rule
+(missing 'uses SibB'?)`) fires even though `uses SibB;` IS present, `ruleB`
+never fires, and the call `t.__fromB()` fails at runtime: `Uncaught
+RuntimeException: cannot resolve call target '__fromB'`. Confirmed the same
+result whether the two namespaces are unrelated siblings (above), or one is
+nested one level inside the other in either direction (attribute in the
+outer namespace + rule in a nested inner namespace, matching Track 07's
+actual C1-amended layout) — the failure is not about nesting depth or
+direction, only about the rule and the attribute being declared in different
+namespace blocks at all. When both are declared in the SAME namespace block
+(regardless of how deeply that namespace is itself nested — e.g. Track 06's
+`Atlantis::Orm` rules matching `Atlantis::Orm`'s own attributes, bug #91's
+now-fixed regression floor), matching works correctly — confirmed by this
+same probe file's `ruleOuter`/`__fromOuter` case, which passes.
+
+**Root-cause pointer:** not investigated (framework agents don't debug
+compiler internals per the Atlantis overview §0.4(b)/(h)); likely the same
+family as #91 (rule/attribute namespace keying in `Rules.cpp`), but #91's fix
+(keying by full qualified path) evidently did not extend to cross-namespace
+*matching* — only to same-namespace rules/attributes nested arbitrarily deep.
+
+**Workaround (debt site):** co-locate a rule with the attribute it matches,
+in the attribute's OWN namespace, even when C1's placement guidance would
+otherwise put the rule in a different (more specific) subsystem namespace.
+Applied in `packages/atlantis/src/openapi/schema.lev` (Track 07): the
+`serializableSchema` rule matches `@Serializable`, declared in flat
+`Atlantis` by Track 03's (still-unmigrated) `src/json/serializable.lev` — so
+it is declared inside `namespace Atlantis { ... }` directly, not nested
+`Atlantis::OpenApi`, with a comment pointing here. Revisit when either this
+bug is fixed, or Track 03 completes its own C1 migration (at which point the
+rule should move to `Atlantis::Json` instead, once cross-namespace matching
+works or `@Serializable` lands there).
 
 ---
 

@@ -1,0 +1,131 @@
+// Atlantis Track 07 — Atlantis::Mcp core value types (design §2.3).
+//
+// Per the C1 2026-07-18 amendment, Track 07's own rules/attributes/types live in the
+// subsystem namespace they belong to (Atlantis::Mcp here), not flat Atlantis — a file
+// opts in with `uses Atlantis::Mcp;`.
+namespace Atlantis {
+    namespace Mcp {
+
+        // Compile-time-injected parameter descriptor (§2.3) — one per @Tool method
+        // param, produced by the mcpTool rule's `$for` over `m.params` (T7-P4).
+        struct ParamSpec {
+            string name;
+            string type;
+            new ParamSpec(string name, string type) {
+                this.name = name;
+                this.type = type;
+            }
+        }
+
+        // A tool's result envelope (§2.3). `content` items are pre-built JsonValue
+        // objects (`{"type":"text","text":"..."}` shape, §3.6) — the uniform envelope
+        // never wraps/unwraps a second time.
+        class McpResult {
+            Array<JsonValue> content;
+            bool isError;
+            new McpResult(Array<JsonValue> content, bool isError) {
+                this.content = content;
+                this.isError = isError;
+            }
+        }
+
+        // A registered tool (§2.3). `run` is the typed dispatch adapter — uniform
+        // envelope; the language's no-coloring `await` means the adapter body may
+        // await inside without a Promise-returning signature here.
+        class McpTool {
+            string name;
+            string description;
+            JsonValue inputSchema;
+            (JsonValue) => McpResult run;
+            new McpTool(string name, string description, JsonValue inputSchema,
+                        (JsonValue) => McpResult run) {
+                this.name = name;
+                this.description = description;
+                this.inputSchema = inputSchema;
+                this.run = run;
+            }
+        }
+
+        // §3.3 metadata record — see rules.lev's header comment for why this is
+        // METADATA ONLY (name/description/params), not a working tool: LA-16
+        // (type-position splicing) is not landed, so the rule cannot generate the
+        // typed dispatch closure itself (design §3.5 fallback ladder rung 3).
+        struct ToolMeta {
+            string name;
+            string description;
+            Array<ParamSpec> params;
+            new ToolMeta(string name, string description, Array<ParamSpec> params) {
+                this.name = name;
+                this.description = description;
+                this.params = params;
+            }
+        }
+
+        // §2.3/§3.3 — provided by inheriting ToolSource; a service class lists its
+        // generated tools here for McpServer to flatten at construction.
+        // `toolMetas()` additionally exposes whatever `@Tool` metadata the
+        // mcpToolMeta rule captured, so McpServer can boot-warn about a `@Tool`
+        // method whose name was never wired up via `registerRun`/`addRaw`
+        // (rules.lev's own fallback-ladder note; design risk #5's spirit, applied
+        // to this track's own reduced-automation shape).
+        interface IToolSource {
+            Array<McpTool> mcpTools();
+            Array<ToolMeta> toolMetas();
+        }
+
+        class ToolSource : IToolSource {
+            Array<McpTool> __mcpTools = [];
+            Array<ToolMeta> __mcpToolMetas = [];
+            Array<McpTool> mcpTools() => this.__mcpTools;
+            Array<ToolMeta> toolMetas() => this.__mcpToolMetas;
+
+            // The hand-written half of the design's §3.5 rung-3 fallback: pairs a
+            // `@Tool`-declared name with its actual typed dispatch closure. The app
+            // author names the concrete param type statically at the call site
+            // (`AddArgs::FromJson(a)`) — exactly the design's own sketch.
+            void registerRun(string name, string description, JsonValue inputSchema,
+                              (JsonValue) => McpResult run) {
+                this.__mcpTools = this.__mcpTools.add(McpTool(name, description, inputSchema, run));
+            }
+        }
+
+        // -- content-item builders (§3.3's `content()` overload set root) --
+        JsonValue contentTextItem(string s) {
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr("text");
+            m["text"] = JsonValue::ofStr(s);
+            return JsonValue::ofObject(m);
+        }
+        McpResult contentText(string s) => McpResult([contentTextItem(s)], false);
+        McpResult contentErrorText(string s) => McpResult([contentTextItem(s)], true);
+
+        // §3.3 content() overload set — most-specific-wins over the duck-typed
+        // generic (T7-P3 confirmed this resolves correctly).
+        McpResult content(string s) => contentText(s);
+        McpResult content(int v) => contentText(v.toString());
+        McpResult content(float v) => contentText(v.toString());
+        McpResult content(bool v) => contentText(v.toString());
+        McpResult content(JsonValue v) => contentText(v.render());
+        McpResult content<R>(R r) => contentText(r.toJson().render());
+
+        // §3.4 — the uniform error-mapping wrapper every hand-written `run`
+        // closure should use. Tool execution failures are `isError:true` RESULTS,
+        // never JSON-RPC errors (MCP spec: the model should see them).
+        McpResult guard(string name, () => McpResult thunk) {
+            try {
+                return thunk();
+            } catch (Http::IValidationException e) {
+                Array<string> parts = [];
+                for (Http::FieldError fe in e.errors) {
+                    parts = parts.add(fe.field + ": " + fe.message);
+                }
+                return contentErrorText(parts.joinToString("; "));
+            } catch (Http::IHttpException e) {
+                return contentErrorText(e.message);
+            } catch (IException e) {
+                console.writeln("WARNING: tool '" + name + "' failed: " + e.toString());
+                return contentErrorText("tool '" + name + "' failed");
+            }
+        }
+    }
+}

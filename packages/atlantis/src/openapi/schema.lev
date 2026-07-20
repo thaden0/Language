@@ -1,0 +1,175 @@
+// Atlantis Track 07 — schema generation (design §4). The ONE schema
+// generator: `schemaJson()`/`Empty()` (§4.1) + `SchemaMap` (§4.2) +
+// `SchemaRegistry` (§4.3). MCP's inputSchema and OpenAPI's
+// components/schemas are two emitters over these same values (design risk
+// #1 — schema drift is structurally impossible).
+//
+// Runtime logic lives in Atlantis::OpenApi, its owned home per the C1
+// 2026-07-18 amendment. The ONE exception is the `serializableSchema` RULE
+// itself (bottom of this file): it must match `@Serializable`, still
+// declared in flat `Atlantis` by Track 03's (unmigrated) json/serializable.lev
+// — and a rule cannot match an attribute declared in a different namespace
+// than the rule itself (known_bugs_2.md #96, found by this track's T7-P6
+// probe). Interim workaround per that entry: the rule is declared in flat
+// `namespace Atlantis { ... }`, matching @Serializable's actual home today.
+namespace Atlantis {
+    namespace OpenApi {
+
+        // Compile-time-injected field descriptor (§4.1) — mirrors Mcp::ParamSpec's
+        // shape but is OpenApi's own (no cross-subsystem struct sharing, C1).
+        struct FieldSpec {
+            string name;
+            string type;
+            new FieldSpec(string name, string type) {
+                this.name = name;
+                this.type = type;
+            }
+        }
+
+        JsonValue emptyObjectSchema() {
+            Map<string, JsonValue> props = Map();
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr("object");
+            m["properties"] = JsonValue::ofObject(props);
+            return JsonValue::ofObject(m);
+        }
+
+        // §5.2's own optional-detection idiom (Track 03's __atlGuard), reused
+        // verbatim: a SIMPLE optional is "T | None" with no further '|' in T.
+        bool isSimpleOptional(string t) {
+            if (!t.endsWith(" | None")) { return false; }
+            string base = t.subStr(0, t.length() - 7);
+            return !base.contains("|");
+        }
+
+        JsonValue withNullable(JsonValue base) {
+            Map<string, JsonValue>? obj = base.asObject();
+            if (obj == None) {
+                return base;
+            } else {
+                Map<string, JsonValue> m = obj;
+                JsonValue? tv = m.atOrNone("type");
+                if (tv == None) {
+                    return base;
+                } else {
+                    string baseType = (tv ?? JsonValue::ofNull()).asStr() ?? "object";
+                    Array<JsonValue> arr = [JsonValue::ofStr(baseType), JsonValue::ofStr("null")];
+                    m["type"] = JsonValue::ofArray(arr);
+                    return JsonValue::ofObject(m);
+                }
+            }
+        }
+
+        JsonValue scalarSchema(string jsonType) {
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr(jsonType);
+            return JsonValue::ofObject(m);
+        }
+
+        // §4.3 — nested-struct schemas the composition root registers
+        // explicitly. A namespace-level singleton (verified legal + engine-
+        // identical, oracle/IR/LLVM): schemaJson() is a fixed-signature
+        // generated member with no injection point for a registry parameter,
+        // so this is the only reach it has (same "one process-wide table"
+        // shape as the design's own bare `OpenApi::schemas()` call).
+        class SchemaRegistry {
+            Map<string, JsonValue> entries = Map();
+
+            void register(string name, JsonValue schema) {
+                this.entries[name] = schema;
+            }
+            bool has(string name) => this.entries.has(name);
+            Map<string, JsonValue> all() => this.entries;
+            JsonValue lookup(string name) {
+                JsonValue? found = this.entries.atOrNone(name);
+                if (found == None) {
+                    Array<string> known = this.entries.keys();
+                    throw RuntimeException("SchemaRegistry: unknown nested type '" + name +
+                        "' — known: [" + known.joinToString(", ") + "]; register it with " +
+                        "'OpenApi::schemas().register(\"" + name + "\", " + name +
+                        "::Empty().schemaJson());' in the composition root (design §4.3)");
+                } else {
+                    return found ?? JsonValue::ofNull();
+                }
+            }
+        }
+
+        SchemaRegistry __registry = SchemaRegistry();
+        SchemaRegistry schemas() => __registry;
+
+        // §4.2 SchemaMap — the one type-string -> JSON-Schema table, string-
+        // parsed (meta::Field.type/ParamSpec.type are canonical strings,
+        // Track 03 M0 finding; ORM's P7 pinned the "T | None" spelling this
+        // reuses). Refused loudly (never silent): anything not on the table
+        // and not a registered struct name throws via SchemaRegistry.lookup.
+        JsonValue mapType(string rawType) {
+            string t = rawType.trim();
+            if (isSimpleOptional(t)) {
+                string base = t.subStr(0, t.length() - 7);
+                return withNullable(mapType(base));
+            } else if (t == "int") {
+                return scalarSchema("integer");
+            } else if (t == "float") {
+                return scalarSchema("number");
+            } else if (t == "bool") {
+                return scalarSchema("boolean");
+            } else if (t == "string") {
+                return scalarSchema("string");
+            } else if (t == "DateTime") {
+                Map<string, JsonValue> m = Map();
+                m["type"] = JsonValue::ofStr("string");
+                m["format"] = JsonValue::ofStr("date-time");
+                return JsonValue::ofObject(m);
+            } else if (t == "JsonValue") {
+                return JsonValue::ofObject(Map());
+            } else if (t.startsWith("Array<") && t.endsWith(">")) {
+                string inner = t.subStr(6, t.length() - 7);
+                Map<string, JsonValue> m = Map();
+                m["type"] = JsonValue::ofStr("array");
+                m["items"] = mapType(inner);
+                return JsonValue::ofObject(m);
+            } else if (t.startsWith("Map<string,") && t.endsWith(">")) {
+                string inner = t.subStr(11, t.length() - 12).trim();
+                Map<string, JsonValue> m = Map();
+                m["type"] = JsonValue::ofStr("object");
+                m["additionalProperties"] = mapType(inner);
+                return JsonValue::ofObject(m);
+            } else {
+                return schemas().lookup(t);
+            }
+        }
+
+        // §4.1 objectSchema — runs at boot over compile-time-injected
+        // FieldSpecs (zero reflection). `required` drops any simple-optional
+        // field (§4.2's `T?` row).
+        JsonValue objectSchema(Array<FieldSpec> fields) {
+            Map<string, JsonValue> props = Map();
+            Array<JsonValue> required = [];
+            for (FieldSpec f in fields) {
+                props[f.name] = mapType(f.type);
+                if (!isSimpleOptional(f.type)) {
+                    required = required.add(JsonValue::ofStr(f.name));
+                }
+            }
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr("object");
+            m["properties"] = JsonValue::ofObject(props);
+            if (!required.isEmpty()) {
+                m["required"] = JsonValue::ofArray(required);
+            }
+            return JsonValue::ofObject(m);
+        }
+    }
+
+    // known_bugs_2.md #96 workaround — see the file header. This rule lives
+    // beside Track 03's rules (flat Atlantis, matching @Serializable's real
+    // home) rather than nested Atlantis::OpenApi.
+    rule serializableSchema {
+        match @Serializable on struct S
+        inject `JsonValue schemaJson() => Atlantis::OpenApi::objectSchema(
+            [ $for f in S.fields.where((x) => !x.hasAttr("JsonIgnore"))
+                  : Atlantis::OpenApi::FieldSpec($f.name, $f.type) ]);`
+            at member of S
+        inject `new Empty() { }` at member of S
+    }
+}
