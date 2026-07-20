@@ -1,0 +1,15 @@
+// techdesign-splices-desugars-sonnet.md §2.5 regression: `on struct C` is
+// unaffected by the addendum — still fires on a struct exactly as before.
+namespace Marker {
+    attribute Serializable { }
+    rule tagStruct {
+        match @Serializable(x) on struct C
+        inject `int kindTag() => 1;` at member of C
+    }
+}
+uses Marker;
+
+@Serializable
+struct Point { int x; int y; }
+
+console.writeln(Point(1, 2).kindTag());

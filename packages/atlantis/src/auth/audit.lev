@@ -1,0 +1,55 @@
+// Atlantis Track 08 — audit events (design §9.3). Track 01 owns the logger;
+// this track owns the vocabulary. Redaction rule (hard): passwords, tokens,
+// cookie values, and Authorization headers never appear in any log line at any
+// level — enforced by construction here, since none of these functions accept
+// those values as parameters in the first place (grep-gate: no call in
+// Atlantis::Auth references them).
+namespace Atlantis {
+    namespace Auth {
+
+        string auditIp(Http::Context ctx) => ctx.items.atOr("remoteAddr", "");
+        string auditRoute(Http::Context ctx) => ctx.items.atOr("atlantis.route", "");
+
+        void auditLoginSuccess(Log::Logger log, Http::Context ctx, string principalId) {
+            log.info("auth.login.success", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("principalId", principalId),
+                Log::LogField("ip", auditIp(ctx)), Log::LogField("route", auditRoute(ctx))]);
+        }
+        // reason: "bad_password" | "unknown_user" | "locked" (internal only —
+        // never surfaced in the HTTP response body, §9.2).
+        void auditLoginFailure(Log::Logger log, Http::Context ctx, string reason) {
+            log.info("auth.login.failure", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("reason", reason),
+                Log::LogField("ip", auditIp(ctx)), Log::LogField("route", auditRoute(ctx))]);
+        }
+        void auditLockout(Log::Logger log, Http::Context ctx, string principalId) {
+            log.warn("auth.lockout", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("principalId", principalId),
+                Log::LogField("ip", auditIp(ctx))]);
+        }
+        void auditLogout(Log::Logger log, Http::Context ctx, string principalId) {
+            log.info("auth.logout", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("principalId", principalId),
+                Log::LogField("ip", auditIp(ctx))]);
+        }
+        void auditSessionReissue(Log::Logger log, Http::Context ctx, string principalId) {
+            log.debug("auth.session.reissue", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("principalId", principalId)]);
+        }
+        void auditTokenInvalid(Log::Logger log, Http::Context ctx, string reason) {
+            log.warn("auth.token.invalid", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("reason", reason),
+                Log::LogField("ip", auditIp(ctx))]);
+        }
+        void auditCsrfReject(Log::Logger log, Http::Context ctx) {
+            log.warn("auth.csrf.reject", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("ip", auditIp(ctx)),
+                Log::LogField("route", auditRoute(ctx))]);
+        }
+        void auditRatelimitReject(Log::Logger log, Http::Context ctx) {
+            log.warn("auth.ratelimit.reject", [
+                Log::LogField("requestId", ctx.id()), Log::LogField("ip", auditIp(ctx)),
+                Log::LogField("route", auditRoute(ctx))]);
+        }
+    }
+}

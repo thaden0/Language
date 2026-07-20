@@ -1,0 +1,63 @@
+// Atlantis Track 07 — `@Tool` attribute + the mcpToolMeta rule (design §3).
+//
+// DEVIATION FROM THE DESIGN'S §3.3 SKETCH (read this before touching this file):
+// the design's `mcpTool` rule generates a COMPLETE, working `McpTool` — including
+// a typed dispatch closure built by splicing the tool method's param TYPE NAME
+// into call-target/type position (`$p.type::FromJson(args)`, an `A::Empty()`
+// generic instantiation, or a typed lambda parameter). That needs LA-16
+// ("identifier/type-position splicing of comptime strings... `$p.type::FromJson`
+// in type/ctor position") — filed in `designs/requests/request-metaprog-splices.md`,
+// NOT landed. Confirmed by three independent P-probes before writing this rule
+// (2026-07-19):
+//   1. Inferring a generic type param from an explicitly-typed lambda parameter
+//      `(Widget w) => ...` fails to compile ("cannot determine a concrete type
+//      tuple"), and fails identically for a bound method reference (LA-25) —
+//      not a metaprog-shaped issue, just no argument-driven generic inference;
+//      an EXPLICIT turbofish (`f::<Widget, string>(...)`, LA-32) fixes it.
+//   2. But the turbofish's type argument can't itself be a splice hole —
+//      `callWithParsed::<$p.type, string>(...)` fails to PARSE ("expected '>'").
+//   3. `$p.type::FromJson(v)` (call-target position) parses but fails at
+//      RUNTIME ("cannot resolve call target 'FromJson'") — the hole is a STRING
+//      VALUE, not a type/identifier splice, confirming LA-16's gap directly.
+// Filed as a note against the existing LA-16 ticket (already registered — no new
+// ticket needed) rather than a `known_bugs_*.md` entry (LA-16 not landing is
+// documented, expected behavior, not a defect).
+//
+// Per the design's OWN §3.5 fallback ladder, rung 3 ("P1 fails -> typed adapters
+// written by hand in the composition root ... rule still generates
+// name/description/descriptors"): this rule generates METADATA ONLY (name,
+// description, param name+type strings — everything that's just a STRING value
+// hole, §7's T7-P4/P5). The actual typed dispatch closure is written by hand via
+// `ToolSource.registerRun`/`McpServer.addRaw`, naming the concrete param type
+// statically — exactly the design's own sketch (`AddArgs::FromJson(a)`).
+namespace Atlantis {
+    namespace Mcp {
+
+        attribute Tool { string name; string description; }
+
+        rule mcpToolMeta {
+            match @Tool(t) on method m in class C
+            inject `this.__mcpToolMetas = this.__mcpToolMetas.add(Atlantis::Mcp::ToolMeta($t.name, $t.description,
+                [ $for p in m.params : Atlantis::Mcp::ParamSpec($p.name, $p.type) ]));`
+                at bottom of C.constructor
+        }
+
+        // Boot-time safety net for the fallback shape above (mirrors design risk
+        // #5's "silent tool loss" spirit): every `@Tool`-declared name should have
+        // a matching hand-written registration. Loud warning, not a throw — a
+        // service class may legitimately still be under construction.
+        void warnUnwiredTools(IToolSource source) {
+            Array<string> wired = [];
+            for (McpTool t in source.mcpTools()) {
+                wired = wired.add(t.name);
+            }
+            for (ToolMeta meta in source.toolMetas()) {
+                if (!wired.contains(meta.name)) {
+                    console.writeln("WARNING: @Tool(\"" + meta.name + "\") declared but never " +
+                        "registered via registerRun/addRaw — the tool metadata exists but the " +
+                        "tool will not appear in tools/list (design §3.5 fallback ladder rung 3)");
+                }
+            }
+        }
+    }
+}

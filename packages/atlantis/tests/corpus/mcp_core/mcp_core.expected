@@ -1,0 +1,47 @@
+== dispatch() directly ==
+-- initialize --
+{"jsonrpc":"2.0","id":1.000000,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"test-app","version":"1.2.3"}}}
+-- ping --
+{"jsonrpc":"2.0","id":2.000000,"result":{}}
+-- tools/list --
+{"jsonrpc":"2.0","id":3.000000,"result":{"tools":[{"name":"echo","description":"Echoes text back","inputSchema":{"type":"object","properties":{}}},{"name":"add","description":"Adds two integers","inputSchema":{"type":"object","properties":{}}}]}}
+-- tools/call echo --
+{"jsonrpc":"2.0","id":4.000000,"result":{"content":[{"type":"text","text":"hi"}],"isError":false}}
+-- tools/call add --
+{"jsonrpc":"2.0","id":5.000000,"result":{"content":[{"type":"text","text":"5.000000"}],"isError":false}}
+-- tools/call unknown tool --
+{"jsonrpc":"2.0","id":6.000000,"error":{"code":-32602.000000,"message":"Unknown tool: nope"}}
+-- unknown method --
+{"jsonrpc":"2.0","id":7.000000,"error":{"code":-32601.000000,"message":"method not found: whatever"}}
+-- notification (id-less) through dispatch (never reached via HTTP, still total) --
+{"jsonrpc":"2.0","id":null,"result":{}}
+== HTTP handler() -- section 2.1 table ==
+-- POST valid request --
+  status=200 ctype=application/json
+  body={"jsonrpc":"2.0","id":8.000000,"result":{}}
+-- POST notification (no id) -> 202 --
+  status=202 ctype=-
+  body=
+-- POST unparseable body -> 200, -32700 --
+  status=200 ctype=application/json
+  body={"jsonrpc":"2.0","id":null,"error":{"code":-32700.000000,"message":"parse error"}}
+-- POST batch (array) -> 200, -32600 --
+  status=200 ctype=application/json
+  body={"jsonrpc":"2.0","id":null,"error":{"code":-32600.000000,"message":"batching not supported (2025-06-18 removed JSON-RPC batching)"}}
+-- GET /mcp -> 405 --
+  status=405 ctype=-
+  body=
+-- DELETE /mcp -> 405 --
+  status=405 ctype=-
+  body=
+-- POST bad protocol version -> 400 problem+json --
+  status=400 ctype=application/problem+json
+  body={"type":"about:blank","status":400.000000,"detail":"unsupported MCP-Protocol-Version: 2025-03-26"}
+-- POST correct protocol version -> 200 --
+  status=200 ctype=application/json
+  body={"jsonrpc":"2.0","id":10.000000,"result":{}}
+== boot validation: duplicate tool name across sources ==
+threw=true msg=McpServer: duplicate tool name 'echo' — tool names must be unique across every registered source
+== addRaw (fallback ladder rung 4) ==
+{"jsonrpc":"2.0","id":11.000000,"result":{"content":[{"type":"text","text":"hello"}],"isError":false}}
+addRaw duplicate threw=true

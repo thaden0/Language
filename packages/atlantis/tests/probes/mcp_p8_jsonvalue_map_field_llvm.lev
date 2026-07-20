@@ -1,0 +1,29 @@
+// T7-P8 (infra sanity, not in the design's §7 table): a class FIELD typed
+// `Map<string, JsonValue>` -- the shape §4.3's SchemaRegistry needs -- built
+// from nested object/array JsonValue trees and read back, on every engine.
+// respond.lev's own comment notes a historical LLVM `Map<K, recursive-class>`
+// corruption (bug.md #30, since fixed/superseded -- known_bugs_1/2.md carry
+// no open JsonValue entry and Track 02's Controller.jsonBody/ok() already
+// pass JsonValue through LLVM routes) -- this pins it directly for the
+// registry shape specifically (JsonValue is a reference `class`, not the
+// value-`struct`-in-Map-field shape bug #47 warns about).
+namespace Probe {
+    class Registry {
+        Map<string, JsonValue> schemas = Map();
+        void register(string name, JsonValue v) { this.schemas[name] = v; }
+        JsonValue get(string name) => this.schemas.at(name);
+    }
+}
+uses Probe;
+
+void run() {
+    Registry r = Registry();
+    Map<string, JsonValue> fields = Map();
+    fields["a"] = JsonValue::ofNum(1.0);
+    fields["b"] = JsonValue::ofArray([JsonValue::ofStr("x"), JsonValue::ofStr("y")]);
+    r.register("Widget", JsonValue::ofObject(fields));
+    r.register("Other", JsonValue::ofBool(true));
+    console.writeln(r.get("Widget").render());
+    console.writeln(r.get("Other").render());
+}
+run();

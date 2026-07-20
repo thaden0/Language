@@ -1,0 +1,23 @@
+// T7-P3: `content(string)` vs `content<R>(R)` — most-specific overload must
+// beat the generic (duck-typed .toJson()); `content(await promise)` must
+// unify (design §3.3/§7).
+struct Box {
+    int v;
+    JsonValue toJson() => JsonValue::ofNum(this.v.toFloat());
+}
+
+string content<R>(R r) => "generic:" + r.toJson().render();
+string content(string s) => "string:" + s;
+
+Promise<string> asyncHi() {
+    Promise<string> p = Promise();
+    p.resolve("hi");
+    return p;
+}
+
+void main() {
+    console.writeln(content("plain"));
+    console.writeln(content(Box(5)));
+    console.writeln(content(await asyncHi()));
+}
+main();

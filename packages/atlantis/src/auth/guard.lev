@@ -1,0 +1,86 @@
+// Atlantis Track 08 — guard enforcement (design §5), built on the LANDED Track 02
+// surface. The design's original §5 assumed Track 02 would stamp a normalized
+// `ctx.items["route.guard"]` string, produced from `@Auth`/`@NoAuth` ATTRIBUTES —
+// that attribute-rule auto-wiring is blocked upstream on LA-4/LA-16/LA-22 (none
+// landed at authoring time; LA-4 items (A)/(B) landed 2026-07-19, but LA-16/LA-22
+// — the splice mechanism attribute-based route wiring would ride — are still an
+// open, un-accepted request, `designs/requests/request-metaprog-splices.md`).
+//
+// Track 02 DID land the equivalent explicit-fluent surface: `Route<C>`'s
+// `.requireAuth()/.noAuth()/.auth(role)` feed `RouteRec.authMode`/`authRole`
+// (int 0/1/2 + a plain string), and `Router` already exposes `authModeOf(key)`/
+// `authRoleOf(key)` for exactly this track to read. So the GuardSpec vocabulary
+// below is DERIVED from that pair at request time rather than stored as a new
+// RouteRec field — zero C5/Router-schema changes, same enforcement semantics.
+// `.auth("policy:canEditPost")` already threads a policy reference through the
+// existing `authRole` string with no schema change at all.
+namespace Atlantis {
+    namespace Auth {
+
+        class PolicyRegistry {
+            Map<string, (Http::Context, Principal) => bool> policies = Map();
+            PolicyRegistry add(string name, (Http::Context, Principal) => bool fn) {
+                this.policies[name] = fn;
+                return this;
+            }
+            bool has(string name) => this.policies.has(name);
+            (Http::Context, Principal) => bool get(string name) => this.policies.at(name);
+        }
+
+        // GuardSpec vocabulary (frozen small, design §5): "noauth" | "auth" |
+        // "role:<name>" | "policy:<name>".
+        string guardSpecOf(int authMode, string authRole) {
+            if (authMode == 2) { return "noauth"; }
+            if (authRole == "") { return "auth"; }
+            if (authRole.startsWith("policy:")) {
+                return "policy:" + authRole.subStr(7, authRole.length() - 7);
+            }
+            return "role:" + authRole;
+        }
+
+        // Boot validation (design §5): a `policy:` spec with no registered
+        // policy, or a bare role name containing ':', is a boot error — the
+        // overload is safe precisely because this runs before traffic.
+        void validateGuards(Routing::Router router, PolicyRegistry reg) {
+            for (Routing::RouteRec rec in router.routes()) {
+                if (rec.authMode == 1 && rec.authRole != "") {
+                    if (rec.authRole.startsWith("policy:")) {
+                        string name = rec.authRole.subStr(7, rec.authRole.length() - 7);
+                        if (!reg.has(name)) {
+                            throw RuntimeException("Auth::validateGuards: route " + rec.verb + " " +
+                                rec.path + " references unregistered policy '" + name + "'");
+                        }
+                    } else if (rec.authRole.contains(":")) {
+                        throw RuntimeException("Auth::validateGuards: route " + rec.verb + " " +
+                            rec.path + " has an invalid role name '" + rec.authRole +
+                            "' (':' is reserved for policy: specs)");
+                    }
+                }
+            }
+        }
+
+        // Asymmetry, per the classic semantics (design §5): unauthenticated =>
+        // 401 (retry with credentials); authenticated-but-insufficient => 403
+        // (retrying won't help). Track 01's ErrorMapper owns exception=>status.
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse guard(Routing::Router router, PolicyRegistry reg) =>
+            (ctx, next) => {
+                string key = ctx.items.atOr("atlantis.route", "");
+                string spec = guardSpecOf(router.authModeOf(key), router.authRoleOf(key));
+                if (spec == "noauth") { return next(ctx); }
+                Principal? uOpt = ctx.user;
+                if (uOpt == None) { throw Http::UnauthorizedException(); }
+                Principal u = uOpt ?? Principal("", "", [], emptyClaims());
+                if (spec == "auth") { return next(ctx); }
+                if (spec.startsWith("role:")) {
+                    if (!u.hasRole(spec.subStr(5, spec.length() - 5))) { throw Http::ForbiddenException(); }
+                    return next(ctx);
+                }
+                if (spec.startsWith("policy:")) {
+                    var p = reg.get(spec.subStr(7, spec.length() - 7));
+                    if (!p(ctx, u)) { throw Http::ForbiddenException(); }
+                    return next(ctx);
+                }
+                throw Http::HttpException(500, "unknown guard spec");   // unreachable post-boot-validation
+            };
+    }
+}

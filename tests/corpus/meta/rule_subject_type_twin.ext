@@ -1,0 +1,25 @@
+// Hand-written twin of rule_subject_type.ext: a separate `on class C` rule
+// and `on struct C` rule, in place of the single `on type C` rule — the
+// class/struct pair the addendum's `on type` collapses. Must produce
+// byte-identical output.
+namespace Marker {
+    attribute Serializable { }
+    rule tagClass {
+        match @Serializable(x) on class C
+        inject `int kindTag() => 1;` at member of C
+    }
+    rule tagStruct {
+        match @Serializable(x) on struct C
+        inject `int kindTag() => 1;` at member of C
+    }
+}
+uses Marker;
+
+@Serializable
+class Widget { }
+
+@Serializable
+struct Point { int x; int y; }
+
+console.writeln(Widget().kindTag());
+console.writeln(Point(1, 2).kindTag());

@@ -1,0 +1,253 @@
+// Atlantis Track 07 — McpServer: JSON-RPC 2.0 core + streamable-HTTP handler
+// (design §2). Spec revision pinned to "2025-06-18" — no batching, no SSE, no
+// sessions (v1, seams named in the design, not built here).
+namespace Atlantis {
+    namespace Mcp {
+
+        JsonValue okEnvelope(JsonValue id, JsonValue result) {
+            Map<string, JsonValue> m = Map();
+            m["jsonrpc"] = JsonValue::ofStr("2.0");
+            m["id"] = id;
+            m["result"] = result;
+            return JsonValue::ofObject(m);
+        }
+        JsonValue errEnvelope(JsonValue id, int code, string message) {
+            Map<string, JsonValue> e = Map();
+            e["code"] = JsonValue::ofNum(code.toFloat());
+            e["message"] = JsonValue::ofStr(message);
+            Map<string, JsonValue> m = Map();
+            m["jsonrpc"] = JsonValue::ofStr("2.0");
+            m["id"] = id;
+            m["error"] = JsonValue::ofObject(e);
+            return JsonValue::ofObject(m);
+        }
+
+        // Two small response builders kept LOCAL to this namespace — reaching
+        // `Http::Respond::json` would be a two-`::`-deep sibling qualification,
+        // the exact shape router.lev (design §13 log) documents as failing at IR
+        // lowering; a same-namespace helper sidesteps it, matching that
+        // precedent (Routing's own inline 405 response).
+        HttpResponse mcpHttpJson(int status, string bodyJson) {
+            HttpResponse r = HttpResponse(status, bodyJson);
+            r.withHeader("Content-Type", "application/json");
+            return r;
+        }
+        HttpResponse mcpHttpProblem(int status, string detail) {
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr("about:blank");
+            m["status"] = JsonValue::ofNum(status.toFloat());
+            m["detail"] = JsonValue::ofStr(detail);
+            HttpResponse r = HttpResponse(status, JsonValue::ofObject(m).render());
+            r.withHeader("Content-Type", "application/problem+json");
+            return r;
+        }
+
+        class McpServer {
+            Array<McpTool> tools;
+            string name;
+            string version;
+
+            // §2.3 — flatten every source's tools at construction; boot-fail-fast
+            // on a duplicate name (design risk #8). Naming the offending CLASSES
+            // (as the design's risk table suggests) would need runtime type
+            // reflection, which is forbidden (overview §0.4(a)) — the duplicate
+            // tool NAME is itself the actionable, honest diagnostic.
+            new McpServer(Array<IToolSource> sources) {
+                Array<McpTool> flat = [];
+                for (IToolSource s in sources) {
+                    Array<McpTool> fromSource = s.mcpTools();
+                    if (fromSource.isEmpty() && s.toolMetas().isEmpty()) {
+                        console.writeln("WARNING: McpServer: a listed IToolSource produced zero " +
+                            "tools — check the class has @Tool methods and the file has " +
+                            "'uses Atlantis::Mcp;' (design risk #5)");
+                    }
+                    warnUnwiredTools(s);
+                    for (McpTool t in fromSource) {
+                        flat = flat.add(t);
+                    }
+                }
+                Array<string> seen = [];
+                for (McpTool t in flat) {
+                    if (seen.contains(t.name)) {
+                        throw RuntimeException("McpServer: duplicate tool name '" + t.name +
+                            "' — tool names must be unique across every registered source");
+                    }
+                    seen = seen.add(t.name);
+                }
+                this.tools = flat;
+                this.name = "atlantis-app";
+                this.version = "0.1.0";
+            }
+
+            McpServer withInfo(string name, string version) {
+                this.name = name;
+                this.version = version;
+                return this;
+            }
+
+            // §3.5 fallback ladder rung 4 — always available, independent of the
+            // @Tool rule (M2). Also how M1's own corpus hand-registers tools.
+            McpServer addRaw(string name, string description, JsonValue schema,
+                              (JsonValue) => McpResult run) {
+                if (this.tools.find((t) => t.name == name) != None) {
+                    throw RuntimeException("McpServer.addRaw: duplicate tool name '" + name + "'");
+                }
+                this.tools = this.tools.add(McpTool(name, description, schema, run));
+                return this;
+            }
+
+            JsonValue initializeResult() {
+                Map<string, JsonValue> toolsCap = Map();
+                Map<string, JsonValue> caps = Map();
+                caps["tools"] = JsonValue::ofObject(toolsCap);
+                Map<string, JsonValue> serverInfo = Map();
+                serverInfo["name"] = JsonValue::ofStr(this.name);
+                serverInfo["version"] = JsonValue::ofStr(this.version);
+                Map<string, JsonValue> m = Map();
+                m["protocolVersion"] = JsonValue::ofStr("2025-06-18");
+                m["capabilities"] = JsonValue::ofObject(caps);
+                m["serverInfo"] = JsonValue::ofObject(serverInfo);
+                return JsonValue::ofObject(m);
+            }
+
+            JsonValue listResult() {
+                Array<JsonValue> items = [];
+                for (McpTool t in this.tools) {
+                    Map<string, JsonValue> m = Map();
+                    m["name"] = JsonValue::ofStr(t.name);
+                    m["description"] = JsonValue::ofStr(t.description);
+                    m["inputSchema"] = t.inputSchema;
+                    items = items.add(JsonValue::ofObject(m));
+                }
+                Map<string, JsonValue> out = Map();
+                out["tools"] = JsonValue::ofArray(items);
+                return JsonValue::ofObject(out);
+            }
+
+            JsonValue resultToJson(McpResult r) {
+                Map<string, JsonValue> m = Map();
+                m["content"] = JsonValue::ofArray(r.content);
+                m["isError"] = JsonValue::ofBool(r.isError);
+                return JsonValue::ofObject(m);
+            }
+
+            JsonValue callTool(JsonValue id, JsonValue? params) {
+                if (params == None) {
+                    return errEnvelope(id, -32602, "missing params");
+                } else {
+                    JsonValue p = params ?? JsonValue::ofNull();
+                    JsonValue? nameV = p.atOrNone("name");
+                    if (nameV == None) {
+                        return errEnvelope(id, -32602, "missing tool name");
+                    } else {
+                        string? nameS = (nameV ?? JsonValue::ofNull()).asStr();
+                        if (nameS == None) {
+                            return errEnvelope(id, -32602, "tool name must be a string");
+                        } else {
+                            string toolName = nameS ?? "";
+                            McpTool? found = this.tools.find((t) => t.name == toolName);
+                            if (found == None) {
+                                return errEnvelope(id, -32602, "Unknown tool: " + toolName);
+                            } else {
+                                McpTool t = found ?? this.tools.at(0);
+                                JsonValue? argsV = p.atOrNone("arguments");
+                                Map<string, JsonValue> emptyArgs = Map();
+                                JsonValue args = argsV ?? JsonValue::ofObject(emptyArgs);
+                                // A field-typed closure called directly off a dot-access
+                                // (`t.run(args)`) silently no-ops on the LLVM backend (known_bugs
+                                // #94 — "calling a function-typed FIELD via dot-call silently
+                                // no-ops on LLVM"). Workaround: bind the field to a local first,
+                                // call the local.
+                                var runFn = t.run;
+                                McpResult result = runFn(args);
+                                return okEnvelope(id, this.resultToJson(result));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // §2.5 — the sensitive core. Total (no throw) so it's directly testable
+            // without HTTP; the HTTP layer (handle()) short-circuits notifications
+            // to 202 before ever calling this.
+            JsonValue dispatch(JsonValue rpc) {
+                if (rpc.isArray()) {
+                    return errEnvelope(JsonValue::ofNull(), -32600,
+                        "batching not supported (2025-06-18 removed JSON-RPC batching)");
+                }
+                JsonValue? idv = rpc.atOrNone("id");
+                JsonValue id = idv ?? JsonValue::ofNull();
+                JsonValue? methodV = rpc.atOrNone("method");
+                if (methodV == None) {
+                    return errEnvelope(id, -32600, "missing method");
+                } else {
+                    string? methodS = (methodV ?? JsonValue::ofNull()).asStr();
+                    if (methodS == None) {
+                        return errEnvelope(id, -32600, "method must be a string");
+                    } else {
+                        string method = methodS ?? "";
+                        Map<string, JsonValue> emptyResult = Map();
+                        return match (method) {
+                            "initialize" => okEnvelope(id, this.initializeResult());
+                            "notifications/initialized" => okEnvelope(id, JsonValue::ofObject(emptyResult));
+                            "ping" => okEnvelope(id, JsonValue::ofObject(emptyResult));
+                            "tools/list" => okEnvelope(id, this.listResult());
+                            "tools/call" => this.callTool(id, rpc.atOrNone("params"));
+                            else => errEnvelope(id, -32601, "method not found: " + method);
+                        };
+                    }
+                }
+            }
+
+            // §2.1's HTTP table.
+            HttpResponse handle(Http::Context c) {
+                if (c.request.method != "POST") {
+                    return HttpResponse(405, "");
+                }
+                string? pv = c.request.headers.first("MCP-Protocol-Version");
+                if (pv != None && (pv ?? "") != "2025-06-18") {
+                    return mcpHttpProblem(400,
+                        "unsupported MCP-Protocol-Version: " + (pv ?? ""));
+                }
+                JsonValue? parsed = json::parse(c.request.body);
+                if (parsed == None) {
+                    return mcpHttpJson(200,
+                        errEnvelope(JsonValue::ofNull(), -32700, "parse error").render());
+                } else {
+                    JsonValue rpc = parsed ?? JsonValue::ofNull();
+                    if (!rpc.isArray() && rpc.isObject() && rpc.atOrNone("id") == None) {
+                        return HttpResponse(202, "");
+                    } else {
+                        return mcpHttpJson(200, this.dispatch(rpc).render());
+                    }
+                }
+            }
+
+            (Http::Context) => HttpResponse handler() {
+                McpServer self = this;
+                return (c) => self.handle(c);
+            }
+        }
+
+        // §2.4 command dispatch (R3) — a Command factory, registered by app code
+        // like any other (Track 04's "builtins are just registrations" pattern).
+        // Serves ONLY /mcp on a fresh pipeline (design §2.4), same process, no
+        // other routes.
+        App::Command mcpCommand(McpServer server) {
+            return App::Command("mcp", "Serve the MCP endpoint only",
+                (cfg, args) => runMcpOnly(server, cfg));
+        }
+
+        int runMcpOnly(McpServer server, Config::Config cfg) {
+            int? port = cfg.at("PORT", "8080").toInt();
+            Log::Logger log = Log::Logger(Log::ConsoleSink(), 1);
+            Http::Pipeline pipeline = Http::Pipeline();
+            pipeline.use(Http::AccessLog(log).mw());
+            pipeline.use(Http::ErrorMapper(log).mw());
+            var built = pipeline.build(server.handler());
+            Http::Server srv = Http::Server(port ?? 8080, built);
+            srv.start();
+            return 0;
+        }
+    }
+}

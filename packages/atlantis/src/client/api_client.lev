@@ -1,0 +1,89 @@
+// Atlantis Track 07 — typed service clients (design §6): the honest v1 —
+// hand-written thin clients over `ApiClient` helpers.
+//
+// DEVIATION: the design's sketch takes a `baseUrl` string; the real Track 09
+// `HttpClient` (src/Resolver.cpp's prelude class) has no raw-URL constructor
+// — it's `request(method, host, port, path, headers, body, cb)` /
+// `get`/`post` sugar / `fetch(host, port, path) -> Promise<HttpResponse>`
+// (GET-only). URL-string parsing is explicitly deferred (reference.md
+// §6.6.6). `ApiClient` therefore takes `host`/`port` directly — connection
+// target config is a `DbConfig`-shaped concern either way (C6).
+namespace Atlantis {
+    namespace Client {
+
+        class ApiException : Exception, Http::IHttpException {
+            int status;
+            string code;
+            string detail;
+            new ApiException(int status, string code, string detail) {
+                Exception::Exception(detail);
+                this.status = status;
+                this.code = code;
+                this.detail = detail;
+            }
+        }
+
+        class ApiClient {
+            HttpClient http;
+            string host;
+            int port;
+            HeaderMap headers = HeaderMap();
+
+            new ApiClient(HttpClient http, string host, int port) {
+                this.http = http;
+                this.host = host;
+                this.port = port;
+            }
+
+            void bearer(string token) {
+                this.headers = this.headers.set("Authorization", "Bearer " + token);
+            }
+
+            // The callback -> Promise reshape (§14's "a promise is a one-shot
+            // stream", the exact pattern `HttpClient.fetch` itself uses) —
+            // generalized to any method/headers/body, since `fetch` is GET-only.
+            Promise<HttpResponse> rawRequest(string method, string path, string body) {
+                Promise<HttpResponse> p = Promise();
+                HeaderMap h = this.headers.set("Content-Type", "application/json");
+                this.http.request(method, this.host, this.port, path, h, body, (resp) => { p.resolve(resp); });
+                return p;
+            }
+
+            // non-2xx -> ApiException (problem+json parsed for code/detail when
+            // present, else status + raw body snippet, per §6.1).
+            JsonValue handleResponse(HttpResponse resp) {
+                if (resp.status >= 200 && resp.status < 300) {
+                    if (resp.body == "") {
+                        return JsonValue::ofNull();
+                    } else {
+                        return json::parse(resp.body) ?? JsonValue::ofNull();
+                    }
+                } else {
+                    string? ct = resp.headers.first("Content-Type");
+                    string ctv = ct ?? "";
+                    if (ctv.startsWith("application/problem+json")) {
+                        JsonValue? probV = json::parse(resp.body);
+                        if (probV != None) {
+                            JsonValue prob = probV ?? JsonValue::ofNull();
+                            string? titleS = prob.atOrNone("title")?.asStr();
+                            string? detailS = prob.atOrNone("detail")?.asStr();
+                            throw ApiException(resp.status, titleS ?? "", detailS ?? resp.body);
+                        }
+                    }
+                    throw ApiException(resp.status, "", resp.body);
+                }
+            }
+
+            Promise<JsonValue> requestJson(string method, string path, string body) {
+                HttpResponse resp = await this.rawRequest(method, path, body);
+                JsonValue result = this.handleResponse(resp);
+                return Promise(result);
+            }
+
+            Promise<JsonValue> getJson(string path) => this.requestJson("GET", path, "");
+            Promise<JsonValue> postJson(string path, JsonValue body) => this.requestJson("POST", path, body.render());
+            Promise<JsonValue> putJson(string path, JsonValue body) => this.requestJson("PUT", path, body.render());
+            Promise<JsonValue> deleteJson(string path) => this.requestJson("DELETE", path, "");
+        }
+    }
+}

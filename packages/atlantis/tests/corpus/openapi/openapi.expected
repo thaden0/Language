@@ -1,0 +1,45 @@
+== SchemaRegistry: miss -> boot error ==
+threw=true
+mentionsFix=true
+== SchemaRegistry: register + hit ==
+has(Address)=true
+== instantiate UserController (runs the @Summary ctor-injection) ==
+constructed
+== hand-built RouteRec fixture ==
+== OpenApiDoc.build ==
+-- §5.3 validation: openapi version --
+3.1.0
+-- §5.3 validation: every route appears exactly once --
+has /users=true
+has post=true
+has get=true
+-- create op: summary joined from @Summary (rec.summary was "") --
+Creates a new user
+-- list op: no @Summary -> no summary key --
+hasSummary=false
+-- create op: authMode=1(auth) + a scheme name -> security entry present --
+hasSecurity=true
+-- list op: authMode=2(noauth) -> security: [] --
+[]
+-- every op has a default->Problem $ref --
+#/components/schemas/Problem
+-- components/schemas has Problem + registered Address --
+hasProblem=true
+hasAddress=true
+== design risk #1: schema-drift check ==
+identical=true
+== /llms.txt ==
+# demo-app (v2.0.0)
+
+## Routes
+- POST /users — Creates a new user
+- GET /users
+
+## Tools
+- createUser — Creates a new user
+
+See /openapi.json for the full API schema and /mcp for the MCP endpoint.
+All errors are application/problem+json (RFC 9457).
+
+== openApiCommand factory (no execution -- writes a file) ==
+openapi: Write the OpenAPI 3.1 document to openapi.json

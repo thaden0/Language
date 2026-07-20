@@ -1,0 +1,32 @@
+// Named splice anchor §2.3 point 3: two @InjectRoutes() sites in one program is
+// a rule-stage error UNLESS the rule opts into `at splice Name multi`, which
+// fans the injection out into EVERY same-named site. Here one @Route method
+// registers into both a() and b()'s bodies, each in its own scope (`sink` differs).
+namespace App {
+    attribute InjectRoutes { }
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice InjectRoutes multi
+    }
+}
+uses App;
+
+class HomeController {
+    @Route("/")
+    void index() { }
+}
+
+string a() {
+    string sink = "A:";
+    @InjectRoutes();
+    return sink;
+}
+string b() {
+    string sink = "B:";
+    @InjectRoutes();
+    return sink;
+}
+
+console.writeln(a());
+console.writeln(b());

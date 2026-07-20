@@ -395,4 +395,20 @@ private:
     // stacking on one marker accumulate in rule order rather than reversing.
     std::map<const Stmt*, int> markerInsertCount_;
     std::vector<StmtPtr> namespaceInjections_;   // `namespace N` anchor (§8.3) output
+
+    // Named-anchor design §2.3: the program-global splice-site index. Built by
+    // indexSpliceSites() in the same phase decls_ is indexed (and rebuilt each
+    // reentrant round), it maps a splice attribute's simple name to every
+    // `@Name();` site in the program — the owning statement vector plus the
+    // marker Empty node itself. `expand`'s SpliceSite arm looks a rule's target
+    // up here, so a rule matched on one declaration can land statements at a
+    // site in a DIFFERENT declaration's body (the delta over subject-local
+    // `at marker`), inheriting that body's lexical scope by placement.
+    struct SpliceSiteRef {
+        std::vector<StmtPtr>* vec;   // the body vector the marker lives in (stable)
+        Stmt* node;                  // the `@Name();` Empty marker node
+    };
+    std::map<std::string_view, std::vector<SpliceSiteRef>> spliceSites_;
+    void indexSpliceSites();                     // (re)build spliceSites_ from decls_
+    void collectSpliceSites(std::vector<StmtPtr>& vec);   // recursive site gather
 };

@@ -1,0 +1,139 @@
+// Atlantis Track 07 — M1 acceptance corpus (design §9 M1): McpServer JSON-RPC
+// core over hand-registered tools (no @Tool rule yet, that's M2) — initialize/
+// ping/tools-list/tools-call round trip via dispatch() directly, then the full
+// §2.1 HTTP table via handler(), boot validation (duplicate names), addRaw.
+uses Atlantis::Mcp;
+uses Atlantis::Http;
+
+JsonValue emptySchema() {
+    Map<string, JsonValue> props = Map();
+    Map<string, JsonValue> m = Map();
+    m["type"] = JsonValue::ofStr("object");
+    m["properties"] = JsonValue::ofObject(props);
+    return JsonValue::ofObject(m);
+}
+
+class TestTools : ToolSource {
+    new TestTools() {
+        this.__mcpTools = this.__mcpTools.add(McpTool("echo", "Echoes text back", emptySchema(),
+            (args) => {
+                string? t = args.atOrNone("text")?.asStr();
+                return contentText(t ?? "");
+            }));
+        this.__mcpTools = this.__mcpTools.add(McpTool("add", "Adds two integers", emptySchema(),
+            (args) => {
+                JsonValue? av = args.atOrNone("a");
+                JsonValue? bv = args.atOrNone("b");
+                float a = av == None ? 0.0 : ((av ?? JsonValue::ofNull()).asNum() ?? 0.0);
+                float b = bv == None ? 0.0 : ((bv ?? JsonValue::ofNull()).asNum() ?? 0.0);
+                return contentText((a + b).toString());
+            }));
+    }
+}
+
+HttpRequest mkReq(string method, string path, string body, string pvHeader) {
+    HttpRequest r = HttpRequest();
+    int cl = body.length();
+    string pvLine = pvHeader != "" ? ("MCP-Protocol-Version: " + pvHeader + "\r\n") : "";
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\n" + pvLine +
+        "Content-Length: " + cl.toString() + "\r\n\r\n" + body);
+    return r;
+}
+
+void hr(HttpResponse r) {
+    console.writeln("  status=" + r.status.toString() + " ctype=" + r.headers.firstOr("Content-Type", "-"));
+    console.writeln("  body=" + r.body);
+}
+
+JsonValue parseOrNull(string s) => json::parse(s) ?? JsonValue::ofNull();
+
+void main() {
+    console.writeln("== dispatch() directly ==");
+    TestTools src = TestTools();
+    IToolSource srcAsSource = src;
+    Array<IToolSource> srcs = [srcAsSource];
+    McpServer server = McpServer(srcs).withInfo("test-app", "1.2.3");
+
+    console.writeln("-- initialize --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")).render());
+
+    console.writeln("-- ping --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}")).render());
+
+    console.writeln("-- tools/list --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}")).render());
+
+    console.writeln("-- tools/call echo --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"text\":\"hi\"}}}")).render());
+
+    console.writeln("-- tools/call add --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":2,\"b\":3}}}")).render());
+
+    console.writeln("-- tools/call unknown tool --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"nope\"}}")).render());
+
+    console.writeln("-- unknown method --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"whatever\"}")).render());
+
+    console.writeln("-- notification (id-less) through dispatch (never reached via HTTP, still total) --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}")).render());
+
+    console.writeln("== HTTP handler() -- section 2.1 table ==");
+    var h = server.handler();
+
+    console.writeln("-- POST valid request --");
+    hr(h(Context(mkReq("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}", ""))));
+
+    console.writeln("-- POST notification (no id) -> 202 --");
+    hr(h(Context(mkReq("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", ""))));
+
+    console.writeln("-- POST unparseable body -> 200, -32700 --");
+    hr(h(Context(mkReq("POST", "/mcp", "not json", ""))));
+
+    console.writeln("-- POST batch (array) -> 200, -32600 --");
+    hr(h(Context(mkReq("POST", "/mcp", "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]", ""))));
+
+    console.writeln("-- GET /mcp -> 405 --");
+    hr(h(Context(mkReq("GET", "/mcp", "", ""))));
+
+    console.writeln("-- DELETE /mcp -> 405 --");
+    hr(h(Context(mkReq("DELETE", "/mcp", "", ""))));
+
+    console.writeln("-- POST bad protocol version -> 400 problem+json --");
+    hr(h(Context(mkReq("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}", "2025-03-26"))));
+
+    console.writeln("-- POST correct protocol version -> 200 --");
+    hr(h(Context(mkReq("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}", "2025-06-18"))));
+
+    console.writeln("== boot validation: duplicate tool name across sources ==");
+    bool threw = false;
+    string msg = "";
+    try {
+        TestTools src2 = TestTools();
+        IToolSource src2AsSource = src2;
+        Array<IToolSource> badSrcs = [srcAsSource, src2AsSource];
+        McpServer bad = McpServer(badSrcs);
+    } catch (RuntimeException e) {
+        threw = true;
+        msg = e.message;
+    }
+    console.writeln("threw=" + threw.toString() + " msg=" + msg);
+
+    console.writeln("== addRaw (fallback ladder rung 4) ==");
+    Array<IToolSource> noSrcs = [];
+    McpServer raw = McpServer(noSrcs);
+    raw.addRaw("greet", "Greets", emptySchema(), (args) => contentText("hello"));
+    console.writeln(raw.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\"}}")).render());
+
+    bool threwDup = false;
+    try {
+        raw.addRaw("greet", "again", emptySchema(), (args) => contentText("x"));
+    } catch (RuntimeException e) {
+        threwDup = true;
+    }
+    console.writeln("addRaw duplicate threw=" + threwDup.toString());
+}

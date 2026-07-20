@@ -1,0 +1,111 @@
+// Atlantis Track 08 — PBKDF2-HMAC-SHA256 password hashing (design §6.1).
+// dkLen=32 (one SHA-256 output block — the whole "F" loop below is one U-chain,
+// no multi-block T_1..T_n concatenation needed). Stored format:
+//   pbkdf2$<iterations>$<base64UrlSalt>$<base64UrlHash>
+// Self-describing params => upgrade-on-verify (verifyPassword, below).
+namespace Atlantis {
+    namespace Auth {
+
+        const int PBKDF2_MIN_ITERATIONS = 100000;      // hard floor — boot error below it
+        const int PBKDF2_DEFAULT_ITERATIONS = 210000;  // revisited at M4 with real LLVM numbers
+        const int PBKDF2_CHUNK = 5000;                 // iterations between event-loop yields
+
+        // Boot-time guard (composition root calls this against the configured
+        // iteration count) — never silently lower the floor (S-6).
+        void checkPbkdf2Iterations(int n) {
+            if (n < PBKDF2_MIN_ITERATIONS) {
+                throw RuntimeException("Auth: AUTH_PBKDF2_ITERS=" + n.toString() +
+                    " is below the hard floor of " + PBKDF2_MIN_ITERATIONS.toString() +
+                    " (design §6.1) — raise it, don't lower the floor");
+            }
+        }
+
+        // XOR two equal-length byte strings (the PBKDF2 U-chain accumulator).
+        string xorBytes(string a, string b) {
+            StringBuilder sb = StringBuilder();
+            int i = 0;
+            int n = a.length();
+            while (i < n) {
+                sb << std::byteToString(a.byteAt(i) ^ b.byteAt(i));
+                i = i + 1;
+            }
+            return sb.toString();
+        }
+
+        // The chunked U-chain (§6.1 implementation notes): one-shot
+        // hmacSha256(key, salt || INT32BE(1)) then U_{j+1} = hmacSha256(P, U_j),
+        // XOR-accumulating. Chunks of PBKDF2_CHUNK iterations with a zero-delay
+        // event-loop yield between chunks (H-3: 250ms of CPU starves the loop) —
+        // same total work, loop keeps breathing.
+        Promise<string> pbkdf2Chain(string password, string salt, int iterations) {
+            string blockOne = salt + std::byteToString(0) + std::byteToString(0) +
+                               std::byteToString(0) + std::byteToString(1);
+            string u = digest::hmacSha256(password, blockOne);
+            string t = u;
+            int i = 1;
+            int sinceYield = 0;
+            while (i < iterations) {
+                u = digest::hmacSha256(password, u);
+                t = xorBytes(t, u);
+                i = i + 1;
+                sinceYield = sinceYield + 1;
+                if (sinceYield >= PBKDF2_CHUNK) {
+                    await Http::nextTick();
+                    sinceYield = 0;
+                }
+            }
+            return Promise(t);
+        }
+
+        Promise<string> hashPassword(string password, int iterations) {
+            string salt = randomBytes(16);
+            string t = await pbkdf2Chain(password, salt, iterations);
+            string stored = "pbkdf2$" + iterations.toString() + "$" +
+                             encoding::base64UrlEncode(salt) + "$" +
+                             encoding::base64UrlEncode(t);
+            return Promise(stored);
+        }
+
+        struct VerifyResult {
+            bool ok;
+            string? upgradedHash;         // set when verify succeeded at stale (lower) iterations
+            new VerifyResult(bool ok, string? upgradedHash) {
+                this.ok = ok;
+                this.upgradedHash = upgradedHash;
+            }
+        }
+
+        // A fixed, correctly-shaped (but not-anyone's-real-password) hash string:
+        // verifyPassword against THIS when the account doesn't exist so login
+        // timing cannot distinguish "no such user" from "wrong password" (§6.3).
+        // The salt/hash bodies are arbitrary fixed bytes of the right length —
+        // the point is the KDF work genuinely runs, not that the fixture verifies
+        // any real credential. Takes `iterations` explicitly — it MUST match
+        // whatever the app is actually configured at (PBKDF2_DEFAULT_ITERATIONS
+        // in production) for the timing equalization to hold; hardcoding a
+        // single constant here would desync from a raised/lowered config value.
+        string dummyPasswordHash(int iterations) =>
+            "pbkdf2$" + iterations.toString() +
+            "$" + encoding::base64UrlEncode("0123456789abcdef") +
+            "$" + encoding::base64UrlEncode("0123456789abcdef0123456789abcdef");
+
+        Promise<VerifyResult> verifyPassword(string password, string stored, int currentIterations) {
+            Array<string> parts = stored.split("$");
+            if (parts.length() == 4 && parts.at(0) == "pbkdf2") {
+                int iters = parts.at(1).toInt() ?? 0;
+                string salt = encoding::base64UrlDecode(parts.at(2)) ?? "";
+                string wantHash = encoding::base64UrlDecode(parts.at(3)) ?? "";
+                if (iters > 0 && salt != "" && wantHash != "") {
+                    string got = await pbkdf2Chain(password, salt, iters);
+                    bool ok = constantTimeEquals(got, wantHash);
+                    if (ok && iters < currentIterations) {
+                        string upgraded = await hashPassword(password, currentIterations);
+                        return Promise(VerifyResult(true, upgraded));
+                    }
+                    return Promise(VerifyResult(ok, None));
+                }
+            }
+            return Promise(VerifyResult(false, None));
+        }
+    }
+}

@@ -1,0 +1,31 @@
+// Named splice anchor §4 (M42, ≥2 sites without `multi`): two @InjectRoutes()
+// sites in one program, and a rule that does NOT opt into `multi`. Ambiguous —
+// which site? — so it is a rule-stage error naming both sites, not a silent
+// double injection. Adding `multi` (rule_splice_multi.ext) is the opt-in.
+namespace App {
+    attribute InjectRoutes { }
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice InjectRoutes
+    }
+}
+uses App;
+
+class HomeController {
+    @Route("/")
+    void index() { }
+}
+
+string a() {
+    string sink = "";
+    @InjectRoutes();
+    return sink;
+}
+string b() {
+    string sink = "";
+    @InjectRoutes();
+    return sink;
+}
+
+console.writeln(a() + b());

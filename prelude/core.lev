@@ -408,11 +408,28 @@ class string {
 
 // Array<T>: a tiny native core (length/at/add — add is pure, returns a new
 // array) with the LINQ/JS surface written in the language on top of it.
-// A 2-tuple, used as the result element of relational joins.
-class Pair<A, B> {
+// A 2-tuple, the result element of relational joins and Map iteration. A value
+// `struct` (NOT a reference class): copied not aliased, field-wise ==, and — as
+// a value type — its arrays store dense/row-major instead of boxed (see
+// designs/techdesign-triple.md §2). The (==) is hand-written because the struct-
+// equality synthesis pass bails on generic structs (Resolver.cpp:1359).
+struct Pair<A, B> {
     A first;
     B second;
     new Of(A a, B b) { first = a; second = b; }
+    bool (==)(Pair<A, B> other) => first == other.first && second == other.second;
+    string toString() => "(" + first + ", " + second + ")";
+}
+
+// A 3-tuple sibling of Pair. Same value-struct conventions (see above).
+struct Triple<A, B, C> {
+    A first;
+    B second;
+    C third;
+    new Of(A a, B b, C c) { first = a; second = b; third = c; }
+    bool (==)(Triple<A, B, C> other) =>
+        first == other.first && second == other.second && third == other.third;
+    string toString() => "(" + first + ", " + second + ", " + third + ")";
 }
 
 // The iteration protocol (techdesign-07 §1). `for (T x in e)` where e's static

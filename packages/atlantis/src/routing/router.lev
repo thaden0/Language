@@ -199,7 +199,8 @@ namespace Atlantis {
                         this.checkParamCoverage(rec);
                     }
                     RouteRec resolved = RouteRec(rec.verb, rec.path, rec.controller, rec.action,
-                                                  rec.params, rec.returnType, mode, role);
+                                                  rec.params, rec.returnType, mode, role,
+                                                  rec.bodySchema, rec.summary);
                     rebuilt = rebuilt.add(resolved);
                 }
                 if (!offenders.isEmpty()) {

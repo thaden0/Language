@@ -1,0 +1,251 @@
+// Atlantis Track 08 — shipped strategy A: SESSION, signed cookie + server-side
+// store (design §3). Cookie value (all base64Url-safe, `.`-separated, no
+// padding — encoding::base64Url{En,De}code already emit/accept unpadded,
+// verified against tests/corpus/encoding, so no shim is needed here either):
+//   v1.<sid>.<expEpochMs>.<sig>
+//   sid = base64Url(randomBytes(32))
+//   sig = base64Url(hmacSha256(key, "v1." + sid + "." + expEpochMs))
+// The HMAC covers version+id+expiry (tamper-evident without a store hit); the
+// store record stays authoritative (revocation wins over cookie expiry).
+namespace Atlantis {
+    namespace Auth {
+
+        struct SessionConfig {
+            string cookieName;    // default "atlantis_sid"
+            string key;           // AUTH_KEY — base64 of >=32 random bytes
+            int ttlSec;           // rolling expiry
+            int absoluteMaxSec;   // hard cap from createdAt
+            bool forceSecure;     // cookies.forceSecure — pairs with http.trustProxy
+            new SessionConfig(string cookieName, string key, int ttlSec, int absoluteMaxSec, bool forceSecure) {
+                this.cookieName = cookieName;
+                this.key = key;
+                this.ttlSec = ttlSec;
+                this.absoluteMaxSec = absoluteMaxSec;
+                this.forceSecure = forceSecure;
+            }
+        }
+        SessionConfig defaultSessionConfig(string key) => SessionConfig("atlantis_sid", key, 1800, 43200, false);
+
+        // Secure-cookie determination (design §3.1): TLS-or-forced. No landed
+        // track stamps a TLS indicator on Context yet (C2's frozen fields don't
+        // carry one) — the documented interim convention is `ctx.items["tls"] =
+        // "1"`, which a TLS-terminating listener/composition root sets; absent
+        // that, only `forceSecure` decides.
+        bool cookieShouldBeSecure(Http::Context ctx, SessionConfig cfg) =>
+            cfg.forceSecure || ctx.items.atOr("tls", "") == "1";
+
+        class SessionRecord {
+            Principal? principal;     // None = anonymous pre-session (CSRF-only, csrf.lev)
+            string csrfToken;
+            int createdAtMs;          // absolute-lifetime anchor
+            int expiresAtMs;          // rolling expiry — authoritative over the cookie's own exp
+            new SessionRecord(Principal? principal, string csrfToken, int createdAtMs, int expiresAtMs) {
+                this.principal = principal;
+                this.csrfToken = csrfToken;
+                this.createdAtMs = createdAtMs;
+                this.expiresAtMs = expiresAtMs;
+            }
+        }
+
+        interface ISessionStore {           // Promise-shaped: a redis-style store drops in later
+            Promise<SessionRecord?> get(string sid);
+            Promise<void> put(string sid, SessionRecord rec);
+            Promise<void> remove(string sid);
+            Promise<int> removeExpired(int nowMs);   // returns evicted count (sweep metric)
+        }
+
+        interface ISessionIssuer {
+            Promise<string> issue(Http::Context ctx, Principal p);   // returns Set-Cookie header value
+            Promise<string> revoke(Http::Context ctx);               // returns expiring Set-Cookie value
+        }
+
+        // Shared timer-rearm plumbing (design §3.2/§9.2 — "shared with the rate
+        // limiter"). A closure callback, not virtual override: the language's
+        // dynamic dispatch is interface-only, so a base class hands subclasses
+        // a plain method rather than requiring an override hook.
+        class SweepTimer {
+            void armSweep(int intervalMs, (int) => void onFire) {
+                std::every(intervalMs).subscribe(onFire);
+            }
+        }
+
+        // In-memory v1 (design §3.2): restart loses sessions — documented v1
+        // posture; ISessionStore/Promise shape is the seam, not a rewrite (F-7).
+        // `records` holds SessionRecord (a CLASS, i.e. reference-typed) values —
+        // deliberately not a struct: Router's own §1.3 note documents a landed
+        // LLVM bug where a `Map<K, Struct>` CLASS FIELD corrupts memory past 2
+        // entries; storing a class reference instead sidesteps it entirely.
+        class InMemorySessionStore : SweepTimer, ISessionStore {
+            Map<string, SessionRecord> records = Map();
+
+            // Sweep is NOT auto-armed in the ctor (a repeating timer is live
+            // work that keeps the program's implicit event loop running
+            // forever, reference.md §6.6.55 — that would hang a corpus test
+            // that just wants to exercise store logic). The composition root
+            // calls `startSweep()` explicitly once the app is actually serving.
+            void startSweep() {
+                InMemorySessionStore self = this;
+                this.armSweep(60000, (tick) => { await self.removeExpired(Http::nowMs()); });
+            }
+
+            Promise<SessionRecord?> get(string sid) => Promise(this.records.atOrNone(sid));
+
+            Promise<void> put(string sid, SessionRecord rec) {
+                this.records[sid] = rec;
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            // `.without()` is missing from the LLVM/ELF named-method dispatch
+            // (reference.md §6.4.5, bug.md #18) — rebuild via bracket-sugar
+            // instead of calling it by name, so this stays LLVM-safe.
+            Promise<void> remove(string sid) {
+                Map<string, SessionRecord> next = Map();
+                for (Pair e in this.records) {
+                    if (e.first != sid) { next[e.first] = e.second; }
+                }
+                this.records = next;
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            }
+
+            Promise<int> removeExpired(int nowMs) {
+                Map<string, SessionRecord> next = Map();
+                int evicted = 0;
+                for (Pair e in this.records) {
+                    SessionRecord rec = e.second;
+                    if (rec.expiresAtMs > nowMs) { next[e.first] = rec; }
+                    else { evicted = evicted + 1; }
+                }
+                this.records = next;
+                return Promise(evicted);
+            }
+        }
+
+        class SessionStrategy : IAuthStrategy, ISessionIssuer {
+            ISessionStore store;
+            SessionConfig cfg;
+            new SessionStrategy(ISessionStore store, SessionConfig cfg) {
+                this.store = store;
+                this.cfg = cfg;
+            }
+
+            // Verify the envelope's HMAC without a store hit: CS-1 (§3.3 step 2).
+            bool envelopeSigOk(string sid, string expStr, string presentedSigB64) {
+                string expectedSig = digest::hmacSha256(this.cfg.key, "v1." + sid + "." + expStr);
+                string presentedSig = encoding::base64UrlDecode(presentedSigB64) ?? "";
+                return constantTimeEquals(expectedSig, presentedSig);
+            }
+
+            // Returns the sid IFF the cookie envelope is present and its
+            // signature verifies (regardless of store-side liveness) — used both
+            // by authenticate() and by issue()'s fixation-defense cleanup.
+            string verifiedSidOf(Http::Context ctx) {
+                string raw = cookieValue(ctx, this.cfg.cookieName) ?? "";
+                if (raw == "") { return ""; }
+                Array<string> parts = raw.split(".");
+                if (parts.length() != 4 || parts.at(0) != "v1") { return ""; }
+                string sid = parts.at(1);
+                string expStr = parts.at(2);
+                if (!this.envelopeSigOk(sid, expStr, parts.at(3))) { return ""; }
+                return sid;
+            }
+
+            Principal? authenticate(Http::Context ctx) {
+                string raw = cookieValue(ctx, this.cfg.cookieName) ?? "";
+                if (raw == "") { return None; }                          // missing -> None
+                Array<string> parts = raw.split(".");
+                if (parts.length() != 4 || parts.at(0) != "v1") { return None; }   // malformed -> None
+                string sid = parts.at(1);
+                string expStr = parts.at(2);
+                if (!this.envelopeSigOk(sid, expStr, parts.at(3))) { return None; }  // CS-1 mismatch -> None
+
+                int envelopeExpMs = expStr.toInt() ?? 0;
+                int nowMs = Http::nowMs();
+                if (envelopeExpMs <= nowMs) { return None; }              // signed expiry in the past
+
+                SessionRecord? recOpt = await this.store.get(sid);
+                if (recOpt == None) { return None; }
+                SessionRecord rec = recOpt ?? SessionRecord(None, "", 0, 0);
+                if (rec.expiresAtMs <= nowMs) { return None; }            // store expiry
+
+                // Every LIVE record carries a csrfToken, including anonymous
+                // pre-sessions (§7) — stash it before the principal check so
+                // Auth::csrfToken(ctx) works on @NoAuth form pages too.
+                ctx.items["auth.csrfToken"] = rec.csrfToken;
+                if (rec.principal == None) { return None; }               // anon pre-session authenticates nobody
+
+                // Rolling expiry (§3.3 step 5): extend when under half the TTL,
+                // capped by the absolute-lifetime anchor; stash the fresh
+                // Set-Cookie for the reissue middleware to append on the way out.
+                int halfTtlMs = (this.cfg.ttlSec * 1000) / 2;
+                if (rec.expiresAtMs - nowMs < halfTtlMs) {
+                    int extended = nowMs + this.cfg.ttlSec * 1000;
+                    int cap = rec.createdAtMs + this.cfg.absoluteMaxSec * 1000;
+                    int newExp = extended < cap ? extended : cap;
+                    SessionRecord updated = SessionRecord(rec.principal, rec.csrfToken, rec.createdAtMs, newExp);
+                    await this.store.put(sid, updated);
+                    ctx.items["auth.reissueCookie"] = this.renderEnvelope(ctx, sid, newExp);
+                    return updated.principal;
+                }
+                return rec.principal;
+            }
+
+            string renderEnvelope(Http::Context ctx, string sid, int expMs) {
+                string expStr = expMs.toString();
+                string sig = encoding::base64UrlEncode(digest::hmacSha256(this.cfg.key, "v1." + sid + "." + expStr));
+                string value = "v1." + sid + "." + expStr + "." + sig;
+                return renderSetCookie(this.cfg.cookieName, value, cookieShouldBeSecure(ctx, this.cfg), this.cfg.ttlSec);
+            }
+
+            // Session fixation defense (F-2): ALWAYS mints a fresh sid; any
+            // pre-session the request carried (anonymous or another user) is
+            // deleted and its CSRF token is NOT carried over.
+            Promise<string> issue(Http::Context ctx, Principal p) {
+                string oldSid = this.verifiedSidOf(ctx);
+                if (oldSid != "") { await this.store.remove(oldSid); }
+
+                string sid = encoding::base64UrlEncode(randomBytes(32));
+                string csrfToken = encoding::base64UrlEncode(randomBytes(32));
+                int nowMs = Http::nowMs();
+                int expMs = nowMs + this.cfg.ttlSec * 1000;
+                await this.store.put(sid, SessionRecord(p, csrfToken, nowMs, expMs));
+                return Promise(this.renderEnvelope(ctx, sid, expMs));
+            }
+
+            Promise<string> revoke(Http::Context ctx) {
+                string sid = this.verifiedSidOf(ctx);
+                if (sid != "") { await this.store.remove(sid); }
+                return Promise(renderExpiredCookie(this.cfg.cookieName, cookieShouldBeSecure(ctx, this.cfg)));
+            }
+        }
+
+        // Anonymous pre-session (§3.4/§7): created on first GET of a page
+        // containing a form, so a CSRF token exists before login. Returns the
+        // Set-Cookie value; the caller attaches it to the response.
+        Promise<string> ensurePreSession(SessionStrategy strategy, Http::Context ctx) {
+            string existing = strategy.verifiedSidOf(ctx);
+            if (existing != "") { return Promise(""); }   // already has a live envelope; nothing to do
+            string sid = encoding::base64UrlEncode(randomBytes(32));
+            string csrfToken = encoding::base64UrlEncode(randomBytes(32));
+            int nowMs = Http::nowMs();
+            int expMs = nowMs + strategy.cfg.ttlSec * 1000;
+            await strategy.store.put(sid, SessionRecord(None, csrfToken, nowMs, expMs));
+            return Promise(strategy.renderEnvelope(ctx, sid, expMs));
+        }
+
+        // The reissue middleware (design §3.3 step 5): must be registered
+        // BEFORE useAuthentication() so it wraps the strategies and can append
+        // the fresh Set-Cookie once the rest of the pipeline has run.
+        // HeaderMap.add keeps duplicate Set-Cookie lines (reference.md §6.6.4).
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse sessionReissueMiddleware() =>
+            (ctx, next) => {
+                HttpResponse r = next(ctx);
+                string cookie = ctx.items.atOr("auth.reissueCookie", "");
+                if (cookie != "") { r.headers.add("Set-Cookie", cookie); }
+                return r;
+            };
+    }
+}

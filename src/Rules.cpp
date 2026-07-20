@@ -104,6 +104,7 @@ bool RuleEngine::run(Program& program) {
     if (!rules_.empty()) {
         std::vector<Ancestor> chain;
         indexDecls(program.items, chain, "<root>");
+        indexSpliceSites();
         orderRules();
         runRules();
         // §4: re-run reentrant rules to a fixpoint (no-op unless a reentrant
@@ -1340,6 +1341,50 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
     }
 }
 
+// --- 2b. index every `@Name();` splice site (named-anchor design §2.3) --------
+// Recursively gather every splice-site marker in a statement vector, recording
+// its owning vector + node under the attribute name. Mirrors findMarkerSlot's
+// recursion set (a splice site is a statement-position marker) so a site nested
+// in an if/try block is found the same way `at marker` finds one.
+void RuleEngine::collectSpliceSites(std::vector<StmtPtr>& vec) {
+    for (size_t i = 0; i < vec.size(); ++i) {
+        Stmt* s = vec[i].get();
+        if (s->kind == StmtKind::Empty && s->isSpliceSite && !s->name.empty())
+            spliceSites_[s->name].push_back({&vec, s});
+        if (s->kind == StmtKind::Block) collectSpliceSites(s->body);
+        if (s->thenBranch && s->thenBranch->kind == StmtKind::Block)
+            collectSpliceSites(s->thenBranch->body);
+        if (s->elseBranch && s->elseBranch->kind == StmtKind::Block)
+            collectSpliceSites(s->elseBranch->body);
+        for (const CatchClause& c : s->catches)
+            if (c.body && c.body->kind == StmtKind::Block)
+                collectSpliceSites(c.body->body);
+    }
+}
+
+// (Re)build the program-global splice-site index from the already-indexed decls
+// (one extra pass over already-visited callable bodies — design §2.3). Then M43:
+// every site must name a declared `attribute`, so a mistyped `@Bindz()` with no
+// such attribute anywhere is a loud error, not a silent no-op marker.
+void RuleEngine::indexSpliceSites() {
+    spliceSites_.clear();
+    for (const DeclInfo& di : decls_) {
+        Stmt* d = di.decl;
+        if (d->callable && d->memberBody && d->memberBody->kind == StmtKind::Block)
+            collectSpliceSites(d->memberBody->body);
+    }
+    for (auto& [name, sites] : spliceSites_) {
+        bool isAttr = false;
+        for (const DeclInfo& di : decls_)
+            if (di.kindWord == "attribute" && di.decl->name == name) { isAttr = true; break; }
+        if (isAttr) continue;
+        for (const SpliceSiteRef& site : sites)
+            sink_.error(site.node->span, "'@" + std::string(name) +
+                        "()' is not a declared attribute — a splice site must name "
+                        "'attribute " + std::string(name) + " { }'");   // M43
+    }
+}
+
 // --- 3. deterministic rule order (§5.3) --------------------------------------
 // Source offset is the stable total order: the whole-program gather concatenates
 // files in manifest `sources` order, so offset encodes namespace-then-decl order
@@ -1355,11 +1400,17 @@ void RuleEngine::orderRules() {
 bool RuleEngine::declKindMatches(const Stmt* d, std::string_view kind) const {
     // `method` and `function` are the same node shape; the encloser clause
     // (`in class C`) enforces context, so accept either for callable members.
+    // `type` (techdesign-splices-desugars-sonnet.md §2) is the subject-position
+    // analogue of the encloser's existing `class`-also-matches-struct/interface
+    // leniency — new and additive; `class`/`struct` alone stay exact.
     for (const DeclInfo& di : decls_)
         if (di.decl == d)
             return di.kindWord == kind ||
                    ((kind == "method" || kind == "function") &&
-                    (di.kindWord == "method" || di.kindWord == "function"));
+                    (di.kindWord == "method" || di.kindWord == "function")) ||
+                   (kind == "type" &&
+                    (di.kindWord == "class" || di.kindWord == "struct" ||
+                     di.kindWord == "interface"));
     return false;
 }
 
@@ -1725,6 +1776,7 @@ void RuleEngine::runReentrantFixpoint(Program& program) {
         decls_.clear();                          // re-index the expanded tree
         std::vector<Ancestor> chain;
         indexDecls(program.items, chain, "<root>");
+        indexSpliceSites();                      // rebuild the splice-site index too
         runRulePasses(/*reentrantOnly=*/true);   // only reentrant rules re-trigger
         if (firedPairs_.size() == firedBefore) return;   // fixpoint: nothing new fired
     }
@@ -1846,6 +1898,63 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                            std::make_move_iterator(cloned.begin()),
                            std::make_move_iterator(cloned.end()));
             markerInsertCount_[markerNode] += n;
+
+        } else if (act.anchor == AnchorKind::SpliceSite) {
+            // Named-anchor design §2.3: land at the program-global `@Name();`
+            // site(s), NOT the matched subject's own body — the entire delta over
+            // subject-local `at marker`. The site's index was built in
+            // indexSpliceSites(); the spliced statements inherit the site body's
+            // lexical scope by placement (no plumbing — design §2.4).
+            auto it = spliceSites_.find(act.target);
+            size_t nsites = it == spliceSites_.end() ? 0 : it->second.size();
+            if (nsites == 0) {
+                sink_.error(act.span, "rule '" + std::string(r.node->name) +
+                            "' injects at splice '" + std::string(act.target) +
+                            "' but no '@" + std::string(act.target) +
+                            "()' splice site exists");   // M42 (zero sites)
+                continue;
+            }
+            // Default single-site keeps the common case honest; ≥2 sites without
+            // `multi` is an error naming the sites, so a stray second `@Name()`
+            // can't silently double the injection (design §2.3 point 3).
+            if (nsites > 1 && !act.spliceMulti) {
+                std::string locs;
+                for (size_t i = 0; i < it->second.size(); ++i) {
+                    LineCol lc = lineColAt(file_.text, it->second[i].node->span.offset);
+                    if (i) locs += ", ";
+                    locs += std::to_string(lc.line) + ":" + std::to_string(lc.col);
+                }
+                sink_.error(act.span, "rule '" + std::string(r.node->name) +
+                            "' injects at splice '" + std::string(act.target) +
+                            "' but " + std::to_string(nsites) + " '@" +
+                            std::string(act.target) + "()' sites exist at " + locs +
+                            " — add 'multi' to fan out or keep one site");   // M42 (multi)
+                continue;
+            }
+            // Clone the template per matched site and insert AFTER the marker,
+            // accumulating in rule order via markerInsertCount_ (reused wholesale
+            // from the `at marker` arm — several rules stacking on one site stay
+            // deterministic). The marker node stays in the tree, so `--expand`
+            // shows the site with the injected statements around it.
+            for (SpliceSiteRef& site : it->second) {
+                std::vector<StmtPtr> cloned;
+                for (const StmtPtr& t : act.tmplStmts)
+                    cloned.push_back(cloneStmt(t.get(), b, err));
+                if (err) break;
+                expandMacrosInClone(cloned);
+                std::vector<StmtPtr>& v = *site.vec;
+                int idx = -1;
+                for (int i = 0; i < (int)v.size(); ++i)
+                    if (v[i].get() == site.node) { idx = i; break; }
+                if (idx < 0) continue;   // marker vanished (defensive)
+                int insertAt = idx + 1 + markerInsertCount_[site.node];
+                int n = (int)cloned.size();
+                v.insert(v.begin() + insertAt,
+                         std::make_move_iterator(cloned.begin()),
+                         std::make_move_iterator(cloned.end()));
+                markerInsertCount_[site.node] += n;
+            }
+            if (err) continue;
 
         } else if (act.anchor == AnchorKind::BodyReplace ||
                    act.anchor == AnchorKind::BodyGenerate) {
@@ -2697,19 +2806,41 @@ void RuleEngine::warnDanglingAttrs(std::vector<StmtPtr>& rootItems) {
                 // that is the actionable "you forgot a `uses`" case. An attribute
                 // no rule anywhere consumes is legitimate inert data (§4.1), not
                 // a mistake, so it stays silent.
+                // techdesign-splices-desugars-sonnet.md §2.3(3): a rule for this
+                // attribute may exist but never fire because its subject kind
+                // (e.g. `on class`) can't match this declaration's kind (e.g. a
+                // `struct`) — that is a DIFFERENT mistake than a missing `uses`,
+                // and blaming `uses` sends the author down the wrong trail.
                 std::string hint;
                 bool ruleExists = false;
+                bool kindCompatibleRuleExists = false;
+                std::string mismatchRuleName, mismatchKind;
                 for (const OwnedRule& r : rules_) {
                     const RuleMatch& m = *r.node->ruleMatch;
                     if (m.hasAttr && m.attrName == a.name) {
                         ruleExists = true;
-                        if (r.ns != "<root>") { hint = r.ns; break; }
+                        if (declKindMatches(item.get(), m.subject.kindWord)) {
+                            kindCompatibleRuleExists = true;
+                            if (r.ns != "<root>") hint = r.ns;
+                        } else if (mismatchRuleName.empty()) {
+                            mismatchRuleName = r.ns == "<root>" ? std::string(r.node->name)
+                                                                : r.ns + "::" + std::string(r.node->name);
+                            mismatchKind = m.subject.kindWord;
+                        }
                     }
                 }
                 if (!ruleExists) continue;
-                std::string msg = "attribute '@" + std::string(a.name) +
-                    "' matched no imported rule";
-                if (!hint.empty()) msg += " (missing 'uses " + hint + "'?)";
+                std::string msg;
+                if (!kindCompatibleRuleExists && !mismatchRuleName.empty()) {
+                    msg = "attribute '@" + std::string(a.name) + "' has a rule '" +
+                        mismatchRuleName + "' that matches '" + mismatchKind +
+                        "' subjects, but this is a '" + declKindWord(item.get()) +
+                        "' — did you mean 'on type' / 'on " + declKindWord(item.get()) + "'?";
+                } else {
+                    msg = "attribute '@" + std::string(a.name) +
+                        "' matched no imported rule";
+                    if (!hint.empty()) msg += " (missing 'uses " + hint + "'?)";
+                }
                 sink_.warning(a.span, msg);
             }
             if (item->kind == StmtKind::Namespace || item->kind == StmtKind::Class)

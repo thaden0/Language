@@ -297,6 +297,33 @@ add_test(NAME rule_if_reject_kindmix            # M41: statement in an expr-posi
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_kindmix.ext"
                  "expected expression")
+# techdesign-splices-desugars-sonnet.md §1.2 point 4: a trailing `@attr(A);`
+# grouped-attribute group with no following declaration is a parse error, not
+# a silently-dropped attribute.
+add_test(NAME rule_attr_group_reject_dangling
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_attr_group_dangling.ext"
+                 "@attr(...) must precede a declaration")
+# Named splice anchor (designs/metaprog-splices/techdesign-splices-named-anchor-
+# opus.md §4): the three splice-anchor reject rows. The green fixtures
+# (rule_splice_routes{,_twin}, rule_splice_multi, rule_splice_empty) ride the
+# corpus_meta_* + expand round-trip lanes above.
+add_test(NAME rule_splice_reject_missing         # M42: `at splice X` with no `@X()` site
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_missing.ext"
+                 "no '@InjectRoutes()' splice site exists")
+add_test(NAME rule_splice_reject_dup             # M42: two `@X()` sites, non-`multi` rule
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_dup.ext"
+                 "add 'multi' to fan out or keep one site")
+add_test(NAME rule_splice_reject_notattr         # M43: `@X()` site where X is not an attribute
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr.ext"
+                 "is not a declared attribute")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir

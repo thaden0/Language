@@ -288,3 +288,126 @@ generic runner:
 - Boot validation is `await db.validate()` (dev flag = calling it at boot):
   repos register in the AppDb constructor AFTER `Db`'s own constructor runs,
   and constructors cannot await.
+
+---
+
+# Atlantis Track 07 — MCP/OpenAPI results (2026-07-19)
+
+Executed with `build/leviathan`/`build/trident` rebuilt at head (commit `9709700` and
+later — see the compiler-findings note below; the pre-rebuild binary gave false-positive
+failures on unrelated code). All four milestones green on oracle/IR/LLVM:
+
+```
+./packages/atlantis/tests/runtests.sh
+```
+
+## M0 probes (design §7, run before any M2 feature work)
+
+| # | probe file | result |
+|---|---|---|
+| P1 | `mcp_p1_generic_fromjson.lev` | GREEN (3 engines) — `A::FromJson(v)` inside a generic body (LA-18) works once `A` is pinned; **inferring `A` from a `(A) => R` argument (typed lambda OR bound method reference) does NOT work** without an explicit turbofish (LA-32) — a real finding, not metaprog-shaped, that reshapes M2 (see below) |
+| P2 | `mcp_p2_empty_ctor.lev` | GREEN (3 engines) — rule-injected `new Empty() { }` + zero-default struct fields (int/string/bool all zero-value) |
+| P3 | `mcp_p3_content_overloads.lev` | GREEN (3 engines) — `content(string)` beats `content<R>(R)`; duck-typed `.toJson()` generic fallback; `content(await promise)` unifies |
+| P4 | `mcp_p4_for_over_params.lev` | GREEN (3 engines) — `$for p in m.params : F($p.name, $p.type)` (BARE holes — quoted holes are literals, corrected from this doc's own quoted sketches, same finding as ORM's P2) |
+| P5 | `mcp_p5_splice_spellings.lev` | GREEN (3 engines) — `$m.name`/`$C.name`/`$p.type` bare-hole splicing; nested-namespace struct canonical spelling pinned as `Outer::Inner` (fully qualified, `::`-joined) |
+| P6 | `mcp_p6_two_rules_stack.lev` | **FAILED, as real** — a rule cannot match an attribute declared in a DIFFERENT namespace than the rule itself (confirmed independent of nesting depth/direction via a minimal sibling-namespace repro). Filed **known_bugs_2.md #98** [P1]. Workaround applied: `schema.lev`'s rule stays in flat `Atlantis`, matching `@Serializable`'s real (un-migrated) home |
+| P7 | `mcp_p7_multi_tool_accumulate.lev` | GREEN (3 engines) — three `@ItemProbe`-attributed methods, ctor-bottom injections accumulate in declaration order into one array field |
+
+Two EXTRA probes run beyond the design's own table, both load-bearing for M2's actual
+shape (not written up as separate `#N` items, but see the doc's §11 log): explicit
+turbofish into a rule-generated splice position (`callWithParsed::<$p.type, string>(...)`)
+fails to PARSE; `$p.type::FromJson(v)` (call-target position) parses but fails at RUNTIME
+("cannot resolve call target"). Together with P1, these three confirm LA-16
+(identifier/type-position splicing) is not landed — not a new bug, an already-filed ask.
+
+## Corpus (M1–M4)
+
+| case | what it proves | oracle | IR | LLVM |
+|---|---|---|---|---|
+| corpus/mcp_core | M1: JSON-RPC core over hand-registered (`addRaw`) tools — initialize/ping/tools-list/tools-call round trip, unknown-tool/unknown-method errors, the full §2.1 HTTP table (POST valid, notification→202, unparseable→-32700, batch→-32600, GET/DELETE→405, bad/good `MCP-Protocol-Version`→400/200), boot-time duplicate-name validation, `addRaw` duplicate rejection. Found+worked around known_bugs #94 (function-typed-FIELD dot-call silent no-op on LLVM) at `t.run(args)` | green | green | green |
+| corpus/mcp_tool | M2: the real (fallback-ladder-adapted) round trip — `@Tool` generates `ToolMeta` metadata with zero hand code; `registerRun` hand-wires the typed closure naming `AddArgs` statically; `tools/list`/`tools/call` wire format matches this doc's §3.6 example exactly; `guard()` maps a `ValidationException` (missing field, wrong type) to `isError:true` text; boot warning for an `@Tool` method declared but never `registerRun`'d | green | green | green |
+| corpus/openapi | M3: `SchemaRegistry` miss (boot error naming the exact fix line) + hit; `OpenApiDoc.build` over a hand-built `Array<RouteRec>` fixture — `openapi: "3.1.0"`, every route appears exactly once, `@Summary` joins into an op whose `RouteRec.summary` was `""`, `authMode` 1(+scheme)/2 → `security` entry/`[]`, every op's `default` response `$ref`s `components/schemas/Problem` (and it resolves), registered nested schemas present; **design risk #1 schema-drift check**: the same `CreateUser` DTO's schema through an MCP tool's `inputSchema` and an OpenAPI route's `requestBody` schema render byte-identical (both are literally the same `schemaJson()` call); `/llms.txt` output; `openApiCommand` factory construction (not executed — writes a real file) | green | green | green |
+| corpus/client | M4: `ApiClient`/`ApiException` against a REAL in-process server (one event loop, Track 01 loopback's own pattern) — 2xx `getJson`/`postJson`, a `problem+json` 404 mapped to a typed `ApiException` (status + parsed detail), and the demo `UsersClient` (design §6.1's exact convention) round-tripping a typed `UserDto` through `await`. Timeout→exception not exercised (`HttpClient` has no timeout knob yet, reference.md §6.6.6) | green | green | green |
+
+## Findings / deviations from the design text (each logged in detail in techdesign-07-mcp-openapi.md §11)
+
+- **known_bugs_2.md #98 [P1] filed**: a rule cannot match an attribute declared in a
+  different namespace than the rule itself (P6 above) — affects any future subsystem
+  whose rule needs to match another subsystem's attribute, exactly the shape C1's own
+  multi-consumer tiebreak anticipates as normal. Workaround: co-locate.
+- **M2's `mcpTool` rule generates metadata only**, not a working tool — LA-16 (type-
+  position splicing) gates the design's full "attribute only, zero hand code" promise for
+  the typed dispatch closure specifically; `ToolSource.registerRun` + a boot-time
+  unwired-tool warning is the shipped fallback (design's own §3.5 rung 3).
+- **Compiler-build hygiene**: `build/leviathan` was stale by ~20 minutes relative to a
+  same-day commit fixing bugs #91/#92; every symptom that looked like a #91 regression
+  (including ORM's own regression-floor probe) disappeared after a plain rebuild. No
+  compiler bug filed for that — it never existed on the current source.
+- `schema.lev`'s rule placement (flat `Atlantis`, not `Atlantis::OpenApi`) and `@Summary`'s
+  free-function shape (not a `Controller` base addition) are both cross-track-footprint-
+  minimizing choices, not compiler-forced — see §11 for the full reasoning.
+- `RouteRec.bodySchema`/`.summary` land as the LAST two constructor params (additive,
+  positional — no named args in the language yet); every existing call site (Track 02's
+  `AddRoute`, Track 02's own `routing.lev` corpus) updated to pass `None, ""`.
+
+---
+
+# Atlantis Track 08 — Auth & Security results (2026-07-19)
+
+Core subsystem implemented in `packages/atlantis/src/auth/*.lev`
+(principal/crypto/cookie/pbkdf2/strategy/session/bearer/guard/csrf/cors/headers/
+ratelimit/audit) + additive `App.useAuthentication()/useAuthorization()` in
+`kernel/facade.lev`. Full itemized deviation list lives in
+`designs/complete/techdesign-08-auth-security.md` §15 — this is the test-result summary.
+
+```
+./packages/atlantis/tests/runtests.sh
+```
+
+| case | result |
+|---|---|
+| corpus/auth | **oracle: green. IR: green, byte-identical to oracle (`auth.expected`). LLVM: FAILS** — see below, not a Track 08 regression |
+
+Full run across every corpus dir (2026-07-19, freshly rebuilt `leviathan`/`trident`):
+every OTHER case (app, client, config, di, kernel, loopback, mcp_core, mcp_tool, openapi,
+orm, orm_migrate, orm_query, orm_rel, serialization, static) still passes oracle+IR+LLVM
+unchanged — Track 08's additions (a new `src/auth/*.lev` glob entry, two additive methods
+on `App`, and removing the Track-01 `Principal` seed it explicitly said to replace) do not
+regress anything else. Two OTHER pre-existing, unrelated failures were observed in the
+same run and are NOT Track 08's: `routing` (LLVM only) and `serialization_refusals`
+(negative-case text mismatch) — confirmed via `git status` that no file under
+`src/json/` or `src/routing/` was touched this session.
+
+**LLVM finding — `known_bugs_1.md` #99 filed, likely the same family as pre-existing
+#95.** Bisected a genuine, minimal, independently-reproducible LLVM defect: a function
+taking a class-typed parameter (e.g. `Http::Context`) that ALSO returns from inside a
+`for` loop over `Array<Struct>` corrupts a LATER, unrelated heap-touching call. Fixed at
+the one site this track hit (`cookie.lev`'s `cookieValue`, converted to an accumulator
+pattern). Fixing it did NOT make the corpus LLVM-clean, though — the crash just moves to
+a different `Router`/`Context` construction point depending on unrelated prior heap
+activity (confirmed by reordering test sections: the crash site changes, never whether it
+crashes). Directly re-ran the untouched, pre-existing `packages/atlantis/tests/
+corpus/routing` corpus (Track 02, zero Track 08 code involved) and confirmed it ALSO
+segfaults on LLVM within its first two lines of output — matching `known_bugs_1.md` #95's
+own description ("atlantis routing corpus segfaults on LLVM, pre-existing at 2026-07-19
+master") almost exactly. Conclusion: this is a systemic, already-tracked, out-of-scope
+defect broad enough that essentially any non-trivial Atlantis program constructing
+`Router`/`Context` objects is currently affected on LLVM — not something Track 08
+introduced or can fix from within `.lev` source. Oracle+IR are the correctness reference
+until the compiler-side fix lands.
+
+**Other findings / deviations (full detail in the design's §15 log):**
+- R-4 `sysRandomBytes` → landed as `sysRandom` before this track started (crypto ticket,
+  already resolved, `Auth::randomBytes` is a direct pass-through).
+- base64Url padding shim (P2) never needed — `encoding::base64Url{En,De}code` already
+  emit/accept unpadded.
+- `@Auth`/`@NoAuth` attributes still don't exist (blocked on LA-16/LA-22, an open/
+  un-accepted request) — guard enforcement derives its GuardSpec from Track 02's landed
+  `RouteRec.authMode`/`authRole` + `Router.authModeOf`/`authRoleOf` instead, zero schema
+  changes; `.auth("policy:name")` already threads the `policy:` prefix through the
+  existing `authRole` string.
+- PBKDF2 corpus proves the algorithm/format/upgrade-path self-consistently at a tiny
+  iteration count (4-8), not against RFC 7914 §11 vectors — `digest::hmacSha256` is an
+  IN-LANGUAGE implementation, so real production iteration counts cost real wall-clock on
+  the tree-walk oracle (~130ms/HMAC-call measured) and would blow any test timeout. No
+  PBKDF2 calibration numbers exist yet for the 210k default.

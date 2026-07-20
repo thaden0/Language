@@ -1,0 +1,45 @@
+// T7-P5: splices $m.name/$C.name/$p.type as string values, and records the
+// canonical spelling of a NESTED-NAMESPACE struct type in param position —
+// pins the SchemaRegistry key spelling (design §4.3).
+//
+// NOTE: bare holes throughout (see P4's note) — Track 06's own orm_p1 probe
+// confirms bare $t.name works standalone in a string-concat expression too
+// (not just inside $for), so that's the shape used here.
+namespace ProbeP5NS {
+    struct Inner {
+        int v;
+    }
+}
+namespace ProbeP5 {
+    struct PSpec2 {
+        string name;
+        string type;
+        new PSpec2(string name, string type) {
+            this.name = name;
+            this.type = type;
+        }
+    }
+    attribute SpliceProbe {}
+    rule spliceProbeRule {
+        match @SpliceProbe on method m in class C
+        inject `Array<PSpec2> __probeParams2() => [ $for p in m.params : PSpec2($p.name, $p.type) ];`
+            at member of C
+        inject `string __probeName() => $C.name + "::" + $m.name;`
+            at member of C
+    }
+}
+uses ProbeP5;
+
+class Widget3 {
+    @SpliceProbe
+    int take(ProbeP5NS::Inner x, int y) => y;
+}
+
+void main() {
+    Widget3 w = Widget3();
+    console.writeln(w.__probeName());
+    for (PSpec2 p in w.__probeParams2()) {
+        console.writeln(p.name + ":" + p.type);
+    }
+}
+main();

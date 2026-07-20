@@ -1,0 +1,22 @@
+// Named splice anchor §2.3 point 2 (the asymmetry): a @InjectRoutes() site with
+// NO firing rule expands to just the marker — no injected statements, and no
+// dangling warning. It is an intentional extension point. Here the rule targets
+// the site but its match never fires (no class carries @Route), so the site
+// stays empty and the program runs clean.
+namespace App {
+    attribute InjectRoutes { }
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice InjectRoutes
+    }
+}
+uses App;
+
+string addRoutes() {
+    string sink = "none";
+    @InjectRoutes();
+    return sink;
+}
+
+console.writeln(addRoutes());

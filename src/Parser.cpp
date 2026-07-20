@@ -1162,7 +1162,30 @@ StmtPtr Parser::parseStatement() {
                 s->name = marker;
                 return s;
             }
-            error("'anchor(\"name\")' after '@' (attributes are declaration-position only)");
+            // `@Name();` (named-anchor design §2.1) — a statement-position, named
+            // splice site. `Name` must name a declared `attribute` (checked at the
+            // rule stage, M43); the trailing `()` + `;` in statement position is
+            // what distinguishes a splice site from a decl-position decorator.
+            // Produces the same StmtKind::Empty marker node as `@anchor`, but with
+            // the bare attribute name and isSpliceSite set.
+            if (peek(1).kind == TokenKind::Identifier &&
+                peek(2).kind == TokenKind::LParen) {
+                advance();                     // '@'
+                std::string_view spliceName = cur().text;
+                advance();                     // Name
+                advance();                     // '('
+                if (!at(TokenKind::RParen))
+                    error("a splice site takes no arguments — '@Name()'");
+                expect(TokenKind::RParen, "')'");
+                expect(TokenKind::Semicolon, "';'");
+                sawMeta_ = true;
+                auto s = mkStmt(StmtKind::Empty, sp);
+                s->name = spliceName;
+                s->isSpliceSite = true;
+                return s;
+            }
+            error("'anchor(\"name\")' or a splice site '@Name();' after '@' "
+                  "(decorations are declaration-position only)");
             advance();
             return mkStmt(StmtKind::Empty, sp);
         }
@@ -1329,10 +1352,13 @@ StmtPtr Parser::parseStatement() {
 
 // Attribute wrapper for members: `@Column public int id;` etc.
 StmtPtr Parser::parseClassMember(Access sectionAccess, bool sectionConst) {
-    std::vector<AttrUse> attrs = parseAttrUses();
+    bool lastWasGroup = false;
+    std::vector<AttrUse> attrs = parseAttrUses(&lastWasGroup);
     StmtPtr m = parseClassMemberInner(sectionAccess, sectionConst);
     if (!attrs.empty()) {
         if (m && m->kind == StmtKind::Member) m->attrs = std::move(attrs);
+        else if (lastWasGroup) sink_.error(attrs.front().span,
+                         "@attr(...) must precede a declaration");
         else sink_.error(attrs.front().span,
                          "an attribute must precede a member declaration");
     }
@@ -1516,9 +1542,51 @@ StmtPtr Parser::parseEnum(Access access) {
 // ---------------------------------------------------------------------------
 
 // `@Name(args)` / `@NS::Name(args)`, zero or more, before a declaration.
-std::vector<AttrUse> Parser::parseAttrUses() {
+std::vector<AttrUse> Parser::parseAttrUses(bool* lastWasGroup) {
     std::vector<AttrUse> out;
+    if (lastWasGroup) *lastWasGroup = false;
     while (at(TokenKind::At)) {
+        // `@attr(Name1, Name2, …);` (techdesign-splices-desugars-sonnet.md §1) —
+        // statement/member-position sugar for `@Name1 @Name2 …` on the next
+        // declaration. `attr` is a contextual keyword only in this exact shape
+        // (`@` `attr` `(` at a decorator-prefix position, a shape no ordinary
+        // decorator use — with or without an attribute literally named `attr`
+        // — collides with, since a real `@attr(...)` decorator never continues
+        // with a bare `;` right after its ')').
+        if (peek(1).kind == TokenKind::Identifier && peek(1).text == "attr" &&
+            peek(2).kind == TokenKind::LParen) {
+            advance();                               // '@'
+            advance();                               // 'attr'
+            advance();                               // '('
+            do {
+                AttrUse a;
+                a.span = cur().span;
+                if (!at(TokenKind::Identifier)) { error("attribute name"); break; }
+                a.name = cur().text;
+                advance();
+                while (at(TokenKind::ColonColon)) {
+                    advance();
+                    if (!at(TokenKind::Identifier)) { error("attribute name"); break; }
+                    a.path.push_back(a.name);
+                    a.name = cur().text;
+                    advance();
+                }
+                if (pos_ > 0) a.span.length = tokens_[pos_ - 1].span.end() - a.span.offset;
+                out.push_back(std::move(a));
+            } while (accept(TokenKind::Comma));
+            expect(TokenKind::RParen, "')'");
+            expect(TokenKind::Semicolon, "';'");
+            sawMeta_ = true;
+            if (lastWasGroup) *lastWasGroup = true;
+            // A body's declaration loop always attempts to parse a member/item
+            // even at its closing brace (there is no "nothing left" sentinel
+            // return), so it cascades unrelated errors rather than surfacing
+            // this specific one — check directly, here, where the dangling
+            // group is actually detected (design point F.4).
+            if (at(TokenKind::RBrace) || atEnd())
+                sink_.error(cur().span, "@attr(...) must precede a declaration");
+            continue;
+        }
         AttrUse a;
         a.span = cur().span;
         advance();                                   // '@'
@@ -1535,6 +1603,7 @@ std::vector<AttrUse> Parser::parseAttrUses() {
         if (at(TokenKind::LParen)) a.args = parseArgs();
         if (pos_ > 0) a.span.length = tokens_[pos_ - 1].span.end() - a.span.offset;
         sawMeta_ = true;
+        if (lastWasGroup) *lastWasGroup = false;
         out.push_back(std::move(a));
     }
     return out;
@@ -1817,6 +1886,18 @@ void Parser::parseRuleAction(RuleAction& out, bool generates) {
         if (at(TokenKind::StringLiteral)) { out.markerName = cur().text; advance(); }
         else error("a marker name string");
         out.anchor = AnchorKind::Marker;
+    } else if (at(TokenKind::Identifier) && cur().text == "splice") {
+        // `at splice Name [multi]` (named-anchor design §2.2): land at the
+        // program-global `@Name();` site(s). `multi` opts into fanning out across
+        // every same-named site; without it, ≥2 sites is a rule-stage error (M42).
+        advance();                                       // 'splice'
+        if (at(TokenKind::Identifier)) { out.target = cur().text; advance(); }
+        else error("a splice-site name after 'splice'");
+        if (at(TokenKind::Identifier) && cur().text == "multi") {
+            out.spliceMulti = true;
+            advance();
+        }
+        out.anchor = AnchorKind::SpliceSite;
     } else if (at(TokenKind::KwNamespace)) {
         advance();
         if (at(TokenKind::Identifier)) { out.target = cur().text; advance(); }
@@ -2114,7 +2195,8 @@ StmtPtr Parser::parseNamespace() {
 // Attributes bind to the declaration that follows them (§16.5 Layer A). The
 // wrapper keeps the existing item grammar untouched and just attaches.
 StmtPtr Parser::parseTopLevelItem() {
-    std::vector<AttrUse> attrs = parseAttrUses();
+    bool lastWasGroup = false;
+    std::vector<AttrUse> attrs = parseAttrUses(&lastWasGroup);
     StmtPtr item = parseTopLevelItemInner();
     if (!attrs.empty()) {
         bool declLike = item && (item->kind == StmtKind::Class ||
@@ -2122,6 +2204,8 @@ StmtPtr Parser::parseTopLevelItem() {
                                  item->kind == StmtKind::Var ||
                                  (item->kind == StmtKind::Member && item->callable));
         if (declLike) item->attrs = std::move(attrs);
+        else if (lastWasGroup) sink_.error(attrs.front().span,
+                         "@attr(...) must precede a declaration");
         else sink_.error(attrs.front().span,
                          "an attribute must precede a declaration "
                          "(class, struct, function, field, or namespace)");

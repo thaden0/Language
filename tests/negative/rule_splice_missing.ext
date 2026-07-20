@@ -1,0 +1,21 @@
+// Named splice anchor §4 (M42, zero sites): a rule injects `at splice
+// InjectRoutes` but the program has no `@InjectRoutes();` site anywhere — the
+// rule asked to inject somewhere that does not exist. A loud error, unlike the
+// silent site-with-no-rules direction (rule_splice_empty).
+namespace App {
+    attribute InjectRoutes { }
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice InjectRoutes
+    }
+}
+uses App;
+
+class HomeController {
+    @Route("/")
+    void index() { }
+}
+
+// No @InjectRoutes() site exists — the rule fires but has nowhere to land.
+console.writeln("unreached");

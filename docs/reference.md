@@ -1182,8 +1182,16 @@ std::sum(Array<float>)` overload by argument type instead. `std::min`/`std::max`
 return `T?` (`None` on empty); `std::average` always returns `float`.
 
 ### 6.4 `Pair<A, B>`
-Fields `first`, `second`; constructor `Pair::Of(a, b)`. The element type of relational joins
-and of Map iteration.
+Fields `first`, `second`; constructor `Pair::Of(a, b)`. A value type (`struct`, §9):
+copied not aliased, field-wise `==`, and `toString()` returns `(first, second)`. The
+element type of relational joins and of Map iteration. Its arrays store densely (no
+per-element boxing).
+
+### 6.4a `Triple<A, B, C>`
+Fields `first`, `second`, `third`; constructor `Triple::Of(a, b, c)`. The three-field
+sibling of `Pair`, same value-struct conventions. Use it wherever three values travel
+together (a coordinate + a label, a key + two related values) instead of a
+purpose-built struct or nested `Pair<A, Pair<B, C>>`.
 
 ### 6.3.5 `StringBuilder` — a mutable accumulator (Track 04 M4)
 ```
@@ -2196,6 +2204,13 @@ Array<User> list() => ...;
   `use NS::x` opts the file into `NS` at namespace grain, exactly as it does for
   phantom-dep purposes — §4.1.) Ambiguity across imports is an error; qualify
   (`@Web::Route`).
+- **Grouped attributes:** `@attr(Name1, Name2, …);` in statement/member
+  position is sugar for `@Name1 @Name2 …` decorating the **next declaration**
+  in the same body — `@attr(PrimaryKey, AutoIncrement); int id;` ==
+  `@PrimaryKey @AutoIncrement int id;`. `attr` is a contextual keyword only in
+  this exact `@attr(` shape; a real attribute named `attr` is unaffected. A
+  trailing `@attr(…);` with no following declaration is a parse error, never
+  silently dropped. `--expand` canonicalizes to the stacked-decorator spelling.
 
 ### Rules (Layer B) — match a shape, inject quasiquoted code
 ```
@@ -2216,10 +2231,24 @@ every rule that can touch it.
 
 - **Match** binds by structural shape: `@Attr(bind)` (an attribute on the decl,
   binding its evaluated value), `on <kind> m` (the decl: `method`/`function`/
-  `class`/`struct`/`field`/`constructor`/`interface`/`namespace`), and
+  `class`/`struct`/`field`/`constructor`/`interface`/`namespace`/`type`), and
   `in <kind> C : IFace` enclosers (an enclosing decl, optionally constrained to
   implement/extend a type — checked against the resolved base chain). `match one`
   requires at most one matching attribute.
+  - **Subject `class`/`struct`/`type` symmetry:** `on class C` and
+    `on struct C` are exact — each matches only its own kind, so a contract
+    that must cover both value structs and reference classes needs a
+    `class`/`struct` pair. `on type C` is additive: it matches `class`
+    **or** `struct` **or** `interface` in one rule (the subject-position
+    analogue of the encloser clause's existing `in class C`-also-matches-
+    struct/interface leniency), without changing what `on class`/`on struct`
+    match. The subject still binds as its actual declaration, so `$C`/
+    `C.fields`/etc. reflect the real kind regardless of which subject
+    kind-word matched. A `@Attr` whose only in-scope rule has a subject kind
+    that can't match the decorated declaration's kind gets a kind-aware
+    diagnostic (`... has a rule 'K::r' that matches 'class' subjects, but
+    this is a 'struct' — did you mean 'on type' / 'on struct'?`) instead of
+    the generic "missing `uses`" warning.
 - **Inject** splices a quasiquote template at a named anchor. **Holes** are
   `$name`: `$r.method` reifies a field of a bound attribute value to a literal;
   `$m` / `$C` splice a bound declaration's name (e.g. `this.$m` → the method's
@@ -2236,10 +2265,24 @@ every rule that can touch it.
   C.constructor` (a nullary constructor is synthesized if the class has none;
   `top` inserts after base constructor calls) and `member of C` (adds a member,
   erroring on a same-name same-type collision). `top`/`bottom of body`,
-  `marker`, and `namespace N` anchors, plus `where` predicates, `$for` list
-  splices, and expression macros (`macro name(e) => \`…\`;` / `name!(arg)`),
-  all ship. **Body-replacing rules (Layer D, `rewrites` / `replace` / `$body`)
-  also ship** — see below.
+  `marker`, `splice Name [multi]`, and `namespace N` anchors, plus `where`
+  predicates, `$for` list splices, and expression macros (`macro name(e) =>
+  \`…\`;` / `name!(arg)`), all ship. **Body-replacing rules (Layer D,
+  `rewrites` / `replace` / `$body`) also ship** — see below.
+- **`splice Name` — a program-global, user-placed named anchor.** A statement
+  `@Name();` in a function/method body (where `Name` is a declared `attribute`)
+  is a **named splice site**; a rule's `inject … at splice Name` lands its
+  statements at that point, **in the site's surrounding lexical scope** — so a
+  spliced `bind`/`AddRoute` sees the site function's parameters and locals like
+  hand-written code, and collision/duplicate checks fire there. Unlike `marker`
+  (which resolves inside the *matched* declaration's own body), `splice` is
+  cross-declaration: a rule matched on one class registers statements at a
+  `@Name();` site in a *different* function. The site stays visible in
+  `--expand`. A site with no firing rule is silent (an intentional extension
+  point); a rule with no site is an error (M42), as is `at splice Name` with two
+  sites unless the rule opts into `at splice Name multi` to fan out into every
+  site. A `@Name();` whose `Name` is not a declared attribute is M43 (the
+  typo-safety the attribute spelling buys over string-named markers).
 - **`$if` / `$else` / `$else if` — the expansion-time template conditional.**
   Inside any template `$if (<comptime-pred>) { <frag> } $else if (<pred>) {
   <frag> } $else { <frag> }` selects **one branch at expansion time**, per rule

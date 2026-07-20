@@ -1,0 +1,33 @@
+// Named splice anchor (designs/metaprog-splices/techdesign-splices-named-anchor
+// -opus.md §3): every @Route method in the program contributes one registration
+// at the single, user-placed @InjectRoutes() site — in that function's own
+// scope. The rule MATCHES on methods in other classes but LANDS its statements
+// in addRoutes()'s body, the cross-declaration delta over subject-local
+// `at marker`. The spliced statements read `sink`, addRoutes's local, proving
+// lexical-scope inheritance by placement (§2.4).
+namespace App {
+    attribute InjectRoutes { }
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice InjectRoutes
+    }
+}
+uses App;
+
+class HomeController {
+    @Route("/")
+    void index() { }
+}
+class AboutController {
+    @Route("/about")
+    void about() { }
+}
+
+string addRoutes() {
+    string sink = "";
+    @InjectRoutes();
+    return sink;
+}
+
+console.writeln(addRoutes());

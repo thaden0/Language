@@ -633,3 +633,110 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
   triple is recorded in the overview LA register alongside `request-metaprog-splices.md`.
   Auth security-scheme naming: map Track 08's GuardSpec strings verbatim into OpenAPI
   securitySchemes (session cookie + bearer), per overview ruling.
+- 2026-07-19 — **Track 07 implemented in full (M1–M4)**, all four milestones green on
+  oracle/IR/LLVM (`packages/atlantis/tests/corpus/{mcp_core,mcp_tool,openapi,client}`,
+  probes `tests/probes/mcp_p1..p7_*.lev`). Key deviations from this doc, each logged in
+  detail at its call site:
+  - **C1 placement, applied**: all new code lives in `Atlantis::Mcp`/`Atlantis::OpenApi`/
+    `Atlantis::Client` (the amended C1, not this doc's original flat-`Atlantis` sketch) —
+    **except** `schema.lev`'s `serializableSchema` rule, which stays in flat `Atlantis`
+    (matching `@Serializable`'s own un-migrated home) because of a real, filed compiler
+    bug: a rule cannot match an attribute declared in a different namespace than the rule
+    itself, confirmed with a minimal sibling-namespace repro independent of nesting depth
+    or direction (**known_bugs_2.md #98**, P1). `@Tool`/`@Summary` are Track 07's own
+    attributes, co-declared with their matching rules in the correct C1-amended namespace,
+    so they're unaffected.
+  - **§3.3's `mcpTool` rule generates METADATA ONLY, not a working `McpTool`.** The
+    sketch's typed dispatch closure needs LA-16 (identifier/type-position splicing —
+    `$p.type::FromJson` in call-target/type position) — filed, **not landed**. Confirmed
+    by three independent probes before writing any rule code (§7's T7-P1, and two more
+    beyond the design's own table): (1) a generic type param does not infer from an
+    explicitly-typed lambda parameter OR a bound method reference — `A::FromJson(v)`
+    itself works fine once `A` is pinned via explicit turbofish (LA-32, landed same day);
+    (2) `$p.type` cannot be spliced into a turbofish type-argument position (parse error);
+    (3) `$p.type::FromJson(v)` parses as a call-target splice but fails at RUNTIME
+    ("cannot resolve call target") — the hole is a string VALUE, never a type/identifier
+    splice. Shipped per the design's own **§3.5 fallback ladder, rung 3**: `@Tool` +
+    `mcpToolMeta` generates `Array<ToolMeta>` (name/description/param name+type strings —
+    everything reachable as a plain string value-hole); the app hand-writes the typed
+    closure via the new `ToolSource.registerRun(name, desc, schema, run)`, naming the
+    concrete param type statically (`AddArgs::FromJson(a)`, `AddArgs::Empty().schemaJson()`
+    — exactly the design's own sketch text). A boot-time `warnUnwiredTools` loudly flags
+    any `@Tool` method whose name never got a matching `registerRun` (or `addRaw`) call.
+    `content()`/`guard()` (§3.3/§3.4) ARE fully attribute-independent and ship as designed
+    (T7-P3 confirmed most-specific-overload-wins + duck-typed generic + `content(await …)`
+    unification all work).
+  - **§4.1's `$for` holes are BARE, never quoted** — `PSpec($p.name, $p.type)`, not
+    `PSpec("$p.name", "$p.type")` as this doc's own §3.3/§4.1 sketches show. A quoted hole
+    is a string LITERAL (`"$p.name"` renders as the four characters), not interpolation —
+    already found and documented by Track 06's ORM (P2); this doc's sketches predate that
+    finding and are simply wrong on this one syntax point, confirmed again by T7-P4/P5.
+  - **§4.3 `SchemaRegistry`/`OpenApi::schemas()`** ships as a namespace-level singleton
+    (verified legal and byte-identical across oracle/IR/LLVM before use) — the only reach
+    available to `schemaJson()`, a fixed-signature generated member with no injection point
+    for a registry parameter.
+  - **§5.1 `RouteRec` extension**: `bodySchema: JsonValue?`, `summary: string` added to the
+    real `RouteRec` (`routing/route_rec.lev`) as the LAST two constructor params (one call
+    site in `kernel/facade.lev` + two in Track 02's own `routing.lev` corpus updated). M3's
+    corpus tests against a hand-built `Array<RouteRec>` fixture (this doc's own sanctioned
+    fallback) rather than a live `Router`, since Era-A's `AddRoute` hardcodes
+    `controller = "Route"` (not the real controller class name) — real Era-A integration
+    (and therefore live `@Summary` joining through an actual mounted app) is a follow-up
+    once Track 02 exposes real controller names through the fluent builder.
+  - **§5.4 `@Summary`**: does NOT add a field/method to Track 02's `Controller` base (the
+    design's own primary sketch) — uses the design's OWN named alternative instead (a
+    plain `Atlantis::OpenApi::noteSummary` free function, no base-class dependency), a
+    smaller cross-track footprint. Nested-struct schemas emit INLINE everywhere (not
+    `$ref`) — a simplification from §4.3's "MCP inlines, OpenAPI $refs" split emission;
+    only the fixed `Problem` schema is `$ref`'d. Logged as reduced v1 scope, not a defect.
+  - **§6 `Atlantis::Client`**: `ApiClient` takes `host`/`port`, not a `baseUrl` string — the
+    real Track 09 `HttpClient` (`src/Resolver.cpp`) has no raw-URL constructor
+    (`request(method,host,port,path,headers,body,cb)`, `fetch(host,port,path)` GET-only;
+    URL-string parsing is an explicit, still-open deferral). `getJson`/`postJson`/etc. wrap
+    `HttpClient.request`'s callback into a `Promise<JsonValue>` the same way `fetch` itself
+    does, confirmed `await`-able directly from a corpus program's top-level `main()`.
+    Timeout → exception (M4's acceptance table) is not tested: no request-timeout knob
+    exists on `HttpClient` yet.
+  - **Compiler findings**: filed `known_bugs_2.md #98` (above). Also hit, and RESOLVED
+    WITHOUT filing (stale local build, not a real regression): `build/leviathan` was ~20
+    minutes older than the commit that fixed bugs #91/#92 (2-level nested-namespace
+    rule/attribute matching) — every probe that looked like a #91 regression, including
+    ORM's OWN regression-floor probe, passed clean after a plain rebuild. No compiler code
+    was touched by this track (overview §0.4(b)/(h) honored throughout).
+  - Full `packages/atlantis/tests/runtests.sh` stays green apart from the pre-existing,
+    independently-verified (via `git stash` A/B) `routing (llvm)` failure (bug #95,
+    unrelated to this track).
+- 2026-07-20 — **Independent re-verification** (a second, concurrent agent instance
+  worked this same doc from a stale `designs/atlantis/` worktree copy before discovering
+  the M1-M4 landing above at merge time — collision noted for the record, not repeated
+  here). Its own T7-P1..P7 + one extra infra probe corroborate the 2026-07-19 entry almost
+  exactly: same T7-P1 failure mode (a generic's type param can't be inferred from a
+  lambda-literal argument alone; a plain witness value or explicit `fn::<A,R>(...)` both
+  work around it — this is the more precise mechanism behind "LA-16 not landed" above, an
+  LA-18 *specialization-tuple-collection* gap specifically, not a blanket absence of
+  type-position splicing: `A::FromJson`/`A::Empty()` and explicit turbofish both work
+  fine; the lambda-inference gap itself is filed on its own as known_bugs_2.md #101,
+  renumbered from that session's #99 filing), same bare-vs-quoted hole finding, and the
+  same cross-namespace rule/attribute gap (re-confirmed by its own T7-P6 probe and folded
+  into known_bugs_2.md #98 — same defect, one entry). Two additions:
+  1. **`Map<string, JsonValue>` as a class field is LLVM-safe** (probed directly —
+     `packages/atlantis/tests/probes/mcp_p8_jsonvalue_map_field_llvm.lev`, oracle/IR/LLVM
+     all green) — confirms `SchemaRegistry`/`OpenApi::schemas()`'s storage shape (above)
+     rests on solid ground, not just "verified legal" by inspection.
+  2. **A real, unfixed gap in §4.2/§4.3's registry-key premise**: `meta::Param.type` /
+     `meta::Field.type` is not a *stable* canonical spelling — it reproduces however the
+     type was written at its declaration site. Proven directly: the same type used twice
+     in one signature, once bare (via `uses`) and once namespace-qualified, reflects as two
+     different strings (`"Thing"` vs `"NS::Thing"`). This reconciles what looked like a
+     contradiction between the two independent T7-P5 probes above (one tested a
+     bare-via-`uses` parameter and recorded a bare spelling; this session's tested an
+     explicitly-qualified parameter and recorded the qualified spelling — both correct,
+     for different inputs). Consequence: two call sites naming the same DTO differently
+     (one bare, one qualified) register/look up under different `SchemaRegistry` keys for
+     the same type, which would surface as a spurious "unregistered schema" boot error
+     rather than the spelling mismatch it actually is. Not filed as a numbered known_bugs
+     entry (no crash/wrong-output on any *shipped* Track 07 code path today — the shipped
+     corpus happens to spell every DTO consistently) — flagged here as a follow-up so it
+     isn't rediscovered from scratch if a future consumer trips over it; the fix, if ever
+     needed, is normalizing the registry key through the resolved symbol rather than the
+     reflected string.
