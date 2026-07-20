@@ -633,3 +633,59 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
   triple is recorded in the overview LA register alongside `request-metaprog-splices.md`.
   Auth security-scheme naming: map Track 08's GuardSpec strings verbatim into OpenAPI
   securitySchemes (session cookie + bearer), per overview ruling.
+- 2026-07-20 — Pre-M1 reality check + all seven P-probes (plus one infra sanity probe,
+  T7-P8) run against the current tree; probes committed under
+  `packages/atlantis/tests/probes/mcp_p*`. Two load-bearing findings that change how M1-M4
+  are built, neither a redesign — both were anticipated escape hatches in this doc's own
+  text (§3.5, §5.1's "if Track 02 lands a different shape" note):
+  1. **Dependency reality vs. this doc's §2.4/§5.1 assumptions.** Track 02 landed, but
+     `Application` (`packages/atlantis/src/app/app.lev`) is a flat command dispatcher only
+     — there is no fluent `App(pipeline, router)` / `app.mcp(mcp)` facade; `serve` is an
+     ordinary app-defined `Command` the author wires by hand (`HttpServer` + pipeline +
+     router), same as `packages/atlantis/tests/corpus/app/app.lev` does for `serve`/
+     `migrate`. §2.4's mounting example is accordingly a *convention* (an `mcp`/`mcpOpen`
+     command the app registers the same way), not a method Track 07 can add to a shared
+     facade class it doesn't own. Separately, `RouteRec` (`routing/route_rec.lev`) does
+     **not** carry `bodySchema`/`summary`/`bodyType` — the 2026-07-07 entry above records a
+     plan that the landed file doesn't reflect; `RouteRec` is commented "frozen for Track
+     07's... consumption" as verb/path/controller/action/params/returnType/authMode/
+     authRole only, and the only production path from a route to a `RouteRec`
+     (`Http::App::AddRoute`, `kernel/facade.lev:60`) always passes `params:[]`,
+     `returnType:""` (Era A has no attribute-driven param/body reflection yet — routing's
+     own commissioning note says so). §5.1/§5.2 in M3 are implemented against this real
+     shape: `summary` is joined from the `@Summary` registry **at OpenAPI-assembly time**
+     (a lookup keyed by `rec.key()`, not a RouteRec field — matches what §5.4 already said
+     independently), and `requestBody`/typed `parameters` are emitted only when the route
+     carries them (Era A routes honestly don't; the default-`Problem`-response and
+     path/verb/security wiring still apply to every route).
+  2. **T7-P1 fails; §3.5 rung 3 applies.** LA-18 (generic static members) landed
+     2026-07-12 and `A::FromJson`/`A::Empty()` work fine *inside* a generic body — but the
+     specialization-tuple collector cannot determine `A`/`R` when the *only* evidence is a
+     `(A) => R` lambda-literal argument (no plain witness value of type `A` anywhere in the
+     call). Confirmed via `mcp_p1_generic_labeled_ctor_type_param` plus four scratch
+     repros (bare/qualified calls, single/double type params all fail identically; a
+     witness-value argument or explicit `fn::<A,R>(...)` both succeed). Filed as
+     known_bugs_2.md #99. Consequence for §3.3: the rule cannot spell `AddArgs` as an
+     explicit type argument either (no bound declaration for a matched method's *parameter
+     type* — `$p` in type position is a parse error, "unknown type '$p'", confirmed
+     alongside T7-P5), so `makeTool<A,R>` is not rule-callable. M2 implements §3.5 rung 3
+     as designed: the `@Tool` rule generates name/description/`ParamSpec` descriptors and a
+     compile-time v1-contract check (0 params, or 1 `@Serializable` param, or 1 `JsonValue`
+     param); the typed dispatch closure is hand-written in the composition root
+     (`(JsonValue a) => Mcp::content(svc.add(AddArgs::FromJson(a)))`, naming `AddArgs`
+     once, exactly where the author already named it in `add`'s own signature) and
+     registered via `McpServer.addRaw`/`ToolSource.registerTool` (rung 4's "always
+     available" surface, promoted to the v1 primary path). `schemaJson()`/`Empty()` (§4.1)
+     are UNAFFECTED — that rule matches `@Serializable on struct S` directly (`$C` is a
+     bound declaration, proven splicing to type position throughout Track 03), no generic
+     inference involved.
+  3. **Two smaller confirmed mechanics**, both now load-bearing for M2/M3's templates:
+     value-hole splices in an injected template must be **bare** (`Probe::PSpec($p.name,
+     $p.type)`), not re-quoted (`"$p.name"` splices nothing — the quoted form this doc's
+     own §3.3/§5.1 text used is corrected in the implementation, not the prose above, since
+     it's a syntax detail); and a rule only fires on an attribute declared in the **same**
+     namespace as the rule itself (cross-namespace, even both `uses`-imported at file
+     scope, silently doesn't fire) — confirming §1/§4.1's placement of Track 07's
+     `schemaJson` rule directly in `namespace Atlantis` (beside `@Serializable`, not under
+     `Atlantis::OpenApi`) is load-bearing, not stylistic. T7-P2/P3/P4/P6/P7 all pass clean
+     on oracle+IR+LLVM with no further findings.

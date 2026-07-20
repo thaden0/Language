@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #94, #96 |
-| P1       | #97 |
+| P1       | #97, #99 |
 | P2       | — |
 | P3       | — |
 
@@ -200,6 +200,72 @@ the prelude class — `std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/
 `tests/pty_win_driver.lev` (the G-PTY3 behavioral lane, which is why it does
 not use `Pty`). `tests/run_wine_cross.sh` avoids the area entirely — its scope
 note excludes net corpus.
+
+## #99 [P1] — LA-18 specialization can't determine a type tuple from a lambda-typed argument alone
+
+**Found:** 2026-07-20, implementing Atlantis Track 07 (`designs/atlantis/techdesign-07-mcp-openapi.md`,
+probe T7-P1) — the `makeTool<A,R>(string, string, Array<ParamSpec>, (A) => R fn)` adapter shape.
+**Priority justification:** P1.2 — the only workaround is per-use (a plain witness value of type `A`
+in the call, or explicit `fn::<A, R>(...)` type arguments); every future LA-18 consumer that infers a
+`specializationRequired` generic's type purely from a lambda-literal argument's declared parameter
+type must independently discover one of those two workarounds. Not P0: it is a loud compile error
+(`cannot determine a concrete type tuple`), never silent, and a per-call fix exists.
+
+**NOT the bug:** `A::member` itself. Calling a static-shaped labeled ctor on a function-level generic
+type parameter works exactly as `designs/complete/techdesign-generic-static-members.md` (LA-18)
+describes — confirmed directly (`packages/atlantis/tests/probes/mcp_p1_generic_labeled_ctor_type_param.lev`
+compiles and runs once the `A::Zero()` call is removed, and a companion witness-argument repro below
+compiles and runs with it present). The bug is narrower: **which call shapes let the specialization
+pass *see* the concrete type**.
+
+**Repro:**
+
+```
+namespace Probe {
+    () => string wrap<A, R>(string tag, (A) => R fn) {
+        string eager = A::Zero().tag();      // <- specializationRequired because of this
+        return () => tag + ":" + eager;
+    }
+}
+uses Probe;
+class Left { new Zero() { } string tag() => "L"; }
+var l = Probe::wrap("left", (Left a) => a);   // ERROR
+console.writeln(l());
+```
+
+```
+error: cannot determine a concrete type tuple for generic 'wrap' at this call site
+```
+
+Deleting the `A::Zero()` line (making `wrap` an ordinary, non-`::`-using generic) makes the identical
+call compile and run — plain generic checking infers `A`/`R` from the lambda argument's declared
+type just fine (`inferConstruction`/`genericReturn`, the same machinery LA-18 §4.1 point 4 says its
+own tuple collector reuses). Only the **specialization-set collection** step added by LA-18 fails to
+pick up the tuple here.
+
+**Confirmed workarounds (both compile and run correctly):**
+1. A plain witness *value* argument of type `A` alongside the lambda:
+   `A witness<A>(A w) => A::Zero().tag(); apply6(Left())` — succeeds (no lambda involved at all).
+2. Explicit generic type arguments at the call site, `::<...>` syntax:
+   `Probe::apply3::<Left, Left>("hi", (Left a) => a)` — succeeds; note the call-site spelling is
+   `name::<T1,T2>(...)`, not `name<T1,T2>(...)` (the latter parses as a chained comparison and a
+   separate, pre-existing diagnostic — "cannot reference generic function ... in value position" —
+   points at the `::<...>` spelling).
+
+**Root-cause pointer:** not yet narrowed inside `Checker.cpp`'s specialization-set collector (the
+LA-18 M1 code path, `designs/complete/techdesign-generic-static-members.md` §4.1 point 4); the
+collector evidently keys off argument-VALUE type inference and does not additionally consult a
+lambda-LITERAL argument's own declared parameter type the way ordinary (non-specialization) generic
+checking does.
+
+**Workaround (debt sites):** Atlantis Track 07's `@Tool` rule cannot emit a fully-generic,
+lambda-argument-inferred `makeTool<A,R>(...)` call from a rule template (the rule has no bound
+declaration for a matched method's parameter TYPE to spell an explicit `::<AddArgs, int>` — only
+`$p.name`/`$p.type` as string VALUES, confirmed separately, see T7-P5). Track 07 implements its
+design's own pre-authorized §3.5 fallback ladder rung 3 instead: the rule generates tool metadata
+(name/description/param descriptors) only; typed dispatch adapters are hand-written in the app's
+composition root, where the concrete DTO type is already spelled by the author. Debt site:
+`packages/atlantis/src/mcp/**` once implemented.
 
 ---
 

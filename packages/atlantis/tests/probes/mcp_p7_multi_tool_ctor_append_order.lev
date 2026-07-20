@@ -1,0 +1,26 @@
+// T7-P7: three @Tool-shaped methods in one class; the ctor-bottom injection
+// accumulates once per matching method, in declaration order. Gates
+// §3.3/§3.6's __mcpTools accumulation.
+namespace Probe {
+    interface IToolSource { }
+    attribute Tool { string name; }
+    rule toolRule {
+        match @Tool(t) on method m in class C : IToolSource
+        inject `this.names = this.names.add($t.name);` at bottom of C.constructor
+    }
+}
+uses Probe;
+
+class Svc : Probe::IToolSource {
+    Array<string> names = [];
+    @Tool("first")
+    int a() => 1;
+    @Tool("second")
+    int b() => 2;
+    @Tool("third")
+    int c() => 3;
+}
+
+Svc svc = Svc();
+console.writeln(svc.names.length().toString());
+console.writeln(svc.names.joinToString(","));
