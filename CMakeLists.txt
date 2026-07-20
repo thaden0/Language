@@ -1085,6 +1085,21 @@ if (OpenSSL_FOUND)
 endif()
 # --- end TLS (LA-2) ---
 
+# --- HTTP streaming responses (LA-HTTP-STREAM) ---
+# designs/complete/techdesign-http_streaming_response-*.md §7. One consolidated
+# lane (run_http_streaming.sh) drives the http_streaming corpus — head/framing,
+# SSE return-before-end, keep-alive across the stream boundary, writer-throw,
+# pipelining-abort, bodyless/version, the flush barrier, sink abort, teardown
+# churn, and transport backpressure — on oracle / IR / LLVM, then asserts the
+# teardown churn's reachable root set is constant in N. Binds loopback
+# 8096-8102 / 18097 / 18110 / 18114, so it holds corpus_net_ports.
+add_test(NAME http_streaming_integration
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_http_streaming.sh"
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}")
+set_tests_properties(http_streaming_integration PROPERTIES
+                     RESOURCE_LOCK corpus_net_ports TIMEOUT 600)
+# --- end HTTP streaming responses ---
+
 # Project / file system (§12): multi-file programs gathered into one logical
 # compilation unit via a manifest, resolved through trident into a build plan
 # (§3.3) — trident is the front door (GT1); leviathan never parses a manifest.

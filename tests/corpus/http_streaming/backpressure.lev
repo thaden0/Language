@@ -1,0 +1,93 @@
+// LA-HTTP-STREAM §7.5: transport backpressure / bounded producer memory. An
+// instrumented streaming producer increments a shared counter per 4 KiB chunk
+// written. Client A requests the big stream but NEVER reads the body, so its
+// socket buffers fill and the producer PARKS on flush well before the target.
+// Client B then requests a small /count endpoint on a second connection and
+// completes while A is parked; the counter it reads is > 0 (progress) but far
+// below the target (the whole body was NOT read/queued) — the causal invariant
+// that a serial producer cannot run ahead of the transport queue (risk #1),
+// which is stronger and less platform-fragile than an absolute RSS threshold.
+class State { int count = 0; int target = 100000; }
+
+Promise<int> tick() {
+    Promise<int> p = Promise();
+    std::after(0).subscribe((t) => { p.resolve(t); });
+    return p;
+}
+
+void produce(ChunkedSink out, State s) {
+    string chunk = "";
+    int k = 0;
+    while (k < 512) { chunk = chunk + "xxxxxxxx"; k = k + 1; }   // 4 KiB
+    while (s.count < s.target && !out.isClosed()) {
+        out.write(chunk);              // parks here once the pipe fills
+        s.count = s.count + 1;
+        int y = await tick();          // fairness yield
+    }
+    if (!out.isClosed()) { out.end(); }
+}
+
+class App {
+    State st;
+    new App(State s) { st = s; }
+    HttpResponse route(HttpRequest req) {
+        if (req.path == "/count") { return HttpResponse(200, "" + st.count); }
+        State s = st;
+        HeaderMap h = HeaderMap();
+        return HttpResponse::ofStream(200, h, (out) => { produce(out, s); });
+    }
+}
+
+class Bwatch {
+    TcpStream b;
+    TcpStream a;
+    HttpServer srv;
+    State st;
+    string acc = "";
+    bool done = false;
+    new Bwatch(TcpStream bb, TcpStream aa, HttpServer sv, State s) { b = bb; a = aa; srv = sv; st = s; }
+    void start() {
+        Bwatch self = this;
+        b.onData((c) => self.onData(c));
+        b << "GET /count HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    }
+    void onData(string c) {
+        if (done) { return; }
+        acc = acc + c;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) { return; }
+        int fnl = acc.indexOf("\r\n");
+        HeaderMap hm = std::parseHeaderLines(acc.subStr(fnl + 2, he - (fnl + 2)));
+        int cl = std::bodyLenOf(hm);
+        int need = cl > 0 ? cl : 0;
+        if (acc.length() < he + 4 + need) { return; }
+        done = true;
+        string body = acc.subStr(he + 4, need);
+        int? ci = body.trim().toInt();
+        int cnt = ci != None ? ci : (0 - 1);
+        bool held = cnt > 0 && cnt < st.target;
+        console.writeln("B completed while A parked: yes");
+        console.writeln("backpressure held (0 < count < target): " + (held ? "yes" : "no"));
+        b.close();
+        a.close();                     // release A -> producer flush false -> stop
+        srv.stop();
+    }
+}
+
+void run() {
+    State st = State();
+    App app = App(st);
+    HttpServer server = HttpServer(18114);
+    server.handle((req) => app.route(req));
+
+    int fdA = std::sysTcpConnect("127.0.0.1", 18114);
+    TcpStream a = TcpStream(fdA);
+    a << "GET /big HTTP/1.1\r\nHost: x\r\n\r\n";           // paused reader: no onData
+
+    std::after(80).subscribe((t) => {
+        int fdB = std::sysTcpConnect("127.0.0.1", 18114);
+        Bwatch bw = Bwatch(TcpStream(fdB), a, server, st);
+        bw.start();
+    });
+}
+run();

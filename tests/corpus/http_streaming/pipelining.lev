@@ -1,0 +1,54 @@
+// LA-HTTP-STREAM §7.4/§4.1: pipelined bytes sent while a stream is open. v1 does
+// not pipeline — the extra request bytes close the connection cleanly and the
+// second handler is NEVER invoked.
+class P {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    bool sentEvil = false;
+    bool closed = false;
+    new P(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        P self = this;
+        s.onData((c) => self.onData(c));
+        s.onClose(() => self.onClose());
+        s << "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n";
+    }
+    void onData(string c) {
+        acc = acc + c;
+        if (!sentEvil && acc.contains("\r\n\r\n")) {
+            sentEvil = true;                             // stream is open: pipeline a 2nd request
+            s << "GET /evil HTTP/1.1\r\nHost: x\r\n\r\n";
+        }
+    }
+    void onClose() {
+        if (closed) { return; }
+        closed = true;
+        console.writeln("client: connection closed by server");
+        srv.stop();
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    if (req.path == "/slow") {
+        console.writeln("handler:/slow");
+        HeaderMap h = HeaderMap();
+        return HttpResponse::ofStream(200, h, (sink) => {
+            sink.write("one");                           // one chunk, then stay open
+            Timer t = std::every(1000);
+            t.subscribe((k) => { sink.write("late"); });
+            sink.onClose(() => { t.cancel(); });
+        });
+    }
+    console.writeln("handler:/evil");                     // must NEVER print
+    return HttpResponse(200, "evil");
+}
+
+void run() {
+    HttpServer server = HttpServer(8101);
+    server.handle((req) => handler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 8101);
+    P c = P(TcpStream(fd), server);
+    c.start();
+}
+run();

@@ -1,0 +1,18 @@
+// LA-HTTP-STREAM §7.3 (close-before-registration race) + §2.2 idempotence,
+// exercised at the sink level over an invalid transport (no live connection).
+//  - onClose registered AFTER abort runs immediately, once per registration;
+//  - write()/end() after abort are no-ops and do not re-fire close;
+//  - isClosed() reflects the aborted state.
+void run() {
+    ChunkedSink sink = ChunkedSink(TcpStream(0 - 1));
+    sink.abort();
+    console.writeln(sink.isClosed() ? "closed=true" : "closed=false");
+
+    sink.onClose(() => { console.writeln("late onClose ran"); });   // post-abort: now
+
+    // write/end after abort add nothing and do not re-fire close.
+    sink.write("ignored");
+    sink.end();
+    console.writeln("no more output expected after this");
+}
+run();

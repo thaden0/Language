@@ -1607,8 +1607,10 @@ loop stays dumb ("this fd is ready, run that"); all protocol logic is in the lan
 
 - **`TcpStream`** — a connected socket wearing the stream surface: `(<<)`/`send` (write),
   `onData((string) => void)` (a read-watch that recvs and delivers chunks), `onClose`,
-  `close`. `sysRecv` returns `string?` — `None` = peer closed — so the three states
-  (data / nothing-now / EOF) are the ones union narrowing was built for.
+  `close`, and **`flush() -> bool`** (LA-HTTP-STREAM) — park until the queued tail drains
+  (`true`) or the stream closes/fails (`false`), the queue barrier a caller needs before
+  reusing or closing the fd. `sysRecv` returns `string?` — `None` = peer closed — so the three
+  states (data / nothing-now / EOF) are the ones union narrowing was built for.
 - **`TcpListener`** — a listening socket presented as a **stream of connections**:
   `connections((TcpStream) => void)` accepts each client as a new stream.
 - **HTTP** is a pure Layer-2 reshaping over TCP streams, written entirely in the language,
@@ -1617,10 +1619,16 @@ loop stays dumb ("this fd is ready, run that"); all protocol logic is in the lan
   **chunked transfer both directions** (a fragmentation-proof `ChunkedDecoder` +
   `chunkEncode`), incremental request/response `parse(feed)` state machines,
   **server-side keep-alive** (re-arm per connection, bounded at 100), a **500 error path**
-  (an uncaught handler throw becomes `500` + `Connection: close`, loop survives), and a real
-  **`HttpClient`** (`request`/`get`/`post` + await-able `fetch`). Text bodies until `Block`.
-  One-process loopback tests (server + client in one event loop) stay the hermetic corpus,
-  identical across engines; the existing programs remain green on the frozen ELF backend too.
+  (an uncaught handler throw becomes `500` + `Connection: close`, loop survives), a real
+  **`HttpClient`** (`request`/`get`/`post` + await-able `fetch`), and **server-side streaming
+  responses** (LA-HTTP-STREAM): `HttpResponse::ofStream(status, headers, (ChunkedSink) =>
+  void)` commits a `Transfer-Encoding: chunked` head now and streams the body incrementally
+  through a live `ChunkedSink` — each `write` frames one chunk and parks on transport
+  backpressure (a serial file producer can't run ahead of the socket), the writer may return
+  while the sink stays open for later timer/subscription callbacks (SSE), and a premature peer
+  close fires the sink's `onClose` exactly once. Text bodies until `Block`. One-process
+  loopback tests (server + client in one event loop) stay the hermetic corpus, identical
+  across engines; the existing buffered programs remain green on the frozen ELF backend too.
   Deferred: client redirects, URL-string parsing, request timeout, pipelining, client-side
   chunk-send, connection pooling.
 - **TLS is an fd property under the stream boundary** (LA-2,

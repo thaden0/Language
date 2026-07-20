@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | #95 |
 | P1       | #93, #98 |
-| P2       | — |
+| P2       | #99 |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -97,6 +97,67 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
+
+## #99 [P2] — reassigning a closure-typed FIELD leaks the old closure on LLVM
+
+**Found:** 2026-07-20, LA-HTTP-STREAM (server-side streaming responses) ARC
+churn gate. The prelude's `TcpStream`/`ChunkedSink` teardown broke the
+connection<->stream<->callback cycle by overwriting the stored callback field
+with a no-op closure (`onChunk = (s) => {}`), the shape the design specified.
+On LLVM that overwrite never releases the previous closure (or anything it
+captures), so a program that churns callback-bearing objects leaks one closure
+graph per iteration while the oracle's reachability root set stays flat.
+**Priority justification:** P2.2 — resource-only: output is correct on every
+engine (oracle/IR/LLVM print identically) and the oracle reachability oracle
+reports a CONSTANT root set in N; only the LLVM escaping-tier live-at-exit
+grows with N. No wrong value, no crash — memory behavior is wrong on one
+actively-maintained engine.
+
+**Minimal repro** (`@N@` swept by `fuzz/churn_leak.py`-style magnitudes):
+
+```
+class Payload { Array<int> data; int v = 0; }
+class Holder {
+    (int) => void cb; bool has = false;
+    void set((int) => void c) { cb = c; has = true; }
+    void detach() { cb = (x) => { }; has = false; }   // reassign: leaks old cb + its Payload
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Holder h = Holder(); Payload p = Payload(); p.v = i; p.data = p.data.add(i);
+        h.set((k) => { sink = p.v; });   // closure captures p
+        h.detach();                       // must drop the closure -> drop p; on LLVM it does NOT
+        sink = sink + p.v;
+    }
+    console.writeln(sink);
+}
+run(@N@);
+```
+
+`[heap] live-at-exit` grows ~128 B/iter on LLVM; oracle `--mem-verify` root
+set is `x1` at every N. A `set`-only variant (no `detach` reassignment) is
+FLAT, so the defect is specifically the field REASSIGNMENT release path, not
+closure capture.
+
+**Root-cause pointer:** LLVM lowering of a store to a closure-typed object
+field — the old field value is overwritten without a release. Compare the
+object-field store path (storing a class/`?` value releases the prior value
+correctly) and bug #90's `Op::CallDyn` consumed-receiver release fix, both in
+`src/LlvmGen.cpp`.
+
+**Workaround (debt sites):** make the field an OPTIONAL closure and clear it to
+`None` — an object-field store, which DOES release the prior value (verified
+flat at N=50/800). Applied throughout the LA-HTTP-STREAM prelude teardown:
+`TcpStream.onChunk`/`onClosed` and `ChunkedSink.onDone`/`userClose` are
+`(... => ...)?` cleared to `None` in `close()`/`detach()`, never overwritten
+with a no-op closure. NOTE: this workaround only removes the leak at sites that
+adopt it; the landed base HTTP loopback path (`HttpClient` / `HttpResponseReader`
+reader teardown) still churns a residual per-connection cycle under
+loopback-churn and is not retired by this entry — a full net-stack cycle audit
+is the real fix and is out of scope for the streaming design.
+
+---
 
 ## #93 [P1] — punctuation-only string literals inside inject templates are corrupted
 

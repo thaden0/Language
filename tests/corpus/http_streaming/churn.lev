@@ -1,0 +1,73 @@
+// LA-HTTP-STREAM §7.6: connection/sink teardown churn. Each iteration opens ONE
+// loopback streaming response; odd iterations read to the terminal 0-chunk and
+// close (normal end), even ones close mid-stream (peer abort -> sink.abort).
+// Either way the connection detaches its sink and TcpStream.close() clears its
+// callback fields to None (known_bugs #99: a None clear releases; a noop
+// overwrite would leak). Iterations chain (one live connection at a time); the
+// program prints a deterministic checksum. run_http_streaming.sh additionally
+// sweeps N under `--mem-verify` and asserts the reachable ROOT SET stays
+// constant (the genuine no-leak proof — the LLVM escaping-tier byte count still
+// reflects the pre-existing base-HTTP loopback cycle tracked as #99).
+class Peer {
+    TcpStream s;
+    Churn owner;
+    bool abortMode;
+    string acc = "";
+    bool done = false;
+    new Peer(TcpStream st, Churn o, bool ab) { s = st; owner = o; abortMode = ab; }
+    void start() {
+        Peer self = this;
+        s.onData((c) => self.onData(c));
+        s.onClose(() => self.onClose());
+        s << "GET /s HTTP/1.1\r\nHost: x\r\n\r\n";
+    }
+    void finish(int add) {
+        if (done) { return; }
+        done = true;
+        s.close();
+        owner.oneDone(add);
+    }
+    void onData(string c) {
+        acc = acc + c;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) { return; }
+        if (abortMode) { this.finish(1); return; }        // close before terminal
+        string body = acc.subStr(he + 4, acc.length() - (he + 4));
+        if (body.endsWith("0\r\n\r\n")) { this.finish(2); }
+    }
+    void onClose() { this.finish(3); }                    // server closed first
+}
+
+class Churn {
+    HttpServer srv;
+    int n;
+    int i = 0;
+    int total = 0;
+    new Churn(HttpServer s, int count) { srv = s; n = count; }
+    void next() {
+        if (i >= n) { console.writeln(total); srv.stop(); return; }
+        i = i + 1;
+        bool ab = (i % 2) == 0;
+        int fd = std::sysTcpConnect("127.0.0.1", 18110);
+        Peer p = Peer(TcpStream(fd), this, ab);
+        p.start();
+    }
+    void oneDone(int add) { total = total + add; this.next(); }
+}
+
+HttpResponse handler(HttpRequest req) {
+    HeaderMap h = HeaderMap();
+    return HttpResponse::ofStream(200, h, (out) => {
+        out.write("chunk-one");
+        out.write("chunk-two");
+        out.end();
+    });
+}
+
+void run(int n) {
+    HttpServer server = HttpServer(18110);
+    server.handle((req) => handler(req));
+    Churn c = Churn(server, n);
+    c.next();
+}
+run(40);

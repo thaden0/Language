@@ -1,0 +1,79 @@
+// LA-HTTP-STREAM §7.4/§4.7: a writer that throws AFTER the head commit. The
+// client observes the partial chunk then EOF with no terminal 0-chunk (an
+// incomplete chunked response); the server/accept loop survives and serves a
+// fresh connection normally.
+int bufNeed(HeaderMap hm) {
+    int cl = std::bodyLenOf(hm);
+    return cl > 0 ? cl : 0;
+}
+
+class C2 {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    new C2(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        C2 self = this;
+        s.onData((c) => self.onData(c));
+        s << "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    }
+    void onData(string c) {
+        acc = acc + c;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) { return; }
+        int fnl = acc.indexOf("\r\n");
+        HeaderMap hm = std::parseHeaderLines(acc.subStr(fnl + 2, he - (fnl + 2)));
+        int need = bufNeed(hm);
+        if (acc.length() < he + 4 + need) { return; }
+        console.writeln("conn2: " + acc.subStr(he + 4, need));
+        s.close();
+        srv.stop();
+    }
+}
+
+class C1 {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    bool reported = false;
+    new C1(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        C1 self = this;
+        s.onData((c) => self.onData(c));
+        s.onClose(() => self.onClose());
+        s << "GET /throw HTTP/1.1\r\nHost: x\r\n\r\n";
+    }
+    void onData(string c) { acc = acc + c; }
+    void onClose() {
+        if (reported) { return; }
+        reported = true;
+        int he = acc.indexOf("\r\n\r\n");
+        string body = he >= 0 ? acc.subStr(he + 4, acc.length() - (he + 4)) : "";
+        ChunkedDecoder dec = ChunkedDecoder();
+        string decoded = dec.feed(body);
+        console.writeln("conn1: decoded=" + decoded + " terminal=" + (acc.contains("0\r\n\r\n") ? "yes" : "no"));
+        int fd = std::sysTcpConnect("127.0.0.1", 8100);
+        C2 c2 = C2(TcpStream(fd), srv);
+        c2.start();
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    if (req.path == "/throw") {
+        HeaderMap h = HeaderMap();
+        return HttpResponse::ofStream(200, h, (sink) => {
+            sink.write("partial");
+            throw RuntimeException("boom");
+        });
+    }
+    return HttpResponse(200, "second-ok");
+}
+
+void run() {
+    HttpServer server = HttpServer(8100);
+    server.handle((req) => handler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 8100);
+    C1 c = C1(TcpStream(fd), server);
+    c.start();
+}
+run();

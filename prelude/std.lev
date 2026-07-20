@@ -540,17 +540,47 @@ namespace std {
     class TcpStream {
         int fd = 0 - 1;
         int watchId = 0 - 1;
-        (string) => void onChunk;
-        () => void onClosed;
+        // Optional callback fields (LA-HTTP-STREAM §3.1). Teardown clears these
+        // to None — an OBJECT-field write that releases the stored closure (and
+        // whatever it captures), breaking the connection<->stream<->callback
+        // cycle. Reassigning a closure-typed field to a no-op closure would
+        // instead LEAK the old closure on the LLVM backend (known_bugs #99), so
+        // the cycle must be severed with a None clear, never a noop overwrite.
+        ((string) => void)? onChunk = None;
+        (() => void)? onClosed = None;
         bool watching = false;
-        bool hasCloseCb = false;
         string pending = "";
         bool draining = false;
         int drainId = 0 - 1;
         bool eofKeepsFd = false;
+        // LA-HTTP-STREAM §3.1: flush() backpressure. A parked flush resolves
+        // `true` when every queued byte reached the transport, `false` on a
+        // fatal write, local/peer close, or an already-invalid stream. Only
+        // callers that opt into flush() see backpressure; send() stays queueing.
+        Array<Promise<bool>> flushWaiters = [];
+        bool writeHealthy = true;
 
         new TcpStream(int f) { fd = f; }
         int rawFd() => fd;                   // the underlying socket fd (TLS wrap-in-place)
+
+        // Park while an unsent tail is draining; true once the queue is empty,
+        // false if the stream closed or a send went fatal. A queue barrier, not
+        // a peer-ack: the bytes were accepted by the transport floor, the exact
+        // fact needed before reusing or locally closing the descriptor.
+        bool flush() {
+            if (fd < 0 || !writeHealthy) return false;
+            if (!draining) return true;
+            Promise<bool> p = Promise();
+            flushWaiters = flushWaiters.add(p);
+            return await p;
+        }
+        // Snapshot-and-clear before resolving: a resumed task may call
+        // send()/flush() again and re-populate the array (no in-place mutation).
+        void settleFlush(bool ok) {
+            Array<Promise<bool>> ws = flushWaiters;
+            flushWaiters = [];
+            for (Promise<bool> p in ws) { p.resolve(ok); }
+        }
 
         // Writes and close are guarded on fd >= 0: after close() the fd
         // NUMBER may be recycled by the OS for an unrelated connection
@@ -571,7 +601,7 @@ namespace std {
             if (fd < 0) return;
             if (draining) { pending = pending + s; return; }
             int n = std::sysSend(fd, s);
-            if (n == 0 - 2) return;
+            if (n == 0 - 2) { writeHealthy = false; settleFlush(false); return; }
             if (n < 0) n = 0;
             if (n < s.length()) {
                 pending = s.subStr(n, s.length() - n);
@@ -583,9 +613,9 @@ namespace std {
         void drain() {
             if (fd < 0) return;
             int n = std::sysSend(fd, pending);
-            if (n == 0 - 2) { pending = ""; stopDrain(); return; }
+            if (n == 0 - 2) { pending = ""; writeHealthy = false; stopDrain(); settleFlush(false); return; }
             if (n < 0) return;                   // spurious wake; keep watching
-            if (n >= pending.length()) { pending = ""; stopDrain(); }
+            if (n >= pending.length()) { pending = ""; stopDrain(); settleFlush(true); }
             else pending = pending.subStr(n, pending.length() - n);
         }
         void stopDrain() {
@@ -601,7 +631,7 @@ namespace std {
             TcpStream self = this;
             watchId = std::sysWatch(fd, (ready) => self.pump());
         }
-        void onClose(() => void cb) { onClosed = cb; hasCloseCb = true; }
+        void onClose(() => void cb) { onClosed = cb; }
         // Pty ONLY (designs/pty/ D-P5): read-EOF must NOT close the descriptor.
         // A pty master is the tty's hangup switch — closing it the instant the
         // child drops the slave SIGHUPs that child, and a session leader still
@@ -616,7 +646,14 @@ namespace std {
         // itself to close() only when we own the retirement.
         void retireRead() {
             if (eofKeepsFd) {
+                // PTY master keeps its fd until reap, but a read-EOF means the
+                // slave is gone: any discarded write tail / parked flush cannot
+                // complete, so settle it false (LA-HTTP-STREAM §3.1). The fd
+                // itself is NOT closed here — that would SIGHUP the child (D-P5).
                 stopDrain();
+                pending = "";
+                writeHealthy = false;
+                settleFlush(false);
                 if (watching) { std::sysUnwatch(watchId); watching = false; }
             } else {
                 close();
@@ -628,11 +665,15 @@ namespace std {
             if (fd < 0) return;                  // stale watch after close()
             string? chunk = std::sysRecv(fd, 4096);
             if (chunk == None) {                 // peer closed -> deliver close
+                // Snapshot the close callback BEFORE retirement: retireRead() may
+                // route through close(), which clears onClosed to None to break the
+                // connection->stream->callback cycle (LA-HTTP-STREAM §3.1).
+                var cb = onClosed;
                 retireRead();
-                if (hasCloseCb) { var cb = onClosed; cb(); }
+                if (cb != None) { cb(); }
             } else if (chunk != None) {
                 var cb = onChunk;
-                cb(chunk);                       // narrowed to string
+                if (cb != None) { cb(chunk); }   // narrowed
             }
         }
         // Drain everything already buffered on the descriptor NOW: pump until
@@ -647,13 +688,14 @@ namespace std {
                 else {
                     string? chunk = std::sysRecv(fd, 4096);
                     if (chunk == None) {
+                        var ccb = onClosed;      // snapshot before retireRead clears it
                         retireRead();
-                        if (hasCloseCb) { var ccb = onClosed; ccb(); }
+                        if (ccb != None) { ccb(); }
                         more = false;
                     } else {
                         string got = chunk ?? "";
                         if (got.isEmpty()) { more = false; }
-                        else { var cb = onChunk; cb(got); }
+                        else { var cb = onChunk; if (cb != None) { cb(got); } }
                     }
                 }
             }
@@ -663,7 +705,19 @@ namespace std {
         void close() {
             if (fd < 0) return;
             stopDrain();
+            // Settle any parked flush FALSE before the fd is invalidated, then
+            // detach the stored read/close callbacks so a completed connection
+            // cannot be retained through stream->callback->connection (the ARC
+            // churn gate, LA-HTTP-STREAM §3.1). Order: settle, unwatch, detach.
+            writeHealthy = false;
+            pending = "";
+            settleFlush(false);
             if (watching) { std::sysUnwatch(watchId); watching = false; }
+            // Clear to None (object-field write) — releases the stored closures
+            // and everything they capture, breaking the ARC cycle. A noop-closure
+            // overwrite would leak the old closure on LLVM (known_bugs #99).
+            onChunk = None;
+            onClosed = None;
             std::sysClose(fd);
             fd = 0 - 1;
         }
@@ -1184,6 +1238,101 @@ namespace std {
     string chunkEncode(string data) => data.length().toHex() + "\r\n" + data + "\r\n";
     string chunkEnd() => "0\r\n\r\n";
 
+    // LA-HTTP-STREAM §2.2: the live chunked-body sink an open streaming response
+    // writes through. Framing is the sink's job — callers write payload bytes,
+    // never chunk sizes. Every non-empty write frames exactly one chunkEncode()
+    // and PARKS until it drains (transport backpressure). Only HttpConnection
+    // constructs one, because only it owns the head commit and keep-alive re-entry.
+    class ChunkedSink {
+        TcpStream conn;
+        bool endedFlag = false;      // end() completed: terminal 0-chunk drained
+        bool aborted = false;        // premature transport close / server abort
+        // Optional hooks cleared to None on teardown (object-field write releases
+        // the closure; a noop overwrite would leak it on LLVM — known_bugs #99).
+        (() => void)? userClose = None;   // §2.2 onClose: fired once on abort only
+        (() => void)? onDone = None;      // completion hook back to the HttpConnection
+        // §2.2 FIFO serialization gate: an async mutex so overlapping callbacks
+        // cannot interleave size lines, payloads, or the terminator on the wire.
+        Array<Promise<bool>> turnQ = [];
+        bool busy = false;
+
+        new ChunkedSink(TcpStream c) { conn = c; }
+        void setDone(() => void cb) { onDone = cb; }
+        bool isClosed() => endedFlag || aborted;
+
+        // Acquire the write turn: immediate when idle, else park behind earlier
+        // callers in arrival order. release() hands the turn straight on.
+        Promise<bool> acquire() {
+            if (!busy) { busy = true; return Promise(true); }
+            Promise<bool> p = Promise();
+            turnQ = turnQ.add(p);
+            return p;
+        }
+        void release() {
+            if (turnQ.length() > 0) {
+                Promise<bool> nx = turnQ.first();
+                turnQ = turnQ.skip(1);
+                nx.resolve(true);                 // hand the turn on; busy stays true
+            } else {
+                busy = false;
+            }
+        }
+
+        ChunkedSink write(string data) {
+            if (this.isClosed()) return this;
+            if (data.length() == 0) return this;  // write("") is a no-op; never chunkEnd
+            bool turn = await this.acquire();
+            if (this.isClosed()) { this.release(); return this; }
+            conn.send(std::chunkEncode(data));
+            bool ok = conn.flush();
+            this.release();
+            if (!ok) { this.abort(); }
+            return this;
+        }
+        ChunkedSink (<<)(string data) { this.write(data); return this; }
+
+        void end() {
+            if (this.isClosed()) return;
+            bool turn = await this.acquire();
+            if (this.isClosed()) { this.release(); return; }
+            conn.send(std::chunkEnd());
+            bool ok = conn.flush();
+            this.release();
+            if (!ok) { this.abort(); return; }
+            endedFlag = true;
+            // Signal successful completion, then detach. Snapshot the hook first:
+            // detach() clears it (ARC teardown, §3.3).
+            var cb = onDone;
+            this.detach();
+            if (cb != None) { cb(); }
+        }
+
+        void onClose(() => void cb) {
+            if (aborted) { var c = cb; c(); return; }   // registered post-abort: run now
+            userClose = cb;
+        }
+
+        // Premature transport termination: mark closed, fire the user close once,
+        // and break the connection<->sink<->closure graph.
+        void abort() {
+            if (aborted || endedFlag) return;
+            aborted = true;
+            var uc = userClose;
+            this.detach();
+            if (uc != None) { uc(); }
+        }
+
+        // §3.3: clear the completion/close hooks to None and resolve any parked
+        // write turns false so no caller hangs. Idempotent.
+        void detach() {
+            onDone = None;
+            userClose = None;
+            Array<Promise<bool>> q = turnQ;
+            turnQ = [];
+            for (Promise<bool> p in q) { p.resolve(false); }
+        }
+    }
+
     // Parse the "Name: value" lines of a header block into a HeaderMap. Blank
     // names / missing colons are skipped; values are trimmed.
     HeaderMap parseHeaderLines(string block) {
@@ -1279,7 +1428,20 @@ namespace std {
         string body = "";
         HeaderMap headers;
         bool keepAlive = false;
+        // LA-HTTP-STREAM §2.3: a zero-or-one writer holder — buffered
+        // construction leaves it empty, ofStream adds exactly one. A concrete
+        // Array of function values (already landed) rather than a nullable
+        // callable sentinel.
+        Array<(ChunkedSink) => void> streamWriters = [];
         new HttpResponse(int s, string b) { status = s; body = b; headers = HeaderMap(); }
+        // Streaming body mode: head now (Transfer-Encoding: chunked), body later
+        // through a live ChunkedSink. Only HttpConnection may drive the writer.
+        new ofStream(int s, HeaderMap h, (ChunkedSink) => void writer) {
+            status = s;
+            headers = h;
+            streamWriters = streamWriters.add(writer);
+        }
+        bool isStreaming() => streamWriters.length() == 1;
         HttpResponse withHeader(string name, string value) { headers.set(name, value); return this; }
         string reason() {
             if (reasonText.length() > 0) return reasonText;
@@ -1288,11 +1450,13 @@ namespace std {
             if (status == 204) return "No Content";
             if (status == 301) return "Moved Permanently";
             if (status == 302) return "Found";
+            if (status == 304) return "Not Modified";
             if (status == 400) return "Bad Request";
             if (status == 401) return "Unauthorized";
             if (status == 403) return "Forbidden";
             if (status == 404) return "Not Found";
             if (status == 500) return "Internal Server Error";
+            if (status == 505) return "HTTP Version Not Supported";
             return "OK";
         }
         // Content-Length + Connection are computed here; any user header of those
@@ -1300,10 +1464,16 @@ namespace std {
         // concatenation (ELF has no StringBuilder.toString/concatAll — see
         // HeaderMap.render); int operands convert implicitly, as the old code did.
         string render() {
+            // §2.3: the buffered renderer refuses a streaming response — only
+            // HttpConnection may drive it (renderStreamHead + the live sink).
+            if (this.isStreaming()) {
+                throw RuntimeException("render() called on a streaming HttpResponse");
+            }
             string extra = "";
             for (Header h in headers.entries()) {
                 string ln = h.name.toLower();
-                if (ln != "content-length" && ln != "connection") {
+                // §4.3: drop a user Transfer-Encoding too — server CL is authoritative.
+                if (ln != "content-length" && ln != "connection" && ln != "transfer-encoding") {
                     extra = extra + h.name + ": " + h.value + "\r\n";
                 }
             }
@@ -1311,6 +1481,36 @@ namespace std {
             return "HTTP/1.1 " + status + " " + this.reason() +
                    "\r\nContent-Length: " + body.length() +
                    "\r\nConnection: " + conn + "\r\n" + extra + "\r\n" + body;
+        }
+        // §4.2: the authoritative streaming head. Caller CL/TE/Connection are
+        // dropped; exactly one Transfer-Encoding: chunked and the computed
+        // Connection are added. No body — the sink writes the chunks.
+        string renderStreamHead(bool keep) {
+            string extra = "";
+            for (Header h in headers.entries()) {
+                string ln = h.name.toLower();
+                if (ln != "content-length" && ln != "transfer-encoding" && ln != "connection") {
+                    extra = extra + h.name + ": " + h.value + "\r\n";
+                }
+            }
+            string conn = keep ? "keep-alive" : "close";
+            return "HTTP/1.1 " + status + " " + this.reason() +
+                   "\r\nTransfer-Encoding: chunked\r\nConnection: " + conn + "\r\n" + extra + "\r\n";
+        }
+        // §4.6: a bodyless streaming response (HEAD / 1xx / 204 / 304) ends after
+        // its header section — neither Content-Length nor Transfer-Encoding is
+        // added by the server, and the writer is never invoked.
+        string renderHeadOnly(bool keep) {
+            string extra = "";
+            for (Header h in headers.entries()) {
+                string ln = h.name.toLower();
+                if (ln != "content-length" && ln != "transfer-encoding" && ln != "connection") {
+                    extra = extra + h.name + ": " + h.value + "\r\n";
+                }
+            }
+            string conn = keep ? "keep-alive" : "close";
+            return "HTTP/1.1 " + status + " " + this.reason() +
+                   "\r\nConnection: " + conn + "\r\n" + extra + "\r\n";
         }
         // Parse a fully-buffered response; decodes a chunked body transparently.
         void parse(string raw) {
@@ -1351,6 +1551,13 @@ namespace std {
         bool closed = false;
         int served = 0;
         int maxRequests = 100;
+        // LA-HTTP-STREAM §4.1: response phase. 0 reading, 1 responding (handler
+        // in flight / buffered flush), 2 streaming (live sink), 3 closed.
+        int state = 0;
+        Array<ChunkedSink> sink = [];   // zero-or-one active sink (ARC-safe holder)
+        bool inWriter = false;          // inside the initial writer invocation (§4.2.6)
+        bool endReached = false;        // sink end() has fired (terminal drained)
+        bool streamKeep = false;        // keep-alive intent for the open stream
         new HttpConnection(TcpStream c, (HttpRequest) => HttpResponse h) {
             conn = c;
             handler = h;
@@ -1359,15 +1566,29 @@ namespace std {
         void start() {
             HttpConnection self = this;
             conn.onData((chunk) => self.feed(chunk));
+            conn.onClose(() => self.peerClosed());       // §4.4 peer-close detection
         }
         void closeConn() {
             if (closed) return;
             closed = true;
+            state = 3;
             conn.close();
         }
         void feed(string chunk) {
             if (closed) return;
+            // §4.1: while responding or streaming no request bytes are accepted.
+            // An empty would-block chunk is a no-op; real bytes are unsupported
+            // pipelining -> close (streaming aborts the sink first).
+            if (state == 1) {
+                if (chunk.length() > 0) { this.closeConn(); }
+                return;
+            }
+            if (state == 2) {
+                if (chunk.length() > 0) { this.abortStream(); }
+                return;
+            }
             if (!req.feed(chunk)) return;               // not a full request yet
+            state = 1;                                  // responding: gate re-entry
             HttpResponse resp = HttpResponse(500, "Internal Server Error");
             bool ok = false;
             try {
@@ -1379,14 +1600,112 @@ namespace std {
                 ok = false;
             }
             bool wantKeep = ok && req.header("Connection").toLower() != "close" && served < maxRequests;
+            if (ok && resp.isStreaming()) {
+                this.startStream(resp, wantKeep);
+            } else {
+                this.finishBuffered(resp, wantKeep);
+            }
+        }
+        // §4.3: buffered responses also cross the drain barrier before reuse/close.
+        void finishBuffered(HttpResponse resp, bool wantKeep) {
             resp.keepAlive = wantKeep;
-            conn << resp.render();
+            conn.send(resp.render());
+            bool sent = conn.flush();
+            if (!sent) { this.closeConn(); return; }
             if (wantKeep) {
                 served = served + 1;
                 req = HttpRequest();                    // re-arm for the next request
+                state = 0;
             } else {
                 this.closeConn();
             }
+        }
+        // §4.2 / §4.6: commit an authoritative streaming head, then drive the writer.
+        void startStream(HttpResponse resp, bool wantKeep) {
+            // §4.6: chunked coding is HTTP/1.1 only. Anything else -> 505/close,
+            // writer never invoked.
+            if (req.version != "HTTP/1.1") {
+                this.finishBuffered(HttpResponse(505, ""), false);
+                return;
+            }
+            // §4.6: HEAD and 1xx/204/304 have no body — head only, no writer.
+            bool bodyless = req.method == "HEAD" || resp.status == 204 ||
+                            resp.status == 304 || (resp.status >= 100 && resp.status < 200);
+            if (bodyless) {
+                conn.send(resp.renderHeadOnly(wantKeep));
+                bool hs = conn.flush();
+                if (!hs) { this.closeConn(); return; }
+                if (wantKeep) { served = served + 1; req = HttpRequest(); state = 0; }
+                else { this.closeConn(); }
+                return;
+            }
+            // Commit point: queue the head and flush it. A failed commit aborts
+            // WITHOUT invoking the writer (no second response is possible after).
+            conn.send(resp.renderStreamHead(wantKeep));
+            bool committed = conn.flush();
+            if (!committed) { this.closeConn(); return; }
+            state = 2;
+            streamKeep = wantKeep;
+            endReached = false;
+            ChunkedSink s = ChunkedSink(conn);
+            HttpConnection self = this;
+            s.setDone(() => self.streamEnded());
+            sink = [];
+            sink = sink.add(s);
+            // §4.2/§4.7: invoke the writer under try/catch. It may park, call
+            // end(), or return while the sink stays open.
+            inWriter = true;
+            bool threw = false;
+            try {
+                var wcb = resp.streamWriters.first();
+                wcb(s);
+            } catch (IException e) {
+                threw = true;
+            }
+            inWriter = false;
+            if (threw) {
+                // Post-commit throw: abort the transport, fire sink cleanup, keep
+                // the accept loop alive. Client sees an incomplete chunked response.
+                this.abortStream();
+                return;
+            }
+            // §4.2.6: a synchronous/awaiting writer that already called end()
+            // deferred keep-alive re-entry to here.
+            if (endReached) { this.completeStream(); }
+        }
+        // Called by the sink after its terminal 0-chunk drains.
+        void streamEnded() {
+            endReached = true;
+            if (inWriter) return;                       // defer past writer return (§4.2.6)
+            this.completeStream();
+        }
+        // §4.5 successful end: detach the sink, then re-arm or close.
+        void completeStream() {
+            if (state != 2) return;                     // already torn down
+            sink = [];                                  // detach (ARC)
+            if (streamKeep) {
+                served = served + 1;
+                req = HttpRequest();
+                state = 0;                              // reading again, same watch
+            } else {
+                this.closeConn();
+            }
+        }
+        // §4.4/§4.7 abort: mark the sink aborted (fires onClose once) and retire.
+        void abortStream() {
+            if (sink.length() > 0) {
+                ChunkedSink s = sink.first();
+                sink = [];
+                s.abort();
+            }
+            this.closeConn();
+        }
+        // §4.4: peer EOF. Idempotent. During streaming, abort the sink first so
+        // the producer's onClose fires exactly once, then retire.
+        void peerClosed() {
+            if (closed) return;
+            if (state == 2) { this.abortStream(); return; }
+            this.closeConn();
         }
     }
 
