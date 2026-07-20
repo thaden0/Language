@@ -1182,8 +1182,16 @@ std::sum(Array<float>)` overload by argument type instead. `std::min`/`std::max`
 return `T?` (`None` on empty); `std::average` always returns `float`.
 
 ### 6.4 `Pair<A, B>`
-Fields `first`, `second`; constructor `Pair::Of(a, b)`. The element type of relational joins
-and of Map iteration.
+Fields `first`, `second`; constructor `Pair::Of(a, b)`. A value type (`struct`, §9):
+copied not aliased, field-wise `==`, and `toString()` returns `(first, second)`. The
+element type of relational joins and of Map iteration. Its arrays store densely (no
+per-element boxing).
+
+### 6.4a `Triple<A, B, C>`
+Fields `first`, `second`, `third`; constructor `Triple::Of(a, b, c)`. The three-field
+sibling of `Pair`, same value-struct conventions. Use it wherever three values travel
+together (a coordinate + a label, a key + two related values) instead of a
+purpose-built struct or nested `Pair<A, Pair<B, C>>`.
 
 ### 6.3.5 `StringBuilder` — a mutable accumulator (Track 04 M4)
 ```

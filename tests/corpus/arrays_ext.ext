@@ -94,5 +94,20 @@ void run() {
 
     int? emptyMin = std::min(emptyArr);
     if (emptyMin != None) console.writeln(emptyMin); else console.writeln("none");
+
+    // --- Triple<A, B, C>: value-struct sibling of Pair --------------------
+
+    Triple<int, string, bool> t = Triple::Of(1, "x", true);
+    console.writeln(t.first);
+    console.writeln(t.second);
+    console.writeln(t.third);
+    console.writeln(t.toString());                  // hand-written toString, not <object>
+    console.writeln(t == Triple::Of(1, "x", true));  // true
+    console.writeln(t == Triple::Of(1, "x", false)); // false
+
+    // Pair as a value struct: printing + field-wise equality.
+    Pair<int, int> p = Pair::Of(1, 2);
+    console.writeln(p.toString());
+    console.writeln(p == Pair::Of(1, 2));            // true — was false (identity) as a class
 }
 run();

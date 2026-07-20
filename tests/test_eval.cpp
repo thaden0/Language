@@ -141,6 +141,20 @@ int main() {
         "Array g = a.groupJoin(b, (x, y) => x == y); "
         "for (Pair p in g) console.writeln(p.second.length()); } run();", "0\n1\n1\n");
 
+    // Triple<A,B,C>: construction + field access.
+    OUT("void run() { Triple t = Triple::Of(1, \"x\", true); "
+        "console.writeln(t.first); console.writeln(t.second); "
+        "console.writeln(t.third); } run();", "1\nx\ntrue\n");
+    // Both tuples are value structs now: hand-written field-wise (==).
+    OUT("void run() { console.writeln(Triple::Of(1,2,3) == Triple::Of(1,2,3)); "
+        "console.writeln(Pair::Of(1,2) == Pair::Of(1,2)); } run();", "true\ntrue\n");
+    // ...and hand-written toString() (called explicitly; console.writeln(obj)
+    // itself still falls back to the generic "<object>" for any class/struct —
+    // only an explicit .toString() call or string interpolation dispatches to it).
+    OUT("void run() { console.writeln(Pair::Of(1,2).toString()); "
+        "console.writeln(Triple::Of(1,\"x\",true).toString()); } run();",
+        "(1, 2)\n(1, x, true)\n");
+
     // Method-level generics run: identity + container remap.
     OUT("R identity<R>(R x) => x; void run() { console.writeln(identity(42)); } run();", "42\n");
 
