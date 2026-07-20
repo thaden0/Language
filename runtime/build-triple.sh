@@ -156,7 +156,7 @@ fi
 #     lv_loop.c in this archive only (doc 04 §2: the shared loop is never
 #     edited for wasm-only behavior, and its poll-blocking step cannot run
 #     on this target — the HOST arms timers and fires dispatch activations);
-#   - lv_thread.c/lv_proc.c stay dropped: they need pthread.h / fork(2),
+#   - lv_thread.c/lv_proc.c/lv_pty.c stay dropped: they need pthread.h / fork(2),
 #     neither in wasm32-wasi's sysroot, and the capability gate (hard-03)
 #     keeps every reachable caller out of a wasm build.
 case "$triple" in
@@ -170,7 +170,7 @@ case "$triple" in
   #   trampoline + marshaler-support exports). Wasm-only — native builds use
   #   lv_runtime.c's raising stubs (DOM/JS is a wasm-gained capability).
   wasm32*) srcs=(lv_runtime.c "$floor" lv_loop_wasm.c lv_bridge_wasm.c lv_entry.c "${task_srcs[@]}" "$tls_src") ;;
-  *)       srcs=(lv_runtime.c "$floor" lv_loop.c lv_thread.c lv_proc.c lv_entry.c "${task_srcs[@]}" "$tls_src") ;;
+  *)       srcs=(lv_runtime.c "$floor" lv_loop.c lv_thread.c lv_proc.c lv_pty.c lv_entry.c "${task_srcs[@]}" "$tls_src") ;;
 esac
 mkdir -p "$out_dir"
 work="$(mktemp -d)"

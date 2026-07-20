@@ -1,0 +1,90 @@
+// H12 — Settings: theme selection + keymap accelerator overrides, loaded from
+// (and saved to) a workspace-root `helm.toml` via configtoml.lev's generic
+// TOML-subset parser. Two sections:
+//   [theme]  name = "default" | "dark" | "light" | "highContrast"
+//   [keymap] <command-id> = "<chord>"   (any subset of registered ids)
+//
+// Storage is parallel primitive columns (never `Array<struct>` — footgun #5),
+// the same shape as `CommandRegistry`/`MenuModel`.
+//
+// Keymap-reload scope (recorded, the H-C4/H-C2/H-C3 precedent): overrides are
+// applied to a `CommandRegistry`'s DISPLAY key text via `applyKeymap`, which
+// is only meaningful *before* `CommandRegistry.bindInto` installs the real
+// accelerators into the app `Keymap` — Sonar's `Keymap.bind` throws on a
+// re-bound chord (keymap.lev, anchor C9), and this package doesn't add
+// unbind/rebind token plumbing for a v1 nicety. So a `helm.toml` present at
+// startup takes effect correctly (loaded before `bindInto` in the shell
+// ctor); a keymap edit made while Helm is running needs a restart.
+
+namespace Helm {
+
+    const string ThemeDefault      = "default";
+    const string ThemeDark         = "dark";
+    const string ThemeLight        = "light";
+    const string ThemeHighContrast = "highContrast";
+
+    class Settings {
+        string theme_ = ThemeDefault;
+        Array<string> keymapIds_    = [];
+        Array<string> keymapChords_ = [];
+
+        new Settings() { }
+        new FromDoc(ConfigDoc doc) {
+            string? name = doc.get("theme", "name");
+            if (name != None) { string n = name; theme_ = n; }
+            for (string id in doc.sectionKeys("keymap")) {
+                string? chord = doc.get("keymap", id);
+                if (chord != None) { string c = chord; this.setKeymapOverride(id, c); }
+            }
+        }
+
+        string theme() => theme_;
+        void   setTheme(string name) { theme_ = name; }
+
+        int indexOfKeymap(string id) {
+            int i = 0;
+            for (string existing in keymapIds_) { if (existing == id) return i; i = i + 1; }
+            return 0 - 1;
+        }
+
+        void setKeymapOverride(string id, string chord) {
+            int at = this.indexOfKeymap(id);
+            if (at >= 0) { keymapChords_ = keymapChords_.with(at, chord); return; }
+            keymapIds_    = keymapIds_.add(id);
+            keymapChords_ = keymapChords_.add(chord);
+        }
+        string? keymapOverride(string id) {
+            int at = this.indexOfKeymap(id);
+            return at >= 0 ? keymapChords_[at] : None;
+        }
+        Array<string> keymapIds() => keymapIds_;
+        int keymapCount() => keymapIds_.length();
+
+        // Apply every stored override to a registry's key column (startup
+        // path — see the class comment on when this actually takes effect).
+        void applyKeymap(CommandRegistry reg) {
+            for (int i in 0..keymapIds_.length() - 1) {
+                if (reg.has(keymapIds_[i])) reg.setKey(keymapIds_[i], keymapChords_[i]);
+            }
+        }
+
+        // Snapshot every currently-bound command's accelerator (settings.save):
+        // the whole live keymap, not just a prior override set, so a save
+        // always reflects exactly what's bound right now.
+        void captureKeymap(CommandRegistry reg) {
+            keymapIds_    = [];
+            keymapChords_ = [];
+            for (Command c in reg.commands()) {
+                if (!c.key.isEmpty()) this.setKeymapOverride(c.id, c.key);
+            }
+        }
+
+        ConfigDoc toDoc() {
+            ConfigDoc doc = ConfigDoc();
+            doc.put("theme", "name", theme_);
+            for (int i in 0..keymapIds_.length() - 1) doc.put("keymap", keymapIds_[i], keymapChords_[i]);
+            return doc;
+        }
+    }
+
+}

@@ -1,0 +1,19 @@
+// H12 — one workspace-search hit: the file, 1-based line/scalar-col of the
+// match start, and the matched line (trimmed) as a preview. A `class` row
+// (never `Array<struct>` — footgun #5), the same shape as Diagnostic/FileNode.
+// Re-highlighting the match inside the (still-unmounted) editor is a later
+// rider — §6.3's "don't over-build the v1 editor" precedent.
+
+namespace Helm {
+
+    class SearchMatch {
+        string path;
+        int    line;     // 1-based
+        int    col;      // 1-based byte offset into the line (Regex is byte-oriented)
+        string preview;
+        new SearchMatch(string p, int ln, int c, string pv) {
+            path = p; line = ln; col = c; preview = pv;
+        }
+    }
+
+}

@@ -4,8 +4,32 @@
 bridge the bindgen generates stubs for). **HARD content:** none.
 
 **As-built investigation (2026-07-19) — §1 bindgen is not buildable as written; §2 is
-a live STOP. Details below; the metaprog prerequisites this doc assumed were built
+no longer a STOP (the packaging ruling landed later the same day); §3 + §4 are
+implemented. Details below; the metaprog prerequisites this doc assumed were built
 along the way.**
+
+**Update (2026-07-19, later than the 08:13 header below):** two changes since the
+initial investigation:
+- **§2 is CONSUMED / LANDED (2026-07-19).** The "ship stdlib as files" refactor is
+  built: `designs/complete/techdesign-prelude-ship-as-files-opus.md`. The stdlib now
+  ships as `prelude/*.lev` files through a real `parsePrelude()` file-reading seam
+  (resolved `--prelude` → `LV_PRELUDE_DIR` → next-to-binary → source tree, with a
+  build-generated embedded fallback), and `wasm.lev` — the `Dom` surface — is loaded
+  **only for `wasm32*` targets**, so native builds no longer carry it. This track was the
+  **consumer, not author** of that upstream refactor (overview §5); **W-M4 §2 closes** with
+  this landing. The doc-02 capability gate is unchanged — it still handles the OS-only
+  natives that remain interleaved in the shared `std`/`rest` segments on wasm builds (the
+  refactor's R3 deliberately kept those shared rather than re-partitioning).
+- **§3 + §4 are implemented** against the hand-written `Dom` stubs, as this doc said they
+  could be: the Atlantis-client demo is `examples/wasm-client/` (`todo.lev` + loader
+  `index.html` + `README` + the `todo.expected` golden, driven by `tests/run_wasm_dom.sh`),
+  and the size-visibility pass is `tests/wasm_size.sh` (O0/O2 raw+gzip, optional
+  `wasm-opt -O2`, skip-clean when the archive/linker is absent). The reference-doc duty
+  (§6) landed too: `docs/reference.md` §7.3 gained the `wasm32` target entry + the `@extern`/
+  `Dom` surface note, and `info.md` gained §20 (the wasm-target framing).
+- **§1 is unchanged: still structurally blocked** (the three facts below). **This doc does
+  NOT move to `designs/complete/`** — with §2 now landed, §1's unbuilt bindgen is the sole
+  remaining blocker to closing the track.
 
 - **The metaprog prerequisites landed** (`request-metaprog-attr-values.md` items A + B,
   see that doc's status header): attribute-value reflection in `$for` iteration
@@ -33,11 +57,12 @@ along the way.**
      without either the larger metaprog scope in (1) or a redesign of the DOM seam.
      Neither is in this packet's charter; the hand-written `Dom` prelude surface
      (doc 05, `Resolver.cpp` `kPreludeWasm`) remains the as-built reality.
-- **§2 packaging is a live STOP.** The "ship stdlib as files / per-target segment"
-  owner ruling is still OPEN (doc 00 §5, info.md §19 #18, proposal §398 — no decision
-  record anywhere). `kPreludeWasm` exists (`Resolver.cpp`) but is concatenated
-  unconditionally; per the STOP condition we do **not** improvise a `parsePrelude()`
-  seam. W-M4 shipping cannot close until the owner rules.
+- **§2 packaging is a live STOP.** *(Superseded — see the 2026-07-19 update block at the
+  top: the ship-as-files refactor landed and W-M4 §2 is now consumed/closed.)* The "ship
+  stdlib as files / per-target segment" owner ruling is still OPEN (doc 00 §5, info.md §19
+  #18, proposal §398 — no decision record anywhere). `kPreludeWasm` exists (`Resolver.cpp`)
+  but is concatenated unconditionally; per the STOP condition we do **not** improvise a
+  `parsePrelude()` seam. W-M4 shipping cannot close until the owner rules.
 - **§3/§4 (size passes, the Atlantis demo) remain doable on dev builds** against the
   existing hand-written stubs — deferred, not blocked.
 

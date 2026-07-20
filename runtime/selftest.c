@@ -1372,6 +1372,115 @@ static void test_process_floor(void) {
     fprintf(stderr, "OK: process floor (spawn/drain/reap/kill/pidfd, fd hygiene, [] on empty path)\n");
 }
 
+/* --- G-LANG-2 terminal half: pty floor (designs/pty/ 02 §5) -----------------
+ * Pins lv_plat_pty_spawn/resize + the lvrt marshaling independently of codegen,
+ * and asserts the D-P4 EIO collapse AT THE C LEVEL: on Linux the master's read
+ * errors EIO once the child is gone, and lv_plat_recv must still report 0.
+ * Without the collapse the drain loop below never terminates. */
+static int64_t lv_test_pty_drain(int master, char* buf, int64_t cap) {
+    int64_t total = 0;
+    for (int i = 0; i < 5000; i++) {
+        int64_t r = lv_plat_recv(master, buf + total, cap - total);
+        if (r == 0) return total;                 /* orderly close (EIO collapsed) */
+        if (r > 0) { total += r; i = 0; continue; }
+        usleep(1000);                             /* -1 = EAGAIN, nothing yet */
+    }
+    return -1;                                    /* never closed: the collapse is missing */
+}
+
+static void test_pty_floor(void) {
+    /* round 1: /bin/echo on the DETERMINISTIC profile (flags bit0) — the frozen
+     * termios's ONLCR turns echo's "\n" into "\r\n", the goldens' shape. */
+    char* argv1[] = { (char*)"/bin/echo", (char*)"hi", NULL };
+    int m1 = -1;
+    int pid1 = lv_plat_pty_spawn("/bin/echo", argv1, 24, 80, 1, &m1);
+    CHECK(pid1 > 0 && m1 >= 0);
+    char buf[128];
+    int64_t got = lv_test_pty_drain(m1, buf, sizeof buf);
+    CHECK(got == 4 && memcmp(buf, "hi\r\n", 4) == 0);
+    CHECK(lv_test_reap_poll(pid1) == 0);
+    CHECK(lv_plat_pty_resize(m1, 30, 100) == 0);  /* live master: accepted */
+    lv_plat_close(m1);
+    CHECK(lv_plat_pty_resize(m1, 30, 100) == -1); /* closed master: refused */
+    CHECK(lv_plat_pty_resize(-1, 30, 100) == -1);
+
+    /* refusals leak nothing: empty path / rows 0 / cols 0 all -1 with no fd
+     * consumed, so round 2 reuses round 1's exact master fd number (the
+     * lowest-available rule — the spawn selftest's hygiene probe idiom). */
+    int mx = -1;
+    CHECK(lv_plat_pty_spawn("", argv1, 24, 80, 1, &mx) == -1);
+    CHECK(lv_plat_pty_spawn("/bin/echo", argv1, 0, 80, 1, &mx) == -1);
+    CHECK(lv_plat_pty_spawn("/bin/echo", argv1, 24, 0, 1, &mx) == -1);
+    CHECK(mx == -1);                              /* untouched on every refusal */
+
+    int m2 = -1;
+    int pid2 = lv_plat_pty_spawn("/bin/echo", argv1, 24, 80, 1, &m2);
+    CHECK(pid2 > 0);
+    CHECK(m2 == m1);                              /* ±0 fds across the whole round */
+    CHECK(lv_test_pty_drain(m2, buf, sizeof buf) == 4);
+    CHECK(lv_test_reap_poll(pid2) == 0);
+    lv_plat_close(m2);
+
+    /* the VEOF protocol (D-P3): canonical mode, VEOF frozen at 4, so writing
+     * "\x04" is the only way to EOF a pty (there is no closable write half). */
+    char* argv3[] = { (char*)"/bin/cat", NULL };
+    int m3 = -1;
+    int pid3 = lv_plat_pty_spawn("/bin/cat", argv3, 24, 80, 1, &m3);
+    CHECK(pid3 > 0);
+    CHECK(lv_plat_send(m3, "ping\n", 5) == 5);
+    CHECK(lv_plat_send(m3, "\x04", 1) == 1);
+    got = lv_test_pty_drain(m3, buf, sizeof buf);
+    CHECK(got == 6 && memcmp(buf, "ping\r\n", 6) == 0);   /* echo off, ONLCR on */
+    CHECK(lv_test_reap_poll(pid3) == 0);
+    lv_plat_close(m3);
+
+    /* lvrt marshaling (K5 ARC convention, settled by the valgrind lane): fresh
+     * rc-0 Array<int> of 2, retained/released exactly like codegen's
+     * retainDst() + register death. */
+    LvValue pathV; lvrt_str_new(&pathV, "/bin/echo", 9);
+    LvValue argsV; lvrt_arr_new(&argsV, 1);
+    LvValue a0;    lvrt_str_new(&a0, "z", 1);
+    ((int64_t*)(intptr_t)(argsV.payload + 8))[0] = a0.tag;
+    ((int64_t*)(intptr_t)(argsV.payload + 8))[1] = a0.payload;
+    lvrt_retain(&a0);                          /* buffer owns element */
+    LvValue rowsV; rowsV.tag = LV_INT; rowsV.payload = 24;
+    LvValue colsV; colsV.tag = LV_INT; colsV.payload = 80;
+    LvValue flagV; flagV.tag = LV_INT; flagV.payload = 1;
+    LvValue sp; lvrt_sysptyspawn(&sp, &pathV, &argsV, &rowsV, &colsV, &flagV);
+    CHECK(sp.tag == LV_ARR && lv_test_len(sp.payload) == 2);
+    int mpid = (int)((int64_t*)(intptr_t)(sp.payload + 8))[1];
+    int mmst = (int)((int64_t*)(intptr_t)(sp.payload + 8 + 16))[1];
+    CHECK(mpid > 0 && mmst >= 0);
+    got = lv_test_pty_drain(mmst, buf, sizeof buf);
+    CHECK(got == 3 && memcmp(buf, "z\r\n", 3) == 0);
+    CHECK(lv_test_reap_poll(mpid) == 0);
+    LvValue rz; LvValue mfV; mfV.tag = LV_INT; mfV.payload = mmst;
+    lvrt_sysptyresize(&rz, &mfV, &rowsV, &colsV);
+    CHECK(rz.tag == LV_INT && rz.payload == 0);
+    lv_plat_close(mmst);
+    lvrt_retain(&sp);    lvrt_release(&sp);    /* the sysArgs convention: rc-0 fresh */
+    lvrt_retain(&pathV); lvrt_release(&pathV);
+    lvrt_retain(&argsV); lvrt_release(&argsV); /* recursively drops the element */
+
+    /* bad args -> [] (frozen: empty array, not None) */
+    LvValue emptyV; lvrt_str_new(&emptyV, "", 0);
+    LvValue noargs; lvrt_arr_new(&noargs, 0);
+    LvValue sf; lvrt_sysptyspawn(&sf, &emptyV, &noargs, &rowsV, &colsV, &flagV);
+    CHECK(sf.tag == LV_ARR && lv_test_len(sf.payload) == 0);
+    lvrt_retain(&sf); lvrt_release(&sf);
+    LvValue zero; zero.tag = LV_INT; zero.payload = 0;
+    LvValue okp; lvrt_str_new(&okp, "/bin/echo", 9);
+    LvValue sf2; lvrt_sysptyspawn(&sf2, &okp, &noargs, &zero, &colsV, &flagV);
+    CHECK(sf2.tag == LV_ARR && lv_test_len(sf2.payload) == 0);
+    lvrt_retain(&sf2); lvrt_release(&sf2);
+    lvrt_retain(&okp);    lvrt_release(&okp);
+    lvrt_retain(&emptyV); lvrt_release(&emptyV);
+    lvrt_retain(&noargs); lvrt_release(&noargs);
+
+    fprintf(stderr, "OK: pty floor (spawn/termios/drain, EIO collapse, VEOF, resize, "
+                    "fd hygiene, [] on bad args)\n");
+}
+
 /* ==========================================================================
  * LA-30 §9 — task-substrate selftest additions
  * (designs/suspension/techdesign-01-task-substrate.md; engine-free, same
@@ -1834,6 +1943,7 @@ int main(void) {
     test_sys_file_natives();
     test_sockets();
     test_process_floor();   /* G-LANG-2 (techdesign-spawn-llvm.md §7.4) */
+    test_pty_floor();       /* G-LANG-2 terminal half (designs/pty/ 02 §5) */
 
     /* LA-30 §9 — task substrate */
     test_tasks_basic();

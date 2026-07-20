@@ -1,0 +1,94 @@
+// H12 golden — workspace search: the in-process Regex-backed walk (case
+// sensitivity, literal vs regex, the .git/node_modules skip-list, the result cap),
+// and the SearchResultsModel ITableSource surface. Reads committed fixtures
+// under fixtures/proj. Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    void printMatches(Array<SearchMatch> ms) {
+        for (SearchMatch m in ms) console.writeln("  " + m.path + ":" + m.line.toString() + ":" + m.col.toString() + " | " + m.preview);
+    }
+
+    void main() {
+        section("literal, case-insensitive (default)");
+        WorkspaceSearch se = WorkspaceSearch("fixtures/proj");
+        Array<SearchMatch> hits = se.search("needle_token", false, false);
+        printMatches(hits);
+        console.writeln("count: " + hits.length().toString());
+        console.writeln("truncated: " + yn(se.truncated()));
+
+        section("literal, case-sensitive");
+        Array<SearchMatch> csHits = se.search("needle_token", false, true);
+        printMatches(csHits);
+        console.writeln("count: " + csHits.length().toString());
+
+        section("regex");
+        Array<SearchMatch> reHits = se.search("needle_\\w+", true, false);
+        printMatches(reHits);
+        console.writeln("count: " + reHits.length().toString());
+
+        section("cap at 1 result");
+        se.setMaxResults(1);
+        Array<SearchMatch> capped = se.search("needle_token", false, false);
+        printMatches(capped);
+        console.writeln("truncated: " + yn(se.truncated()));
+
+        section("no matches");
+        WorkspaceSearch se2 = WorkspaceSearch("fixtures/proj");
+        Array<SearchMatch> none = se2.search("nothing_matches_this", false, false);
+        console.writeln("count: " + none.length().toString());
+        console.writeln("truncated: " + yn(se2.truncated()));
+
+        // A fixture with a `.git` subdirectory can't be committed at all — git
+        // itself refuses to track anything under a directory literally named
+        // `.git` (a repository-boundary special case, not a gitignore rule) —
+        // so this one is built and torn down at run time (the filetree_test.lev
+        // scratch-dir precedent) instead of living under fixtures/.
+        section(".git skip (scratch fixture)");
+        string scratch = "scratch_search";
+        std::sysMkdir(scratch);
+        std::sysMkdir(scratch + "/.git");
+        using File realFile = File(scratch + "/real.lev", std::write);
+        realFile.write("let needle_token = 2;\n");
+        using File hiddenFile = File(scratch + "/.git/hidden.txt", std::write);
+        hiddenFile.write("needle_token should not be found\n");
+        WorkspaceSearch se3 = WorkspaceSearch(scratch);
+        Array<SearchMatch> scratchHits = se3.search("needle_token", false, false);
+        printMatches(scratchHits);
+        console.writeln("count: " + scratchHits.length().toString());
+        std::sysRemove(scratch + "/.git/hidden.txt");
+        std::sysRemove(scratch + "/.git");
+        std::sysRemove(scratch + "/real.lev");
+        std::sysRemove(scratch);
+
+        section("malformed regex throws");
+        try {
+            se2.search("(unclosed", true, false);
+            console.writeln("(no throw — unexpected)");
+        } catch (RegexException e) {
+            console.writeln("threw RegexException");
+        }
+
+        section("SearchResultsModel");
+        SearchResultsModel model = SearchResultsModel();
+        console.writeln("empty: " + yn(model.isEmpty()));
+        model.setResults("needle_token", hits, false);
+        console.writeln("query: " + model.query());
+        console.writeln("rowCount: " + model.rowCount().toString());
+        console.writeln("colCount: " + model.colCount().toString());
+        for (int r in 0..model.rowCount() - 1) {
+            console.writeln("  row " + r.toString() + ": [" + model.cellAt(r, 0) + "] [" + model.cellAt(r, 1) + "]");
+        }
+        console.writeln("cellAt OOB: [" + model.cellAt(99, 0) + "]");
+        SearchMatch? first = model.resultAt(0);
+        if (first != None) { SearchMatch f = first; console.writeln("resultAt(0).path: " + f.path); }
+        console.writeln("resultAt OOB: " + yn(model.resultAt(99) != None));
+        model.clear();
+        console.writeln("after clear, empty: " + yn(model.isEmpty()));
+    }
+
+}

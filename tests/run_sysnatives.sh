@@ -291,8 +291,9 @@ else
 fi
 
 cat > "$work/churn_llvm.lev" <<'EOF'
-// problem #4's acceptance on the compiled runtime: 8 spawn/reap rounds leave
-// the lowest free fd number unchanged (pipes x3 + pidfd all closed on reap).
+// problem #4's acceptance on the compiled runtime: 8 spawn/reap rounds then 8
+// pty rounds leave the lowest free fd number unchanged (pipes x3 / the pty
+// master, plus the pidfd, all closed on reap).
 int fdProbe() {
     int fd = std::sysOpen("/dev/null", 1);
     std::sysClose(fd);
@@ -300,9 +301,21 @@ int fdProbe() {
 }
 int before = 0 - 1;
 int rounds = 0;
+// designs/pty/ 02 §6.3 (K8): 8 pty rounds on the compiled runtime too — the
+// master and the pidfd must both be released on reap, or the probe drifts up.
+void spinPty() {
+    if (rounds >= 16) {
+        console.writeln("churn: " + (fdProbe() == before).toString());
+        return;
+    }
+    rounds = rounds + 1;
+    Pty p = Pty::Deterministic("/bin/echo", ["r" + rounds.toString()], 24, 80);
+    p.onData((s) => {});
+    p.exitCode().then((code) => spinPty());
+}
 void spin() {
     if (rounds >= 8) {
-        console.writeln("churn: " + (fdProbe() == before).toString());
+        spinPty();
         return;
     }
     rounds = rounds + 1;
@@ -345,6 +358,92 @@ if "$bin" --build-native "$work/sp_llvm" "$work/sp.lev" >/dev/null 2>&1; then
 else
   echo "FAIL llvm (expected sysSpawn to compile natively)"; fail=1
 fi
+
+# --- 11. pty floor: three-lane behavior + emit-C++ defers cleanly -----------
+# designs/pty/ 02 §6.3-§6.4. The kill->143 encoding on a session-leader child,
+# the pre-exec TIOCSWINSZ seed, and the frozen VEOF ("\x04") round trip, all
+# asserted on the COMPILED runtime as well as the two interpreters — the whole
+# point of G-PTY2 is that the three lanes cannot diverge.
+cat > "$work/pty.lev" <<'EOF'
+string acc = "";
+void stepVeof() {
+    Pty c = Pty::Deterministic("/bin/cat", [], 24, 80);
+    c.onData((s) => { acc = acc + s; });
+    c.write("ping\n");
+    c.write("\x04");                    // VEOF: the frozen pty EOF protocol
+    c.exitCode().then((code) => {
+        console.writeln("veof: " + acc.length().toString() + " " + code.toString());
+    });
+}
+void stepKill() {
+    Pty k = Pty::Deterministic("/bin/cat", [], 24, 80);
+    k.onData((s) => {});
+    k.kill();
+    k.exitCode().then((code) => {
+        console.writeln("kill: " + code.toString());
+        acc = "";
+        stepVeof();
+    });
+}
+Pty w = Pty::Deterministic("/bin/stty", ["size"], 24, 80);
+w.onData((s) => { acc = acc + s; });
+w.exitCode().then((code) => {
+    console.writeln("winsize: " + acc.trim());   // trim the ONLCR CR
+    stepKill();
+});
+EOF
+P_EXPECT='winsize: 24 80
+kill: 143
+veof: 6 0'
+check "pty --run" "$P_EXPECT" "$("$bin" --run "$work/pty.lev" 2>/dev/null)"
+check "pty --ir"  "$P_EXPECT" "$("$bin" --ir  "$work/pty.lev" 2>/dev/null)"
+if "$bin" --build-native "$work/pty_llvm" "$work/pty.lev" >/dev/null 2>&1; then
+  check "pty llvm-native" "$P_EXPECT" "$("$work/pty_llvm" 2>/dev/null)"
+else
+  echo "FAIL pty llvm-native (build failed)"; fail=1
+fi
+
+# emit-C++ keeps its deliberate system-layer deferral for the pty floor too:
+# a clean coverage error naming a sys native, never a miscompile (§6.4).
+printf 'Pty p = Pty::Deterministic("/bin/echo", ["x"], 24, 80);\np.exitCode().then((c) => console.writeln(c.toString()));\n' > "$work/pty_cpp.lev"
+pty_cpp=$("$bin" --build "$work/pty_cpp" "$work/pty_cpp.lev" 2>&1); pty_cpp_rc=$?
+if [ $pty_cpp_rc -ne 0 ] && echo "$pty_cpp" | grep -q "native.*'sys"; then
+  echo "ok   emit-cpp (clean pty deferral)"
+else
+  echo "FAIL emit-cpp (expected clean pty deferral, got rc=$pty_cpp_rc): $pty_cpp"; fail=1
+fi
+
+# --- 12. the Windows codegen gating split (designs/pty/ 03 §7, D-P10) -------
+# S3 narrowed the process-floor Windows reject: sysReap/sysKill gained real
+# registry-backed win32 bodies (D-W3) and now LOWER on a Windows triple, while
+# sysSpawn/sysPidfdOpen keep the frozen reject (pipes-spawn on Windows is still
+# future work). sysPtySpawn/sysPtyResize have lowered everywhere since S2 —
+# their Windows story is a RUNTIME degrade (D-P8), never a compile error.
+# --native-obj stops after object emission, so this needs no MinGW toolchain.
+WIN_TRIPLE=x86_64-pc-windows-gnu
+win_reject() {   # win_reject <label> <program>
+  printf '%s\n' "$2" > "$work/wingate.lev"
+  out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1)
+  if [ $? -ne 0 ] && echo "$out" | grep -q "process spawn: unsupported on Windows"; then
+    echo "ok   win-gate $1 (rejects)"
+  else
+    echo "FAIL win-gate $1 (expected the frozen Windows reject): $out"; fail=1
+  fi
+}
+win_lowers() {   # win_lowers <label> <program>
+  printf '%s\n' "$2" > "$work/wingate.lev"
+  if out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1); then
+    echo "ok   win-gate $1 (lowers)"
+  else
+    echo "FAIL win-gate $1 (expected Windows lowering): $out"; fail=1
+  fi
+}
+win_reject "sysSpawn"      'console.writeln(std::sysSpawn("/bin/true", []).length().toString());'
+win_reject "sysPidfdOpen"  'console.writeln(std::sysPidfdOpen(1).toString());'
+win_lowers "sysReap/sysKill" 'console.writeln(std::sysReap(999999).toString());
+console.writeln(std::sysKill(999999, 15).toString());'
+win_lowers "sysPty*"         'console.writeln(std::sysPtySpawn("C:\\x.exe", [], 24, 80, 0).length().toString());
+console.writeln(std::sysPtyResize(3, 30, 100).toString());'
 
 echo "sys-natives differential done"
 exit $fail

@@ -11,11 +11,18 @@
   View / helm.palette [^P]  — Command Palette…
   File / helm.save [^S]  — Save
   File / helm.quit [^Q]  — Quit
+  File / settings.save  — Save Settings
+  File / settings.reload  — Reload Settings
+  View / view.theme.default  — Theme: Default
+  View / view.theme.dark  — Theme: Dark
+  View / view.theme.light  — Theme: Light
+  View / view.theme.highContrast  — Theme: High Contrast
+  Edit / helm.search  — Find in Files…
 == menu bar ==
 bar: File  Edit  View  Run  Help
-  File (2): helm.save, helm.quit
-  Edit (0): 
-  View (2): helm.togglePanel, helm.palette
+  File (4): helm.save, settings.save, settings.reload, helm.quit
+  Edit (1): helm.search
+  View (6): helm.togglePanel, helm.palette, view.theme.default, view.theme.dark, view.theme.light, view.theme.highContrast
   Run (8): helm.build, helm.run, helm.stop, helm.test, helm.runEngine, helm.engine.oracle, helm.engine.ir, helm.engine.llvm
   Help (0): 
 == command palette — filter 'engine' ==

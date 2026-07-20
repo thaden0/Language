@@ -1,0 +1,94 @@
+// H12 golden — the config TOML subset parser, Settings (theme + keymap
+// overrides), and helm.toml load/save against a scratch workspace dir the
+// test makes and cleans up (the filetree_test.lev scratch-dir precedent).
+// Oracle + IR.
+uses Sonar;
+
+namespace Helm {
+
+    void section(string s) { console.writeln("== " + s + " =="); }
+    string yn(bool b) => b ? "y" : "n";
+
+    void main() {
+        section("parse");
+        string text = "# a comment\n"
+            + "[theme]\n"
+            + "name = \"dark\"\n"
+            + "\n"
+            + "[keymap]\n"
+            + "helm.build = \"^B\"\n"
+            + "helm.search = \"^S-F\"\n";
+        ConfigDoc doc = parseConfigToml(text, "helm.toml");
+        console.writeln("theme.name: " + (doc.get("theme", "name") ?? "<none>"));
+        console.writeln("keymap keys: " + doc.sectionKeys("keymap").joinToString(", "));
+        console.writeln("keymap helm.build: " + (doc.get("keymap", "helm.build") ?? "<none>"));
+        console.writeln("missing key: " + (doc.get("theme", "nope") ?? "<none>"));
+
+        section("write round-trip");
+        string written = writeConfigToml(doc);
+        console.writeln(written);
+        ConfigDoc reparsed = parseConfigToml(written, "roundtrip.toml");
+        console.writeln("roundtrip theme.name: " + (reparsed.get("theme", "name") ?? "<none>"));
+        console.writeln("roundtrip keymap.helm.search: " + (reparsed.get("keymap", "helm.search") ?? "<none>"));
+
+        section("parse errors");
+        Array<string> bad = [
+            "[theme\nname = \"x\"\n",     // unterminated header
+            "name = \"x\"\n",              // key/value before any header
+            "[theme]\nname dark\n",        // missing '='
+            "[theme]\nname = \"unterminated\n"
+        ];
+        for (string b in bad) {
+            try {
+                parseConfigToml(b, "bad.toml");
+                console.writeln("  (no throw — unexpected)");
+            } catch (SonarException e) {
+                console.writeln("  threw: " + e.message);
+            }
+        }
+
+        section("Settings from doc");
+        Settings s = Settings::FromDoc(doc);
+        console.writeln("theme: " + s.theme());
+        console.writeln("keymapIds: " + s.keymapIds().joinToString(", "));
+        console.writeln("override helm.build: " + (s.keymapOverride("helm.build") ?? "<none>"));
+        console.writeln("override helm.missing: " + (s.keymapOverride("helm.missing") ?? "<none>"));
+
+        section("applyKeymap / captureKeymap");
+        CommandRegistry reg = CommandRegistry();
+        reg.register("helm.build", "Build", "Run", () => {});
+        reg.setKey("helm.build", "F9");           // factory default, pre-override
+        reg.register("helm.other", "Other", "Run", () => {});
+        reg.setKey("helm.other", "^O");
+        s.applyKeymap(reg);
+        console.writeln("helm.build key after apply: " + reg.key("helm.build"));   // overridden -> ^B
+        console.writeln("helm.other key after apply: " + reg.key("helm.other"));   // untouched -> ^O
+
+        Settings captured = Settings();
+        captured.captureKeymap(reg);
+        console.writeln("captured ids: " + captured.keymapIds().joinToString(", "));
+        console.writeln("captured helm.build: " + (captured.keymapOverride("helm.build") ?? "<none>"));
+
+        section("default Settings (empty doc)");
+        Settings empty = Settings::FromDoc(ConfigDoc());
+        console.writeln("default theme: " + empty.theme());
+        console.writeln("default keymapCount: " + empty.keymapCount().toString());
+
+        section("load/save against a scratch workspace");
+        string scratch = "scratch_cfg";
+        std::sysMkdir(scratch);
+        console.writeln("fresh dir load theme: " + loadSettings(scratch).theme());
+        Settings toSave = Settings();
+        toSave.setTheme(ThemeHighContrast);
+        toSave.setKeymapOverride("helm.quit", "^Q");
+        toSave.setKeymapOverride("helm.save", "^S");
+        saveSettings(scratch, toSave);
+        Settings loaded = loadSettings(scratch);
+        console.writeln("reloaded theme: " + loaded.theme());
+        console.writeln("reloaded keymapIds: " + loaded.keymapIds().joinToString(", "));
+        console.writeln("reloaded helm.quit: " + (loaded.keymapOverride("helm.quit") ?? "<none>"));
+        std::sysRemove(settingsPath(scratch));
+        std::sysRemove(scratch);
+    }
+
+}

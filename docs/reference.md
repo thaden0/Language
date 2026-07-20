@@ -1587,6 +1587,9 @@ Track 08 F5/F7 add (see §6.6.57/§6.6.59): `int sysTcpConnectNb(string host, in
 `int sysWatchWrite(int fd, (int) => void cb)`, `int sysConnectResult(int fd)`,
 `Array<int> sysSpawn(string path, Array<string> args)`, `int sysPidfdOpen(int pid)`,
 `int sysReap(int pid)`, `int sysKill(int pid, int sig)`.
+The pty floor adds (see §6.6.60):
+`Array<int> sysPtySpawn(string path, Array<string> args, int rows, int cols, int flags)`
+and `int sysPtyResize(int masterFd, int rows, int cols)`.
 Track 10 (threads, see §6.6.66) add: `int sysTcpListen(int port, bool reusePort)` (an
 SO_REUSEPORT overload — LLVM/interpreters; the frozen ELF backend rejects the /2 form
 loudly), `int sysCpuCount()` (online logical processors, ≥ 1; `std::cpuCount()` wraps it),
@@ -1692,6 +1695,68 @@ never exposed). All `sys*`-prefixed → comptime-denied automatically. Oracle + 
 (G-LANG-2 process half, 2026-07-16: `runtime/lv_proc.c` over the `lv_plat_spawn/pidfd_open/
 reap/kill` floor, `designs/complete/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
 the threads precedent). emit-C++ still defers cleanly (deliberate system-layer policy).
+
+### 6.6.60 Pty — a child on a pseudo-terminal (G-LANG-2 terminal half)
+`Pty(path, args, rows, cols)` spawns a child on a **pseudo-terminal** instead of pipes.
+Same explicit-path rule as `Process`, but the shape differs in one load-bearing way: a pty
+**fuses stdout and stderr into one bidirectional stream**, so there is one fd, not three,
+and no separate `onStderr`. The child gets a real controlling terminal — `isatty(0)` is
+true, line editing and job control work, and full-screen programs behave as they would
+under a terminal emulator.
+
+- `Pty::Deterministic(path, args, rows, cols)` — the second constructor, selecting a
+  **frozen termios profile with the echo family off**. Use it whenever output must be
+  reproducible: with echo on, what you write is interleaved back into what you read.
+- `ok() -> bool` — spawn succeeded. A bad path is not a spawn failure (exec fails in the
+  child and surfaces as exit `127`); `rows`/`cols` `<= 0` and an empty path are refused.
+- `write(string)` — queue-and-drain like a socket send. A pty has **no closable write
+  half**, so EOF is the terminal's own protocol: `write("\x04")` (VEOF, frozen at `^D`).
+- `onData((string) => void)` / `onClose(() => void)` — the merged byte stream. Output
+  carries the terminal's `ONLCR` translation, so a child's `\n` arrives as `\r\n`.
+- `resize(rows, cols) -> int` — `0`/`-1`. The **kernel** delivers `SIGWINCH` to the child's
+  foreground group; callers never signal by hand.
+- `exitCode() -> Promise<int>` — the same pidfd-watch reaping as `Process` (`128+signal`
+  when signal-terminated, `127` on spawn failure). The master fd is deliberately held open
+  until the child is **reaped**, not closed when the read side hits EOF: the master is the
+  tty's hangup switch, and dropping it early `SIGHUP`s a session-leader child that is still
+  running its exit path.
+- `kill()` — `SIGTERM`; a pending `exitCode()` then resolves `143`.
+
+Floor: `sysPtySpawn(path, args, rows, cols, flags) -> Array<int>` (`[pid, masterFd]`, `[]`
+on failure; `flags` bit0 selects the deterministic profile) and `sysPtyResize(masterFd,
+rows, cols)`. Oracle + IR + **LLVM** (G-PTY2, `designs/complete/techdesign-02-pty-llvm-native.md`:
+`runtime/lv_pty.c` over the `lv_plat_pty_spawn/resize` floor). emit-C++ defers cleanly
+(deliberate system-layer policy).
+
+**Windows (G-PTY3, `designs/complete/techdesign-03-pty-windows-conpty.md`).** The floor is
+**ConPTY**, and it **degrades at runtime** rather than rejecting at compile time — the same
+binary must run on pre- and post-ConPTY hosts, so `sysPtySpawn` lowers on every target:
+- **Windows 10 1809 / Server 2019 or newer** — a real pseudoconsole. ConPTY's anonymous
+  pipes cannot be polled, so the floor bridges them to a loopback socketpair whose loop-side
+  end *is* the master fd; the bytes are UTF-8 both ways and no language code ever runs on a
+  bridge thread.
+- **Older than 1809** — `CreatePseudoConsole` is absent, `sysPtySpawn` returns `[]`, and a
+  `Pty` resolves `127` like any other spawn failure. No compile error, no hang.
+- **Exit encoding differs by platform and that is deliberate.** The `128+signal` band is
+  POSIX-only; Windows has no signals, so a child *we* killed reports the documented sentinel
+  **`254`** (`LV_PTY_KILLED`) — chosen clear of `127` (exec failure) and `255`. Normal exits
+  are the ordinary `code & 0xFF` on both. Code that branches on `143` is branching on
+  POSIX-lane behavior.
+- **What the stream carries differs too**: ConPTY re-renders output, so the master carries
+  *its* VT stream rather than the child's raw bytes, and it is version-dependent — assert
+  behavior after stripping escapes, never byte-for-byte output. There is no termios on
+  Windows: `Pty::Deterministic`'s profile bit is accepted and ignored (ConPTY owns the cooked
+  behavior).
+- `sysReap`/`sysKill` **lower on Windows** (they read a floor-internal pid→handle registry
+  filled by `sysPtySpawn`, so pid reuse can never alias a stranger's process). `Process`
+  (pipes-spawn) still rejects at compile time on a Windows target.
+- **Standing limitation:** the `Pty` *prelude class* still cannot be compiled for a Windows
+  target, because it routes its master through `TcpStream`, whose `IDisposable` over-marking
+  drags `sysTaskCancel` into the build — and the task natives keep their own Windows reject
+  (`tasks: unsupported on Windows (v1)`, the LA-30 pump pin, which also blocks `TcpStream`
+  and `TcpListener` there). The `sysPty*`/`sysReap`/`sysKill` **floor natives** compile and
+  run on Windows today; lifting the class-level lane is the tasks gate's work, not the pty
+  floor's.
 
 ### 6.6.54 Promises and await
 `Promise<T>` (`resolve(v)`, `isReady()`, `get()`, `then(cb)`; construct `Promise()` pending
@@ -2760,6 +2825,12 @@ with zero violations — §15's claim, measured.
 Three native backends consume the same IR; only entry-reachable functions are emitted, and
 out-of-coverage constructs fail with a diagnostic:
 
+The stdlib prelude ships as `prelude/*.lev` files (eight segments), resolved `--prelude <dir>`
+→ `LV_PRELUDE_DIR` → next-to-binary `prelude/` → source-tree `../prelude`, with a
+build-generated embedded fallback baked into the compiler when no directory resolves;
+`wasm.lev` (the `Dom` surface) is loaded only for `wasm32*` targets, so native builds never
+see it.
+
 - **LLVM** (when built against LLVM ≥ 18) — **the primary, portable AOT backend**
   (`designs/complete/techdesign-portable-backend.md`): `--emit-llvm` / `--native-obj out.o` (direct
   object emission via `TargetMachine`, no external `llc`), linking the portable runtime v2
@@ -2771,6 +2842,36 @@ out-of-coverage constructs fail with a diagnostic:
   `--opt-level 0|2` selects it (default 2, `0` for a debug build — faster codegen, easier
   to read under a debugger). `--build-native out` goes straight from source to a linked
   executable in one step.
+  - **`wasm32` browser target** (`--target wasm32-unknown-unknown`, Track W): the same LLVM
+    backend and the one 44-op IR — the language and IR are untouched (overview §1); a
+    backend only diverges on emit-per-op. Codegen is nearly free (the installed LLVM has
+    the `WebAssembly` target); the work is the runtime archive
+    (`runtime/build-triple.sh wasm32-wasi`, needs a `wasi-libc` sysroot), the browser floor
+    (`runtime/lv_plat_wasm.c` — syscalls swapped for host imports), and the JS host
+    (`runtime/lv_host.js` — "one imports file, three hosts": that module,
+    `runtime/lv_host_page.html`, and `tests/wasm_node_run.mjs`). Run headlessly under Node's
+    native `WebAssembly` via `tests/run_wasm.sh` / `tests/run_wasm_dom.sh` — plain
+    `wasmtime run` cannot supply this target's custom `lv.*` imports. **Covered subset**
+    (per-target — native Leviathan loses nothing): the entire language + every pure prelude
+    library (JSON, DateTime, encoding, digests, regex, collections, strings, math), console,
+    time, randomness, event loop, async/await. Async is **JSPI** — the engine-provided
+    realization of the same stackful park/resume the landed task substrate does with `.S`
+    context switches; browser floor Chrome ≥ 137 or Node ≥ 24 `--experimental-wasm-jspi`.
+    **Reshaped:** HTTP → `fetch`, sockets → `WebSocket` (stream endpoints). **Gained:** the
+    DOM. **Gated** (compile-time diagnostic when *user* code reaches one; unreachable prelude
+    bodies get a trap stub — the ELF-DNS `native-elf backend: …` precedent): filesystem,
+    process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking sync reads, raw OS
+    threads / shared-address `fork`. Select the branch at comptime with `target::os == "wasm"`.
+  - **The `@extern` / DOM surface.** DOM is reached through the hand-written `Dom` prelude
+    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `prelude/wasm.lev`):
+    opaque JS values wrapped in an `int` handle, marshaled by one reflective routine in
+    `lv_host.js`, with DOM events surfaced as `InStream` endpoints and a closure trampoline
+    for handlers (which may `await`). Note the *rules-engine `@extern` bindgen* that would
+    generate these stubs is **not built** — it targeted a per-method `__import` seam that the
+    reflective single-`dom_call` bridge abandoned, and a faithful generator needs metaprog
+    scope (interface-member reflection + cross-class injection) outside the bounded P4 roadmap
+    (`designs/wasm-frontend/techdesign-06-bindgen-and-ship.md` §1). The hand-written `Dom`
+    surface is the as-built binding surface; `examples/wasm-client/` is the worked demo.
 - **Pure x86-64 / ELF** (`--emit-elf out`): the self-hosting-grade path — **our own machine-
   code emitter and ELF writer, no g++, no assembler, no linker, no libc.** It compiles the
   **whole language** (objects, collections, closures, exceptions, files, streams, event loop,

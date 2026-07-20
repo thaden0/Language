@@ -28,6 +28,12 @@ public:
         fileRanges_ = std::move(ranges);
     }
 
+    // Ship-as-files prelude (techdesign-prelude-ship-as-files-opus.md §4.2).
+    // Both default to "" so any Resolver constructed without these calls gets
+    // the embedded native prelude and keeps working — R1's zero-config guarantee.
+    void setPreludeDir(std::string dir) { preludeDir_ = std::move(dir); }
+    void setTargetTriple(std::string triple) { targetTriple_ = std::move(triple); }
+
     void run(Program& program);
     const Sema& sema() const { return sema_; }
     Program& preludeProgram() { return preludeProgram_; }   // for IR lowering
@@ -45,6 +51,8 @@ private:
     Program preludeProgram_;
     std::vector<Symbol*> classSymbols_;   // every class, in gather order
     std::vector<std::pair<uint32_t, uint32_t>> fileRanges_;   // per-file spans (bug.md #8)
+    std::string preludeDir_;    // "" => use the embedded prelude fallback
+    std::string targetTriple_;  // "" => host/native target
 
     // gather
     void gatherInto(std::vector<StmtPtr>& items, Scope* scope, Symbol* enclosingNs = nullptr);

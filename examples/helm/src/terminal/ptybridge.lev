@@ -1,0 +1,148 @@
+// H10 — the pty bridge, the H09 `Proc`/`ProcStreamer` precedent applied to
+// `Pty` (reference §6.6's Pty class, landed 2026-07-16 — designs/pty/). A pty
+// child has ONE merged byte stream (no separate stderr — there is no tty
+// concept of one), so the event shape is simpler than `ProcEvent`: Data or
+// Exit. Like `Process`, `Pty` is a fd-/loop-bound carrier that cannot cross a
+// `std::spawn` boundary and is already event-loop-driven on the UI thread, so
+// (mirroring proc.lev's own H-C4 note) there is no worker task and no
+// cross-thread Channel — `onData`/`exitCode()` enqueue onto an in-process
+// queue the UI drains at frame start. Single-writer H-R1 holds trivially.
+//
+// Floor note: `Pty` runs on the oracle + IR interpreters only (G-LANG-2's
+// terminal half is not yet lowered on LLVM — designs/pty/techdesign-02).
+// This is not a NEW constraint for Helm: H09/H11 already accepted the
+// identical `Process` limitation, so the golden lane stays oracle+IR here too.
+
+namespace Helm {
+
+    const int PtyData = 0;
+    const int PtyExit = 1;
+
+    class PtyEvent {
+        int    kind;
+        string data;   // Data payload (may contain partial escape sequences)
+        int    code;   // Exit status (128+signal if signalled; 127 = exec failed)
+
+        new Data(string d) { kind = PtyData; data = d;  code = 0; }
+        new Exit(int c)    { kind = PtyExit; data = ""; code = c; }
+
+        bool isData() => kind == PtyData;
+        bool isExit() => kind == PtyExit;
+    }
+
+    class PtyEventQueue {
+        Array<PtyEvent> pending_ = [];
+
+        void push(PtyEvent e) { pending_ = pending_.add(e); }
+        Array<PtyEvent> drain() {
+            Array<PtyEvent> out = pending_;
+            pending_ = [];
+            return out;
+        }
+        bool hasPending() => pending_.length() > 0;
+    }
+
+    // A running (or finished) pty child, bridged to a PtyEventQueue.
+    //
+    //   PtyBridge b = PtyBridge("/bin/bash", [], 24, 80);
+    //   PtyEventQueue q = b.start();
+    //   ... each frame: for (PtyEvent e in q.drain()) applyToUi(e);
+    //
+    // `deterministic` selects `Pty::Deterministic` (frozen termios, echo
+    // family off — designs/pty/ D-P3) for byte-exact goldens; the live path
+    // uses plain `Pty` so the child's own shell gets a real interactive tty.
+    class PtyBridge {
+        string        path_;
+        Array<string> args_;
+        int           rows_;
+        int           cols_;
+        bool          deterministic_;
+
+        Pty?           pty_     = None;
+        PtyEventQueue  queue_   = PtyEventQueue();
+        bool           running_ = false;
+        bool           started_ = false;
+
+        new PtyBridge(string path, Array<string> args, int rows, int cols) {
+            path_ = path; args_ = args; rows_ = rows; cols_ = cols; deterministic_ = false;
+        }
+        new Deterministic(string path, Array<string> args, int rows, int cols) {
+            path_ = path; args_ = args; rows_ = rows; cols_ = cols; deterministic_ = true;
+        }
+
+        PtyEventQueue start() {
+            if (started_) return queue_;
+            started_ = true;
+            Pty p = deterministic_ ? Pty::Deterministic(path_, args_, rows_, cols_)
+                                    : Pty(path_, args_, rows_, cols_);
+            pty_ = p;
+            running_ = true;
+            // Explicit `this.` receivers throughout (bug #53 — a bare
+            // implicit-`this` call from a stored-lambda handler segfaults on
+            // native and loses mutations on IR).
+            p.onData((s) => this.onData(s));
+            p.exitCode().then((code) => this.onExit(code));
+            return queue_;
+        }
+
+        void onData(string chunk) { queue_.push(PtyEvent::Data(chunk)); }
+        void onExit(int code) {
+            running_ = false;
+            queue_.push(PtyEvent::Exit(code));
+        }
+
+        void write(string bytes) {
+            if (pty_ != None) { Pty p = pty_; p.write(bytes); }
+        }
+        int resize(int rows, int cols) {
+            rows_ = rows; cols_ = cols;
+            // If-block narrowing only (an early-return guard doesn't persist
+            // the narrowing past it — a known footgun, H02's §14 log).
+            if (pty_ != None) { Pty p = pty_; return p.resize(rows, cols); }
+            return 0 - 1;
+        }
+        // Cancellation (the terminal tab's close button). SIGTERM only — the
+        // `Pty` floor exposes no finer signal set (mirrors `Proc.signal`,
+        // §7.1).
+        void kill() {
+            if (pty_ != None) { Pty p = pty_; p.kill(); }
+        }
+
+        bool running() => running_;
+    }
+
+    // Headless drain-on-tick driver — the ProcStreamer precedent. The live
+    // TerminalView drains from its own frame loop instead (a renderFrame
+    // hook); this stands in for spikes/tests/CLI use.
+    class PtyStreamer {
+        PtyBridge                  bridge_;
+        PtyEventQueue              queue_;
+        Array<(PtyEvent) => void>  sink_ = [];
+        std::Timer?                tick_ = None;
+        bool                       done_ = false;
+
+        new PtyStreamer(PtyBridge b, (PtyEvent) => void sink) {
+            bridge_ = b;
+            queue_  = b.start();
+            sink_   = sink_.add(sink);
+        }
+
+        void run(int intervalMs) {
+            std::Timer t = std::every(intervalMs);
+            tick_ = t;
+            t.subscribe((n) => this.pump());
+        }
+
+        void pump() {
+            (PtyEvent) => void s = sink_[0];
+            for (PtyEvent e in queue_.drain()) s(e);
+            if (!bridge_.running() && !queue_.hasPending()) {
+                done_ = true;
+                if (tick_ != None) { std::Timer t = tick_; t.cancel(); }
+            }
+        }
+
+        bool done() => done_;
+    }
+
+}

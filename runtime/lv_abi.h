@@ -736,6 +736,17 @@ void    lvrt_syspidfdopen(LvValue* out, const LvValue* pid);
 void    lvrt_sysreap(LvValue* out, const LvValue* pid);
 void    lvrt_syskill(LvValue* out, const LvValue* pid, const LvValue* sig);
 
+/* Pty floor (designs/pty/ 02; oracle RuntimeNatives.cpp sysPtySpawn).
+ * lvrt_sysptyspawn: fresh Array<int> [pid, masterFd], or the empty array on
+ *   failure (bad args / allocation / fork). Exec failure is the child's
+ *   _exit(127) via lvrt_sysreap. Return follows the lvrt_sysargs ownership
+ *   convention (rc 0; codegen retains) — the lvrt_sysspawn parity.
+ * lvrt_sysptyresize: scalar LV_INT 0/-1.                                     */
+void    lvrt_sysptyspawn(LvValue* out, const LvValue* path, const LvValue* args,
+                         const LvValue* rows, const LvValue* cols, const LvValue* flags);
+void    lvrt_sysptyresize(LvValue* out, const LvValue* master,
+                          const LvValue* rows, const LvValue* cols);
+
 void    lvrt_systimerstart(LvValue* out, const LvValue* delayMs,
                             const LvValue* intervalMs, const LvValue* cb);
 void    lvrt_systimercancel(const LvValue* id);

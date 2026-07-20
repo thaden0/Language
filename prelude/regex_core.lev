@@ -1,0 +1,676 @@
+
+namespace regex {
+    // AST: 1 byte, 2 class, 3 any, 4 concat, 5 alt, 6 star, 7 plus,
+    // 8 optional, 9 empty, 10 ^, 11 $, 12 word-boundary, 13 non-boundary.
+    // VM: 1 byte, 2 class, 3 any, 4 any-with-newline, 5 split, 6 jump,
+    // 7 assert, 8 accept, 9 save. A compiled program is a self-contained
+    // Array<int>. Its fixed header also carries match-length and prefilter facts;
+    // the tail carries byte-equivalence classes and encoded named groups.
+    // Class bytes are 0/1 entries (rather than bitmaps):
+    // this is intentionally comptime-reifiable and avoids signed-shift traps.
+
+    // Engine internals, namespace-scoped (bug.md #32 fixed the qualified-
+    // construction dispatch gap that once forced these to top level); not
+    // part of the public Regex API (owned by techdesign-regex-library.md).
+    // Every construction site below is qualified (regex::Name(...)) rather
+    // than bare, since bare same-namespace construction (M2) stays deferred.
+    class RegexCoreFragment {
+        int start;
+        Array<int> outs;
+        new RegexCoreFragment(int s, Array<int> o) { start = s; outs = o; }
+    }
+
+    class RegexCoreCompiler {
+        string pattern;
+        int pos = 0;
+        int depth = 0;
+        int flags = 0; // i=1, m=2, s=4
+        Array<int> nodeOp = [];
+        Array<int> nodeA = [];
+        Array<int> nodeB = [];
+        Array<int> classes = [];
+        int classCount = 0;
+        int groupCount = 0;
+        Array<int> nameData = [];
+        Array<int> ops = [];
+        Array<int> argA = [];
+        Array<int> argB = [];
+
+        new RegexCoreCompiler(string p, string f) {
+            pattern = p;
+            int i = 0;
+            while (i < f.length()) {
+                int c = f.byteAt(i);
+                if (c == 105) flags = flags | 1;
+                else if (c == 109) flags = flags | 2;
+                else if (c == 115) flags = flags | 4;
+                else throw RuntimeException("regex: unknown flag at offset " + i.toString());
+                i = i + 1;
+            }
+        }
+
+        int addNode(int op, int a, int b) {
+            if (nodeOp.length() >= 4096) throw RuntimeException("regex: pattern too large");
+            int n = nodeOp.length();
+            nodeOp = nodeOp.add(op); nodeA = nodeA.add(a); nodeB = nodeB.add(b);
+            return n;
+        }
+        int peek() => pos < pattern.length() ? pattern.byteAt(pos) : -1;
+        int take() { int c = peek(); if (c >= 0) pos = pos + 1; return c; }
+        bool atomStart(int c) => c >= 0 && c != 41 && c != 124;
+        int fold(int c) => ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c;
+        bool word(int c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) ||
+                            (c >= 97 && c <= 122) || c == 95;
+
+        int newClass(bool inverted) {
+            int idx = classCount;
+            classCount = classCount + 1;
+            int i = 0;
+            while (i < 256) { classes = classes.add(inverted ? 1 : 0); i = i + 1; }
+            return idx;
+        }
+        void classSet(int ci, int c, bool yes) {
+            if (c >= 0 && c < 256) classes = classes.with(ci * 256 + c, yes ? 1 : 0);
+            if ((flags & 1) != 0) {
+                if (c >= 65 && c <= 90) classes = classes.with(ci * 256 + c + 32, yes ? 1 : 0);
+                if (c >= 97 && c <= 122) classes = classes.with(ci * 256 + c - 32, yes ? 1 : 0);
+            }
+        }
+        void classKind(int ci, int kind, bool yes) {
+            int c = 0;
+            while (c < 256) {
+                bool hit = kind == 1 ? (c >= 48 && c <= 57) :
+                    (kind == 2 ? word(c) : (c == 32 || c == 9 || c == 10 || c == 13 || c == 12));
+                if (hit) classSet(ci, c, yes);
+                c = c + 1;
+            }
+        }
+        void classToken(int ci, int kind, bool negatedKind, bool outerInverted) {
+            int c = 0;
+            while (c < 256) {
+                bool hit = kind == 1 ? (c >= 48 && c <= 57) :
+                    (kind == 2 ? word(c) : (c == 32 || c == 9 || c == 10 || c == 13 || c == 12));
+                bool selected = negatedKind ? !hit : hit;
+                if (selected) classSet(ci, c, !outerInverted); c = c + 1;
+            }
+        }
+        int escapeAtom() {
+            if (pos >= pattern.length()) throw RuntimeException("regex: trailing escape at offset " + pos.toString());
+            int e = take();
+            if (e == 98) return addNode(12, 0, 0);
+            if (e == 66) return addNode(13, 0, 0);
+            if (e == 100 || e == 119 || e == 115 || e == 68 || e == 87 || e == 83) {
+                bool inv = e == 68 || e == 87 || e == 83;
+                int ci = newClass(inv);
+                int k = (e == 100 || e == 68) ? 1 : ((e == 119 || e == 87) ? 2 : 3);
+                classKind(ci, k, !inv);
+                return addNode(2, ci, 0);
+            }
+            if (e == 110) e = 10; else if (e == 114) e = 13; else if (e == 116) e = 9;
+            return addNode(1, fold(e), 0);
+        }
+        int classChar() {
+            if (pos >= pattern.length()) throw RuntimeException("regex: unterminated class at offset " + pos.toString());
+            int c = take();
+            if (c != 92) return c;
+            if (pos >= pattern.length()) throw RuntimeException("regex: trailing class escape at offset " + pos.toString());
+            int e = take();
+            if (e == 110) return 10; if (e == 114) return 13; if (e == 116) return 9;
+            return e;
+        }
+        int parseClass() {
+            take();
+            bool inv = false;
+            if (peek() == 94) { take(); inv = true; }
+            int ci = newClass(inv);
+            bool any = false;
+            while (peek() >= 0 && peek() != 93) {
+                if (peek() == 92 && pos + 1 < pattern.length()) {
+                    int e = pattern.byteAt(pos + 1);
+                    if (e == 100 || e == 119 || e == 115 || e == 68 || e == 87 || e == 83) {
+                        pos = pos + 2;
+                        bool negKind = e == 68 || e == 87 || e == 83;
+                        int k = (e == 100 || e == 68) ? 1 : ((e == 119 || e == 87) ? 2 : 3);
+                        classToken(ci, k, negKind, inv);
+                        any = true; continue;
+                    }
+                }
+                int lo = classChar(); int hi = lo;
+                if (peek() == 45 && pos + 1 < pattern.length() && pattern.byteAt(pos + 1) != 93) {
+                    take(); hi = classChar();
+                    if (lo > hi) throw RuntimeException("regex: reversed class range at offset " + pos.toString());
+                }
+                int c = lo; while (c <= hi) { classSet(ci, c, !inv); c = c + 1; }
+                any = true;
+            }
+            if (peek() != 93) throw RuntimeException("regex: unterminated class at offset " + pos.toString());
+            take();
+            if (!any) throw RuntimeException("regex: empty class at offset " + pos.toString());
+            return addNode(2, ci, 0);
+        }
+        int parseAtom() {
+            int c = peek();
+            if (c == 40) {
+                take(); depth = depth + 1;
+                if (depth > 200) throw RuntimeException("regex: nesting too deep");
+                bool capture = true; string groupName = "";
+                if (peek() == 63) {
+                    take();
+                    if (peek() == 58) { take(); capture = false; }
+                    else if (peek() == 60) {
+                        take();
+                        int nameStart = pos;
+                        while (peek() >= 0 && peek() != 62) take();
+                        if (peek() != 62) throw RuntimeException("regex: bad group name at offset " + pos.toString());
+                        if (pos == nameStart) throw RuntimeException("regex: empty group name at offset " + pos.toString());
+                        groupName = pattern.subStr(nameStart, pos - nameStart);
+                        take();
+                    } else throw RuntimeException("regex: unsupported group at offset " + pos.toString());
+                }
+                int gi = -1;
+                if (capture) { groupCount = groupCount + 1; gi = groupCount; }
+                int n = parseAlt();
+                if (peek() != 41) throw RuntimeException("regex: unterminated group at offset " + pos.toString());
+                take(); depth = depth - 1;
+                if (groupName.length() > 0) {
+                    nameData = nameData.add(gi).add(groupName.length());
+                    int ni = 0; while (ni < groupName.length()) { nameData = nameData.add(groupName.byteAt(ni)); ni = ni + 1; }
+                }
+                return capture ? addNode(16, n, gi) : n;
+            }
+            if (c == 91) return parseClass();
+            if (c == 92) { take(); return escapeAtom(); }
+            take();
+            if (c == 46) return addNode(3, 0, 0);
+            if (c == 94) return addNode(10, 0, 0);
+            if (c == 36) return addNode(11, 0, 0);
+            if (c == 42 || c == 43 || c == 63 || c == 123)
+                throw RuntimeException("regex: quantifier without atom at offset " + (pos - 1).toString());
+            return addNode(1, fold(c), 0);
+        }
+        int number() {
+            if (peek() < 48 || peek() > 57) return -1;
+            int n = 0;
+            while (peek() >= 48 && peek() <= 57) { n = n * 10 + take() - 48; if (n > 1000) throw RuntimeException("regex: repetition too large"); }
+            return n;
+        }
+        int parseRepeat() {
+            int n = parseAtom();
+            bool again = true;
+            while (again) {
+                int c = peek(); int op = 0;
+                if (c == 42) { take(); op = 6; }
+                else if (c == 43) { take(); op = 7; }
+                else if (c == 63) { take(); op = 8; }
+                else if (c == 123) {
+                    take(); int lo = number(); if (lo < 0) throw RuntimeException("regex: bad repetition at offset " + pos.toString());
+                    int hi = lo;
+                    if (peek() == 44) { take(); hi = number(); }
+                    if (peek() != 125 || (hi >= 0 && hi < lo)) throw RuntimeException("regex: bad repetition at offset " + pos.toString());
+                    take(); n = addNode(14, n, lo * 1002 + (hi + 1)); op = 0;
+                } else again = false;
+                if (op != 0) n = addNode(op, n, 0);
+                if (op != 0 || c == 123) {
+                    if (peek() == 63) { take(); n = addNode(15, n, 0); }
+                    if (peek() == 42 || peek() == 43 || peek() == 63 || peek() == 123)
+                        throw RuntimeException("regex: repeated quantifier at offset " + pos.toString());
+                }
+            }
+            return n;
+        }
+        int parseConcat() {
+            int n = -1;
+            while (atomStart(peek())) { int r = parseRepeat(); n = n < 0 ? r : addNode(4, n, r); }
+            return n < 0 ? addNode(9, 0, 0) : n;
+        }
+        int parseAlt() {
+            int n = parseConcat();
+            while (peek() == 124) { take(); n = addNode(5, n, parseConcat()); }
+            return n;
+        }
+        int emit(int op, int a, int b) {
+            if (ops.length() >= 4096) throw RuntimeException("regex: program too large");
+            int pc = ops.length(); ops = ops.add(op); argA = argA.add(a); argB = argB.add(b); return pc;
+        }
+        Array<int> oneOut(int pc, int side) { Array<int> r = []; return r.add(pc * 2 + side); }
+        void patch(Array<int> out, int target) {
+            for (int q in out) { int pc = q / 2; if (q % 2 == 0) argA = argA.with(pc, target); else argB = argB.with(pc, target); }
+        }
+        RegexCoreFragment build(int id, bool lazy) {
+            int o = nodeOp.at(id);
+            if (o == 1) { int p = emit(1, nodeA.at(id), -1); return regex::RegexCoreFragment(p, oneOut(p, 1)); }
+            if (o == 2) { int p = emit(2, nodeA.at(id), -1); return regex::RegexCoreFragment(p, oneOut(p, 1)); }
+            if (o == 3) { int p = emit((flags & 4) != 0 ? 4 : 3, -1, 0); return regex::RegexCoreFragment(p, oneOut(p, 0)); }
+            if (o >= 10 && o <= 13) { int p = emit(7, o - 10, -1); return regex::RegexCoreFragment(p, oneOut(p, 1)); }
+            if (o == 9) { int p = emit(6, -1, 0); return regex::RegexCoreFragment(p, oneOut(p, 0)); }
+            if (o == 4) { RegexCoreFragment x = build(nodeA.at(id), lazy); RegexCoreFragment y = build(nodeB.at(id), lazy); patch(x.outs, y.start); return regex::RegexCoreFragment(x.start, y.outs); }
+            if (o == 5) { RegexCoreFragment x = build(nodeA.at(id), lazy); RegexCoreFragment y = build(nodeB.at(id), lazy); int p = emit(5, x.start, y.start); return regex::RegexCoreFragment(p, x.outs.concat(y.outs)); }
+            if (o == 15) return build(nodeA.at(id), true);
+            if (o == 16) {
+                int before = emit(9, nodeB.at(id) * 2, -1);
+                RegexCoreFragment x = build(nodeA.at(id), lazy);
+                int after = emit(9, nodeB.at(id) * 2 + 1, -1);
+                argB = argB.with(before, x.start); patch(x.outs, after);
+                return regex::RegexCoreFragment(before, oneOut(after, 1));
+            }
+            if (o == 6 || o == 7 || o == 8) {
+                RegexCoreFragment x = build(nodeA.at(id), lazy); int p;
+                if (lazy) p = emit(5, -1, x.start); else p = emit(5, x.start, -1);
+                if (o == 6 || o == 7) patch(x.outs, p);
+                if (o == 7) return regex::RegexCoreFragment(x.start, oneOut(p, lazy ? 0 : 1));
+                if (o == 8) return regex::RegexCoreFragment(p, x.outs.concat(oneOut(p, lazy ? 0 : 1)));
+                return regex::RegexCoreFragment(p, oneOut(p, lazy ? 0 : 1));
+            }
+            // Bounded repetition node: b packs min and max+1; max=-1 is open.
+            if (o == 14) {
+                int lo = nodeB.at(id) / 1002; int hi = nodeB.at(id) % 1002 - 1;
+                RegexCoreFragment result = regex::RegexCoreFragment(-1, []); int i = 0;
+                while (i < lo) { RegexCoreFragment z = build(nodeA.at(id), lazy); if (result.start < 0) result = z; else { patch(result.outs, z.start); result = regex::RegexCoreFragment(result.start, z.outs); } i = i + 1; }
+                if (hi < 0) { RegexCoreFragment z = build(addNode(6, nodeA.at(id), 0), lazy); if (result.start < 0) return z; patch(result.outs, z.start); return regex::RegexCoreFragment(result.start, z.outs); }
+                while (i < hi) { RegexCoreFragment z = build(addNode(8, nodeA.at(id), 0), lazy); if (result.start < 0) result = z; else { patch(result.outs, z.start); result = regex::RegexCoreFragment(result.start, z.outs); } i = i + 1; }
+                if (result.start < 0) return build(addNode(9, 0, 0), lazy);
+                return result;
+            }
+            throw RuntimeException("regex: internal compiler error");
+        }
+        int minLength(int id) {
+            int o = nodeOp.at(id);
+            if (o >= 1 && o <= 3) return 1;
+            if (o == 9 || (o >= 10 && o <= 13)) return 0;
+            if (o == 4) return minLength(nodeA.at(id)) + minLength(nodeB.at(id));
+            if (o == 5) { int a = minLength(nodeA.at(id)); int b = minLength(nodeB.at(id)); return a < b ? a : b; }
+            if (o == 6 || o == 8) return 0;
+            if (o == 7) return minLength(nodeA.at(id));
+            if (o == 14) return minLength(nodeA.at(id)) * (nodeB.at(id) / 1002);
+            if (o == 15 || o == 16) return minLength(nodeA.at(id));
+            return 0;
+        }
+        int maxLength(int id) {
+            int o = nodeOp.at(id);
+            if (o >= 1 && o <= 3) return 1;
+            if (o == 9 || (o >= 10 && o <= 13)) return 0;
+            if (o == 4) { int a = maxLength(nodeA.at(id)); int b = maxLength(nodeB.at(id)); return a < 0 || b < 0 ? -1 : a + b; }
+            if (o == 5) { int a = maxLength(nodeA.at(id)); int b = maxLength(nodeB.at(id)); return a < 0 || b < 0 ? -1 : (a > b ? a : b); }
+            if (o == 6) return maxLength(nodeA.at(id)) == 0 ? 0 : -1;
+            if (o == 7) return maxLength(nodeA.at(id)) == 0 ? 0 : -1;
+            if (o == 8) return maxLength(nodeA.at(id));
+            if (o == 14) { int hi = nodeB.at(id) % 1002 - 1; int a = maxLength(nodeA.at(id)); return hi < 0 || a < 0 ? -1 : hi * a; }
+            if (o == 15 || o == 16) return maxLength(nodeA.at(id));
+            return 0;
+        }
+        bool isLiteral(int id) {
+            int o = nodeOp.at(id);
+            if (o == 1 || o == 9) return true;
+            if (o == 4) return isLiteral(nodeA.at(id)) && isLiteral(nodeB.at(id));
+            if (o == 16) return isLiteral(nodeA.at(id));
+            return false;
+        }
+        Array<int> literalBytes(int id) {
+            int o = nodeOp.at(id); Array<int> r = [];
+            if (o == 1) return r.add(nodeA.at(id));
+            if (o == 4) return literalBytes(nodeA.at(id)).concat(literalBytes(nodeB.at(id)));
+            if (o == 16) return literalBytes(nodeA.at(id));
+            return r;
+        }
+        Array<int> requiredPrefix(int id) {
+            Array<int> none = []; if ((flags & 1) != 0) return none;
+            int o = nodeOp.at(id);
+            if (o == 1) return none.add(nodeA.at(id));
+            if (o == 16 || o == 15) return requiredPrefix(nodeA.at(id));
+            if (o == 4) {
+                Array<int> a = requiredPrefix(nodeA.at(id));
+                if (isLiteral(nodeA.at(id))) return literalBytes(nodeA.at(id)).concat(requiredPrefix(nodeB.at(id)));
+                return a;
+            }
+            return none;
+        }
+        bool startsAnchored(int id) {
+            int o = nodeOp.at(id);
+            if (o == 10) return true;
+            if (o == 16 || o == 15) return startsAnchored(nodeA.at(id));
+            if (o == 4) return startsAnchored(nodeA.at(id));
+            return false;
+        }
+        int firstExact(int id) {
+            if ((flags & 1) != 0) return -1; int o = nodeOp.at(id);
+            if (o == 1) return nodeA.at(id);
+            if (o == 2) { int only = -1; int c = 0; while (c < 256) { if (classes.at(nodeA.at(id) * 256 + c) != 0) { if (only >= 0) return -1; only = c; } c = c + 1; } return only; }
+            if (o == 16 || o == 15) return firstExact(nodeA.at(id));
+            if (o == 4) { int a = firstExact(nodeA.at(id)); return minLength(nodeA.at(id)) > 0 ? a : -1; }
+            return -1;
+        }
+        bool hasAssert(int id) {
+            int o = nodeOp.at(id);
+            if (o >= 10 && o <= 13) return true;
+            if (o == 4 || o == 5) return hasAssert(nodeA.at(id)) || hasAssert(nodeB.at(id));
+            if (o >= 6 && o <= 8 || o == 14 || o == 15 || o == 16) return hasAssert(nodeA.at(id));
+            return false;
+        }
+        bool sameByte(int x, int y) {
+            int pc = 0;
+            while (pc < ops.length()) {
+                int o = ops.at(pc); bool a = false; bool b = false;
+                if (o == 1) { a = argA.at(pc) == fold(x); b = argA.at(pc) == fold(y); }
+                else if (o == 2) { a = classes.at(argA.at(pc) * 256 + x) != 0; b = classes.at(argA.at(pc) * 256 + y) != 0; }
+                else if (o == 3) { a = x != 10; b = y != 10; }
+                else if (o == 4) { a = true; b = true; }
+                if (a != b) return false; pc = pc + 1;
+            }
+            return true;
+        }
+        Array<int> equivalenceMap() {
+            Array<int> map = Array(256, -1); int next = 0; int c = 0;
+            while (c < 256) {
+                int rep = -1; int r = 0;
+                while (r < c && rep < 0) { if (sameByte(c, r)) rep = r; r = r + 1; }
+                if (rep >= 0) map = map.with(c, map.at(rep));
+                else { map = map.with(c, next); next = next + 1; }
+                c = c + 1;
+            }
+            return map;
+        }
+        Array<int> compile() {
+            int root = parseAlt();
+            if (pos != pattern.length()) throw RuntimeException("regex: unexpected token at offset " + pos.toString());
+            int wrapped = addNode(16, root, 0);
+            RegexCoreFragment f = build(wrapped, false); int accept = emit(8, 0, 0); patch(f.outs, accept);
+            // Header v2: magic,n,classes,flags,start,groups,min,max,anchored,
+            // literalOnly,prefixLen,firstByte,equivCount,nameInts,dfaSafe,version.
+            // Conservative length/prefilter analysis is filled by helpers below.
+            int mn = minLength(root); int mx = maxLength(root);
+            Array<int> prefix = requiredPrefix(root); bool literal = isLiteral(root) && (flags & 1) == 0;
+            int first = prefix.length() > 0 ? prefix.at(0) : firstExact(root);
+            bool anchored = startsAnchored(root);
+            Array<int> eq = equivalenceMap(); int eqCount = 0;
+            for (int q in eq) if (q + 1 > eqCount) eqCount = q + 1;
+            bool dfaSafe = !hasAssert(root);
+            Array<int> r = [1380271952, ops.length(), classCount, flags, f.start,
+                groupCount, mn, mx, anchored ? 1 : 0, literal ? 1 : 0,
+                prefix.length(), first, eqCount, nameData.length(), dfaSafe ? 1 : 0, 2];
+            r = r.concat(ops).concat(argA).concat(argB).concat(classes).concat(prefix).concat(eq).concat(nameData); return r;
+        }
+    }
+
+    class RegexCoreVm {
+        Array<int> p; int n; int cc; int flags; int start; int groups; int minLen; int maxLen;
+        int anchored; int literalOnly; int prefixLen; int firstByte; int eqCount; int dfaSafe;
+        int opOff; int aOff; int bOff; int clsOff; int prefixOff; int eqOff; int nameOff;
+        Array<Array<int>> dfaStates = [];
+        Array<int> dfaAccept = [];
+        Array<int> dfaTrans = [];
+        Map<string, int> dfaIds = Map();
+        int scanOverflows = 0;
+        int dfaBudget = 512;
+        // techdesign-regex-linear-gate.md D1: deterministic work counter for the
+        // Pike leg — one increment per (pc, position) examination. Ratio-checked
+        // by regex_pathological_linear to prove O(n) scaling without wall-clock.
+        int pikeSteps = 0;
+        new RegexCoreVm(Array<int> program) {
+            if (program.length() < 16 || program.at(0) != 1380271952 || program.at(15) != 2) throw RuntimeException("regex: invalid program");
+            p = program; n = p.at(1); cc = p.at(2); flags = p.at(3); start = p.at(4);
+            groups = p.at(5); minLen = p.at(6); maxLen = p.at(7); anchored = p.at(8);
+            literalOnly = p.at(9); prefixLen = p.at(10); firstByte = p.at(11);
+            eqCount = p.at(12); dfaSafe = p.at(14);
+            opOff = 16; aOff = opOff + n; bOff = aOff + n; clsOff = bOff + n;
+            prefixOff = clsOff + cc * 256; eqOff = prefixOff + prefixLen;
+            nameOff = eqOff + 256;
+            if (p.length() != nameOff + p.at(13)) throw RuntimeException("regex: invalid program");
+        }
+        bool wordAt(string s, int i) {
+            if (i < 0 || i >= s.length()) return false; int c = s.byteAt(i);
+            return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+        }
+        bool assertion(int k, string s, int pos) {
+            if (k == 0) return pos == 0 || ((flags & 2) != 0 && pos > 0 && s.byteAt(pos - 1) == 10);
+            if (k == 1) return pos == s.length() || ((flags & 2) != 0 && pos < s.length() && s.byteAt(pos) == 10);
+            bool b = wordAt(s, pos - 1) != wordAt(s, pos); return k == 2 ? b : !b;
+        }
+        Array<int> closure(Array<int> seed, string s, int pos) {
+            Array<int> out = []; Array<int> stack = seed; Array<int> seen = Array(n, 0);
+            int i = 0;
+            while (i < stack.length()) {
+                int pc = stack.at(i); i = i + 1;
+                if (pc < 0 || pc >= n || seen.at(pc) != 0) continue;
+                seen = seen.with(pc, 1); int op = p.at(opOff + pc);
+                if (op == 5) { stack = stack.add(p.at(aOff + pc)); stack = stack.add(p.at(bOff + pc)); }
+                else if (op == 6) stack = stack.add(p.at(aOff + pc));
+                else if (op == 7) { if (assertion(p.at(aOff + pc), s, pos)) stack = stack.add(p.at(bOff + pc)); }
+                else if (op == 9) stack = stack.add(p.at(bOff + pc));
+                else out = out.add(pc);
+            }
+            return out;
+        }
+        bool accepted(Array<int> state) { for (int pc in state) if (p.at(opOff + pc) == 8) return true; return false; }
+        bool oldIsMatch(string s, int from) {
+            int pos = from < 0 ? 0 : from; Array<int> state = [];
+            while (pos <= s.length()) {
+                state = closure(state.add(start), s, pos); // one-pass unanchored NFA
+                if (accepted(state)) return true;
+                if (pos == s.length()) return false;
+                int c = s.byteAt(pos); int fc = ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c;
+                Array<int> next = [];
+                for (int pc in state) {
+                    int op = p.at(opOff + pc); bool hit = false;
+                    if (op == 1) hit = p.at(aOff + pc) == fc;
+                    else if (op == 2) hit = p.at(clsOff + p.at(aOff + pc) * 256 + c) != 0;
+                    else if (op == 3) hit = c != 10; else if (op == 4) hit = true;
+                    if (hit) next = next.add((op == 1 || op == 2) ? p.at(bOff + pc) : p.at(aOff + pc));
+                }
+                state = next; pos = pos + 1;
+            }
+            return false;
+        }
+
+        string stateKey(Array<int> state) {
+            Array<string> bits = []; int pc = 0;
+            while (pc < n) { bits = bits.add(std::byteToString(state.contains(pc) ? 49 : 48)); pc = pc + 1; }
+            return bits.concatAll();
+        }
+        void clearDfa() { dfaStates = []; dfaAccept = []; dfaTrans = []; dfaIds = Map(); }
+        int internDfa(Array<int> state) {
+            string key = stateKey(state); if (dfaIds.has(key)) return dfaIds[key];
+            if (dfaStates.length() >= dfaBudget) {
+                scanOverflows = scanOverflows + 1; clearDfa();
+                if (scanOverflows > 1) return -1;
+            }
+            int id = dfaStates.length(); dfaStates = dfaStates.add(state);
+            dfaAccept = dfaAccept.add(accepted(state) ? 1 : 0);
+            int k = 0; while (k < eqCount) { dfaTrans = dfaTrans.add(-1); k = k + 1; }
+            dfaIds[key] = id; return id;
+        }
+        Array<int> dfaExpanded(Array<int> raw, string s, int pos) => closure(raw.add(start), s, pos);
+        int dfaStep(int id, int c, string s, int pos) {
+            int bc = p.at(eqOff + c); int ti = id * eqCount + bc; int cached = dfaTrans.at(ti);
+            if (cached >= 0) return cached;
+            int generation = scanOverflows;
+            Array<int> next = [];
+            for (int pc in dfaStates.at(id)) {
+                int op = p.at(opOff + pc); bool hit = false;
+                if (op == 1) { int fc = ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c; hit = p.at(aOff + pc) == fc; }
+                else if (op == 2) hit = p.at(clsOff + p.at(aOff + pc) * 256 + c) != 0;
+                else if (op == 3) hit = c != 10; else if (op == 4) hit = true;
+                if (hit) next = next.add((op == 1 || op == 2) ? p.at(bOff + pc) : p.at(aOff + pc));
+            }
+            int nid = internDfa(dfaExpanded(next, s, pos + 1));
+            // A cache flush invalidates id/ti; only memoize if the old row survived.
+            if (nid >= 0 && generation == scanOverflows) dfaTrans = dfaTrans.with(ti, nid);
+            return nid;
+        }
+        bool dfaIsMatch(string s, int from) {
+            if (dfaSafe == 0) return pikeIsMatch(s, from);
+            int begin = from < 0 ? 0 : from; if (begin > s.length() || s.length() - begin < minLen) return false;
+            scanOverflows = 0; int id = internDfa(dfaExpanded([], s, begin)); int pos = begin;
+            while (id >= 0 && pos <= s.length()) {
+                if (dfaAccept.at(id) != 0) return true;
+                if (pos == s.length()) return false;
+                id = dfaStep(id, s.byteAt(pos), s, pos); pos = pos + 1;
+            }
+            return pikeIsMatch(s, from);
+        }
+
+        Array<int> flatPc = []; Array<int> flatCaps = [];
+        Array<int> stackPc = []; Array<int> stackCaps = []; int stackTop = 0;
+        int capWidth() => (groups + 1) * 2;
+        Array<int> capAt(Array<int> bank, int row) {
+            Array<int> c = []; int j = 0; int w = capWidth();
+            while (j < w) { c = c.add(bank.at(row * w + j)); j = j + 1; } return c;
+        }
+        Array<int> capAdd(Array<int> bank, Array<int> c) { for (int v in c) bank = bank.add(v); return bank; }
+        void stackPush(int pc, Array<int> caps) {
+            if (stackTop < stackPc.length()) stackPc = stackPc.with(stackTop, pc); else stackPc = stackPc.add(pc);
+            int w = capWidth(); int j = 0;
+            while (j < w) { int at = stackTop * w + j; if (at < stackCaps.length()) stackCaps = stackCaps.with(at, caps.at(j)); else stackCaps = stackCaps.add(caps.at(j)); j = j + 1; }
+            stackTop = stackTop + 1;
+        }
+        void closureFlat(Array<int> seeds, Array<int> seedCaps, string s, int pos) {
+            flatPc = []; flatCaps = []; Array<int> seen = Array(n, 0); int si = 0;
+            while (si < seeds.length()) {
+                stackPc = []; stackCaps = []; stackTop = 0; stackPush(seeds.at(si), capAt(seedCaps, si));
+                while (stackTop > 0) {
+                    pikeSteps = pikeSteps + 1;   // D1: one closure pop examined
+                    stackTop = stackTop - 1; int pc = stackPc.at(stackTop); Array<int> caps = capAt(stackCaps, stackTop);
+                    if (pc < 0 || pc >= n || seen.at(pc) != 0) continue;
+                    seen = seen.with(pc, 1); int op = p.at(opOff + pc);
+                    if (op == 5) { stackPush(p.at(bOff + pc), caps); stackPush(p.at(aOff + pc), caps); }
+                    else if (op == 6) stackPush(p.at(aOff + pc), caps);
+                    else if (op == 7) { if (assertion(p.at(aOff + pc), s, pos)) stackPush(p.at(bOff + pc), caps); }
+                    else if (op == 9) { caps = caps.with(p.at(aOff + pc), pos); stackPush(p.at(bOff + pc), caps); }
+                    else { flatPc = flatPc.add(pc); flatCaps = capAdd(flatCaps, caps); }
+                }
+                si = si + 1;
+            }
+        }
+        Array<int> literalResult(string s, int from) {
+            Array<int> bytes = []; int i = 0;
+            while (i < prefixLen) { bytes = bytes.add(p.at(prefixOff + i)); i = i + 1; }
+            Array<string> parts = []; for (int b in bytes) parts = parts.add(std::byteToString(b));
+            string lit = parts.concatAll(); int at = lit.length() == 0 ? from : s.indexOfFrom(lit, from);
+            if (at < 0 || (anchored != 0 && (flags & 2) == 0 && at != 0)) return [];
+            Array<int> caps = Array((groups + 1) * 2, -1); caps = caps.with(0, at).with(1, at + lit.length()); return caps;
+        }
+        Array<int> pikeFindRaw(string s, int from, bool onlyAtFrom) {
+            int pos = from < 0 ? 0 : from; Array<int> state = []; Array<int> stateCaps = [];
+            Array<int> best = []; bool mayStart = true;
+            while (pos <= s.length()) {
+                if (state.length() == 0 && best.length() > 0) return best;
+                Array<int> seeds = state; Array<int> seedCaps = stateCaps;
+                if (mayStart) { seeds = seeds.add(start); seedCaps = capAdd(seedCaps, Array(capWidth(), -1)); }
+                closureFlat(seeds, seedCaps, s, pos); state = flatPc; stateCaps = flatCaps;
+                int ai = -1; int j = 0;
+                while (j < state.length() && ai < 0) { if (p.at(opOff + state.at(j)) == 8) ai = j; j = j + 1; }
+                if (ai == 0) return capAt(stateCaps, 0);
+                if (ai > 0) {
+                    best = capAt(stateCaps, ai); state = state.take(ai);
+                    Array<int> kept = []; int z = 0; while (z < ai * capWidth()) { kept = kept.add(stateCaps.at(z)); z = z + 1; } stateCaps = kept; mayStart = false;
+                }
+                if (pos == s.length()) return best;
+                int c = s.byteAt(pos); int fc = ((flags & 1) != 0 && c >= 65 && c <= 90) ? c + 32 : c;
+                Array<int> next = []; Array<int> nextCaps = []; int ti = 0;
+                while (ti < state.length()) {
+                    pikeSteps = pikeSteps + 1;   // D1: one thread transition tested
+                    int pc = state.at(ti); int op = p.at(opOff + pc); bool hit = false;
+                    if (op == 1) hit = p.at(aOff + pc) == fc;
+                    else if (op == 2) hit = p.at(clsOff + p.at(aOff + pc) * 256 + c) != 0;
+                    else if (op == 3) hit = c != 10; else if (op == 4) hit = true;
+                    if (hit) { next = next.add((op == 1 || op == 2) ? p.at(bOff + pc) : p.at(aOff + pc)); nextCaps = capAdd(nextCaps, capAt(stateCaps, ti)); }
+                    ti = ti + 1;
+                }
+                state = next; stateCaps = nextCaps; pos = pos + 1; if (onlyAtFrom) mayStart = false;
+            }
+            return best;
+        }
+        string prefixString() {
+            Array<string> parts = []; int i = 0;
+            while (i < prefixLen) { parts = parts.add(std::byteToString(p.at(prefixOff + i))); i = i + 1; }
+            return parts.concatAll();
+        }
+        Array<int> find(string s, int from) {
+            int begin = from < 0 ? 0 : from;
+            if (begin > s.length() || s.length() - begin < minLen) return [];
+            if (literalOnly != 0) return literalResult(s, begin);
+            if (anchored != 0 && (flags & 2) == 0) return begin > 0 ? [] : pikeFindRaw(s, 0, true);
+            if (prefixLen > 0) {
+                string pre = prefixString(); int at = s.indexOfFrom(pre, begin);
+                while (at >= 0) { Array<int> r = pikeFindRaw(s, at, true); if (r.length() > 0) return r; at = s.indexOfFrom(pre, at + 1); }
+                return [];
+            }
+            if (firstByte >= 0) {
+                string one = std::byteToString(firstByte); int at = s.indexOfFrom(one, begin);
+                while (at >= 0) { Array<int> r = pikeFindRaw(s, at, true); if (r.length() > 0) return r; at = s.indexOfFrom(one, at + 1); }
+                return [];
+            }
+            return pikeFindRaw(s, begin, false);
+        }
+        bool isMatch(string s, int from) {
+            if (literalOnly != 0 || prefixLen > 0 || anchored != 0 || dfaSafe == 0) return find(s, from).length() > 0;
+            return dfaIsMatch(s, from);
+        }
+        bool pikeIsMatch(string s, int from) => find(s, from).length() > 0;
+        // techdesign-regex-linear-gate.md D2: run the Pike leg from 0 and report
+        // work done — [matched(0/1), pikeSteps]. Diagnostics/testing only.
+        Array<int> pikeProbe(string s) {
+            pikeSteps = 0;
+            bool hit = pikeIsMatch(s, 0);
+            int h = hit ? 1 : 0;
+            return [h, pikeSteps];
+        }
+        int count(string s) {
+            int total = 0; int pos = 0;
+            while (pos <= s.length()) {
+                Array<int> m = find(s, pos); if (m.length() == 0) return total;
+                total = total + 1; int end = m.at(1); pos = end > m.at(0) ? end : end + 1;
+            }
+            return total;
+        }
+        int groupIndex(string name) {
+            int i = nameOff; int end = nameOff + p.at(13);
+            while (i < end) {
+                int gi = p.at(i); int len = p.at(i + 1); i = i + 2;
+                bool same = len == name.length(); int j = 0;
+                while (j < len) { if (same && p.at(i + j) != name.byteAt(j)) same = false; j = j + 1; }
+                if (same) return gi; i = i + len;
+            }
+            return -1;
+        }
+        int groupTotal() => groups;
+        int minimumLength() => minLen;
+        int maximumLength() => maxLen;
+        int dfaOverflowCount(string s) { dfaIsMatch(s, 0); return scanOverflows; }
+        int dfaOverflowCountWithBudget(string s, int budget) { dfaBudget = budget; dfaIsMatch(s, 0); return scanOverflows; }
+        // Raw (gi,len,byte...) named-group records, for doc 2 (techdesign-
+        // regex-library.md)'s Regex.groupNames()/Match named-lookup: an
+        // additive accessor alongside groupIndex above, no behavior change.
+        Array<int> nameRecords() {
+            Array<int> out = []; int i = nameOff; int end = nameOff + p.at(13);
+            while (i < end) { out = out.add(p.at(i)); i = i + 1; }
+            return out;
+        }
+    }
+
+    Array<int> compileProgram(string pattern, string flags) => regex::RegexCoreCompiler(pattern, flags).compile();
+    bool programIsMatch(Array<int> program, string input) => regex::RegexCoreVm(program).isMatch(input, 0);
+    bool programIsMatchFrom(Array<int> program, string input, int from) => regex::RegexCoreVm(program).isMatch(input, from);
+    Array<int> programFind(Array<int> program, string input) => regex::RegexCoreVm(program).find(input, 0);
+    Array<int> programFindFrom(Array<int> program, string input, int from) => regex::RegexCoreVm(program).find(input, from);
+    bool programIsMatchPike(Array<int> program, string input) => regex::RegexCoreVm(program).pikeIsMatch(input, 0);
+    // techdesign-regex-linear-gate.md: [matched(0/1), pikeSteps] — the Pike leg's
+    // deterministic work count, for the linearity gate. Diagnostics-only internal.
+    Array<int> programPikeProbe(Array<int> program, string input) => regex::RegexCoreVm(program).pikeProbe(input);
+    bool programIsMatchDfa(Array<int> program, string input) => regex::RegexCoreVm(program).dfaIsMatch(input, 0);
+    int programCount(Array<int> program, string input) => regex::RegexCoreVm(program).count(input);
+    int programGroupCount(Array<int> program) => regex::RegexCoreVm(program).groupTotal();
+    int programGroupIndex(Array<int> program, string name) => regex::RegexCoreVm(program).groupIndex(name);
+    Array<int> programNameData(Array<int> program) => regex::RegexCoreVm(program).nameRecords();
+    int programMinLength(Array<int> program) => regex::RegexCoreVm(program).minimumLength();
+    int programMaxLength(Array<int> program) => regex::RegexCoreVm(program).maximumLength();
+    int programDfaOverflowCount(Array<int> program, string input) => regex::RegexCoreVm(program).dfaOverflowCount(input);
+    int programDfaOverflowCountWithBudget(Array<int> program, string input, int budget) => regex::RegexCoreVm(program).dfaOverflowCountWithBudget(input, budget);
+    Array<bool> programIsMatchAll(Array<int> program, Array<string> rows) {
+        RegexCoreVm vm = regex::RegexCoreVm(program); Array<bool> out = [];
+        for (string row in rows) out = out.add(vm.isMatch(row, 0)); return out;
+    }
+    Array<int> programCountAll(Array<int> program, Array<string> rows) {
+        RegexCoreVm vm = regex::RegexCoreVm(program); Array<int> out = [];
+        for (string row in rows) out = out.add(vm.count(row)); return out;
+    }
+}

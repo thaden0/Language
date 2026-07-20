@@ -1,0 +1,39 @@
+<!-- Track W — W-M4 Atlantis-client demo loader
+     (designs/wasm-frontend/techdesign-06-bindgen-and-ship.md §4).
+
+     Build the demo for wasm32 next to this page, then serve the directory and
+     open it in a browser:
+
+         leviathan --build-native examples/wasm-client/todo.wasm \
+                   --target wasm32-unknown-unknown examples/wasm-client/todo.lev
+         (cd examples/wasm-client && python3 -m http.server)
+         # open http://localhost:8000/  in Chrome >= 137
+
+     The program mounts its <ul id="app"> into the live document via
+     lv_host.js's browserDom(); its console trace also streams into <pre>.
+
+     BROWSER FLOOR: the DOM click handler awaits the dispatch trampoline's own
+     promising activation (doc 05 §4), so this needs JSPI — Chrome >= 137 (JSPI
+     on by default). The host fails loud naming the floor when JSPI is absent. -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Leviathan wasm-client — task list demo</title>
+<h1>Leviathan wasm-client demo</h1>
+<div id="app"><!-- the program appends its task <ul> here --></div>
+<h2>console</h2>
+<pre id="out"></pre>
+<script type="module">
+  import { instantiate, run } from '../../runtime/lv_host.js';
+  const out = document.getElementById('out');
+  const sink = (fd, text) => {
+    out.textContent += text;
+    (fd === 2 ? console.error : console.log)(text);
+  };
+  try {
+    const handle = await instantiate('./todo.wasm', { sink });
+    const code = await run(handle);          // settles when the loop drains (doc 04 §3.4)
+    out.textContent += `\n[exit ${code}]\n`;
+  } catch (e) {
+    out.textContent += `\n[error] ${e}\n`;
+  }
+</script>

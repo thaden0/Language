@@ -11,6 +11,7 @@ sources = [
     "../../src/lang/diagparse.lev",
     "../../src/lang/langservice.lev",
     "../../src/workspace/paths.lev",
+    "../../src/workspace/workspace.lev",
     "../../src/proc/proc.lev",
     "../../src/editor/piece.lev",
     "../../src/editor/lineindex.lev",
@@ -21,6 +22,12 @@ sources = [
     "../../src/panels/testresults.lev",
     "../../src/panels/panelhost.lev",
     "../../src/status/statusbar.lev",
+    "../../src/config/configtoml.lev",
+    "../../src/config/settings.lev",
+    "../../src/config/configstore.lev",
+    "../../src/search/searchresult.lev",
+    "../../src/search/workspacesearch.lev",
+    "../../src/search/searchresultsmodel.lev",
 ]
 
 [[dep]]

@@ -244,6 +244,8 @@ struct Gen {
         rtSysSocketBuffer,   // LA-29: advisory SO_SNDBUF/SO_RCVBUF sizing
         // G-LANG-2 process floor (techdesign-spawn-llvm.md §5)
         rtSysSpawn, rtSysPidfdOpen, rtSysReap, rtSysKill,
+        // G-LANG-2 terminal half: pty floor (designs/pty/ 02 §3)
+        rtSysPtySpawn, rtSysPtyResize,
         // LA-2 (techdesign-tls-crypto.md §5.2): TLS/crypto natives + sysRandom leg
         rtSysTlsConnect, rtSysTlsAccept, rtSysTlsHandshake, rtSysTlsError,
         rtSysTlsAlpn, rtSysTlsVersion, rtSysRsaEncrypt, rtSysRandom, rtSysEnv,
@@ -428,6 +430,10 @@ struct Gen {
         rtSysPidfdOpen = fn("lvrt_syspidfdopen", voidTy, {ptrTy, ptrTy});
         rtSysReap      = fn("lvrt_sysreap",      voidTy, {ptrTy, ptrTy});
         rtSysKill      = fn("lvrt_syskill",      voidTy, {ptrTy, ptrTy, ptrTy});
+        // Pty floor (designs/pty/ 02 §3): lowers on ALL targets incl. Windows —
+        // pre-S3 win32 stubs return the failure sentinels (D-P8 runtime degrade).
+        rtSysPtySpawn  = fn("lvrt_sysptyspawn",  voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
+        rtSysPtyResize = fn("lvrt_sysptyresize", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
         rtSysThreadTransfer = fn("lvrt_systhreadtransfer", voidTy, {ptrTy, ptrTy});
         rtSysThreadStart = fn("lvrt_systhreadstart", voidTy, {ptrTy, ptrTy});
         rtSysThreadResult = fn("lvrt_systhreadresult", voidTy, {ptrTy, ptrTy});
@@ -730,9 +736,10 @@ struct Gen {
         // walk above, but rooted at @main only. @ginit (prelude + namespace
         // global initializers) is deliberately NOT a root: a gated native
         // reached only through prelude initialization is tier 2's runtime
-        // trap, never a compile-time brick (the whole prelude lowers into
-        // every module — Resolver.cpp's parsePrelude concatenation — so a
-        // blanket compile-time fail would brick every wasm build). The coll
+        // trap, never a compile-time brick (the target-selected prelude lowers
+        // into every module — Resolver.cpp's parsePrelude, per-target segment
+        // load — so a blanket compile-time fail would brick every wasm build).
+        // The coll
         // seeding is skipped: Array/Map/Range bodies hold no gated natives.
         userReach.assign(mod.functions.size(), false);
         {
@@ -2897,22 +2904,43 @@ struct Gen {
                                 "atan2", FunctionType::get(f64Ty, {f64Ty, f64Ty}, false));
                             storeTP(b, regs[in.a], i64C(2),
                                     b.CreateBitCast(b.CreateCall(f, {y, x}), i64Ty));
-                        } else if (n == "sysSpawn" || n == "sysPidfdOpen" ||
-                                   n == "sysReap" || n == "sysKill") {
+                        } else if (n == "sysSpawn" || n == "sysPidfdOpen") {
                             // G-LANG-2 process floor (techdesign-spawn-llvm.md §5):
-                            // POSIX-only, the threads Windows-reject precedent (D4).
+                            // pipes-spawn stays POSIX-only, the threads
+                            // Windows-reject precedent (D4). The pty path is the
+                            // sanctioned Windows child story (designs/pty/ 03).
                             if (targetWindows) {
                                 fail("process spawn: unsupported on Windows (v1) — '" + n +
                                      "' has no Windows lowering (techdesign-spawn-llvm.md)");
                             } else if (n == "sysSpawn") {
                                 b.CreateCall(rtSysSpawn, {regs[in.a], arg(0), arg(1)});
                                 retainDst();   // fresh heap Array<int> -> +1 (D1, sysArgs parity)
-                            } else if (n == "sysPidfdOpen") {
+                            } else {  // sysPidfdOpen
                                 b.CreateCall(rtSysPidfdOpen, {regs[in.a], arg(0)});
-                            } else if (n == "sysReap") {
+                            }
+                        } else if (n == "sysReap" || n == "sysKill") {
+                            // Windows-clean since designs/pty/ 03 (D-P10/D-W3):
+                            // both have registry-backed win32 bodies keyed by the
+                            // pids lv_plat_pty_spawn hands out, so the reject
+                            // narrowed to the two rows above. Scalar rows: no
+                            // retain, no ABI change — gating surgery only.
+                            if (n == "sysReap") {
                                 b.CreateCall(rtSysReap, {regs[in.a], arg(0)});
                             } else {  // sysKill
                                 b.CreateCall(rtSysKill, {regs[in.a], arg(0), arg(1)});
+                            }
+                        } else if (n == "sysPtySpawn" || n == "sysPtyResize") {
+                            // Pty floor (designs/pty/ 02 §3.2): a SEPARATE arm from
+                            // the sysSpawn family — no Windows reject, that is
+                            // D-P8's runtime degrade. Since designs/pty/ 03 the
+                            // win32 floor IS ConPTY; on a pre-1809 host the same
+                            // binary still degrades at runtime to [].
+                            if (n == "sysPtySpawn") {
+                                b.CreateCall(rtSysPtySpawn,
+                                             {regs[in.a], arg(0), arg(1), arg(2), arg(3), arg(4)});
+                                retainDst();   // fresh heap Array<int> -> +1 (sysSpawn parity)
+                            } else {  // sysPtyResize
+                                b.CreateCall(rtSysPtyResize, {regs[in.a], arg(0), arg(1), arg(2)});
                             }
                         } else if (n == "sysHostI" || n == "sysHostS" ||
                                    n == "sysHostV") {

@@ -13,6 +13,7 @@
 #include "Lexer.hpp"
 #include "Parser.hpp"
 #include "Resolver.hpp"
+#include "PreludeEmbedded.hpp"
 #include "Rules.hpp"
 #include "Project.hpp"
 #include "BuildPlan.hpp"
@@ -166,6 +167,63 @@ static std::string findRuntimeArchiveForTriple(const std::string& triple) {
     return "";
 }
 
+// Shipped prelude (techdesign-prelude-ship-as-files-opus.md §4.1). The eight
+// prelude/*.lev segments ship as files with a build-generated embedded
+// fallback; these resolve which directory (if any) parsePrelude() reads from.
+
+// R7: a prelude dir must contain ALL segments, target-independent — selection
+// happens at parse time, not ship time. Returns the first missing path or "".
+static std::string preludeDirMissing(const std::string& dir) {
+    struct stat st;
+    for (unsigned long i = 0; i < kPreludeSegmentCount; ++i) {
+        std::string f = dir + "/" + kPreludeSegments[i].name + ".lev";
+        if (::stat(f.c_str(), &st) != 0) return f;
+    }
+    return "";
+}
+
+// Tiers (design R2): --prelude flag -> LV_PRELUDE_DIR -> exeDir()/prelude ->
+// exeDir()/../prelude (in-source dev build, mirrors ../runtime/<triple>) ->
+// "" meaning the generated embedded fallback. Explicit overrides and existing-
+// but-incomplete dirs are fatal (R7): never silently ignore an override, never
+// mask a corrupt dir by falling through.
+static std::string findPreludeDir(const char* cliOverride) {
+    auto fatalIfBad = [](const std::string& dir, const char* how) {
+        struct stat st;
+        if (::stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            std::fprintf(stderr, "leviathan: prelude directory '%s' (%s) "
+                         "does not exist\n", dir.c_str(), how);
+            std::exit(1);
+        }
+        std::string missing = preludeDirMissing(dir);
+        if (!missing.empty()) {
+            std::fprintf(stderr, "leviathan: prelude directory '%s' (%s) is "
+                         "missing '%s'\n", dir.c_str(), how, missing.c_str());
+            std::exit(1);
+        }
+    };
+    if (cliOverride) { fatalIfBad(cliOverride, "--prelude"); return cliOverride; }
+    if (const char* env = std::getenv("LV_PRELUDE_DIR")) {
+        fatalIfBad(env, "LV_PRELUDE_DIR"); return env;
+    }
+    std::string dir = exeDir();
+    if (!dir.empty()) {
+        for (const std::string& cand : { dir + "/prelude", dir + "/../prelude" }) {
+            struct stat st;
+            if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                std::string missing = preludeDirMissing(cand);
+                if (!missing.empty()) {
+                    std::fprintf(stderr, "leviathan: prelude directory '%s' is "
+                                 "missing '%s'\n", cand.c_str(), missing.c_str());
+                    std::exit(1);
+                }
+                return cand;
+            }
+        }
+    }
+    return "";  // embedded fallback (R1) — silent, correct by construction
+}
+
 static bool readFile(const char* path, SourceFile& out) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
@@ -223,6 +281,7 @@ int main(int argc, char** argv) {
     const char* whyName = nullptr;     // --why <name>: the name to explain
     const char* whyInFile = "";        // --why <name> in <file>: narrow to a file
     const char* runtimePathOverride = nullptr;
+    const char* preludeDirOverride = nullptr;  // --prelude <dir>: ship-as-files override (R2)
     const char* targetTriple = "";     // --target <triple>: cross emission (B-M4)
     int optLevel = 2;                  // --opt-level 0|2 (§9 A-M6 H-12): default O2, O0 for debug
     bool noRules = false;
@@ -302,6 +361,9 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--runtime") == 0 && i + 1 < argc) {
             runtimePathOverride = argv[++i];
         }
+        else if (std::strcmp(argv[i], "--prelude") == 0 && i + 1 < argc) {
+            preludeDirOverride = argv[++i];
+        }
         else if (std::strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             targetTriple = argv[++i];
         }
@@ -321,7 +383,7 @@ int main(int argc, char** argv) {
     if (!path && !planPath) {
         std::fprintf(stderr,
             "usage: %s [--run|--ir|--build <out>|--build-native <out>|--emit-cpp|"
-            "--emit-llvm|--native-obj <out>|--runtime <path>|--target <triple>|"
+            "--emit-llvm|--native-obj <out>|--runtime <path>|--prelude <dir>|--target <triple>|"
             "--opt-level <0|2>|"
             "--ownership|--ir-verify|--ast|--resolve|--tokens|--imports|--graph|"
             "--namespaces|--specializations|--why <name> [in <file>]|--lint-namespaces|--assets] "
@@ -443,8 +505,14 @@ int main(int argc, char** argv) {
             for (const ProjectFile& pf : project.files)
                 fileRanges.push_back({pf.offset, pf.offset + pf.length});
 
+            // Ship-as-files prelude (R2): resolve the directory (or "" =>
+            // embedded fallback) once; both Resolver construction sites use it.
+            std::string preludeDir = findPreludeDir(preludeDirOverride);
+
             Resolver resolver(file, sink);
             resolver.setFileRanges(fileRanges);
+            resolver.setPreludeDir(preludeDir);        // "" => embedded
+            resolver.setTargetTriple(targetTriple);    // "" => host/native
             resolver.run(program);
 
             // The rule stage (§16.5): comptime folding + attributes, between
@@ -492,6 +560,8 @@ int main(int argc, char** argv) {
                     // like hand-written code (P1 cost-identity).
                     resolver2 = std::make_unique<Resolver>(file, sink);
                     resolver2->setFileRanges(fileRanges);
+                    resolver2->setPreludeDir(preludeDir);
+                    resolver2->setTargetTriple(targetTriple);
                     resolver2->run(program);
                     R = resolver2.get();
                 }

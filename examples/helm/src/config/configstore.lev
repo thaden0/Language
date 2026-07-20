@@ -1,0 +1,23 @@
+// H12 — settings persistence: read/write a workspace-root `helm.toml` (theme
+// selection + keymap overrides, configtoml.lev's TOML subset). A missing file
+// is not an error — a fresh workspace has no config, matching the Workspace's
+// own "missing is not an error" file-watch stance (H02) — `loadSettings` just
+// returns the defaults.
+
+namespace Helm {
+
+    string settingsPath(string wsRoot) => joinPath(wsRoot, "helm.toml");
+
+    Settings loadSettings(string wsRoot) {
+        string path = settingsPath(wsRoot);
+        if (!std::fileExists(path)) return Settings();
+        ConfigDoc doc = parseConfigToml(readTextFile(path), path);
+        return Settings::FromDoc(doc);
+    }
+
+    void saveSettings(string wsRoot, Settings s) {
+        using File f = File(settingsPath(wsRoot), std::write);
+        f.write(writeConfigToml(s.toDoc()));
+    }
+
+}
