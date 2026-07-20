@@ -537,8 +537,14 @@ int64_t lv_plat_send(int fd, const void* buf, int64_t n) {
 
 int64_t lv_plat_recv(int fd, void* buf, int64_t n) {
     int64_t r = (int64_t)recv(fd, buf, (size_t)n, 0);
-    if (r < 0 && errno == ENOTSOCK)
+    if (r < 0 && errno == ENOTSOCK) {
         r = (int64_t)read(fd, buf, (size_t)n);
+        /* pty master, child gone: Linux -1/EIO == macOS 0 == orderly close
+         * (designs/pty/ D-P4; CPython bpo-26228). Scoped to the read fallback:
+         * socket semantics untouched. Without it the read-watch busy-spins
+         * forever on a dead pty. */
+        if (r < 0 && errno == EIO) r = 0;
+    }
     return r;
 }
 
@@ -604,6 +610,79 @@ int lv_plat_reap(int pid) {
 int lv_plat_kill(int pid, int sig) {
     if (pid <= 0 || sig < 0) return -1;
     return kill((pid_t)pid, sig) == 0 ? 0 : -1;
+}
+
+/* --- pty floor (G-LANG-2 terminal half, designs/pty/ 02 §1.2) --------------
+ * Mirrors RuntimeNatives.cpp sysPtySpawn/sysPtyResize call-for-call. D-P2:
+ * ALL non-async-signal-safe work (openpt/grant/unlock/ptsname_r/open/
+ * tcsetattr/TIOCSWINSZ) is parent-side, pre-fork; the child body is setsid/
+ * TIOCSCTTY/dup2/close/execve/_exit only — LLVM programs are multithreaded.
+ * The frozen termios profiles (D-P3) live HERE and in the oracle, nowhere
+ * else; they must stay bit-identical (the sys_pty goldens enforce it).
+ * Portability seam (§1.2 note): posix_openpt(O_CLOEXEC) is honored on glibc
+ * and musl; a future triple that rejects the flag takes fcntl(F_SETFD,
+ * FD_CLOEXEC) right after the open. ptsname_r is glibc/musl — macOS spells it
+ * differently. Recorded, not coded: no such triple builds today. */
+static void lv_pty_termios(struct termios* tio, int flags) {
+    memset(tio, 0, sizeof *tio);
+    tio->c_iflag = ICRNL | IXON;
+    tio->c_oflag = OPOST | ONLCR;
+    tio->c_cflag = CS8 | CREAD;
+    tio->c_lflag = ISIG | ICANON | IEXTEN;
+    if ((flags & 1) == 0) tio->c_lflag |= ECHO | ECHOE | ECHOK;  /* DEFAULT */
+    /* DETERMINISTIC (bit0): whole echo family off — the one interleaving source.
+     * ECHOE/ECHOK without ECHO still echo erase/kill responses. */
+    tio->c_cc[VMIN] = 1;  tio->c_cc[VTIME] = 0;
+    /* explicit seeds so the lanes never drift with libc defaults; VEOF=4
+     * freezes the documented write("\x04") EOF protocol. */
+    tio->c_cc[VEOF] = 4;  tio->c_cc[VINTR] = 3;  tio->c_cc[VSUSP] = 26;
+    tio->c_cc[VERASE] = 0x7f; tio->c_cc[VKILL] = 21; tio->c_cc[VQUIT] = 28;
+    cfsetispeed(tio, B38400); cfsetospeed(tio, B38400);
+}
+
+int lv_plat_pty_spawn(const char* path, char* const argv[],
+                      int rows, int cols, int flags, int* master) {
+    if (!path || !path[0] || rows <= 0 || cols <= 0 || !master) return -1;
+    static int sigpipe_ignored_pty = 0;      /* disposition, not a handler */
+    if (!sigpipe_ignored_pty) { signal(SIGPIPE, SIG_IGN); sigpipe_ignored_pty = 1; }
+
+    int mfd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);   /* atomic (R§A.6) */
+    if (mfd < 0) return -1;
+    char sname[64];
+    if (grantpt(mfd) != 0 || unlockpt(mfd) != 0 ||
+        ptsname_r(mfd, sname, sizeof sname) != 0) { close(mfd); return -1; }
+    int sfd = open(sname, O_RDWR | O_NOCTTY);  /* NOT cloexec: survives the child's exec */
+    if (sfd < 0) { close(mfd); return -1; }
+
+    struct termios tio; lv_pty_termios(&tio, flags);
+    struct winsize ws; memset(&ws, 0, sizeof ws);
+    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+    if (tcsetattr(sfd, TCSANOW, &tio) != 0 || ioctl(sfd, TIOCSWINSZ, &ws) != 0) {
+        close(sfd); close(mfd); return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) { close(sfd); close(mfd); return -1; }
+    if (pid == 0) {                            /* async-signal-safe ONLY (D-P2) */
+        setsid();                              /* leader FIRST, or TIOCSCTTY no-ops */
+        ioctl(sfd, TIOCSCTTY, 0);
+        dup2(sfd, 0); dup2(sfd, 1); dup2(sfd, 2);
+        if (sfd > 2) close(sfd);
+        execve(path, argv, environ);
+        _exit(127);
+    }
+    close(sfd);                                /* parent keeps ONLY the master */
+    int fl = fcntl(mfd, F_GETFL, 0);
+    fcntl(mfd, F_SETFL, fl | O_NONBLOCK);
+    *master = mfd;
+    return (int)pid;
+}
+
+int lv_plat_pty_resize(int master, int rows, int cols) {
+    if (master < 0 || rows <= 0 || cols <= 0) return -1;
+    struct winsize ws; memset(&ws, 0, sizeof ws);
+    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+    return ioctl(master, TIOCSWINSZ, &ws) == 0 ? 0 : -1;
 }
 
 /* LA-2 §8: kernel CSPRNG — getrandom(2) (blocking pool, short-read looped) via

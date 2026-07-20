@@ -628,6 +628,17 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   longer interpreter-pinned — the golden lane can add LLVM for proc-bridge tests. The PTY
   floor (the terminal half of G-LANG-2, needed by H10) remains open.
 
+- **2026-07-19 — G-LANG-2 is now GREEN END-TO-END on POSIX: the terminal half landed too**
+  (language-side, `designs/pty/` docs 01+02, gates G-PTY1/G-PTY2). A `Pty` prelude class —
+  `Pty(path, args, rows, cols)` / `Pty::Deterministic(...)`, `write`/`onData`/`onClose`/
+  `resize`/`kill`/`exitCode()` over one merged bidirectional stream (a pty fuses stdout and
+  stderr; EOF is `write("\x04")`, not a closable write half) — runs byte-identically on
+  **oracle + IR + LLVM** (`tests/corpus/sys_pty/`). **H10 (the integrated terminal) is
+  unblocked on POSIX** and is no longer gated on the external-terminal fallback (K5); it can
+  target the compiled lane from day one. Windows degrades at runtime (`Pty.ok()` false) until
+  ConPTY lands as `designs/pty/` doc 03 — so H10 should branch on `ok()` rather than assume a
+  pty, which is the same shape the fallback needed anyway.
+
 - 2026-07-17 — **G-H2 landed.** H04, the editor — the XL long pole. Five new `.lev` files under
   `examples/helm/src/editor/` and two golden tests (`tests/{buffer,editor}`); 7 Helm tests total,
   all green on **oracle + IR** (byte-identical). Split headless-model (H04a) / Sonar-view (H04b),

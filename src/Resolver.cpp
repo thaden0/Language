@@ -1668,6 +1668,7 @@ namespace std {
         string pending = "";
         bool draining = false;
         int drainId = 0 - 1;
+        bool eofKeepsFd = false;
 
         new TcpStream(int f) { fd = f; }
         int rawFd() => fd;                   // the underlying socket fd (TLS wrap-in-place)
@@ -1722,13 +1723,33 @@ namespace std {
             watchId = std::sysWatch(fd, (ready) => self.pump());
         }
         void onClose(() => void cb) { onClosed = cb; hasCloseCb = true; }
+        // Pty ONLY (designs/pty/ D-P5): read-EOF must NOT close the descriptor.
+        // A pty master is the tty's hangup switch — closing it the instant the
+        // child drops the slave SIGHUPs that child, and a session leader still
+        // running its exit path dies 129 instead of exiting 0 (found by the
+        // sys_pty golden under load: cat gets EOF from VEOF, closes 0/1/2, our
+        // read errors EIO -> collapsed to close -> master closed -> SIGHUP,
+        // all before cat reaches _exit). The owner closes at REAP instead.
+        void keepFdOnEof() { eofKeepsFd = true; }
+
+        // EOF arrived on the read side. Stop watching either way — an EOF'd fd
+        // reports ready forever, so a live watch busy-spins — but hand the fd
+        // itself to close() only when we own the retirement.
+        void retireRead() {
+            if (eofKeepsFd) {
+                stopDrain();
+                if (watching) { std::sysUnwatch(watchId); watching = false; }
+            } else {
+                close();
+            }
+        }
 
         // Invoked by the loop when the socket is read-ready.
         void pump() {
             if (fd < 0) return;                  // stale watch after close()
             string? chunk = std::sysRecv(fd, 4096);
             if (chunk == None) {                 // peer closed -> deliver close
-                close();
+                retireRead();
                 if (hasCloseCb) { var cb = onClosed; cb(); }
             } else if (chunk != None) {
                 var cb = onChunk;
@@ -1747,7 +1768,7 @@ namespace std {
                 else {
                     string? chunk = std::sysRecv(fd, 4096);
                     if (chunk == None) {
-                        close();
+                        retireRead();
                         if (hasCloseCb) { var ccb = onClosed; ccb(); }
                         more = false;
                     } else {
@@ -2058,6 +2079,9 @@ namespace std {
     // write half — canonical mode's VEOF does it: write("\x04").
     // Retirement (D-P5): reap success -> pumpAll -> close -> resolve; a master
     // close alone (child side gone) fires onClose but never resolves exitCode.
+    // The master fd is therefore pinned open until the REAP (keepFdOnEof): it
+    // is the tty's hangup switch, and dropping it the moment the child closes
+    // the slave SIGHUPs a session leader that is still running its exit path.
     class Pty {
         int pid = 0 - 1;
         int pidfd = 0 - 1;
@@ -2070,12 +2094,20 @@ namespace std {
 
         new Pty(string path, Array<string> args, int rows, int cols) {
             Array<int> r = std::sysPtySpawn(path, args, rows, cols, 0);
-            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+            if (r.length() == 2) {
+                pid = r.at(0);
+                io = TcpStream(r.at(1));
+                io.keepFdOnEof();                       // D-P5: close at reap, not at EOF
+            }
         }
         // The frozen deterministic termios profile (echo family off) — goldens.
         new Deterministic(string path, Array<string> args, int rows, int cols) {
             Array<int> r = std::sysPtySpawn(path, args, rows, cols, 1);
-            if (r.length() == 2) { pid = r.at(0); io = TcpStream(r.at(1)); }
+            if (r.length() == 2) {
+                pid = r.at(0);
+                io = TcpStream(r.at(1));
+                io.keepFdOnEof();                       // D-P5: close at reap, not at EOF
+            }
         }
         bool ok() => pid > 0;
 

@@ -240,6 +240,18 @@ int lv_plat_pidfd_open(int pid) { (void)pid; return -1; }
 int lv_plat_reap(int pid)       { (void)pid; return -1; }
 int lv_plat_kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
 
+/* pty floor: ConPTY lands in designs/pty/ 03. Until then the stubs keep the
+ * archive linking; sysPtySpawn surfaces [] (runtime degrade, D-P8 — NOT a
+ * compile-time reject; the same binary must run on pre- and post-S3 floors). */
+int lv_plat_pty_spawn(const char* path, char* const argv[],
+                      int rows, int cols, int flags, int* master) {
+    (void)path; (void)argv; (void)rows; (void)cols; (void)flags; (void)master;
+    return -1;
+}
+int lv_plat_pty_resize(int master, int rows, int cols) {
+    (void)master; (void)rows; (void)cols; return -1;
+}
+
 int64_t lv_plat_stat_size(const char* path) {
     /* Pure Win32 (no CRT _stat64 struct-name ambiguity across CRTs); also
      * correct for files > 4 GB. -1 if the path does not exist (§5 contract). */
