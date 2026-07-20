@@ -1301,6 +1301,18 @@ Value Evaluator::evalCall(Expr* e) {
 
     // Member callee: method on an object/primitive/array, or a namespaced function
     if (callee->kind == ExprKind::Member) {
+        // The checker marks closure-valued fields on the Member itself. Invoke
+        // the loaded value before any by-name method lookup so a same-named
+        // method cannot steal (or suppress) the field call.
+        if (!callee->colon && callee->resolved && !callee->resolved->callable &&
+            callee->resolved->type &&
+            callee->resolved->type->kind == TypeKind::Function) {
+            Value cv = eval(callee);
+            if (cv.kind == VKind::Closure) return callClosure(cv.closure, args);
+            if (throwing_) return vvoid();
+            return throwRuntime("callable field '" + std::string(callee->text) +
+                                "' does not contain a closure");
+        }
         // `recv.Base::method(...)` — the inner `.Base` is a SOURCE QUALIFIER
         // naming a base class (§4), not a field read on `recv`. The receiver is
         // `recv` and dispatch is static to the checker-resolved base method.

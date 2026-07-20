@@ -76,10 +76,7 @@ namespace Atlantis {
                 int pk = Atlantis::Orm::asDbInt(r.byName(this.proto.__ormPk()),
                                                 this.pathKey() + " pk");
                 if (track && this.ident.has(pk)) { return this.ident.at(pk); }
-                // field-closure dot-call is a silent no-op on LLVM (bug #2
-                // family) — copy to a local before calling, throughout.
-                var mk = this.fromRow;
-                E e = mk(r);
+                E e = this.fromRow(r);
                 if (track) {
                     this.ident[pk] = e;
                     this.db.__track(e);
@@ -571,8 +568,7 @@ namespace Atlantis {
                             RepoHandle h = this.__handleByPath(pathKey);
                             Array<Model> one = [];
                             one = one.add(e);
-                            var ad = h.adopt;
-                            ad(e.pkVal(), one);
+                            h.adopt(e.pkVal(), one);
                             j = j + 1;
                         }
                     }
@@ -701,8 +697,7 @@ namespace Atlantis {
                                  Atlantis::Orm::__ormInPh(pks.length()) + ")";
                     Atlantis::Data::ResultSet rs = await this.__q(sql, pks);
                     Array<Model> children = [];
-                    var cmat = child.mat;
-                    for (Atlantis::Data::Row r in rs.rows) { children = children.add(cmat(r)); }
+                    for (Atlantis::Data::Row r in rs.rows) { children = children.add(child.mat(r)); }
                     for (Model p in parents) {
                         Array<Model> mine = [];
                         for (Model ch in children) {
@@ -732,8 +727,7 @@ namespace Atlantis {
                                      " WHERE " + Atlantis::Orm::qcol(target.proto.__ormPk()) +
                                      " IN (" + Atlantis::Orm::__ormInPh(ids.length()) + ")";
                         Atlantis::Data::ResultSet rs = await this.__q(sql, ids);
-                        var tmat = target.mat;
-                        for (Atlantis::Data::Row r in rs.rows) { targets = targets.add(tmat(r)); }
+                        for (Atlantis::Data::Row r in rs.rows) { targets = targets.add(target.mat(r)); }
                     }
                     for (Model p in parents) {
                         Array<Model> mine = [];
@@ -762,8 +756,7 @@ namespace Atlantis {
                     for (string | int | float | bool | None v in pks) { ps2 = ps2.add(v); }
                     Atlantis::Data::ResultSet rs = await this.__q(sql, ps2);
                     Array<Model> links = [];
-                    var thmat = through.mat;
-                    for (Atlantis::Data::Row r in rs.rows) { links = links.add(thmat(r)); }
+                    for (Atlantis::Data::Row r in rs.rows) { links = links.add(through.mat(r)); }
                     RepoHandle target = this.__handleByPath(p0.__ormPath().joinToString("."));
                     Array<string | int | float | bool | None> otherIds = [];
                     for (Model l in links) {
@@ -785,8 +778,7 @@ namespace Atlantis {
                                       " WHERE " + Atlantis::Orm::qcol(target.proto.__ormPk()) +
                                       " IN (" + Atlantis::Orm::__ormInPh(otherIds.length()) + ")";
                         Atlantis::Data::ResultSet rs2 = await this.__q(sql2, otherIds);
-                        var t2mat = target.mat;
-                        for (Atlantis::Data::Row r in rs2.rows) { targets = targets.add(t2mat(r)); }
+                        for (Atlantis::Data::Row r in rs2.rows) { targets = targets.add(target.mat(r)); }
                     }
                     for (Model p in parents) {
                         Array<Model> mine = [];
@@ -819,8 +811,7 @@ namespace Atlantis {
                 int i = 0;
                 while (i < this.handles.length()) {
                     RepoHandle h = this.handles.at(i);
-                    var v = h.validate;
-                    await v();
+                    await h.validate();
                     i = i + 1;
                 }
                 Promise<void> done = Promise();

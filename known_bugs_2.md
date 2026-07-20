@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #94, #96 |
+| P0       | #96 |
 | P1       | #97 |
 | P2       | — |
 | P3       | — |
@@ -28,47 +28,6 @@ separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two 
 Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
 green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
-
----
-
-## #94 [P0] — calling a function-typed FIELD via dot-call silently no-ops on LLVM
-
-**Found:** 2026-07-19, ORM Track 06 M1 (boot validation never ran on LLVM
-while printing success). Related family: the 2026-07-11 "field-closure
-dot-call" finding and #53's this-receiver lambda rule — this entry is the
-checked-code, LLVM-specific shape with a live repro.
-**Priority justification:** P0.3 — an actively-maintained engine silently
-drops an operation for checker-accepted ordinary code; the symptom (missing
-side effects) surfaces away from the causing site. Oracle and IR run the call
-correctly; LLVM returns without executing the closure body.
-
-**Repro shape (from the ORM):**
-
-```
-class RepoHandle {
-    () => Promise<void> validate;      // field holding a closure
-    ...
-}
-await h.validate();                    // oracle/IR: runs the closure; LLVM: silent no-op
-```
-
-Observed concretely: `Db.validate()` printed its success line on LLVM while
-the closure's `DESCRIBE` never executed (the corpus caught it as a missing
-`[sql]` log line). Copying to a local first is reliable on all engines:
-
-```
-var f = h.validate;
-await f();
-```
-
-**Root-cause pointer:** LLVM lowering of a dynamic call whose callee is a
-field read (member access → call in one expression); the local-copy form
-takes the ordinary closure-value call path.
-
-**Workaround (debt sites):** copy the field to a local, then call — applied
-throughout `packages/atlantis/src/orm/db.lev` (search "field-closure
-dot-call"); `packages/atlantis-mysql/src/pool.lev` (`var f = fn;`) already
-used the same idiom.
 
 ---
 

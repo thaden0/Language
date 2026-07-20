@@ -1508,6 +1508,23 @@ int Lowerer::lowerCall(Expr* e) {
 
     // Member callee: namespaced function (resolved or by-name) or a method call
     if (callee->kind == ExprKind::Member) {
+        // A function-typed field is a callable VALUE, not a method dispatch.
+        // The checker stamps the field declaration on the Member expression;
+        // loading that member and using CallValue keeps field precedence even
+        // when some class elsewhere declares a same-named method.
+        if (!callee->colon && callee->resolved && !callee->resolved->callable &&
+            callee->resolved->type &&
+            callee->resolved->type->kind == TypeKind::Function) {
+            int fnReg = lowerExpr(callee);
+            std::vector<int> argRegs;
+            for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
+            int base = F().nregs;
+            { int rr = newReg(); emit(Op::Move, rr, fnReg); }
+            emitArgCopies(argRegs, e->list);
+            int dst = newReg();
+            emit(Op::CallValue, dst, 0, base, 1 + (int)argRegs.size());
+            return dst;
+        }
         // bug #37/#46: a checker-RESOLVED namespaced function through a `::`
         // qualifier — `A::B::fn(...)` (nested) or a sibling `B::C::fn(...)` whose
         // root resolves through the enclosing namespace. The checker pinned the

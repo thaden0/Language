@@ -1395,6 +1395,8 @@ Type Checker::typeOfMember(const Expr* e) {
             const_cast<Expr*>(e)->weakDirect = s->isWeak &&
                 !findAccessorDecl(bt.sym, name, true) &&
                 !findAccessorDecl(bt.sym, name, false);
+            if (!s->isMethod)
+                const_cast<Expr*>(e)->resolved = s->decl;
             return s->isMethod ? wrap(unknown())
                                : wrap(fromTypeRef(s->decl->type.get()));
         }
@@ -2188,6 +2190,69 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
             return error(e->span,
                          "'None' has no members (this branch narrowed it to None)");
         if (bt.kind == TKind::Class) {
+            // A closure-valued data slot wins over a same-named method, just as
+            // it does in value position.  Do this before method overload
+            // resolution and stamp the FIELD declaration on the callee so the
+            // evaluator/lowerer can invoke the loaded value with CallValue.
+            // Previously an unrelated same-named method anywhere in the module
+            // made LLVM's by-name CallDyn fallback skip the field entirely.
+            if (!callee->colon) {
+                const Slot* closureField = nullptr;
+                for (const Slot* s : slotsNamed(bt.sym->shape, callee->text)) {
+                    if (s->isMethod || !s->decl || !s->decl->type ||
+                        s->decl->type->kind != TypeKind::Function)
+                        continue;
+                    if (closureField) {
+                        return error(e->span, "ambiguous callable field '" +
+                                     std::string(callee->text) +
+                                     "' (distinct on multiple bases); qualify with '::'");
+                    }
+                    closureField = s;
+                }
+                if (closureField) {
+                    const TypeRef* ft = closureField->decl->type.get();
+                    if (!e->explicitTypeArgs.empty())
+                        return error(e->span,
+                            "explicit type arguments require a declared function, "
+                            "method, or constructor");
+                    for (const ExprPtr& arg : e->list)
+                        if (!arg->argLabel.empty())
+                            return error(e->span,
+                                "named arguments require a declared function, method, "
+                                "constructor, or attribute parameter name");
+                    if (ft->funcParams.size() != e->list.size())
+                        return error(e->span, "callable field '" +
+                                     std::string(callee->text) + "' expects " +
+                                     std::to_string(ft->funcParams.size()) +
+                                     " argument(s), got " +
+                                     std::to_string(e->list.size()));
+                    for (size_t i = 0; i < e->list.size(); ++i) {
+                        Expr* arg = e->list[i].get();
+                        const TypeRef* pt = ft->funcParams[i].get();
+                        if (arg->kind == ExprKind::Lambda) {
+                            std::vector<Type> ptypes;
+                            if (pt && pt->kind == TypeKind::Function)
+                                for (const TypeRefPtr& fp : pt->funcParams)
+                                    ptypes.push_back(fromTypeRef(fp.get()));
+                            checkLambdaBody(arg, ptypes);
+                            lambdaWalked[i] = 1;
+                        } else if (arg->kind == ExprKind::Member) {
+                            Type expected = fromTypeRef(pt);
+                            bool isRef = false;
+                            tryResolveMethodRef(arg, &expected, isRef);
+                            if (isRef) lambdaWalked[i] = 1;
+                        } else {
+                            Type expected = fromTypeRef(pt);
+                            if (!assignable(argTypes[i], expected))
+                                error(arg->span, "argument has type '" +
+                                      argTypes[i].canonical + "', expected '" +
+                                      expected.canonical + "'");
+                        }
+                    }
+                    const_cast<Expr*>(callee)->resolved = closureField->decl;
+                    return fromTypeRef(ft->funcRet.get());
+                }
+            }
             if (const Stmt* m = resolve(methodOverloads(bt.sym, callee->text), "method",
                                         true, nullptr, bt.sym, &bt)) {
                 // const.md §4: a `mutating` method writes `this` — i.e. writes
