@@ -28,7 +28,7 @@ Run from the repo root:
 M2 Log + AccessLog + ErrorMapper + problem+json ✓, M3 Health/BodyLimit/Deadline ✓,
 M4 StaticFiles (canonicalization/types/ETag/304/HEAD; large-file streaming is
 collect-then-send interim) ✓, M5 SSE/ChunkedBody surface ✓ (finite; unbounded push
-awaits the streaming-response hook — `designs/requests/request-http-streaming-response.md`),
+awaits the streaming-response hook — `designs/requests/accepted/request-http-streaming-response.md`),
 R10 Builder/App facade + IActionResponse ✓.
 
 **Language findings filed** (bug.md): #37 qualified/nested namespace resolution (the

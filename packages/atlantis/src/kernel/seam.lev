@@ -47,7 +47,7 @@ namespace Atlantis {
         // output for FINITE producers (static files, §5.4). True incremental
         // server-push (unbounded SSE) awaits a Track 09 server-side
         // streaming-response hook — filed as
-        // designs/requests/request-http-streaming-response.md (design §3.4).
+        // designs/requests/accepted/request-http-streaming-response.md (design §3.4).
         class ChunkedBody {
             string buffer = "";
             bool ended = false;
