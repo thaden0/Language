@@ -8,6 +8,8 @@
   Run / helm.engine.ir  — Engine: ir
   Run / helm.engine.llvm  — Engine: llvm
   View / helm.togglePanel [^`]  — Toggle Panel
+  View / helm.focusNext [F6]  — Focus Next Pane
+  View / helm.focusPrev [S-F6]  — Focus Previous Pane
   View / helm.palette [^P]  — Command Palette…
   File / helm.save [^S]  — Save
   File / helm.quit [^Q]  — Quit
