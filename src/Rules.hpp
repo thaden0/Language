@@ -329,6 +329,17 @@ private:
     // qualification — set by expand()/expandMacroCall() before any
     // cloneStmt/cloneExpr call, read by cloneExpr's free-Name handling.
     std::string curRuleNs_ = "<root>";
+    // The name of the rule currently being cloned — set by expand() alongside
+    // curRuleNs_, read only for B2 `$if` diagnostics (M40) so their message
+    // matches the `where`-clause shape (`rule '<r>' …`).
+    std::string curRuleName_ = "<root>";
+    // B2 (techdesign-splices-conditional §3.2): evaluate a `$if` condition with
+    // the firing's bindings as comptime locals — the identical env `where` uses.
+    // Sets `taken` to the bool result and returns true; on a failed/non-bool
+    // condition it raises the diagnostic (M40 for non-bool), sets `err`, and
+    // returns false. Shared by the statement (cloneStmtInto) and expression
+    // (cloneArrayElements) fold sites.
+    bool evalForkCond(Expr* cond, Bindings& b, bool& taken, bool& err);
     // A free Name (not a hole, not a renamed template-local) that resolves in
     // the rule's/macro's OWN declaring namespace qualifies to NS::name, so
     // injected code always reaches the rule-author's helpers regardless of
@@ -369,6 +380,10 @@ private:
     // mutating, the caller's Bindings, so nested $for sees the outer var too.
     void cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings& b, bool& err,
                             std::vector<ExprPtr>& out);
+    // Clone one array element, folding an expression-position `$if` (ForkSplice,
+    // B2) to its taken leaf; a plain element clones 1:1.
+    void cloneArrayElementInto(const Expr* el, Bindings& b, bool& err,
+                               std::vector<ExprPtr>& out);
 
     // anchors (§5.6, §8)
     Stmt* boundClass(const Bindings& b, std::string_view target) const;

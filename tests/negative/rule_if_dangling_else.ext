@@ -1,0 +1,15 @@
+// B2 (techdesign-splices-conditional §5) M41: a `$else` with no preceding `$if`
+// is a hard parse error at the template site, not a silent drop.
+namespace K {
+    attribute Row { }
+    rule r {
+        match @Row(x) on class C
+        inject `int tag() { $else { return 1; } return 0; }` at member of C
+    }
+}
+uses K;
+
+@Row
+class P { }
+
+console.writeln(P().tag());

@@ -2217,6 +2217,27 @@ every rule that can touch it.
   splices, and expression macros (`macro name(e) => \`…\`;` / `name!(arg)`),
   all ship. **Body-replacing rules (Layer D, `rewrites` / `replace` / `$body`)
   also ship** — see below.
+- **`$if` / `$else` / `$else if` — the expansion-time template conditional.**
+  Inside any template `$if (<comptime-pred>) { <frag> } $else if (<pred>) {
+  <frag> } $else { <frag> }` selects **one branch at expansion time**, per rule
+  firing: the predicate is an ordinary comptime expression evaluated against the
+  firing's bindings (the same environment `where` and `comptime if` use — e.g.
+  `f.hasAttr("Param")`, `f.attr("Param")?.argStr(0) == "path"`, `C.name == "P"`),
+  and only the **taken** branch's fragment is spliced in — the untaken branch is
+  never emitted (the template stays a template; `--expand` shows only the taken
+  branch). A `{ <frag> }` is a brace group of the **same fragment kind** as its
+  position (statements in a body/ctor template, members in `member of`, items in
+  `namespace N`, or a single expression in array-element position, e.g.
+  `[ … $if (p) { a } $else { b } … ]`); the `$else if` chain is sugar for nested
+  `$if`. It composes with `$for` and sibling splices — one binding rule can emit
+  per-source variants (`$for p … : $if (path) {…} $else if (query) {…} $else
+  {…}`) instead of one rule per combination. This is the template-time analogue
+  of `comptime if` (below); the `$` marks "fold at expansion," so a bare
+  `comptime if` inside a template still means a runtime `if` in the *generated*
+  code. A `$if` whose condition is not a comptime `bool` is a rule-stage error
+  (naming the rule, mirroring the `where`-clause bool check); a `$else` with no
+  preceding `$if`, or a branch whose contents don't fit its fragment kind, is a
+  parse error.
 - **Additive + hygienic (by default):** ordinary rules only add code (no silent
   rewrites); the loud, explicitly-marked exception is a `rewrites` rule (below).
   A local a template declares is alpha-renamed to a fresh symbol, so injected
@@ -2234,6 +2255,8 @@ comptime int TABLE = nextPrime(1000);      // var: init folds to a literal
 comptime Array<int> EVENS = [1,2,3,4].where((x) => x % 2 == 0);
 int y = 1 + comptime sumTo(10);            // expression form (folds rightward)
 comptime if (TABLE > 100) { ... } else { ... }   // untaken branch not compiled
+// (inside a rule TEMPLATE, `$if (...) { ... } $else { ... }` is the expansion-
+//  time analogue — selects a template fragment per firing; see Inject above)
 comptime console.writeln("[build] ...");   // compile-time log (real console)
 ```
 - Evaluation runs on the tree-walk oracle, **hermetic**: the `std::sys*` floor

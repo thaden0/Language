@@ -149,6 +149,9 @@ std::string exprStr(const Expr* e) {
         case ExprKind::ForSplice:
             return "$for " + sv(e->text) + " in " + exprStr(e->a.get()) +
                    " : " + exprStr(e->b.get());
+        case ExprKind::ForkSplice:
+            return "$if (" + exprStr(e->a.get()) + ") { " + exprStr(e->b.get()) +
+                   " }" + (e->c ? " $else { " + exprStr(e->c.get()) + " }" : "");
         case ExprKind::Lambda:
             return "(" + paramList(e->params) + ") => " +
                    (e->block ? "{ ... }" : exprStr(e->a.get()));
@@ -324,6 +327,15 @@ struct Printer {
                 line(indent, "ForSplice " + sv(s->name) + " in " +
                      exprStr(s->expr.get()));
                 stmt(indent + 1, s->thenBranch.get());
+                break;
+            case StmtKind::ForkSplice:
+                line(indent, "ForkSplice $if (" + exprStr(s->expr.get()) + ")");
+                line(indent + 1, "Then");
+                stmt(indent + 2, s->thenBranch.get());
+                if (s->elseBranch) {
+                    line(indent + 1, "Else");
+                    stmt(indent + 2, s->elseBranch.get());
+                }
                 break;
             case StmtKind::While:
                 line(indent, "While (" + exprStr(s->expr.get()) + ")" + labelSuffix(s));
@@ -552,6 +564,12 @@ std::string srcExpr(const Expr* e) {
         case ExprKind::Is:      return "(" + srcExpr(e->a.get()) + " is " + typeStr(e->type.get()) + ")";
         case ExprKind::ForSplice:
             return "$for " + sv(e->text) + " in " + srcExpr(e->a.get()) + " : " + srcExpr(e->b.get());
+        case ExprKind::ForkSplice:
+            // Template-only; the expanded program never contains one (the fold
+            // resolves it to its taken branch before printing). Renders only in a
+            // raw template dump.
+            return "$if (" + srcExpr(e->a.get()) + ") { " + srcExpr(e->b.get()) +
+                   " }" + (e->c ? " $else { " + srcExpr(e->c.get()) + " }" : "");
         case ExprKind::Match: {
             std::string out = "match (" + srcExpr(e->a.get()) + ") {";
             for (const MatchArm& arm : e->arms) {
@@ -804,6 +822,21 @@ struct SourcePrinter {
                 ind(n); out += "$for " + sv(s->name) + " in " +
                        srcExpr(s->expr.get()) + " :\n";
                 stmt(n + 1, s->thenBranch.get());
+                break;
+            case StmtKind::ForkSplice:
+                // Template-only; the fold resolves it to its taken branch before
+                // the expanded program is printed, so this renders only in a raw
+                // template dump.
+                ind(n); out += "$if (" + srcExpr(s->expr.get()) + ")";
+                bracedBody(n, s->thenBranch.get());
+                if (s->elseBranch) {
+                    if (s->elseBranch->kind == StmtKind::ForkSplice) {
+                        out += " $else "; stmt(n, s->elseBranch.get());
+                    } else {
+                        out += " $else"; bracedBody(n, s->elseBranch.get()); out += "\n";
+                    }
+                }
+                if (!s->elseBranch) out += "\n";
                 break;
             case StmtKind::While:
                 ind(n); out += labelPrefix(s) + "while (" + srcExpr(s->expr.get()) + ")";

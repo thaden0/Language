@@ -1,0 +1,12 @@
+// Hand-written twin of rule_if_expr.ext: the array the expression-position `$if`
+// folds to, one element per field with the tagged fields prefixed. Same .expected
+// as the rule version — the byte-identical acceptance proof for the expr path.
+class Point {
+    int x;
+    int y;
+    int z;
+    Array<string> row() => [ "!" + "x", "y", "!" + "z" ];
+}
+
+Point p = Point();
+console.writeln(p.row().joinToString(","));

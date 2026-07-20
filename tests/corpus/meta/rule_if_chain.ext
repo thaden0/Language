@@ -1,0 +1,27 @@
+// B2 (techdesign-splices-conditional §2): the `$else if` chain — sugar for
+// nested `$if`, desugared at parse time to a right-leaning ForkSplice tree. One
+// rule fires on three classes; each firing takes a different arm of the same
+// 3-way chain (first / middle / else), so all three branches are exercised and
+// exactly one is emitted per firing.
+namespace Ch {
+    attribute Pick { }
+    rule pick {
+        match @Pick(p) on class C
+        inject `string kind() {
+            $if (C.name == "A") {
+                return "first";
+            } $else if (C.name == "B") {
+                return "second";
+            } $else {
+                return "other";
+            }
+        }` at member of C
+    }
+}
+uses Ch;
+
+@Pick class A { }
+@Pick class B { }
+@Pick class Z { }
+
+console.writeln(A().kind() + "," + B().kind() + "," + Z().kind());

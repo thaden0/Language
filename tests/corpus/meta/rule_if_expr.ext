@@ -1,0 +1,21 @@
+// B2 (techdesign-splices-conditional §2) in EXPRESSION position: a `$if` sitting
+// as an array-literal element, inside a `$for`, selects one element per field at
+// expansion time. Proves the expr-position fold (cloneArrayElements) distinct
+// from the statement-position one. Byte-identical to rule_if_expr_twin.ext.
+namespace Tag {
+    attribute Row { }
+    attribute Hi  { }
+    rule buildRow {
+        match @Row(r) on class C
+        inject `Array<string> row() => [ $for f in C.fields :
+                    $if (f.hasAttr("Hi")) { "!" + $f.name } $else { $f.name } ];`
+               at member of C
+    }
+}
+uses Tag;
+
+@Row
+class Point { @Hi int x; int y; @Hi int z; }
+
+Point p = Point();
+console.writeln(p.row().joinToString(","));

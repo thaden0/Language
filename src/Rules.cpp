@@ -1735,6 +1735,7 @@ void RuleEngine::expandMacrosInClone(std::vector<StmtPtr>& stmts) {
 void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                         const AttrUse* firedAttr) {
     curRuleNs_ = r.ns;   // §10: def-site qualification during this firing's clones
+    curRuleName_ = r.node->name;   // B2: for `$if` diagnostics (M40)
     for (const RuleAction& act : r.node->ruleActions) {
         // Hygiene (§7.1): alpha-rename any local this template declares, fresh
         // per firing, so it cannot collide with use-site names.
@@ -1997,9 +1998,47 @@ void RuleEngine::cloneArgList(const std::vector<ExprPtr>& args, Bindings& b,
 // that is a `{ }` block splices its statements flat (so several statements can
 // repeat together); any other body clones as one. Non-ForSplice statements
 // clone 1:1.
+// B2 (techdesign-splices-conditional §3.2): a `$if` condition is an ordinary
+// comptime predicate over the firing's bindings — the same env `where` and
+// item-level `comptime if` evaluate against (materializeBindings + evalComptimeAt).
+bool RuleEngine::evalForkCond(Expr* cond, Bindings& b, bool& taken, bool& err) {
+    std::unordered_map<std::string, Value> locals = materializeBindings(b);
+    std::string evErr; bool failed = false;
+    Value v = evalComptimeAt(cond, locals, evErr, failed);
+    if (failed) {
+        // Same wording as the where-clause failure (Rules.cpp §5), keyed to $if —
+        // a runaway/erroring predicate is caught by the existing step budget.
+        sink_.error(cond->span, "rule '" + curRuleName_ +
+                    "' $if-condition evaluation failed: " + evErr);
+        err = true; return false;
+    }
+    if (v.kind != VKind::Bool) {
+        sink_.error(cond->span, "rule '" + curRuleName_ +          // M40
+                    "' $if-condition must be bool (got '" + valueToString(v) + "')");
+        err = true; return false;
+    }
+    taken = v.b; return true;
+}
+
 void RuleEngine::cloneStmtInto(const Stmt* s, Bindings& b, bool& err,
                                std::vector<StmtPtr>& out) {
     if (!s) return;
+    if (s->kind == StmtKind::ForkSplice) {
+        // B2: evaluate the predicate, then splice ONLY the taken branch's
+        // fragment flat into `out` — cloning it through cloneStmtInto so its own
+        // holes, `$for`s, and nested `$if`s (`$else if` lands here as a
+        // ForkSplice elseBranch) all expand. The untaken branch is never cloned
+        // (template stays a template). A false `$if` with no `$else` emits nothing.
+        bool taken = false;
+        if (!evalForkCond(s->expr.get(), b, taken, err)) return;
+        const Stmt* branch = taken ? s->thenBranch.get() : s->elseBranch.get();
+        if (!branch) return;
+        if (branch->kind == StmtKind::Block)
+            for (const StmtPtr& bs : branch->body) cloneStmtInto(bs.get(), b, err, out);
+        else
+            cloneStmtInto(branch, b, err, out);
+        return;
+    }
     if (s->kind != StmtKind::ForSplice) {
         StmtPtr c = cloneStmt(s, b, err);
         if (c) out.push_back(std::move(c));
@@ -2030,9 +2069,31 @@ void RuleEngine::cloneStmtInto(const Stmt* s, Bindings& b, bool& err,
     }
 }
 
+// Clone one array-literal element into `out`, folding an expression-position
+// ForkSplice (`$if`) to its taken leaf (B2). Following nested ForkSplice in `c`
+// resolves the whole `$else if` chain; a false tail with no `$else` contributes
+// no element. A plain element clones 1:1. Shared by cloneArrayElements' top
+// level and its `$for` per-item body, so `$for p : $if (…) {…} $else {…}` folds.
+void RuleEngine::cloneArrayElementInto(const Expr* el, Bindings& b, bool& err,
+                                       std::vector<ExprPtr>& out) {
+    const Expr* cur = el;
+    while (cur && cur->kind == ExprKind::ForkSplice) {
+        bool taken = false;
+        if (!evalForkCond(cur->a.get(), b, taken, err)) return;
+        cur = taken ? cur->b.get() : cur->c.get();
+    }
+    if (!cur) return;
+    ExprPtr cloned = cloneExpr(cur, b, err);
+    if (cloned) out.push_back(std::move(cloned));
+}
+
 void RuleEngine::cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings& b,
                                     bool& err, std::vector<ExprPtr>& out) {
     for (const ExprPtr& el : elems) {
+        if (el->kind == ExprKind::ForkSplice) {
+            cloneArrayElementInto(el.get(), b, err, out);
+            continue;
+        }
         if (el->kind != ExprKind::ForSplice) {
             out.push_back(cloneExpr(el.get(), b, err));
             continue;
@@ -2060,8 +2121,7 @@ void RuleEngine::cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings&
             Bindings inner = b;             // extend, not mutate — nested $for sees both
             Binding ib; ib.hasVal = true; ib.val = item;
             inner[el->text] = ib;
-            ExprPtr cloned = cloneExpr(el->b.get(), inner, err);
-            if (cloned) out.push_back(std::move(cloned));
+            cloneArrayElementInto(el->b.get(), inner, err, out);   // element may be a `$if`
         }
     }
 }

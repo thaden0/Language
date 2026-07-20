@@ -1,0 +1,19 @@
+// B2 (techdesign-splices-conditional §3.3) M41: both branches of a `$if` must
+// produce the same fragment kind as the position they sit in. Fragment-kind
+// consistency is enforced structurally at parse time — a statement (`return 1;`)
+// in an EXPRESSION-position `$if` branch (an array element) is rejected where an
+// expression is required, a hard compile error rather than a mismatched splice.
+namespace K {
+    attribute Row { }
+    rule r {
+        match @Row(x) on class C
+        inject `Array<int> vals() => [ $if (C.name == "P") { return 1; } $else { 2 } ];`
+               at member of C
+    }
+}
+uses K;
+
+@Row
+class P { }
+
+console.writeln(P().vals().joinToString(","));

@@ -611,10 +611,68 @@ ExprPtr Parser::parseArrayElement() {
         expect(TokenKind::KwIn, "'in'");
         fs->a = parseExpr(0);
         expect(TokenKind::Colon, "':'");
-        fs->b = parseExpr(0);
+        // The per-iteration element may itself be a `$if` (the techdesign §4
+        // `$for p : $if (…) {…} $else {…}` binding case in expression position).
+        if (at(TokenKind::Identifier) && cur().text == "$if") {
+            SourceSpan isp = cur().span;
+            advance();
+            fs->b = parseForkSpliceExpr(isp);
+        } else {
+            fs->b = parseExpr(0);
+        }
         return fs;
     }
+    if (at(TokenKind::Identifier) && cur().text == "$if") {
+        // B2 expression position: `$if (c) { e } $else { e }` selects one array
+        // element at expansion time (techdesign-splices-conditional §2).
+        SourceSpan sp = cur().span;
+        advance();                                   // '$if'
+        return parseForkSpliceExpr(sp);
+    }
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        // M41: `$else` with no `$if` (techdesign-splices-conditional §3.3).
+        sink_.error(cur().span, "$else without a preceding $if");
+        advance();
+    }
     return parseExpr(0);
+}
+
+// B2 expression position (techdesign-splices-conditional §2). The leading `$if`
+// is already consumed. Each branch is a single brace-delimited expression; the
+// `$else if` chain desugars to nested ForkSplice in `c`.
+ExprPtr Parser::parseForkSpliceExpr(SourceSpan sp) {
+    auto node = mkExpr(ExprKind::ForkSplice, sp);
+    expect(TokenKind::LParen, "'('");
+    node->a = parseExpr(0);
+    expect(TokenKind::RParen, "')'");
+    node->b = parseForkBranchExpr();
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        SourceSpan esp = cur().span;
+        advance();                                   // '$else'
+        if (at(TokenKind::KwIf)) {
+            advance();                               // 'if' of `$else if`
+            node->c = parseForkSpliceExpr(esp);      // nested fork (desugar)
+        } else {
+            node->c = parseForkBranchExpr();
+        }
+    }
+    return node;
+}
+
+// A `{ <expr> }` branch of an expression-position `$if`. Braces delimit a single
+// expression (which may itself be a nested `$if`).
+ExprPtr Parser::parseForkBranchExpr() {
+    expect(TokenKind::LBrace, "'{'");
+    ExprPtr e;
+    if (at(TokenKind::Identifier) && cur().text == "$if") {
+        SourceSpan sp = cur().span;
+        advance();
+        e = parseForkSpliceExpr(sp);
+    } else {
+        e = parseExpr(0);
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return e;
 }
 
 // Statement/decl/member-position `$for` splice (LA-4 item J + the item-position
@@ -634,12 +692,88 @@ StmtPtr Parser::parseForSpliceStmt(SpliceBody body) {
     expect(TokenKind::KwIn, "'in'");
     fs->expr = parseExpr(0);
     expect(TokenKind::Colon, "':'");
-    switch (body) {
-        case SpliceBody::Stmt:   fs->thenBranch = parseStatement(); break;
-        case SpliceBody::Item:   fs->thenBranch = parseTopLevelItem(); break;
-        case SpliceBody::Member: fs->thenBranch = parseClassMember(Access::Public); break;
-    }
+    // The body is a single fragment element — an ordinary statement/item/member,
+    // or a reserved-head splice (`$for`, `$if`), so `$for p : $if (…) {…} $else
+    // {…}` composes (the techdesign §4 binding case).
+    fs->thenBranch = parseFragmentStmt(body);
     return fs;
+}
+
+// One element of a statement/member/item fragment: dispatch reserved hole-heads
+// to their splice productions, else the ordinary parser for `body`. Shared by
+// the fragment loops (parseStmtsFragment et al.), by parseForSpliceStmt's body,
+// and by parseForkBranch's branch bodies — so every splice nests in every other.
+StmtPtr Parser::parseFragmentStmt(SpliceBody body) {
+    if (at(TokenKind::Identifier) && cur().text == "$for")
+        return parseForSpliceStmt(body);
+    if (at(TokenKind::Identifier) && cur().text == "$if")
+        return parseForkSpliceStmt(body);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        // M41: `$else` with no preceding `$if` (techdesign-splices-conditional
+        // §3.3). Consume it so the fragment loop makes progress.
+        sink_.error(cur().span, "$else without a preceding $if");
+        advance();
+        return nullptr;
+    }
+    switch (body) {
+        case SpliceBody::Stmt:   return parseStatement();
+        case SpliceBody::Item:   return parseTopLevelItem();
+        case SpliceBody::Member: return parseClassMember(Access::Public);
+    }
+    return nullptr;   // unreachable; silences -Wreturn-type
+}
+
+// B2 statement/member/item position (techdesign-splices-conditional §2):
+// `$if (cond) <frag> ( $else if (cond) <frag> )* ( $else <frag> )?`. Consumes
+// the leading `$if`, then defers to parseForkTail.
+StmtPtr Parser::parseForkSpliceStmt(SpliceBody body) {
+    SourceSpan sp = cur().span;
+    advance();                                   // '$if'
+    return parseForkTail(body, sp);
+}
+
+// Parses `(cond) <then-frag> [ $else <else-frag> | $else if … ]` — entered once
+// for `$if` and once per desugared `$else if`. Each `$else if` becomes a nested
+// ForkSplice in `elseBranch`, so the whole chain is a right-leaning tree the
+// fold (cloneStmtInto) walks by ordinary recursion.
+StmtPtr Parser::parseForkTail(SpliceBody body, SourceSpan sp) {
+    auto node = std::make_unique<Stmt>(StmtKind::ForkSplice);
+    node->span = sp;
+    expect(TokenKind::LParen, "'('");
+    node->expr = parseExpr(0);
+    expect(TokenKind::RParen, "')'");
+    node->thenBranch = parseForkBranch(body);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        SourceSpan esp = cur().span;
+        advance();                               // '$else'
+        if (at(TokenKind::KwIf)) {
+            advance();                           // 'if' of `$else if`
+            node->elseBranch = parseForkTail(body, esp);   // nested fork (desugar)
+        } else {
+            node->elseBranch = parseForkBranch(body);
+        }
+    }
+    return node;
+}
+
+// A `{ <frag> }` branch of a statement-position `$if`: a brace group of the same
+// fragment kind as the enclosing template, collected into a Block so the fold
+// splices its members flat (the same shape ForSplice's `{ }` body uses). The
+// kind is fixed by `body`, so both branches are structurally the same kind —
+// parse-time half of M41 (techdesign-splices-conditional §3.3).
+StmtPtr Parser::parseForkBranch(SpliceBody body) {
+    SourceSpan sp = cur().span;
+    expect(TokenKind::LBrace, "'{'");
+    auto blk = std::make_unique<Stmt>(StmtKind::Block);
+    blk->span = sp;
+    while (!at(TokenKind::RBrace) && !atEnd()) {
+        size_t before = pos_;
+        StmtPtr s = parseFragmentStmt(body);
+        if (s && s->kind != StmtKind::Empty) blk->body.push_back(std::move(s));
+        if (pos_ == before) { error("a fragment in $if branch"); break; }
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return blk;
 }
 
 ExprPtr Parser::parsePostfix(ExprPtr base) {
@@ -963,6 +1097,17 @@ StmtPtr Parser::parseStatement() {
     // in a generated method/ctor body, which the fragment-loop checks miss.
     if (at(TokenKind::Identifier) && cur().text == "$for")
         return parseForSpliceStmt(SpliceBody::Stmt);
+    // Statement-position `$if` conditional splice (B2). Same reasoning as `$for`:
+    // it lexes only inside a quasiquote, and a generated method/ctor body is
+    // parsed by this ordinary statement routine, not the fragment loop — so the
+    // recognition must live here to catch a `$if` nested in a body.
+    if (at(TokenKind::Identifier) && cur().text == "$if")
+        return parseForkSpliceStmt(SpliceBody::Stmt);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        sink_.error(cur().span, "$else without a preceding $if");   // M41
+        advance();
+        return nullptr;
+    }
     // Labeled loop (techdesign-labeled-break-continue.md F1): `identifier :`
     // immediately before a loop keyword. `Colon` has no infix binding power
     // (parseExpr(0) stops at it), so `ident :` never begins an expression
@@ -1702,9 +1847,7 @@ std::vector<StmtPtr> Parser::parseStmtsFragment(SourceSpan quasi) {
     Parser sub(std::move(toks), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-                        ? sub.parseForSpliceStmt(SpliceBody::Stmt)
-                        : sub.parseStatement();
+        StmtPtr s = sub.parseFragmentStmt(SpliceBody::Stmt);
         if (s && s->kind != StmtKind::Empty) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("statement in template"); break; }
     }
@@ -1716,9 +1859,7 @@ StmtPtr Parser::parseMemberFragment(SourceSpan quasi) {
     Lexer lex(file_, sink_, /*allowHoles=*/true);
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     if (sub.atEnd()) { sub.error("a member in template"); return nullptr; }
-    if (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-        return sub.parseForSpliceStmt(SpliceBody::Member);   // `$for m ... : <member>`
-    return sub.parseClassMember(Access::Public);
+    return sub.parseFragmentStmt(SpliceBody::Member);   // member, `$for`, or `$if`
 }
 
 ExprPtr Parser::parseExprFragment(SourceSpan quasi) {
@@ -1873,9 +2014,7 @@ std::vector<StmtPtr> Parser::parseItemsFragment(SourceSpan quasi) {
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-                        ? sub.parseForSpliceStmt(SpliceBody::Item)
-                        : sub.parseTopLevelItem();
+        StmtPtr s = sub.parseFragmentStmt(SpliceBody::Item);
         if (s) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("declaration in template"); break; }
     }
