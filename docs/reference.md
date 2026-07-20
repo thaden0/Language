@@ -2234,10 +2234,24 @@ every rule that can touch it.
   C.constructor` (a nullary constructor is synthesized if the class has none;
   `top` inserts after base constructor calls) and `member of C` (adds a member,
   erroring on a same-name same-type collision). `top`/`bottom of body`,
-  `marker`, and `namespace N` anchors, plus `where` predicates, `$for` list
-  splices, and expression macros (`macro name(e) => \`…\`;` / `name!(arg)`),
-  all ship. **Body-replacing rules (Layer D, `rewrites` / `replace` / `$body`)
-  also ship** — see below.
+  `marker`, `splice Name [multi]`, and `namespace N` anchors, plus `where`
+  predicates, `$for` list splices, and expression macros (`macro name(e) =>
+  \`…\`;` / `name!(arg)`), all ship. **Body-replacing rules (Layer D,
+  `rewrites` / `replace` / `$body`) also ship** — see below.
+- **`splice Name` — a program-global, user-placed named anchor.** A statement
+  `@Name();` in a function/method body (where `Name` is a declared `attribute`)
+  is a **named splice site**; a rule's `inject … at splice Name` lands its
+  statements at that point, **in the site's surrounding lexical scope** — so a
+  spliced `bind`/`AddRoute` sees the site function's parameters and locals like
+  hand-written code, and collision/duplicate checks fire there. Unlike `marker`
+  (which resolves inside the *matched* declaration's own body), `splice` is
+  cross-declaration: a rule matched on one class registers statements at a
+  `@Name();` site in a *different* function. The site stays visible in
+  `--expand`. A site with no firing rule is silent (an intentional extension
+  point); a rule with no site is an error (M42), as is `at splice Name` with two
+  sites unless the rule opts into `at splice Name multi` to fan out into every
+  site. A `@Name();` whose `Name` is not a declared attribute is M43 (the
+  typo-safety the attribute spelling buys over string-named markers).
 - **`$if` / `$else` / `$else if` — the expansion-time template conditional.**
   Inside any template `$if (<comptime-pred>) { <frag> } $else if (<pred>) {
   <frag> } $else { <frag> }` selects **one branch at expansion time**, per rule

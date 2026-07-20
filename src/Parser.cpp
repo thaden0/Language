@@ -1162,7 +1162,30 @@ StmtPtr Parser::parseStatement() {
                 s->name = marker;
                 return s;
             }
-            error("'anchor(\"name\")' after '@' (attributes are declaration-position only)");
+            // `@Name();` (named-anchor design §2.1) — a statement-position, named
+            // splice site. `Name` must name a declared `attribute` (checked at the
+            // rule stage, M43); the trailing `()` + `;` in statement position is
+            // what distinguishes a splice site from a decl-position decorator.
+            // Produces the same StmtKind::Empty marker node as `@anchor`, but with
+            // the bare attribute name and isSpliceSite set.
+            if (peek(1).kind == TokenKind::Identifier &&
+                peek(2).kind == TokenKind::LParen) {
+                advance();                     // '@'
+                std::string_view spliceName = cur().text;
+                advance();                     // Name
+                advance();                     // '('
+                if (!at(TokenKind::RParen))
+                    error("a splice site takes no arguments — '@Name()'");
+                expect(TokenKind::RParen, "')'");
+                expect(TokenKind::Semicolon, "';'");
+                sawMeta_ = true;
+                auto s = mkStmt(StmtKind::Empty, sp);
+                s->name = spliceName;
+                s->isSpliceSite = true;
+                return s;
+            }
+            error("'anchor(\"name\")' or a splice site '@Name();' after '@' "
+                  "(decorations are declaration-position only)");
             advance();
             return mkStmt(StmtKind::Empty, sp);
         }
@@ -1863,6 +1886,18 @@ void Parser::parseRuleAction(RuleAction& out, bool generates) {
         if (at(TokenKind::StringLiteral)) { out.markerName = cur().text; advance(); }
         else error("a marker name string");
         out.anchor = AnchorKind::Marker;
+    } else if (at(TokenKind::Identifier) && cur().text == "splice") {
+        // `at splice Name [multi]` (named-anchor design §2.2): land at the
+        // program-global `@Name();` site(s). `multi` opts into fanning out across
+        // every same-named site; without it, ≥2 sites is a rule-stage error (M42).
+        advance();                                       // 'splice'
+        if (at(TokenKind::Identifier)) { out.target = cur().text; advance(); }
+        else error("a splice-site name after 'splice'");
+        if (at(TokenKind::Identifier) && cur().text == "multi") {
+            out.spliceMulti = true;
+            advance();
+        }
+        out.anchor = AnchorKind::SpliceSite;
     } else if (at(TokenKind::KwNamespace)) {
         advance();
         if (at(TokenKind::Identifier)) { out.target = cur().text; advance(); }

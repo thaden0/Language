@@ -1,0 +1,31 @@
+// Named splice anchor (designs/metaprog-splices/techdesign-splices-named-anchor
+// -opus.md §2.4, the DI case): every @Injectable class contributes a `bind`
+// statement at the single @InjectBindings() site. The payoff is lexical-scope
+// inheritance BY CONSTRUCTION — the spliced `bind IService => RealService();`
+// lands inside configure()'s body, so the following `resolve()` implicit-fills
+// IService from it exactly as if the bind were hand-written there. This is the
+// request's reason (2): the @Injectable scoping problem dissolves by placement,
+// with zero special plumbing (§2.4).
+namespace DI {
+    attribute InjectBindings { }
+    attribute Injectable { }
+    rule wireBinds {
+        match @Injectable on class C
+        inject `bind IService => $C();` at splice InjectBindings
+    }
+}
+uses DI;
+
+interface IService { string name(); }
+
+@Injectable
+class RealService : IService { string name() => "real"; }
+
+string resolve(IService s) => s.name();
+
+string configure() {
+    @InjectBindings();
+    return resolve();      // implicit fill from the spliced bind, in THIS scope
+}
+
+console.writeln(configure());

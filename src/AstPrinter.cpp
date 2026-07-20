@@ -397,7 +397,9 @@ struct Printer {
                 }
                 break;
             case StmtKind::Empty:
-                line(indent, s->name.empty() ? "Empty" : "Marker " + sv(s->name));
+                line(indent, s->name.empty() ? "Empty"
+                     : s->isSpliceSite ? "SpliceSite " + sv(s->name)
+                     : "Marker " + sv(s->name));
                 break;
             case StmtKind::Rule: {
                 if (s->isMacroDecl) {
@@ -634,7 +636,9 @@ std::string srcStmtInline(const Stmt* s) {
         case StmtKind::Continue: return s->label.empty() ? "continue;" : "continue " + sv(s->label) + ";";
         case StmtKind::Throw:    return "throw " + srcExpr(s->expr.get()) + ";";
         // The marker name is stored already-quoted (the raw StringLiteral token).
-        case StmtKind::Empty:    return s->name.empty() ? ";" : "@anchor(" + sv(s->name) + ");";
+        case StmtKind::Empty:    return s->name.empty() ? ";"
+                                     : s->isSpliceSite ? "@" + sv(s->name) + "();"
+                                     : "@anchor(" + sv(s->name) + ");";
         default:                 return ";";
     }
 }
@@ -894,8 +898,10 @@ struct SourcePrinter {
                 break;
             }
             case StmtKind::Empty:
-                // The marker name is stored already-quoted (raw StringLiteral).
-                if (!s->name.empty()) line(n, "@anchor(" + sv(s->name) + ");");
+                // A `@anchor("name")` marker (name stored already-quoted, raw
+                // StringLiteral) or a `@Name();` splice site (bare attribute name).
+                if (s->isSpliceSite) line(n, "@" + sv(s->name) + "();");
+                else if (!s->name.empty()) line(n, "@anchor(" + sv(s->name) + ");");
                 break;
             case StmtKind::Rule:
                 // Rules are detached from the tree before this printer ever

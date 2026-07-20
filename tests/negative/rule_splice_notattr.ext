@@ -1,0 +1,25 @@
+// Named splice anchor §4 (M43): a `@Undeclared();` splice site names something
+// that is not a declared `attribute` anywhere in the program. A mistyped site is
+// a loud error, not a silent no-op marker — the typo-safety the attribute
+// spelling buys over string-named markers (design §6).
+namespace App {
+    attribute Route { string path; }
+    rule emitRoutes {
+        match @Route(r) on method m in class C
+        inject `sink = sink + $r.path + ";";` at splice Undeclared
+    }
+}
+uses App;
+
+class HomeController {
+    @Route("/")
+    void index() { }
+}
+
+string addRoutes() {
+    string sink = "";
+    @Undeclared();
+    return sink;
+}
+
+console.writeln(addRoutes());
