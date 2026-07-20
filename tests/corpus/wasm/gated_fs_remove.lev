@@ -1,0 +1,3 @@
+// LLVM filesystem parity: browser wasm deliberately has no ambient file
+// authority, so every newly covered native receives its own direct gate pin.
+console.writeln(std::sysRemove("/tmp/wasm_gate_remove").toString());

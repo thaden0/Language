@@ -4,8 +4,32 @@
 bridge the bindgen generates stubs for). **HARD content:** none.
 
 **As-built investigation (2026-07-19) — §1 bindgen is not buildable as written; §2 is
-a live STOP. Details below; the metaprog prerequisites this doc assumed were built
+no longer a STOP (the packaging ruling landed later the same day); §3 + §4 are
+implemented. Details below; the metaprog prerequisites this doc assumed were built
 along the way.**
+
+**Update (2026-07-19, later than the 08:13 header below):** two changes since the
+initial investigation:
+- **§2 is no longer a live STOP.** The "ship stdlib as files" owner ruling LANDED
+  (commit 476135f, 09:38; info.md §19 #18 now reads *Resolved*): the stdlib ships as
+  `.lev` **files** with a real `parsePrelude()` file-reading seam, per-target selection
+  a packaging detail *within* that model. So STOP condition 2 is lifted. §2 is now an
+  ordinary upstream dependency, not an escalation: this track is the **consumer, not
+  author**, of that `parsePrelude()` file-ship refactor (overview §5), and that refactor
+  is **not yet built** (`parsePrelude()` still concatenates the C++ raw-string segments,
+  `kPreludeWasm` among them). W-M4 packaging consumes it when it lands; until then dev/wasm
+  builds ride the existing in-binary concat (the doc-02 capability gate already handles
+  browser-absent natives, so this is a size/cleanliness win, not a correctness need).
+- **§3 + §4 are implemented** against the hand-written `Dom` stubs, as this doc said they
+  could be: the Atlantis-client demo is `examples/wasm-client/` (`todo.lev` + loader
+  `index.html` + `README` + the `todo.expected` golden, driven by `tests/run_wasm_dom.sh`),
+  and the size-visibility pass is `tests/wasm_size.sh` (O0/O2 raw+gzip, optional
+  `wasm-opt -O2`, skip-clean when the archive/linker is absent). The reference-doc duty
+  (§6) landed too: `docs/reference.md` §7.3 gained the `wasm32` target entry + the `@extern`/
+  `Dom` surface note, and `info.md` gained §20 (the wasm-target framing).
+- **§1 is unchanged: still structurally blocked** (the three facts below). **This doc does
+  NOT move to `designs/complete/`** — the track cannot close while §1's bindgen is unbuilt
+  and §2's upstream file-ship refactor is pending.
 
 - **The metaprog prerequisites landed** (`request-metaprog-attr-values.md` items A + B,
   see that doc's status header): attribute-value reflection in `$for` iteration

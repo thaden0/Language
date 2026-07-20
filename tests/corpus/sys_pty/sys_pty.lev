@@ -1,7 +1,8 @@
 // G-LANG-2 terminal half (designs/pty/ doc 01 §4): the pty floor + Pty prelude
-// class, golden on oracle + IR. The LLVM lane arrives with doc 02 (S2) — until
-// then this dir stays out of corpus_llvm_full via the own-directory split (the
-// sys_natives/ convention).
+// class, golden on oracle + IR + LLVM (doc 02 §6 promoted this dir to three-lane
+// byte-identity against one .expected). It keeps its own directory so
+// corpus_llvm_full's top-level scan never compiles it (the sys_natives/
+// convention); the LLVM leg is corpus_sys_pty_llvm. emit-C++ defers by design.
 //
 // All children use Pty::Deterministic (D-P3: frozen termios, echo family off);
 // all asserts are on ACCUMULATED streams (R§D.3); each step chains off the

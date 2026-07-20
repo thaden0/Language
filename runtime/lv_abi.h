@@ -633,6 +633,11 @@ void    lvrt_sysopen(LvValue* out, const LvValue* path, const LvValue* flagBits)
 void    lvrt_sysclose(const LvValue* fd);
 void    lvrt_sysstat(LvValue* out, const LvValue* path, const LvValue* field);
 void    lvrt_sysmkdir(LvValue* out, const LvValue* path);
+void    lvrt_sysremove(LvValue* out, const LvValue* path);
+void    lvrt_sysrename(LvValue* out, const LvValue* from, const LvValue* to);
+/* Fresh boxed Array<string> at rc 0, or LV_NONE. Each string is retained once
+ * by the array; compiled callers retain the returned array for their dest. */
+void    lvrt_syslistdir(LvValue* out, const LvValue* path);
 void    lvrt_sysread(LvValue* out, const LvValue* fd, const LvValue* max);
 /* Track 03 M4 — zero-copy Block I/O overloads (§6.6.5). Borrow the Block; read/
  * recv fill from offset 0, write/send take a [off,off+len) window; bounds
@@ -730,6 +735,17 @@ void    lvrt_sysspawn(LvValue* out, const LvValue* path, const LvValue* args);
 void    lvrt_syspidfdopen(LvValue* out, const LvValue* pid);
 void    lvrt_sysreap(LvValue* out, const LvValue* pid);
 void    lvrt_syskill(LvValue* out, const LvValue* pid, const LvValue* sig);
+
+/* Pty floor (designs/pty/ 02; oracle RuntimeNatives.cpp sysPtySpawn).
+ * lvrt_sysptyspawn: fresh Array<int> [pid, masterFd], or the empty array on
+ *   failure (bad args / allocation / fork). Exec failure is the child's
+ *   _exit(127) via lvrt_sysreap. Return follows the lvrt_sysargs ownership
+ *   convention (rc 0; codegen retains) — the lvrt_sysspawn parity.
+ * lvrt_sysptyresize: scalar LV_INT 0/-1.                                     */
+void    lvrt_sysptyspawn(LvValue* out, const LvValue* path, const LvValue* args,
+                         const LvValue* rows, const LvValue* cols, const LvValue* flags);
+void    lvrt_sysptyresize(LvValue* out, const LvValue* master,
+                          const LvValue* rows, const LvValue* cols);
 
 void    lvrt_systimerstart(LvValue* out, const LvValue* delayMs,
                             const LvValue* intervalMs, const LvValue* cb);

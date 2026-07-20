@@ -305,8 +305,8 @@ One directory, one `.expected`, `run_corpus.sh`-driven — the `sys_spawn/` layo
 
 CMake: `corpus_sys_pty_treewalk` + `corpus_sys_pty_ir` lanes beside the `sys_spawn` pair
 (`CMakeLists.txt` — the `:363-368` pattern). The dir carries a header noting the LLVM lane
-arrives with doc 02 (so `corpus_llvm_full`'s exclusion list carries `sys_pty/` for exactly one
-stage — removed in S2).
+arrives with doc 02, `designs/complete/techdesign-02-pty-llvm-native.md` (so `corpus_llvm_full`'s
+exclusion list carries `sys_pty/` for exactly one stage — removed in S2).
 
 ---
 

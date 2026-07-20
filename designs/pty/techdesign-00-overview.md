@@ -214,8 +214,8 @@ already covers `sysPidfdOpen`'s absence on Windows ptys. The exact row surgery i
 
 | gate | contents | proves | depends |
 |---|---|---|---|
-| **G-PTY1** | doc 01: oracle natives + EIO collapse + `Pty` prelude + `sys_pty` goldens, oracle=IR | the contract works end-to-end on the interpreters | — |
-| **G-PTY2** | doc 02: plat floor + `lv_pty.c` + **HARD** LlvmGen rows + build wiring + selftest; goldens byte-identical oracle=IR=LLVM | **G-LANG-2 terminal half GREEN on POSIX** | G-PTY1 |
+| **G-PTY1** | doc 01 (LANDED, `designs/complete/techdesign-01-pty-interpreter-lane.md`): oracle natives + EIO collapse + `Pty` prelude + `sys_pty` goldens, oracle=IR | the contract works end-to-end on the interpreters | — |
+| **G-PTY2** | doc 02 (LANDED, `designs/complete/techdesign-02-pty-llvm-native.md`): plat floor + `lv_pty.c` + **HARD** LlvmGen rows + build wiring + selftest; goldens byte-identical oracle=IR=LLVM | **G-LANG-2 terminal half GREEN on POSIX** | G-PTY1 |
 | **G-PTY3** | doc 03: ConPTY floor + bridge + win32 reap/kill + **HARD** gating changes; MinGW triple compiles; behavioral script checked in | the Windows charter is met to the same standard as the existing win32 floor (written-to-spec; executed when a Windows host is available) | G-PTY2 |
 | **G-PTY4** | docs: `reference.md` Pty section; Helm §14 append (H10 unblocked); G-LANG-2 closed in the gate tables; research dossier marked consumed | the paper trail | G-PTY2 (POSIX) |
 
@@ -257,3 +257,15 @@ stop and escalate, not improvise.
   the D-P4 EIO collapse, the `Pty` prelude class, and `tests/corpus/sys_pty/` all in;
   oracle = IR byte-identical, full regression sweep green. G-PTY2 (LLVM floor, HARD)
   is next and unblocks Helm H10 on POSIX. See doc 01 §7 for the landing detail.
+- 2026-07-19 — **S2 LANDED, gate G-PTY2 green — the G-LANG-2 terminal half is GREEN
+  on POSIX** (doc 02). The `lv_plat_pty_*` floor + the floor-half EIO collapse,
+  `runtime/lv_pty.c`, the HARD `LlvmGen.cpp` rows, build wiring across all three
+  source lists + both prebuilt triple archives, the `test_pty_floor` selftest case,
+  and `tests/corpus/sys_pty/` promoted to three-lane byte-identity
+  (oracle = IR = LLVM on one `.expected`). Per D-P8 the pty natives lower on **every**
+  target including Windows and degrade at runtime (`[]`), rather than taking spawn's
+  compile-time reject. Two findings recorded in doc 02 §9: §3.3's 5-arg arity question
+  came back clean, and a latent S1 race (read-EOF closing the pty master SIGHUPs a
+  session-leader child mid-exit) was diagnosed and fixed via `TcpStream.keepFdOnEof()`.
+  Helm H10 can now start against `Pty` on oracle + IR + LLVM. S3 (Windows ConPTY,
+  HARD gating) remains.
