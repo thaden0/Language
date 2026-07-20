@@ -1587,6 +1587,9 @@ Track 08 F5/F7 add (see §6.6.57/§6.6.59): `int sysTcpConnectNb(string host, in
 `int sysWatchWrite(int fd, (int) => void cb)`, `int sysConnectResult(int fd)`,
 `Array<int> sysSpawn(string path, Array<string> args)`, `int sysPidfdOpen(int pid)`,
 `int sysReap(int pid)`, `int sysKill(int pid, int sig)`.
+The pty floor adds (see §6.6.60):
+`Array<int> sysPtySpawn(string path, Array<string> args, int rows, int cols, int flags)`
+and `int sysPtyResize(int masterFd, int rows, int cols)`.
 Track 10 (threads, see §6.6.66) add: `int sysTcpListen(int port, bool reusePort)` (an
 SO_REUSEPORT overload — LLVM/interpreters; the frozen ELF backend rejects the /2 form
 loudly), `int sysCpuCount()` (online logical processors, ≥ 1; `std::cpuCount()` wraps it),
@@ -1692,6 +1695,40 @@ never exposed). All `sys*`-prefixed → comptime-denied automatically. Oracle + 
 (G-LANG-2 process half, 2026-07-16: `runtime/lv_proc.c` over the `lv_plat_spawn/pidfd_open/
 reap/kill` floor, `designs/complete/techdesign-spawn-llvm.md`; Windows targets reject at compile time,
 the threads precedent). emit-C++ still defers cleanly (deliberate system-layer policy).
+
+### 6.6.60 Pty — a child on a pseudo-terminal (G-LANG-2 terminal half)
+`Pty(path, args, rows, cols)` spawns a child on a **pseudo-terminal** instead of pipes.
+Same explicit-path rule as `Process`, but the shape differs in one load-bearing way: a pty
+**fuses stdout and stderr into one bidirectional stream**, so there is one fd, not three,
+and no separate `onStderr`. The child gets a real controlling terminal — `isatty(0)` is
+true, line editing and job control work, and full-screen programs behave as they would
+under a terminal emulator.
+
+- `Pty::Deterministic(path, args, rows, cols)` — the second constructor, selecting a
+  **frozen termios profile with the echo family off**. Use it whenever output must be
+  reproducible: with echo on, what you write is interleaved back into what you read.
+- `ok() -> bool` — spawn succeeded. A bad path is not a spawn failure (exec fails in the
+  child and surfaces as exit `127`); `rows`/`cols` `<= 0` and an empty path are refused.
+- `write(string)` — queue-and-drain like a socket send. A pty has **no closable write
+  half**, so EOF is the terminal's own protocol: `write("\x04")` (VEOF, frozen at `^D`).
+- `onData((string) => void)` / `onClose(() => void)` — the merged byte stream. Output
+  carries the terminal's `ONLCR` translation, so a child's `\n` arrives as `\r\n`.
+- `resize(rows, cols) -> int` — `0`/`-1`. The **kernel** delivers `SIGWINCH` to the child's
+  foreground group; callers never signal by hand.
+- `exitCode() -> Promise<int>` — the same pidfd-watch reaping as `Process` (`128+signal`
+  when signal-terminated, `127` on spawn failure). The master fd is deliberately held open
+  until the child is **reaped**, not closed when the read side hits EOF: the master is the
+  tty's hangup switch, and dropping it early `SIGHUP`s a session-leader child that is still
+  running its exit path.
+- `kill()` — `SIGTERM`; a pending `exitCode()` then resolves `143`.
+
+Floor: `sysPtySpawn(path, args, rows, cols, flags) -> Array<int>` (`[pid, masterFd]`, `[]`
+on failure; `flags` bit0 selects the deterministic profile) and `sysPtyResize(masterFd,
+rows, cols)`. Oracle + IR + **LLVM** (G-PTY2, `designs/complete/techdesign-02-pty-llvm-native.md`:
+`runtime/lv_pty.c` over the `lv_plat_pty_spawn/resize` floor). Windows **degrades at
+runtime** rather than rejecting at compile time — the same binary must run on pre- and
+post-ConPTY floors, so `sysPtySpawn` lowers on every target and the Windows stubs return
+`[]` until ConPTY lands. emit-C++ defers cleanly (deliberate system-layer policy).
 
 ### 6.6.54 Promises and await
 `Promise<T>` (`resolve(v)`, `isReady()`, `get()`, `then(cb)`; construct `Promise()` pending

@@ -148,6 +148,20 @@ int     lv_plat_pidfd_open(int pid);
 int     lv_plat_reap(int pid);
 int     lv_plat_kill(int pid, int sig);
 
+/* --- pty floor (G-LANG-2 terminal half, designs/pty/) ----------------------
+ * lv_plat_pty_spawn: allocate a pty, stamp the frozen termios profile selected
+ *   by flags (bit0 = deterministic/golden, D-P3), seed rows×cols, fork, child
+ *   does setsid/TIOCSCTTY/dup2(slave→0,1,2)/execve (async-signal-safe only,
+ *   D-P2), parent closes the slave and returns pid > 0 with *master an
+ *   O_CLOEXEC + O_NONBLOCK fd (read AND write). rows/cols <= 0 or any
+ *   allocation failure: -1, no fd leaked. Exec failure: child _exit(127).
+ * lv_plat_pty_resize: TIOCSWINSZ on the master / ResizePseudoConsole; the
+ *   KERNEL delivers SIGWINCH to the child's foreground group — callers never
+ *   signal by hand (R§A.4). 0/-1. */
+int     lv_plat_pty_spawn(const char* path, char* const argv[],
+                          int rows, int cols, int flags, int* master);
+int     lv_plat_pty_resize(int master, int rows, int cols);
+
 /* poll: a platform-opaque record so a future Win32 floor can back it with
  * WSAPOLLFD (whose SOCKET fd type differs in width from POSIX's int)
  * without touching any caller. events/revents use LV_POLLIN/LV_POLLOUT,

@@ -2051,7 +2051,12 @@ active** (oracle, IR, emit-C++, LLVM) plus the **frozen, reference-only ELF back
    value-struct churn leaks that distinguished it from the pure backend are closed). Process
    spawn (`sysSpawn`/`sysPidfdOpen`/`sysReap`/`sysKill` — the G-LANG-2 process half) landed
    2026-07-16 via `runtime/lv_proc.c` + the `lv_plat_*` process floor
-   (`designs/complete/techdesign-spawn-llvm.md`); Windows targets reject it at compile time. A
+   (`designs/complete/techdesign-spawn-llvm.md`); Windows targets reject it at compile time.
+   The pty floor (`sysPtySpawn`/`sysPtyResize` — the G-LANG-2 terminal half) followed at gate
+   G-PTY2 via `runtime/lv_pty.c` + `lv_plat_pty_spawn/resize`
+   (`designs/complete/techdesign-02-pty-llvm-native.md`); unlike spawn it lowers on **every**
+   target, Windows included, and degrades at runtime (`[]`) until ConPTY lands — the same
+   binary has to run on pre- and post-ConPTY floors. A
    `PassBuilder` O2 module pipeline runs before object emission (`-O0`/`-O2` selectable);
    measured fast paths inline int/float `Arith`, `truth`/`Not`, fixed-offset field access,
    and checker-resolved dynamic calls rather than crossing into the runtime `.o` for each.

@@ -357,3 +357,47 @@ Spawn the case from a threaded context (K1 — the spawn selftest already establ
 ## 9. Implementation log (append-only)
 
 - 2026-07-16 — doc created (S2 of designs/pty/). Awaiting G-PTY1.
+- 2026-07-19 — **LANDED (G-PTY2 green): the G-LANG-2 terminal half is GREEN on POSIX.**
+  §1 plat floor (`lv_plat_pty_spawn`/`lv_plat_pty_resize` + `lv_pty_termios` in
+  `lv_plat_posix.c`, the `lv_plat_recv` EIO collapse, the win32 always-fail stubs),
+  §2 `runtime/lv_pty.c` + the two `lv_abi.h` decls, §3 the `LlvmGen.cpp` rows (a
+  separate `else if` arm from the sysSpawn family — no Windows reject, D-P8),
+  §4 build wiring in all three lists + both prebuilt archives rebuilt, §5 the
+  `test_pty_floor` selftest case, §6 the corpus promotion (`corpus_sys_pty_llvm`)
+  + the `run_sysnatives.sh` pty legs and the emit-C++ deferral assert, §7 docs.
+  Oracle = IR = LLVM byte-identical on `sys_pty.expected`.
+
+  **Implementation findings** (the append-only discipline; no design deviations):
+
+  1. **§3.3's arity question: answered, nothing bit.** `sysPtySpawn` is indeed the
+     first 5-arg `sys*` native through the `CallNativeFn` chain, and `arg(0..4)`
+     marshaled without a structural limit — the block is positional, as expected.
+
+  2. **A latent S1 race, found by this stage and fixed here** (`Resolver.cpp`,
+     `TcpStream`). The S1 golden was ~5% red under CPU load — on **all three
+     lanes**, including the two S1 shipped green, so this is a pre-existing defect
+     the compiled lane merely made easy to catch. Step 2 (`cat` + VEOF) reported
+     exit `129` (= 128+SIGHUP) instead of `0`. Strace of a failing run:
+
+     ```
+     read(0, "ping\n", 131072) = 5      <- cat reads the line
+     write(1, "ping\n", 5)     = 5
+     read(0, "", 131072)        = 0      <- VEOF: cat sees EOF, starts exiting
+     close(0) close(1) close(2)          <- cat drops the slave, still running
+     read(3, ...) = -1 EIO               <- our master read: D-P4 collapses to "closed"
+     close(3)                            <- TcpStream.pump() closed the MASTER
+     --- SIGHUP {si_code=SI_KERNEL} ---  <- kernel hangs up cat's controlling tty
+     +++ killed by SIGHUP +++            <- cat dies 129 mid-exit
+     ```
+
+     The master fd is the tty's **hangup switch**. `TcpStream.pump()`'s socket
+     contract — read-EOF closes the fd — is exactly wrong for it: a session-leader
+     child that has closed the slave but not yet reached `_exit` gets SIGHUPed.
+     D-P5 already ruled the correct order (*reap* → pumpAll → close → resolve);
+     what was missing was stopping the read side from closing first. Fix: a
+     `TcpStream.keepFdOnEof()` opt-in (default off — socket/`Process` behavior is
+     untouched) routing the EOF paths in `pump`/`pumpAll` through a new
+     `retireRead()`, which always unwatches (an EOF'd pty master reports ready
+     forever — a live watch would busy-spin) but leaves the descriptor to the
+     owner's `close()`. Both `Pty` constructors call it. Verified: 0/180 failures
+     across the three lanes under the load that previously reproduced at ~5%.

@@ -244,6 +244,8 @@ struct Gen {
         rtSysSocketBuffer,   // LA-29: advisory SO_SNDBUF/SO_RCVBUF sizing
         // G-LANG-2 process floor (techdesign-spawn-llvm.md §5)
         rtSysSpawn, rtSysPidfdOpen, rtSysReap, rtSysKill,
+        // G-LANG-2 terminal half: pty floor (designs/pty/ 02 §3)
+        rtSysPtySpawn, rtSysPtyResize,
         // LA-2 (techdesign-tls-crypto.md §5.2): TLS/crypto natives + sysRandom leg
         rtSysTlsConnect, rtSysTlsAccept, rtSysTlsHandshake, rtSysTlsError,
         rtSysTlsAlpn, rtSysTlsVersion, rtSysRsaEncrypt, rtSysRandom, rtSysEnv,
@@ -428,6 +430,10 @@ struct Gen {
         rtSysPidfdOpen = fn("lvrt_syspidfdopen", voidTy, {ptrTy, ptrTy});
         rtSysReap      = fn("lvrt_sysreap",      voidTy, {ptrTy, ptrTy});
         rtSysKill      = fn("lvrt_syskill",      voidTy, {ptrTy, ptrTy, ptrTy});
+        // Pty floor (designs/pty/ 02 §3): lowers on ALL targets incl. Windows —
+        // pre-S3 win32 stubs return the failure sentinels (D-P8 runtime degrade).
+        rtSysPtySpawn  = fn("lvrt_sysptyspawn",  voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
+        rtSysPtyResize = fn("lvrt_sysptyresize", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
         rtSysThreadTransfer = fn("lvrt_systhreadtransfer", voidTy, {ptrTy, ptrTy});
         rtSysThreadStart = fn("lvrt_systhreadstart", voidTy, {ptrTy, ptrTy});
         rtSysThreadResult = fn("lvrt_systhreadresult", voidTy, {ptrTy, ptrTy});
@@ -2913,6 +2919,19 @@ struct Gen {
                                 b.CreateCall(rtSysReap, {regs[in.a], arg(0)});
                             } else {  // sysKill
                                 b.CreateCall(rtSysKill, {regs[in.a], arg(0), arg(1)});
+                            }
+                        } else if (n == "sysPtySpawn" || n == "sysPtyResize") {
+                            // Pty floor (designs/pty/ 02 §3.2): a SEPARATE arm from
+                            // the sysSpawn family — no Windows reject, that is
+                            // D-P8's runtime degrade. ConPTY lands in designs/pty/
+                            // 03; until then the win32 stubs return the frozen
+                            // failure sentinels and the language sees [].
+                            if (n == "sysPtySpawn") {
+                                b.CreateCall(rtSysPtySpawn,
+                                             {regs[in.a], arg(0), arg(1), arg(2), arg(3), arg(4)});
+                                retainDst();   // fresh heap Array<int> -> +1 (sysSpawn parity)
+                            } else {  // sysPtyResize
+                                b.CreateCall(rtSysPtyResize, {regs[in.a], arg(0), arg(1), arg(2)});
                             }
                         } else if (n == "sysHostI" || n == "sysHostS" ||
                                    n == "sysHostV") {
