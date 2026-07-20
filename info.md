@@ -2215,5 +2215,41 @@ are also implemented and share this same front end.
 
 ---
 
+## 20. The wasm-browser target (Track W)
+
+Leviathan runs in the browser as a **per-target capability subset, never a language subset or
+a dialect** (the STOP condition). The same source, the same 44-op IR, and the same LLVM
+backend produce a `wasm32` object (`--target wasm32-unknown-unknown`); a backend only diverges
+on emit-per-op. The target is **three artifacts and zero language changes**: a backend column
+(codegen is nearly free — the installed LLVM has the `WebAssembly` target), a **floor retarget**
+(`runtime/lv_plat_wasm.c`, the same ~40 `lv_plat.h` symbols with **syscalls swapped for host
+imports** — the floor is imports, not a libc), and a **JS/DOM bridge** (one reflective
+marshaler over the frozen `LvValue` ABI, an integer handle table for opaque JS values, and a
+closure trampoline).
+
+- **JSPI is the browser realization of §14's stackful tasks.** Async on wasm is not a second
+  suspension model: it is the engine-provided version of the exact stackful park/resume the
+  landed task substrate already does with hand-written `.S` context switches. One model, two
+  realizations. Floor: Chrome ≥ 137 (JSPI default-on) or Node ≥ 24 `--experimental-wasm-jspi`.
+- **Kept:** the whole language + every pure prelude library; console, time, randomness, the
+  event loop, async/await. **Reshaped:** HTTP → `fetch`, sockets → `WebSocket` (stream
+  endpoints). **Gained:** DOM, `fetch`, `WebSocket`, WebCrypto, Canvas/WebGL, storage.
+  **Gated** (compile-time diagnostic when *user* code reaches one; unreachable prelude bodies
+  trap-stub): filesystem, process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking
+  sync reads, raw OS threads / shared-address `fork`. The high-tier **threads leg is deferred**
+  (a documented future, not a gap in the model). Select the branch at comptime with
+  `target::os == "wasm"`.
+- **Status (2026-07-19).** W-M1–W-M3 (backend column + floor + async/JSPI + the DOM marshaler /
+  handle table / closure trampoline / events-as-streams) landed; the worked browser demo is
+  `examples/wasm-client/`. The `@extern` rules-engine bindgen (doc 06 §1) is **not built** — it
+  targeted a per-method `__import` seam the reflective single-`dom_call` bridge abandoned, and a
+  faithful generator needs metaprog scope beyond the bounded P4 roadmap; the hand-written `Dom`
+  prelude is the as-built binding surface. Per-target **stdlib packaging** now rides the §19 #18
+  ruling (ship as `.lev` files with a real `parsePrelude()` file-reading seam) — this track is
+  the *consumer* of that upstream refactor, which is not yet built; dev/wasm builds ride the
+  existing in-binary concat until it lands.
+
+---
+
 *This document reflects the design as worked out so far. It is a living specification; the open
 decisions in §19 are the active edges. The syntax reference lives in `docs/reference.md`.*

@@ -2808,6 +2808,36 @@ out-of-coverage constructs fail with a diagnostic:
   `--opt-level 0|2` selects it (default 2, `0` for a debug build — faster codegen, easier
   to read under a debugger). `--build-native out` goes straight from source to a linked
   executable in one step.
+  - **`wasm32` browser target** (`--target wasm32-unknown-unknown`, Track W): the same LLVM
+    backend and the one 44-op IR — the language and IR are untouched (overview §1); a
+    backend only diverges on emit-per-op. Codegen is nearly free (the installed LLVM has
+    the `WebAssembly` target); the work is the runtime archive
+    (`runtime/build-triple.sh wasm32-wasi`, needs a `wasi-libc` sysroot), the browser floor
+    (`runtime/lv_plat_wasm.c` — syscalls swapped for host imports), and the JS host
+    (`runtime/lv_host.js` — "one imports file, three hosts": that module,
+    `runtime/lv_host_page.html`, and `tests/wasm_node_run.mjs`). Run headlessly under Node's
+    native `WebAssembly` via `tests/run_wasm.sh` / `tests/run_wasm_dom.sh` — plain
+    `wasmtime run` cannot supply this target's custom `lv.*` imports. **Covered subset**
+    (per-target — native Leviathan loses nothing): the entire language + every pure prelude
+    library (JSON, DateTime, encoding, digests, regex, collections, strings, math), console,
+    time, randomness, event loop, async/await. Async is **JSPI** — the engine-provided
+    realization of the same stackful park/resume the landed task substrate does with `.S`
+    context switches; browser floor Chrome ≥ 137 or Node ≥ 24 `--experimental-wasm-jspi`.
+    **Reshaped:** HTTP → `fetch`, sockets → `WebSocket` (stream endpoints). **Gained:** the
+    DOM. **Gated** (compile-time diagnostic when *user* code reaches one; unreachable prelude
+    bodies get a trap stub — the ELF-DNS `native-elf backend: …` precedent): filesystem,
+    process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking sync reads, raw OS
+    threads / shared-address `fork`. Select the branch at comptime with `target::os == "wasm"`.
+  - **The `@extern` / DOM surface.** DOM is reached through the hand-written `Dom` prelude
+    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `runtime/../Resolver.cpp` `kPreludeWasm`):
+    opaque JS values wrapped in an `int` handle, marshaled by one reflective routine in
+    `lv_host.js`, with DOM events surfaced as `InStream` endpoints and a closure trampoline
+    for handlers (which may `await`). Note the *rules-engine `@extern` bindgen* that would
+    generate these stubs is **not built** — it targeted a per-method `__import` seam that the
+    reflective single-`dom_call` bridge abandoned, and a faithful generator needs metaprog
+    scope (interface-member reflection + cross-class injection) outside the bounded P4 roadmap
+    (`designs/wasm-frontend/techdesign-06-bindgen-and-ship.md` §1). The hand-written `Dom`
+    surface is the as-built binding surface; `examples/wasm-client/` is the worked demo.
 - **Pure x86-64 / ELF** (`--emit-elf out`): the self-hosting-grade path — **our own machine-
   code emitter and ELF writer, no g++, no assembler, no linker, no libc.** It compiles the
   **whole language** (objects, collections, closures, exceptions, files, streams, event loop,
