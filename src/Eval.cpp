@@ -1322,6 +1322,17 @@ Value Evaluator::evalCall(Expr* e) {
         if (bv.kind == VKind::Void && e->resolved)            // NS::fn (checker-resolved)
             return callFunction(e->resolved, args, nullptr, nullptr);
         std::string name(callee->text);
+        if (bv.kind == VKind::Object && !bv.obj) {
+            // A receiver tagged Object but carrying a null pointer is an
+            // uninitialized / dangling object reference (e.g. a never-assigned
+            // non-optional class/interface field surfacing during a traversal —
+            // not a None, which is VKind::None and narrows normally). Reading
+            // bv.obj->cls below would be a hard segfault; raise a catchable
+            // runtime error instead so user code can never crash the engine
+            // (same defensive posture as the null-`this` guards above, #55).
+            return throwRuntime("call of method '" + name +
+                                "' on a null object reference");
+        }
         if (bv.kind == VKind::Object) {
             const Stmt* m = e->resolved ? e->resolved
                                         : findMethod(bv.obj->cls, name, (int)args.size());
