@@ -17,6 +17,8 @@ sources = [
     "../../src/editor/lineindex.lev",
     "../../src/editor/cursor.lev",
     "../../src/editor/buffer.lev",
+    "../../src/editor/editorview.lev",
+    "../../src/explorer/filetree.lev",
     "../../src/panels/problems.lev",
     "../../src/panels/output.lev",
     "../../src/panels/testresults.lev",

@@ -45,6 +45,15 @@ namespace Helm {
         ContentBar panelBar_  = ContentBar();
         ContentBar statusBar_ = ContentBar();
 
+        // Live workspace area — the §3 dock mounted into `body_` at G-H5: the
+        // file-tree sidebar (H05), the editor tab group (H04), and the panel
+        // tabs (H07). The components already exist and pass their goldens; this
+        // is the H01 assembly the snapshot lane deferred as "riders".
+        TreeView    tree_         = TreeView();
+        Tabs        editorTabs_   = Tabs();
+        FileTree    fileTree_     = FileTree(".");                 // real root set in mountWorkspace
+        EditorView  activeEditor_ = EditorView(TextBuffer::Empty()); // real buffer set in mountWorkspace
+
         // Resolved tool paths + workspace (a live command spawns these).
         string wsRoot_     = ".";
         string testsDir_   = "./tests";
@@ -166,7 +175,7 @@ namespace Helm {
             // commands exist now so the accelerator + menu surface is complete.
             c.register("helm.palette", "Command Palette…",      "View", () => {});
             c.setKey("helm.palette", "^P");
-            c.register("helm.save",    "Save",                  "File", () => {});
+            c.register("helm.save",    "Save",                  "File", () => this.doSave());
             c.setKey("helm.save", "^S");
             c.register("helm.quit",    "Quit",                  "File", () => this.quit());
             c.setKey("helm.quit", "^Q");
@@ -231,8 +240,87 @@ namespace Helm {
 
             app_.add(menuBar_);
             app_.add(body_);
-            app_.add(panelBar_);
             app_.add(statusBar_);
+
+            // G-H5: fill the (previously blank) body with the live dock and
+            // focus the editor so keystrokes reach a real buffer. The panel
+            // strip (panelBar_) is subsumed by the in-body panel tabs, so it is
+            // no longer a live child — renderShell() still paints it for the
+            // deterministic golden snapshot.
+            this.mountWorkspace();
+        }
+
+        // §3 dock assembly (H01): sidebar tree | (editor tabs / panel tabs),
+        // mounted into body_ and focused. Every widget here is a landed,
+        // golden-tested component (EditorView H04, FileTree H05, panels H07).
+        void mountWorkspace() {
+            FileTree ft = FileTree(wsRoot_);
+            fileTree_ = ft;
+            tree_.setSource(ft);
+            tree_.setExpanded(TreeNodeId(0), true);   // show the workspace root's entries
+            tree_.onActivate((nid) => this.openNode(nid));
+
+            EditorView ed = EditorView(TextBuffer::FromString(this.welcomeText()));
+            activeEditor_ = ed;
+            editorTabs_.add("welcome", ed);
+
+            ListView  outv  = ListView();  outv.setSource(panels_.output);
+            TableView probv = TableView(); probv.setSource(panels_.problems);
+            TableView testv = TableView(); testv.setSource(panels_.tests);
+            Tabs panelTabs = Tabs();
+            panelTabs.add("Output",   outv);
+            panelTabs.add("Problems", probv);
+            panelTabs.add("Test",     testv);
+
+            SplitBox vsplit = SplitBox();
+            vsplit.setAxis(Axis::Vertical);
+            vsplit.setRatio(72);
+            vsplit.add(editorTabs_);
+            vsplit.add(panelTabs);
+
+            SplitBox hsplit = SplitBox();
+            hsplit.setAxis(Axis::Horizontal);
+            hsplit.setRatio(22);
+            hsplit.add(tree_);
+            hsplit.add(vsplit);
+
+            body_.add(hsplit);
+            app_.focus(ed);
+        }
+
+        // Enter on a tree row: open a file in a fresh editor tab and focus it
+        // (a directory row expands/collapses inside the tree itself).
+        void openNode(TreeNodeId nid) {
+            string p = fileTree_.pathOf(nid);
+            if (std::isDir(p)) { return; }
+            EditorView ed = EditorView(TextBuffer::FromFile(p));
+            activeEditor_ = ed;
+            editorTabs_.add(this.baseName(p), ed);
+            app_.focus(ed);
+        }
+
+        // ^S — save the active editor's buffer (a path-less welcome buffer is a
+        // no-op; only file-backed buffers write).
+        void doSave() {
+            if (!activeEditor_.buffer().path().isEmpty()) { activeEditor_.buffer().save(); }
+        }
+
+        string baseName(string path) {
+            Array<string> parts = path.split("/");
+            if (parts.length() == 0) { return path; }
+            return parts[parts.length() - 1];
+        }
+
+        string welcomeText() {
+            return "Helm — a terminal IDE for Leviathan\n" +
+                   "\n" +
+                   "  Left    file tree      (Enter opens a file)\n" +
+                   "  Editor  type to edit, arrow keys to move the cursor\n" +
+                   "  Tab     cycle focus: tree / editor / panels\n" +
+                   "\n" +
+                   "  ^S save    ^B build    F5 run    ^; test    ^Q quit\n" +
+                   "\n" +
+                   "Open a file from the tree on the left to start editing.\n";
         }
 
         // The panel-tab strip: the four bottom tabs, the active one bracketed
