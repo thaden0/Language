@@ -1,0 +1,10 @@
+loaded 3 tasks
+  row: [ ] Wire the DOM bridge
+  row: [ ] Ship the demo
+  row: [x] Sweep the docs
+initial remaining: 2
+done
+completed: Wire the DOM bridge
+status: remaining: 1
+completed: Ship the demo
+status: remaining: 0

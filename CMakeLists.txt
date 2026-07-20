@@ -383,17 +383,17 @@ add_test(NAME exit_codes
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus")
 # Track 08 system natives (designs/techdesign-08-system-natives.md §10): the
 # environment-dependent halves the golden corpus file omits — env PATH, DNS
-# localhost, and a filesystem round-trip — asserted identical on both
-# interpreters, plus comptime hermeticity (sys* denied) and clean deferral on
-# the compiled backends. A dedicated script because the fs round-trip needs a
-# temp dir and the checks are property-based, not golden.
+# localhost, and a filesystem round-trip. Filesystem behavior is asserted on
+# oracle/IR/LLVM; other checks keep their actual per-backend matrix, plus
+# comptime hermeticity and clean unsupported diagnostics. A dedicated script
+# is needed because the fs round-trip uses a temp dir and property assertions.
 add_test(NAME sys_natives
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_sysnatives.sh"
                  $<TARGET_FILE:leviathan>)
 # The Track 08 golden property-check file lives in its OWN directory (not the
-# shared top-level corpus): its natives defer with a clean coverage-error on the
-# compiled backends, so the LLVM/ELF-scanned `corpus_llvm_full` lane must not
-# compile it. Interpreter-only lanes, the same split as corpus_strings_native_*.
+# shared top-level corpus): it includes natives such as sysIsTty/sysResolve
+# that remain interpreter-only, so the LLVM/ELF-scanned `corpus_llvm_full` lane
+# must not compile it. The environment-dependent LLVM filesystem lane is above.
 add_test(NAME corpus_sys_natives_treewalk
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_natives")
@@ -411,10 +411,11 @@ add_test(NAME corpus_sys_spawn_treewalk
 add_test(NAME corpus_sys_spawn_ir
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --ir "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn")
-# G-PTY1 (designs/pty/ doc 01): the pty floor golden — oracle + IR byte-
-# identical against one .expected. Own directory (the sys_natives/ split), so
-# corpus_llvm_full's top-level scan never compiles it; the LLVM lane arrives
-# with doc 02 (S2) and joins the LLVM_FOUND block then.
+# G-PTY2 (designs/pty/ docs 01+02): the pty floor golden. All three lanes diff
+# the SAME .expected — oracle = IR = LLVM byte-identity is the pass condition
+# (the sys_spawn convention; the LLVM sibling lives in the LLVM_FOUND block
+# below). Own directory so corpus_llvm_full's top-level scan never compiles it.
+# emit-C++ keeps its deliberate system-layer deferral (no cpp lane).
 add_test(NAME corpus_sys_pty_treewalk
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_corpus.sh"
                  $<TARGET_FILE:leviathan> --run "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty")
@@ -1115,6 +1116,7 @@ if (LLVM_FOUND)
       "${CMAKE_SOURCE_DIR}/runtime/lv_loop.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_thread.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_proc.c"
+      "${CMAKE_SOURCE_DIR}/runtime/lv_pty.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_entry.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_task.c"
       "${CMAKE_SOURCE_DIR}/runtime/lv_ctx_x86_64.S"
@@ -1337,6 +1339,13 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/sys_spawn"
                    ${LANG_LVRT_SOURCES})
+  # G-PTY2 (designs/pty/ 02 §6.1): the LLVM leg of the pty golden — the SAME
+  # .expected as corpus_sys_pty_{treewalk,ir} above. Three-lane byte-identity
+  # is the pass condition (same kernel + frozen termios ⇒ achievable, R§D.5).
+  add_test(NAME corpus_sys_pty_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/sys_pty"
+                   ${LANG_LVRT_SOURCES})
   add_test(NAME corpus_threads_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/threads"
@@ -1520,6 +1529,7 @@ add_library(lvrt STATIC
   runtime/lv_loop.c
   runtime/lv_thread.c
   runtime/lv_proc.c
+  runtime/lv_pty.c
   runtime/lv_entry.c
   ${LV_TASK_SRCS}
   ${LVRT_TLS_SRC})

@@ -2660,6 +2660,42 @@ void lvrt_sysmkdir(LvValue* out, const LvValue* path) {
     out->payload = lv_plat_mkdir(cpath);
 }
 
+/* LLVM filesystem/directory parity. Scalar wrappers borrow their inputs and
+ * allocate nothing. listdir translates one floor-owned staging result into a
+ * boxed language array, retaining each fresh string exactly once for the
+ * array; the array itself remains fresh at rc 0 for codegen's retainDst(). */
+void lvrt_sysremove(LvValue* out, const LvValue* path) {
+    const char* cpath = (const char*)(P8(path->payload) + 8);
+    out->tag = LV_INT;
+    out->payload = lv_plat_remove(cpath);
+}
+
+void lvrt_sysrename(LvValue* out, const LvValue* from, const LvValue* to) {
+    const char* cfrom = (const char*)(P8(from->payload) + 8);
+    const char* cto = (const char*)(P8(to->payload) + 8);
+    out->tag = LV_INT;
+    out->payload = lv_plat_rename(cfrom, cto);
+}
+
+void lvrt_syslistdir(LvValue* out, const LvValue* path) {
+    const char* cpath = (const char*)(P8(path->payload) + 8);
+    LvDirEntries entries = { NULL, 0 };
+    if (lv_plat_listdir(cpath, &entries) != 0) {
+        out->tag = LV_NONE;
+        out->payload = 0;
+        return;
+    }
+
+    lvrt_arr_new(out, entries.count);
+    for (int64_t i = 0; i < entries.count; i++) {
+        LvValue s;
+        lvrt_str_new(&s, entries.names[i], (int64_t)strlen(entries.names[i]));
+        lv_st_val(out->payload, 8 + 16 * i, &s);
+        lvrt_retain(&s);
+    }
+    lv_plat_listdir_free(&entries);
+}
+
 void lvrt_sysread(LvValue* out, const LvValue* fd, const LvValue* max) {
     int64_t m = max->payload;
     if (m <= 0) { lvrt_str_new(out, "", 0); return; }

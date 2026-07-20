@@ -64,7 +64,7 @@ int     lv_plat_term_raw(int fd);
 int     lv_plat_term_restore(int fd);
 
 /* ---- terminal floor completion (designs/techdesign-terminal-floor.md) ----
- * lv_plat_term_size: fill *rows/*cols with fd's terminal window size. Returns
+ * lv_plat_term_size: fill `rows` and `cols` with fd's terminal window size. Returns
  * 0 on success, -1 on failure — not a tty, the query fails, OR a 0x0 report
  * (some multiplexers answer 0x0; the design treats it as failure, §2/§5).
  * POSIX ioctl(TIOCGWINSZ); Win32 GetConsoleScreenBufferInfo (srWindow extent).
@@ -95,6 +95,18 @@ int64_t lv_plat_stat_size(const char* path);
 int64_t lv_plat_stat_mtime(const char* path);   /* epoch seconds; -1 if absent */
 int     lv_plat_stat_isdir(const char* path);   /* 1 dir / 0 not-dir / -1 absent */
 int     lv_plat_mkdir(const char* path);         /* 0 ok / -1 fail (mode 0755) */
+/* LLVM filesystem parity: directory enumeration is staged below the platform
+ * seam and copied into language values by lv_runtime.c. On list success,
+ * `names` owns `count` separately allocated NUL-terminated strings; on failure
+ * the result is empty. lv_plat_listdir_free accepts and resets an empty result. */
+typedef struct LvDirEntries {
+    char** names;
+    int64_t count;
+} LvDirEntries;
+int     lv_plat_remove(const char* path);        /* file/symlink/empty dir; 0/-1 */
+int     lv_plat_rename(const char* from, const char* to); /* platform rename; 0/-1 */
+int     lv_plat_listdir(const char* path, LvDirEntries* out); /* owned names; 0/-1 */
+void    lv_plat_listdir_free(LvDirEntries* entries);
 int     lv_plat_tcp_connect(const char* ip, int port);
 int     lv_plat_tcp_listen(const char* ip, int port, int backlog, int reuse_port);
 int     lv_plat_cpu_count(void);
@@ -135,6 +147,20 @@ int     lv_plat_spawn(const char* path, char* const argv[], int fds[3]);
 int     lv_plat_pidfd_open(int pid);
 int     lv_plat_reap(int pid);
 int     lv_plat_kill(int pid, int sig);
+
+/* --- pty floor (G-LANG-2 terminal half, designs/pty/) ----------------------
+ * lv_plat_pty_spawn: allocate a pty, stamp the frozen termios profile selected
+ *   by flags (bit0 = deterministic/golden, D-P3), seed rows×cols, fork, child
+ *   does setsid/TIOCSCTTY/dup2(slave→0,1,2)/execve (async-signal-safe only,
+ *   D-P2), parent closes the slave and returns pid > 0 with *master an
+ *   O_CLOEXEC + O_NONBLOCK fd (read AND write). rows/cols <= 0 or any
+ *   allocation failure: -1, no fd leaked. Exec failure: child _exit(127).
+ * lv_plat_pty_resize: TIOCSWINSZ on the master / ResizePseudoConsole; the
+ *   KERNEL delivers SIGWINCH to the child's foreground group — callers never
+ *   signal by hand (R§A.4). 0/-1. */
+int     lv_plat_pty_spawn(const char* path, char* const argv[],
+                          int rows, int cols, int flags, int* master);
+int     lv_plat_pty_resize(int master, int rows, int cols);
 
 /* poll: a platform-opaque record so a future Win32 floor can back it with
  * WSAPOLLFD (whose SOCKET fd type differs in width from POSIX's int)

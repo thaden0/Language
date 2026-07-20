@@ -121,6 +121,16 @@ int64_t lv_plat_stat_size(const char* path) { (void)path; return -1; }
 int64_t lv_plat_stat_mtime(const char* path) { (void)path; return -1; }
 int lv_plat_stat_isdir(const char* path) { (void)path; return -1; }
 int lv_plat_mkdir(const char* path) { (void)path; return -1; }
+int lv_plat_remove(const char* path) { (void)path; return -1; }
+int lv_plat_rename(const char* from, const char* to) { (void)from; (void)to; return -1; }
+int lv_plat_listdir(const char* path, LvDirEntries* out) {
+    (void)path;
+    if (out) { out->names = NULL; out->count = 0; }
+    return -1;
+}
+void lv_plat_listdir_free(LvDirEntries* entries) {
+    if (entries) { entries->names = NULL; entries->count = 0; }
+}
 int lv_plat_tcp_connect(const char* ip, int port) { (void)ip; (void)port; return -1; }
 int lv_plat_tcp_listen(const char* ip, int port, int backlog, int reuse_port) {
     (void)ip; (void)port; (void)backlog; (void)reuse_port; return -1;

@@ -1,0 +1,1 @@
+console.writeln(std::sysRename("/tmp/wasm_gate_from", "/tmp/wasm_gate_to").toString());

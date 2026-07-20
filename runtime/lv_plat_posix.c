@@ -12,12 +12,15 @@
 #include "lv_plat.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -297,6 +300,95 @@ int lv_plat_mkdir(const char* path) {
     return mkdir(path, 0755) == 0 ? 0 : -1;
 }
 
+/* LLVM filesystem/directory parity. The staging table and every copied name
+ * are call-owned so concurrent listings share no state. Keep the allocator
+ * helpers here: no directory API or staging ownership leaks above lv_plat.h. */
+static void lv_dir_discard(char** names, size_t count) {
+    if (names) {
+        for (size_t i = 0; i < count; i++) free(names[i]);
+        free(names);
+    }
+}
+
+static int lv_dir_append(char*** names, size_t* count, size_t* capacity,
+                         const char* name) {
+    if ((uint64_t)*count >= (uint64_t)INT64_MAX) return -1;
+    if (*count == *capacity) {
+        size_t next;
+        if (*capacity == 0) {
+            next = 16;
+        } else {
+            if (*capacity > SIZE_MAX / 2) return -1;
+            next = *capacity * 2;
+        }
+        if (next > SIZE_MAX / sizeof(char*)) return -1;
+        char** grown = (char**)realloc(*names, next * sizeof(char*));
+        if (!grown) return -1;
+        *names = grown;
+        *capacity = next;
+    }
+
+    size_t len = strlen(name);
+    if (len == SIZE_MAX) return -1;
+    char* copy = (char*)malloc(len + 1);
+    if (!copy) return -1;
+    memcpy(copy, name, len + 1);
+    (*names)[(*count)++] = copy;
+    return 0;
+}
+
+int lv_plat_remove(const char* path) {
+    if (unlink(path) == 0) return 0;
+    int unlink_error = errno;
+    if (unlink_error == EISDIR || unlink_error == EPERM)
+        return rmdir(path) == 0 ? 0 : -1;
+    return -1;
+}
+
+int lv_plat_rename(const char* from, const char* to) {
+    return rename(from, to) == 0 ? 0 : -1;
+}
+
+int lv_plat_listdir(const char* path, LvDirEntries* out) {
+    if (!out) return -1;
+    out->names = NULL;
+    out->count = 0;
+
+    DIR* dir = opendir(path);
+    if (!dir) return -1;
+
+    char** names = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0)
+            continue;
+        if (lv_dir_append(&names, &count, &capacity, entry->d_name) != 0) {
+            (void)closedir(dir);
+            lv_dir_discard(names, count);
+            return -1;
+        }
+    }
+
+    if (closedir(dir) != 0) {
+        lv_dir_discard(names, count);
+        return -1;
+    }
+    out->names = names;
+    out->count = (int64_t)count;
+    return 0;
+}
+
+void lv_plat_listdir_free(LvDirEntries* entries) {
+    if (!entries) return;
+    size_t count = entries->count > 0 ? (size_t)entries->count : 0;
+    lv_dir_discard(entries->names, count);
+    entries->names = NULL;
+    entries->count = 0;
+}
+
 static void lv_set_nonblock_fd(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -445,8 +537,14 @@ int64_t lv_plat_send(int fd, const void* buf, int64_t n) {
 
 int64_t lv_plat_recv(int fd, void* buf, int64_t n) {
     int64_t r = (int64_t)recv(fd, buf, (size_t)n, 0);
-    if (r < 0 && errno == ENOTSOCK)
+    if (r < 0 && errno == ENOTSOCK) {
         r = (int64_t)read(fd, buf, (size_t)n);
+        /* pty master, child gone: Linux -1/EIO == macOS 0 == orderly close
+         * (designs/pty/ D-P4; CPython bpo-26228). Scoped to the read fallback:
+         * socket semantics untouched. Without it the read-watch busy-spins
+         * forever on a dead pty. */
+        if (r < 0 && errno == EIO) r = 0;
+    }
     return r;
 }
 
@@ -512,6 +610,79 @@ int lv_plat_reap(int pid) {
 int lv_plat_kill(int pid, int sig) {
     if (pid <= 0 || sig < 0) return -1;
     return kill((pid_t)pid, sig) == 0 ? 0 : -1;
+}
+
+/* --- pty floor (G-LANG-2 terminal half, designs/pty/ 02 §1.2) --------------
+ * Mirrors RuntimeNatives.cpp sysPtySpawn/sysPtyResize call-for-call. D-P2:
+ * ALL non-async-signal-safe work (openpt/grant/unlock/ptsname_r/open/
+ * tcsetattr/TIOCSWINSZ) is parent-side, pre-fork; the child body is setsid/
+ * TIOCSCTTY/dup2/close/execve/_exit only — LLVM programs are multithreaded.
+ * The frozen termios profiles (D-P3) live HERE and in the oracle, nowhere
+ * else; they must stay bit-identical (the sys_pty goldens enforce it).
+ * Portability seam (§1.2 note): posix_openpt(O_CLOEXEC) is honored on glibc
+ * and musl; a future triple that rejects the flag takes fcntl(F_SETFD,
+ * FD_CLOEXEC) right after the open. ptsname_r is glibc/musl — macOS spells it
+ * differently. Recorded, not coded: no such triple builds today. */
+static void lv_pty_termios(struct termios* tio, int flags) {
+    memset(tio, 0, sizeof *tio);
+    tio->c_iflag = ICRNL | IXON;
+    tio->c_oflag = OPOST | ONLCR;
+    tio->c_cflag = CS8 | CREAD;
+    tio->c_lflag = ISIG | ICANON | IEXTEN;
+    if ((flags & 1) == 0) tio->c_lflag |= ECHO | ECHOE | ECHOK;  /* DEFAULT */
+    /* DETERMINISTIC (bit0): whole echo family off — the one interleaving source.
+     * ECHOE/ECHOK without ECHO still echo erase/kill responses. */
+    tio->c_cc[VMIN] = 1;  tio->c_cc[VTIME] = 0;
+    /* explicit seeds so the lanes never drift with libc defaults; VEOF=4
+     * freezes the documented write("\x04") EOF protocol. */
+    tio->c_cc[VEOF] = 4;  tio->c_cc[VINTR] = 3;  tio->c_cc[VSUSP] = 26;
+    tio->c_cc[VERASE] = 0x7f; tio->c_cc[VKILL] = 21; tio->c_cc[VQUIT] = 28;
+    cfsetispeed(tio, B38400); cfsetospeed(tio, B38400);
+}
+
+int lv_plat_pty_spawn(const char* path, char* const argv[],
+                      int rows, int cols, int flags, int* master) {
+    if (!path || !path[0] || rows <= 0 || cols <= 0 || !master) return -1;
+    static int sigpipe_ignored_pty = 0;      /* disposition, not a handler */
+    if (!sigpipe_ignored_pty) { signal(SIGPIPE, SIG_IGN); sigpipe_ignored_pty = 1; }
+
+    int mfd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);   /* atomic (R§A.6) */
+    if (mfd < 0) return -1;
+    char sname[64];
+    if (grantpt(mfd) != 0 || unlockpt(mfd) != 0 ||
+        ptsname_r(mfd, sname, sizeof sname) != 0) { close(mfd); return -1; }
+    int sfd = open(sname, O_RDWR | O_NOCTTY);  /* NOT cloexec: survives the child's exec */
+    if (sfd < 0) { close(mfd); return -1; }
+
+    struct termios tio; lv_pty_termios(&tio, flags);
+    struct winsize ws; memset(&ws, 0, sizeof ws);
+    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+    if (tcsetattr(sfd, TCSANOW, &tio) != 0 || ioctl(sfd, TIOCSWINSZ, &ws) != 0) {
+        close(sfd); close(mfd); return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) { close(sfd); close(mfd); return -1; }
+    if (pid == 0) {                            /* async-signal-safe ONLY (D-P2) */
+        setsid();                              /* leader FIRST, or TIOCSCTTY no-ops */
+        ioctl(sfd, TIOCSCTTY, 0);
+        dup2(sfd, 0); dup2(sfd, 1); dup2(sfd, 2);
+        if (sfd > 2) close(sfd);
+        execve(path, argv, environ);
+        _exit(127);
+    }
+    close(sfd);                                /* parent keeps ONLY the master */
+    int fl = fcntl(mfd, F_GETFL, 0);
+    fcntl(mfd, F_SETFL, fl | O_NONBLOCK);
+    *master = mfd;
+    return (int)pid;
+}
+
+int lv_plat_pty_resize(int master, int rows, int cols) {
+    if (master < 0 || rows <= 0 || cols <= 0) return -1;
+    struct winsize ws; memset(&ws, 0, sizeof ws);
+    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+    return ioctl(master, TIOCSWINSZ, &ws) == 0 ? 0 : -1;
 }
 
 /* LA-2 §8: kernel CSPRNG — getrandom(2) (blocking pool, short-read looped) via
