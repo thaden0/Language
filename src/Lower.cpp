@@ -1745,13 +1745,31 @@ int Lowerer::lowerCall(Expr* e) {
             last().d = fieldClear.slot;
         }
         int base = F().nregs;
-        { int r = newReg(); emit(clearRecv ? Op::MoveClear : Op::Move, r, recv); }
+        int recvWin = newReg();
+        emit(clearRecv ? Op::MoveClear : Op::Move, recvWin, recv);
         emitArgCopies(argRegs, e->list);
+        // bug.md #95: a value-struct receiver rides the window as a BARE ALIAS
+        // (the Move's wrap retain no-ops on value classes), and the window
+        // register otherwise survives to frame exit. #66 cleared the for-in
+        // loop VARIABLE for exactly this shape, but a method call on it copies
+        // the alias into this second register, which #66's clear cannot see —
+        // once the aliased element's array dies inside the same frame (e.g.
+        // Router.finalize's `this.routeList = rebuilt`), the frame-exit release
+        // reads the freed block's classId (garbage), the value-class skip
+        // fails, and the "release" decrements a freelist word: heap corruption
+        // surfacing far from the site. Void the slot after the call, same
+        // shape as #66's loop-var clear. Consumed receivers (clearRecv) are
+        // containers, and the backend's CallDyn tail already voids their slot.
+        auto clearStructRecvWin = [&] {
+            if (!clearRecv && callee->a->definiteValueStruct)
+                emit(Op::LoadConst, recvWin, addConst(vvoid()));
+        };
         int dst = newReg();
         if (e->resolved && e->resolved->isSpecialization) {
             auto it = mod_->byDecl.find(e->resolved);
             if (it == mod_->byDecl.end()) { fail(e->span, "specialized method"); return dst; }
             emit(Op::Call, dst, it->second, base, 1 + (int)argRegs.size());
+            clearStructRecvWin();
             return dst;
         }
         // in.b = 1 marks a CONSUMED receiver (COW self-append): the callee owns
@@ -1760,6 +1778,7 @@ int Lowerer::lowerCall(Expr* e) {
         emit(Op::CallDyn, dst, clearRecv ? 1 : 0, base, 1 + (int)argRegs.size());
         last().sname = std::string(callee->text);
         last().decl = e->resolved;
+        clearStructRecvWin();
         return dst;
     }
 

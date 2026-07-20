@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #95 |
+| P0       | — |
 | P1       | #93, #98 |
 | P2       | #99 |
 | P3       | — |
@@ -192,28 +192,6 @@ and call it from the template — the ORM does this with
 (`packages/atlantis/src/orm/orm.lev`); templates never carry punctuation-only
 or `@`-leading string literals.
 
-## #95 [P0] — atlantis routing corpus segfaults on LLVM (pre-existing at 2026-07-19 master)
-
-**Found:** 2026-07-19, running the new `packages/atlantis/tests/runtests.sh`
-across all corpus dirs during ORM Track 06 verification.
-**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
-primary backend) crashes mid-run on checker-accepted, previously-landed code
-(the crash-later variant counts).
-
-**Repro:**
-
-```
-./build/trident plan packages/atlantis/tests/corpus/routing --plan /tmp/r.lvplan --leviathan ./build/leviathan
-./build/leviathan --build-native /tmp/r.bin --plan /tmp/r.lvplan
-/tmp/r.bin        # prints 2 lines ("== M3 Era-A end-to-end ..." + "-- GET / --"), then dumps core
-```
-
-Oracle and IR runs of the same plan produce the full 40+-line expected output
-(`routing.expected`). Verified present with ALL of this session's compiler
-changes stashed (clean master `src/`), so it predates Track 06's work — the
-routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
-since regressed it. Not diagnosed further here (out of Track 06 scope).
-
 ## #98 [P1] — metaprogramming rules/attributes declared in the prelude silently never fire
 
 **Found:** 2026-07-19, implementing `designs/techdesign-bindgen-metaprog-scope.md`
@@ -284,6 +262,32 @@ is parked on this bug (or on a project-file placement instead of prelude) rather
 than worked around.
 
 ---
+
+#95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
+regression and not runtime-stale: a latent value-struct ARC over-release exposed
+by the 2026-07-19 base-qualified-call merge (Lower.cpp `lowerCall`). Root cause:
+a METHOD call on a value-struct receiver marshaled the receiver into the CallDyn
+window via a plain `Op::Move` — a BARE ALIAS, since the wrap's retain no-ops on
+value classes — and that window register survived to frame exit. bug #66 cleared
+the for-in loop VARIABLE for exactly this stale-alias shape, but a method call on
+the loop var (`Router.finalize`'s `rec.key()`) copies the alias into a SECOND
+(window) register #66's clear never saw. Once the aliased boxed element's array
+died in the same frame (`this.routeList = rebuilt`), `releaseAllRegs` released
+that stale window alias: it read the freed block's classId (garbage), the
+value-class skip in `lv_is_counted` failed, and the "release" decremented a
+freelist next-pointer word — heap corruption surfacing later inside
+`lv_alloc_heap`, far from the site (the classic P0.3 shape). Boxed-only because a
+flat struct is dense-inlined (no per-element free) — the nested `Array<ParamDesc>`
+field forced the boxed path (#66). Fixed in `src/Lower.cpp`: after a value-struct
+(`definiteValueStruct`) receiver's non-consumed method call, void the receiver
+window register (`Op::LoadConst … vvoid()`), same shape as #66's loop-var clear;
+consumed (COW self-append) receivers are containers whose window slot the backend
+already voids. Engine-neutral (an extra dead-store on every engine); oracle/IR
+never crashed but inherit the clear harmlessly. Regression floor:
+`tests/corpus/composition/aggregates/green/array_struct_method_recv_alias.lev`
+(oracle+IR+cpp+llvm; verified red→green — SIGSEGV on LLVM before the fix, `70`
+after). Full atlantis corpus suite + composition/churn-leak/ownership ctest lanes
+green on all engines.
 
 #91 found AND fixed 2026-07-19 (same session, owner-directed): rules and
 attributes declared in a NESTED namespace (`namespace Atlantis { namespace Orm

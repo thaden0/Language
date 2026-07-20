@@ -1,0 +1,50 @@
+// Regression floor for bug #95 [P0] (Atlantis routing corpus SEGFAULT on the
+// LLVM native backend). Distilled from Router.finalize: a for-in over an
+// Array<struct> where the loop variable is a BOXED value struct (it has a
+// nested heap field, so appends go boxed per bug #66, not dense-inlined), a
+// METHOD is called on that loop variable, and the array is then reassigned in
+// the same frame. The method-call receiver rode the CallDyn window as a bare
+// ALIAS of the boxed element (the Move's wrap-retain no-ops on value classes);
+// bug #66 cleared the loop VARIABLE after the loop but not this second (window)
+// register, so once `list = rebuilt` freed the original boxed buffer, the
+// frame-exit release of the stale window alias read the freed element's classId
+// (garbage) — the value-struct skip failed and the "release" decremented a
+// freelist word: heap corruption surfacing in lv_alloc_heap far from the site
+// (SIGSEGV on LLVM; the same latent use-after-free on ELF). Fixed by voiding the
+// value-struct receiver window register after the call (Lower.cpp). Clean on
+// run/ir/cpp/llvm; pinned here so a future lowering change can't silently
+// regress it.
+struct Tag { string name; new Tag(string name) { this.name = name; } }
+struct RouteRec {
+    string verb;
+    Array<Tag> tags;      // nested heap field -> the array element lives BOXED
+    int mode;
+    new RouteRec(string verb, Array<Tag> tags, int mode) {
+        this.verb = verb; this.tags = tags; this.mode = mode;
+    }
+    string key() => this.verb;
+}
+
+int rebuild(int seed) {
+    Array<RouteRec> list = [];
+    list = list.add(RouteRec("GET", [], 0));
+    list = list.add(RouteRec("PUT", [Tag("id")], 0));
+    list = list.add(RouteRec("POST", [], 0));
+    Array<RouteRec> rebuilt = [];
+    int acc = 0;
+    for (RouteRec rec in list) {
+        string k = rec.key();                       // method call on the loop-var alias
+        acc = acc + k.length() + rec.tags.length();
+        int mode = rec.mode != 0 ? rec.mode : seed;
+        rebuilt = rebuilt.add(RouteRec(rec.verb, rec.tags, mode));
+    }
+    list = rebuilt;                                 // frees the original boxed buffer
+    return acc + list.length();
+}
+
+void main() {
+    int sink = 0;
+    for (int i in 1..5) { sink = sink + rebuild(i); }
+    console.writeln(sink);
+}
+main();
