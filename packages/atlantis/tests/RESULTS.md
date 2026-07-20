@@ -345,3 +345,65 @@ fails to PARSE; `$p.type::FromJson(v)` (call-target position) parses but fails a
 - `RouteRec.bodySchema`/`.summary` land as the LAST two constructor params (additive,
   positional — no named args in the language yet); every existing call site (Track 02's
   `AddRoute`, Track 02's own `routing.lev` corpus) updated to pass `None, ""`.
+
+---
+
+# Atlantis Track 08 — Auth & Security results (2026-07-19)
+
+Core subsystem implemented in `packages/atlantis/src/auth/*.lev`
+(principal/crypto/cookie/pbkdf2/strategy/session/bearer/guard/csrf/cors/headers/
+ratelimit/audit) + additive `App.useAuthentication()/useAuthorization()` in
+`kernel/facade.lev`. Full itemized deviation list lives in
+`designs/complete/techdesign-08-auth-security.md` §15 — this is the test-result summary.
+
+```
+./packages/atlantis/tests/runtests.sh
+```
+
+| case | result |
+|---|---|
+| corpus/auth | **oracle: green. IR: green, byte-identical to oracle (`auth.expected`). LLVM: FAILS** — see below, not a Track 08 regression |
+
+Full run across every corpus dir (2026-07-19, freshly rebuilt `leviathan`/`trident`):
+every OTHER case (app, client, config, di, kernel, loopback, mcp_core, mcp_tool, openapi,
+orm, orm_migrate, orm_query, orm_rel, serialization, static) still passes oracle+IR+LLVM
+unchanged — Track 08's additions (a new `src/auth/*.lev` glob entry, two additive methods
+on `App`, and removing the Track-01 `Principal` seed it explicitly said to replace) do not
+regress anything else. Two OTHER pre-existing, unrelated failures were observed in the
+same run and are NOT Track 08's: `routing` (LLVM only) and `serialization_refusals`
+(negative-case text mismatch) — confirmed via `git status` that no file under
+`src/json/` or `src/routing/` was touched this session.
+
+**LLVM finding — `known_bugs_1.md` #97 filed, likely the same family as pre-existing
+#95.** Bisected a genuine, minimal, independently-reproducible LLVM defect: a function
+taking a class-typed parameter (e.g. `Http::Context`) that ALSO returns from inside a
+`for` loop over `Array<Struct>` corrupts a LATER, unrelated heap-touching call. Fixed at
+the one site this track hit (`cookie.lev`'s `cookieValue`, converted to an accumulator
+pattern). Fixing it did NOT make the corpus LLVM-clean, though — the crash just moves to
+a different `Router`/`Context` construction point depending on unrelated prior heap
+activity (confirmed by reordering test sections: the crash site changes, never whether it
+crashes). Directly re-ran the untouched, pre-existing `packages/atlantis/tests/
+corpus/routing` corpus (Track 02, zero Track 08 code involved) and confirmed it ALSO
+segfaults on LLVM within its first two lines of output — matching `known_bugs_1.md` #95's
+own description ("atlantis routing corpus segfaults on LLVM, pre-existing at 2026-07-19
+master") almost exactly. Conclusion: this is a systemic, already-tracked, out-of-scope
+defect broad enough that essentially any non-trivial Atlantis program constructing
+`Router`/`Context` objects is currently affected on LLVM — not something Track 08
+introduced or can fix from within `.lev` source. Oracle+IR are the correctness reference
+until the compiler-side fix lands.
+
+**Other findings / deviations (full detail in the design's §15 log):**
+- R-4 `sysRandomBytes` → landed as `sysRandom` before this track started (crypto ticket,
+  already resolved, `Auth::randomBytes` is a direct pass-through).
+- base64Url padding shim (P2) never needed — `encoding::base64Url{En,De}code` already
+  emit/accept unpadded.
+- `@Auth`/`@NoAuth` attributes still don't exist (blocked on LA-16/LA-22, an open/
+  un-accepted request) — guard enforcement derives its GuardSpec from Track 02's landed
+  `RouteRec.authMode`/`authRole` + `Router.authModeOf`/`authRoleOf` instead, zero schema
+  changes; `.auth("policy:name")` already threads the `policy:` prefix through the
+  existing `authRole` string.
+- PBKDF2 corpus proves the algorithm/format/upgrade-path self-consistently at a tiny
+  iteration count (4-8), not against RFC 7914 §11 vectors — `digest::hmacSha256` is an
+  IN-LANGUAGE implementation, so real production iteration counts cost real wall-clock on
+  the tree-walk oracle (~130ms/HMAC-call measured) and would blow any test timeout. No
+  PBKDF2 calibration numbers exist yet for the 210k default.

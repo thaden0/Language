@@ -1,0 +1,65 @@
+// Atlantis Track 08 — the minimal internal cookie codec (design §3.1, P-probe P4).
+// Values in this track are always base64Url-safe by construction (sids, CSRF
+// tokens), so parsing never needs percent-decoding.
+namespace Atlantis {
+    namespace Auth {
+
+        struct CookiePair {
+            string name;
+            string value;
+            new CookiePair(string name, string value) {
+                this.name = name;
+                this.value = value;
+            }
+        }
+
+        // Split a `Cookie:` header value on "; ", first "=" per pair. A valueless
+        // name (legal per RFC 6265) yields value "".
+        Array<CookiePair> parseCookieHeader(string header) {
+            Array<CookiePair> out = [];
+            if (header == "") { return out; }
+            for (string part in header.split("; ")) {
+                if (part == "") { continue; }
+                int eq = part.indexOf("=");
+                if (eq < 0) {
+                    out = out.add(CookiePair(part.trim(), ""));
+                } else {
+                    string n = part.subStr(0, eq).trim();
+                    string v = part.subStr(eq + 1, part.length() - (eq + 1));
+                    out = out.add(CookiePair(n, v));
+                }
+            }
+            return out;
+        }
+
+        string? cookieValue(Http::Context ctx, string name) {
+            string header = Http::reqHeader(ctx.request, "Cookie") ?? "";
+            // Accumulator, NOT an early `return` from inside the loop: a
+            // function that (a) takes a class-typed parameter (here
+            // `Http::Context`) AND (b) returns from inside a `for` loop over
+            // an `Array<Struct>` corrupts a LATER, unrelated heap-touching
+            // call on the LLVM backend — filed as known_bugs_1.md #97, minimal
+            // repro included. The accumulator shape sidesteps it entirely.
+            Array<CookiePair> pairs = parseCookieHeader(header);
+            string? found = None;
+            for (CookiePair p in pairs) {
+                if (p.name == name) { found = p.value; }
+            }
+            return found;
+        }
+
+        // Set-Cookie attribute rendering (§3.1): HttpOnly/SameSite=Lax/Path=/
+        // always; Secure when the caller determines TLS-or-forced (session.lev
+        // decides that, this stays a pure renderer); Max-Age mirrors the signed
+        // expiry the caller computed.
+        string renderSetCookie(string name, string value, bool secure, int maxAgeSec) {
+            string out = name + "=" + value + "; HttpOnly; SameSite=Lax; Path=/";
+            if (secure) { out = out + "; Secure"; }
+            out = out + "; Max-Age=" + maxAgeSec.toString();
+            return out;
+        }
+
+        // revoke()'s cookie (§3.4): Max-Age=0 clears it browser-side.
+        string renderExpiredCookie(string name, bool secure) => renderSetCookie(name, "", secure, 0);
+    }
+}

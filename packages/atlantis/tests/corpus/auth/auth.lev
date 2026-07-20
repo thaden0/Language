@@ -1,0 +1,378 @@
+// Atlantis Track 08 — Auth & Security corpus (techdesign-08-auth-security.md
+// §11 P-probe equivalents + §13 M5 acceptance shape), driven WITHOUT a socket
+// (synthetic requests through built middleware), so output is deterministic.
+// All timing-sensitive assertions use booleans/relative outcomes, never raw
+// wall-clock numbers (session/bearer tests run within milliseconds of
+// issuing, well inside any TTL); the rate limiter and login throttle take an
+// explicit synthetic `nowMs` so they never touch the real clock at all.
+//
+// LLVM lane (known, pre-existing, not a Track 08 regression): oracle and IR
+// are green and byte-identical (this file's own `.expected`); the native
+// binary currently segfaults partway through this corpus on `Router`/
+// `Context` construction sequences. This is the same systemic defect
+// `known_bugs_1.md` #95 already tracks — re-verified in this session that
+// the untouched, pre-existing `packages/atlantis/tests/corpus/routing`
+// corpus (no Track 08 code involved) ALSO segfaults on LLVM within its first
+// two lines of output. #97 (same file) narrows one minimal, independently-
+// reproducible instance. Oracle+IR are the correctness reference until the
+// compiler-side fix lands.
+uses Atlantis::Http;
+uses Atlantis::Auth;
+uses Atlantis::Routing;
+uses Atlantis::Log;
+
+HttpRequest mkReq(string method, string path, string headers, string body) {
+    HttpRequest r = HttpRequest();
+    int cl = body.length();
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\n" + headers +
+            "Content-Length: " + cl.toString() + "\r\n\r\n" + body);
+    return r;
+}
+
+// Pulls "<name>=<value>" (no attributes) off a rendered Set-Cookie line, so it
+// can be replayed as a request's `Cookie:` header.
+string cookieNameValue(string setCookieHeader) {
+    int semi = setCookieHeader.indexOf(";");
+    return semi >= 0 ? setCookieHeader.subStr(0, semi) : setCookieHeader;
+}
+
+// ---- PBKDF2 (§6.1) — a handful of iterations, NOT-A-PRODUCTION-PARAMETER
+// (design's own dev-mode note): the real floor/default (100000/210000, see
+// PBKDF2_MIN_ITERATIONS/PBKDF2_DEFAULT_ITERATIONS) run at production speed on
+// LLVM, but `digest::hmacSha256` is itself an IN-LANGUAGE implementation
+// (tests/corpus/digest's own header comment — "in-language over the int64
+// mask idiom"), so a tree-walk oracle run costs real wall-clock per call; this
+// corpus proves the algorithm/format/upgrade-path, not RFC timing. ----
+Promise<void> testPbkdf2() {
+    console.writeln("== pbkdf2 ==");
+    string stored = await hashPassword("correct horse battery staple", 4);
+    console.writeln("format ok=" + stored.startsWith("pbkdf2$4$").toString());
+
+    VerifyResult okRes = await verifyPassword("correct horse battery staple", stored, 4);
+    console.writeln("verify correct=" + okRes.ok.toString() + " upgraded=" + (okRes.upgradedHash != None).toString());
+
+    VerifyResult badRes = await verifyPassword("wrong password", stored, 4);
+    console.writeln("verify wrong=" + badRes.ok.toString());
+
+    VerifyResult upRes = await verifyPassword("correct horse battery staple", stored, 8);
+    console.writeln("verify+upgrade ok=" + upRes.ok.toString() + " upgraded=" + (upRes.upgradedHash != None).toString());
+
+    VerifyResult dummyRes = await verifyPassword("anything at all", dummyPasswordHash(4), 4);
+    console.writeln("verify dummy=" + dummyRes.ok.toString());
+
+    VerifyResult malformedRes = await verifyPassword("x", "not-a-valid-format", 4);
+    console.writeln("verify malformed=" + malformedRes.ok.toString());
+
+    bool floorThrew = false;
+    try { checkPbkdf2Iterations(100); } catch (IException e) { floorThrew = true; }
+    console.writeln("iterations floor enforced=" + floorThrew.toString());
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+// ---- constant-time compare sanity (P3 equivalent) ----
+void testConstantTime() {
+    console.writeln("== constant-time ==");
+    console.writeln("equal=" + constantTimeEquals("abcdefgh", "abcdefgh").toString());
+    console.writeln("diffFirst=" + constantTimeEquals("Xbcdefgh", "abcdefgh").toString());
+    console.writeln("diffLast=" + constantTimeEquals("abcdefgX", "abcdefgh").toString());
+    console.writeln("diffLen=" + constantTimeEquals("abc", "abcd").toString());
+}
+
+// ---- cookie parse/render round-trip (P4 equivalent) ----
+void testCookieCodec() {
+    console.writeln("== cookie codec ==");
+    Array<CookiePair> pairs = parseCookieHeader("a=1; b=2; c=3");
+    console.writeln("count=" + pairs.length().toString());
+    for (CookiePair p in pairs) { console.writeln(p.name + "=" + p.value); }
+    console.writeln(renderSetCookie("sid", "abc123", true, 1800));
+    console.writeln(renderExpiredCookie("sid", false));
+}
+
+// ---- session strategy end-to-end (§3, F-2 fixation defense) ----
+Promise<void> testSession() {
+    console.writeln("== session ==");
+    InMemorySessionStore store = InMemorySessionStore();
+    SessionConfig cfg = SessionConfig("atlantis_sid",
+        encoding::base64Encode("0123456789abcdef0123456789abcdef"), 1800, 43200, false);
+    SessionStrategy strat = SessionStrategy(store, cfg);
+
+    Context anonCtx = Context(mkReq("GET", "/", "", ""));
+    string cookie1 = await strat.issue(anonCtx, Principal("u1", "Ann", ["editor"], emptyClaims()));
+    console.writeln("issued cookie nonEmpty=" + (cookie1 != "").toString());
+
+    Context authedCtx = Context(mkReq("GET", "/me", "Cookie: " + cookieNameValue(cookie1) + "\r\n", ""));
+    Principal? u = strat.authenticate(authedCtx);
+    console.writeln("authenticated id=" + (u?.id ?? "NONE"));
+    console.writeln("csrfToken present=" + (csrfToken(authedCtx) != "").toString());
+
+    // wrong cookie value (tampered sig) -> None
+    Context tamperedCtx = Context(mkReq("GET", "/me",
+        "Cookie: atlantis_sid=v1.deadbeef.9999999999999.deadbeef\r\n", ""));
+    Principal? tamperedResult = strat.authenticate(tamperedCtx);
+    console.writeln("tampered cookie authenticated=" + (tamperedResult != None).toString());
+
+    Context revokeCtx = Context(mkReq("GET", "/logout", "Cookie: " + cookieNameValue(cookie1) + "\r\n", ""));
+    string revokeCookie = await strat.revoke(revokeCtx);
+    console.writeln("revoke cookie clears=" + revokeCookie.contains("Max-Age=0").toString());
+
+    Context afterRevokeCtx = Context(mkReq("GET", "/me", "Cookie: " + cookieNameValue(cookie1) + "\r\n", ""));
+    Principal? afterRevoke = strat.authenticate(afterRevokeCtx);
+    console.writeln("after revoke authenticated=" + (afterRevoke != None).toString());   // F-2: old sid dead
+
+    // Fixation defense: issuing again while the OLD cookie is still presented
+    // must mint a brand-new sid/token (not reuse the old CSRF token).
+    Context reIssueCtx = Context(mkReq("GET", "/", "Cookie: " + cookieNameValue(cookie1) + "\r\n", ""));
+    string cookie2 = await strat.issue(reIssueCtx, Principal("u1", "Ann", ["editor"], emptyClaims()));
+    console.writeln("reissued cookie differs=" + (cookieNameValue(cookie2) != cookieNameValue(cookie1)).toString());
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+// ---- bearer strategy (§4, F-10 alg-confusion) ----
+Promise<void> testBearer() {
+    console.writeln("== bearer ==");
+    TokenConfig cfg = defaultTokenConfig("supersecretkeymaterial0123456789");
+    Principal p = Principal("u2", "Bob", ["admin"], emptyClaims());
+    string token = mintToken(p, 3600, cfg);
+
+    Principal? verified = verifyToken(token, cfg);
+    console.writeln("verified id=" + (verified?.id ?? "NONE"));
+    console.writeln("verified role admin=" + (verified?.hasRole("admin") ?? false).toString());
+
+    Array<string> parts = token.split(".");
+
+    string forgedHeader = encoding::base64UrlEncode("{\"alg\":\"none\",\"typ\":\"JWT\"}");
+    string forged = forgedHeader + "." + parts.at(1) + "." + parts.at(2);
+    console.writeln("alg-none rejected=" + (verifyToken(forged, cfg) == None).toString());
+
+    string tampered = parts.at(0) + "." + parts.at(1) + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    console.writeln("tampered sig rejected=" + (verifyToken(tampered, cfg) == None).toString());
+
+    // wrong key entirely
+    TokenConfig otherCfg = defaultTokenConfig("a-totally-different-key-value!!");
+    console.writeln("wrong key rejected=" + (verifyToken(token, otherCfg) == None).toString());
+
+    // iss/aud enforcement
+    TokenConfig strictCfg = TokenConfig("myapp", "myaud", 60, true, cfg.key);
+    string strictToken = mintToken(p, 3600, strictCfg);
+    console.writeln("iss/aud ok=" + (verifyToken(strictToken, strictCfg) != None).toString());
+    console.writeln("iss/aud mismatch=" + (verifyToken(token, strictCfg) == None).toString());
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+// ---- guard enforcement (§5), built on Track 02's landed fluent surface ----
+void testGuard() {
+    console.writeln("== guard ==");
+    console.writeln(guardSpecOf(2, ""));
+    console.writeln(guardSpecOf(1, ""));
+    console.writeln(guardSpecOf(1, "admin"));
+    console.writeln(guardSpecOf(1, "policy:canEdit"));
+
+    Router r = Router();
+    r.record(RouteRec("GET", "/open", "C", "open", [], "", 2, "", None, ""), (c) => HttpResponse(200, "ok"));
+    r.record(RouteRec("GET", "/me", "C", "me", [], "", 1, "", None, ""), (c) => HttpResponse(200, "ok"));
+    r.record(RouteRec("GET", "/admin", "C", "admin", [], "", 1, "admin", None, ""), (c) => HttpResponse(200, "ok"));
+    r.record(RouteRec("GET", "/edit", "C", "edit", [], "", 1, "policy:canEdit", None, ""), (c) => HttpResponse(200, "ok"));
+    r.finalize("auth");
+
+    PolicyRegistry reg = PolicyRegistry();
+    reg.add("canEdit", (ctx, pr) => pr.hasRole("editor"));
+    validateGuards(r, reg);
+    console.writeln("validateGuards ok=true");
+
+    Router badR = Router();
+    badR.record(RouteRec("GET", "/bad", "C", "bad", [], "", 1, "policy:missing", None, ""), (c) => HttpResponse(200, "ok"));
+    badR.finalize("auth");
+    bool badThrew = false;
+    try { validateGuards(badR, PolicyRegistry()); } catch (IException e) { badThrew = true; }
+    console.writeln("validateGuards missing-policy threw=" + badThrew.toString());
+
+    var guardMw = guard(r, reg);
+    var resolveMw = r.resolveMiddleware();
+    var terminal = (c) => HttpResponse(200, "handled");
+    var pipeline = (c) => resolveMw(c, (c2) => guardMw(c2, terminal));
+
+    console.writeln("open status=" + pipeline(Context(mkReq("GET", "/open", "", ""))).status.toString());
+
+    bool meNoAuthThrew = false;
+    int meNoAuthStatus = 0;
+    try { pipeline(Context(mkReq("GET", "/me", "", ""))); }
+    catch (IHttpException e) { meNoAuthThrew = true; meNoAuthStatus = e.status; }
+    console.writeln("me(no auth) threw=" + meNoAuthThrew.toString() + " status=" + meNoAuthStatus.toString());
+
+    Context meAuthed = Context(mkReq("GET", "/me", "", ""));
+    meAuthed.user = Principal("u3", "Cara", [], emptyClaims());
+    console.writeln("me(authed) status=" + pipeline(meAuthed).status.toString());
+
+    Context adminNoRole = Context(mkReq("GET", "/admin", "", ""));
+    adminNoRole.user = Principal("u4", "Dee", ["user"], emptyClaims());
+    bool adminThrew = false;
+    int adminStatus = 0;
+    try { pipeline(adminNoRole); } catch (IHttpException e) { adminThrew = true; adminStatus = e.status; }
+    console.writeln("admin(no role) threw=" + adminThrew.toString() + " status=" + adminStatus.toString());
+
+    Context adminWithRole = Context(mkReq("GET", "/admin", "", ""));
+    adminWithRole.user = Principal("u5", "Eve", ["admin"], emptyClaims());
+    console.writeln("admin(with role) status=" + pipeline(adminWithRole).status.toString());
+
+    Context editNoPolicy = Context(mkReq("GET", "/edit", "", ""));
+    editNoPolicy.user = Principal("u6", "Fay", ["user"], emptyClaims());
+    bool editThrew = false;
+    int editStatus = 0;
+    try { pipeline(editNoPolicy); } catch (IHttpException e) { editThrew = true; editStatus = e.status; }
+    console.writeln("edit(no policy) threw=" + editThrew.toString() + " status=" + editStatus.toString());
+
+    Context editWithPolicy = Context(mkReq("GET", "/edit", "", ""));
+    editWithPolicy.user = Principal("u7", "Gia", ["editor"], emptyClaims());
+    console.writeln("edit(with policy) status=" + pipeline(editWithPolicy).status.toString());
+}
+
+void testRequire() {
+    console.writeln("== require ==");
+    Context ctx = Context(mkReq("GET", "/", "", ""));
+    bool threw = false;
+    int status = 0;
+    try { require(ctx); } catch (IHttpException e) { threw = true; status = e.status; }
+    console.writeln("require(no user) threw=" + threw.toString() + " status=" + status.toString());
+    ctx.user = Principal("u9", "Han", [], emptyClaims());
+    console.writeln("require(with user) id=" + require(ctx).id);
+}
+
+// ---- CSRF (§7) ----
+void testCsrf() {
+    console.writeln("== csrf ==");
+    var mw = csrfMiddleware(defaultCsrfConfig());
+    var terminal = (c) => HttpResponse(200, "ok");
+
+    console.writeln("GET status=" + mw(Context(mkReq("GET", "/form", "", "")), terminal).status.toString());
+
+    Context postOk = Context(mkReq("POST", "/form",
+        "Content-Type: application/x-www-form-urlencoded\r\n", "_csrf=tok123&name=x"));
+    postOk.items["auth.csrfToken"] = "tok123";
+    console.writeln("POST matching status=" + mw(postOk, terminal).status.toString());
+
+    Context postBad = Context(mkReq("POST", "/form",
+        "Content-Type: application/x-www-form-urlencoded\r\n", "_csrf=WRONG&name=x"));
+    postBad.items["auth.csrfToken"] = "tok123";
+    bool postBadThrew = false;
+    try { mw(postBad, terminal); } catch (IHttpException e) { postBadThrew = true; }
+    console.writeln("POST bad threw=" + postBadThrew.toString());
+
+    Context jsonAjax = Context(mkReq("POST", "/api",
+        "Content-Type: application/json\r\nX-Requested-With: XMLHttpRequest\r\n", "{}"));
+    console.writeln("JSON+ajax status=" + mw(jsonAjax, terminal).status.toString());
+
+    Context jsonNoAjax = Context(mkReq("POST", "/api", "Content-Type: application/json\r\n", "{}"));
+    bool jsonNoAjaxThrew = false;
+    try { mw(jsonNoAjax, terminal); } catch (IHttpException e) { jsonNoAjaxThrew = true; }
+    console.writeln("JSON no-ajax threw=" + jsonNoAjaxThrew.toString());
+
+    Context bearerExempt = Context(mkReq("POST", "/api",
+        "Content-Type: application/x-www-form-urlencoded\r\nAuthorization: Bearer abc\r\n", "_csrf=WRONG"));
+    console.writeln("bearer exempt status=" + mw(bearerExempt, terminal).status.toString());
+}
+
+// ---- CORS (§8) ----
+void testCors() {
+    console.writeln("== cors ==");
+    CorsConfig cfg = CorsConfig(["https://good.example"], ["GET", "POST"], ["Content-Type"], [], true, 600);
+    validateCorsConfig(cfg);
+    var mw = corsMiddleware(cfg);
+    var terminal = (c) => HttpResponse(200, "ok");
+
+    HttpResponse pfOk = mw(Context(mkReq("OPTIONS", "/api",
+        "Origin: https://good.example\r\nAccess-Control-Request-Method: POST\r\n", "")), terminal);
+    console.writeln("preflight ok status=" + pfOk.status.toString() +
+        " acao=" + (pfOk.headers.first("Access-Control-Allow-Origin") ?? "-"));
+
+    HttpResponse pfBad = mw(Context(mkReq("OPTIONS", "/api",
+        "Origin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\n", "")), terminal);
+    console.writeln("preflight bad status=" + pfBad.status.toString() +
+        " acao=" + (pfBad.headers.first("Access-Control-Allow-Origin") ?? "-"));
+
+    HttpResponse simpleR = mw(Context(mkReq("GET", "/api", "Origin: https://good.example\r\n", "")), terminal);
+    console.writeln("simple status=" + simpleR.status.toString() +
+        " acao=" + (simpleR.headers.first("Access-Control-Allow-Origin") ?? "-") +
+        " vary=" + (simpleR.headers.first("Vary") ?? "-"));
+
+    bool wcThrew = false;
+    try { validateCorsConfig(CorsConfig(["*"], ["GET"], [], [], true, 600)); }
+    catch (IException e) { wcThrew = true; }
+    console.writeln("wildcard+credentials threw=" + wcThrew.toString());
+}
+
+// ---- security headers (§9.1) ----
+void testSecurityHeaders() {
+    console.writeln("== security headers ==");
+    var mw = securityHeadersMiddleware(defaultSecurityHeadersConfig());
+    var terminal = (c) => HttpResponse(200, "ok");
+
+    HttpResponse r = mw(Context(mkReq("GET", "/", "", "")), terminal);
+    console.writeln("nosniff=" + (r.headers.first("X-Content-Type-Options") ?? "-"));
+    console.writeln("xfo=" + (r.headers.first("X-Frame-Options") ?? "-"));
+    console.writeln("referrer=" + (r.headers.first("Referrer-Policy") ?? "-"));
+    console.writeln("hsts(no tls)=" + (r.headers.first("Strict-Transport-Security") ?? "-"));
+    console.writeln("csp nonEmpty=" + ((r.headers.first("Content-Security-Policy") ?? "") != "").toString());
+
+    Context tlsCtx = Context(mkReq("GET", "/", "", ""));
+    tlsCtx.items["tls"] = "1";
+    HttpResponse r2 = mw(tlsCtx, terminal);
+    console.writeln("hsts(tls) nonEmpty=" + ((r2.headers.first("Strict-Transport-Security") ?? "") != "").toString());
+}
+
+// ---- token-bucket rate limiting (§9.2) — synthetic clock, no real time ----
+void testRateLimit() {
+    console.writeln("== rate limit ==");
+    TokenBucketLimiter limiter = TokenBucketLimiter();
+    int t0 = 1000000;
+    RateDecision d1 = limiter.allow("ip1", 60.0, 3.0, t0);
+    RateDecision d2 = limiter.allow("ip1", 60.0, 3.0, t0);
+    RateDecision d3 = limiter.allow("ip1", 60.0, 3.0, t0);
+    RateDecision d4 = limiter.allow("ip1", 60.0, 3.0, t0);
+    console.writeln("d1=" + d1.allowed.toString() + " d2=" + d2.allowed.toString() +
+        " d3=" + d3.allowed.toString() + " d4=" + d4.allowed.toString() +
+        " retryAfter>0=" + (d4.retryAfterSec > 0).toString());
+    RateDecision d5 = limiter.allow("ip1", 60.0, 3.0, t0 + 1000);
+    console.writeln("d5(after 1s)=" + d5.allowed.toString());
+}
+
+// ---- login lockout (§9.2) — synthetic clock ----
+void testLoginThrottle() {
+    console.writeln("== login throttle ==");
+    LoginThrottle throttle = LoginThrottle();
+    int t0 = 2000000;
+    int i = 0;
+    while (i < 4) { throttle.recordAccountFailure("bob", t0); i = i + 1; }
+    console.writeln("locked after 4=" + throttle.accountLocked("bob", t0).toString());
+    throttle.recordAccountFailure("bob", t0);
+    console.writeln("locked after 5=" + throttle.accountLocked("bob", t0).toString());
+    throttle.resetAccount("bob");
+    console.writeln("locked after reset=" + throttle.accountLocked("bob", t0).toString());
+}
+
+Promise<void> run() {
+    await testPbkdf2();
+    testConstantTime();
+    testCookieCodec();
+    await testSession();
+    await testBearer();
+    testGuard();
+    testRequire();
+    testCsrf();
+    testCors();
+    testSecurityHeaders();
+    testRateLimit();
+    testLoginThrottle();
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+void main() { await run(); }

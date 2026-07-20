@@ -1,0 +1,164 @@
+// Atlantis Track 08 — shipped strategy B: BEARER, HS256 JWT-shaped tokens
+// (design §4). `Authorization: Bearer <token>` (scheme match case-insensitive).
+//
+// base64Url note (P-probe P2, resolved): `encoding::base64UrlEncode`/
+// `base64UrlDecode` already emit/accept UNPADDED output (verified against
+// `tests/corpus/encoding/encoding.lev`: `base64UrlEncode("foob") == "Zm9vYg"`,
+// no '='), matching RFC 7515 exactly — so no strip/accept-both padding shim is
+// needed inside this track; the design's F-6/P2 contingency does not fire.
+namespace Atlantis {
+    namespace Auth {
+
+        struct TokenConfig {
+            string iss;          // "" = not checked
+            string aud;          // "" = not checked
+            int leewaySec;       // default 60
+            bool requireExp;     // default true
+            string key;          // HMAC key; shared with sessions by default (config `token.key` overrides)
+            new TokenConfig(string iss, string aud, int leewaySec, bool requireExp, string key) {
+                this.iss = iss;
+                this.aud = aud;
+                this.leewaySec = leewaySec;
+                this.requireExp = requireExp;
+                this.key = key;
+            }
+        }
+        TokenConfig defaultTokenConfig(string key) => TokenConfig("", "", 60, true, key);
+
+        // `Map<K,V>()` only infers K/V when it is the WHOLE initializer of a
+        // declared-target-typed local (proven idiom, config.lev's `empty()`) —
+        // not as a nested call argument or the right side of `??` (compiler
+        // limitation, filed). This helper gives `??` a properly-typed operand
+        // to fall back to instead of a bare `Map()`.
+        Map<string, JsonValue> emptyJsonObject() {
+            Map<string, JsonValue> m = Map();
+            return m;
+        }
+
+        // Guard against a NaN/±inf/out-of-int64-range JSON number reaching the
+        // native (throwing) `float.toInt()` — an attacker-controlled `exp`/`nbf`
+        // must fail closed (None), never crash the request.
+        int? jsonNumToInt(JsonValue v) {
+            float fv = v.asNum() ?? float::NaN;
+            if (fv.isNaN() || fv.isInfinite() || fv.abs() > 9000000000000000.0) { return None; }
+            return fv.toInt();
+        }
+
+        // Verify order (§4): fail = None + audit (never throw — the guard owns
+        // 401). alg is pinned to OUR expectation before any signature work —
+        // rejects "none" and anything but exactly "HS256" (F-10, the classic
+        // alg-confusion break).
+        Principal? verifyToken(string token, TokenConfig cfg) {
+            Array<string> parts = token.split(".");
+            if (parts.length() != 3) { return None; }
+            string headerB64 = parts.at(0);
+            string payloadB64 = parts.at(1);
+            string sigB64 = parts.at(2);
+
+            string headerJsonStr = encoding::base64UrlDecode(headerB64) ?? "";
+            JsonValue headerJson = json::parse(headerJsonStr) ?? JsonValue::ofNull();
+            Map<string, JsonValue> headerObj = headerJson.asObject() ?? emptyJsonObject();
+            string alg = ((headerObj.atOrNone("alg") ?? JsonValue::ofNull()).asStr()) ?? "";
+            if (alg != "HS256") { return None; }
+
+            string sig = encoding::base64UrlDecode(sigB64) ?? "";
+            string expectedSig = digest::hmacSha256(cfg.key, headerB64 + "." + payloadB64);
+            if (!constantTimeEquals(expectedSig, sig)) { return None; }   // CS-2, raw bytes
+
+            string payloadJsonStr = encoding::base64UrlDecode(payloadB64) ?? "";
+            JsonValue payloadJson = json::parse(payloadJsonStr) ?? JsonValue::ofNull();
+            Map<string, JsonValue> obj = payloadJson.asObject() ?? emptyJsonObject();
+
+            string sub = ((obj.atOrNone("sub") ?? JsonValue::ofNull()).asStr()) ?? "";
+            if (sub == "") { return None; }   // sub required
+
+            JsonValue expV = obj.atOrNone("exp") ?? JsonValue::ofNull();
+            if (cfg.requireExp && expV.isNull()) { return None; }
+            if (!expV.isNull()) {
+                int? expSec = jsonNumToInt(expV);
+                if (expSec == None) { return None; }
+                int nowSec = DateTime::now().epochMs / 1000;
+                if (nowSec > (expSec ?? 0) + cfg.leewaySec) { return None; }
+            }
+            JsonValue nbfV = obj.atOrNone("nbf") ?? JsonValue::ofNull();
+            if (!nbfV.isNull()) {
+                int? nbfSec = jsonNumToInt(nbfV);
+                if (nbfSec == None) { return None; }
+                int nowSec = DateTime::now().epochMs / 1000;
+                if (nowSec + cfg.leewaySec < (nbfSec ?? 0)) { return None; }
+            }
+            if (cfg.iss != "") {
+                string iss = ((obj.atOrNone("iss") ?? JsonValue::ofNull()).asStr()) ?? "";
+                if (iss != cfg.iss) { return None; }
+            }
+            if (cfg.aud != "") {
+                JsonValue audV = obj.atOrNone("aud") ?? JsonValue::ofNull();
+                bool audOk = false;
+                if (audV.isStr()) {
+                    audOk = (audV.asStr() ?? "") == cfg.aud;
+                } else if (audV.isArray()) {
+                    for (JsonValue item in audV.asArray() ?? []) {
+                        if ((item.asStr() ?? "") == cfg.aud) { audOk = true; }
+                    }
+                }
+                if (!audOk) { return None; }
+            }
+
+            string name = ((obj.atOrNone("name") ?? JsonValue::ofNull()).asStr()) ?? "";
+            Array<string> roles = [];
+            JsonValue rolesV = obj.atOrNone("roles") ?? JsonValue::ofNull();
+            if (rolesV.isArray()) {
+                for (JsonValue item in rolesV.asArray() ?? []) {
+                    string? s = item.asStr();
+                    if (s != None) { roles = roles.add(s); }
+                }
+            }
+            // Every top-level string claim (numbers/bools rendered to strings;
+            // nested objects/arrays dropped — documented flattening, §1/§4.5).
+            Map<string, string> claims = Map();
+            for (Pair e in obj) {
+                JsonValue v = e.second;
+                string key = e.first;
+                if (v.isStr())  { claims[key] = v.asStr() ?? ""; }
+                else if (v.isBool()) { claims[key] = (v.asBool() ?? false).toString(); }
+                else if (v.isNum())  { claims[key] = (v.asNum() ?? 0.0).toString(); }
+            }
+            return Principal(sub, name, roles, claims);
+        }
+
+        class BearerStrategy : IAuthStrategy {
+            TokenConfig cfg;
+            new BearerStrategy(TokenConfig cfg) { this.cfg = cfg; }
+            Principal? authenticate(Http::Context ctx) {
+                string header = Http::reqHeader(ctx.request, "Authorization") ?? "";
+                if (header.length() < 7 || header.subStr(0, 7).toUpper() != "BEARER ") { return None; }
+                string token = header.subStr(7, header.length() - 7);
+                return verifyToken(token, this.cfg);
+            }
+        }
+
+        // Token *minting*: same primitives in reverse (§4) — tests and service
+        // clients need it (Track 07/MCP story).
+        string mintToken(Principal p, int ttlSec, TokenConfig cfg) {
+            string headerJson = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+            Map<string, JsonValue> claims = Map();
+            claims["sub"] = JsonValue::ofStr(p.id);
+            claims["name"] = JsonValue::ofStr(p.name);
+            Array<JsonValue> rolesArr = [];
+            for (string r in p.roles) { rolesArr = rolesArr.add(JsonValue::ofStr(r)); }
+            claims["roles"] = JsonValue::ofArray(rolesArr);
+            int nowSec = DateTime::now().epochMs / 1000;
+            claims["iat"] = JsonValue::ofNum(nowSec.toFloat());
+            claims["exp"] = JsonValue::ofNum((nowSec + ttlSec).toFloat());
+            if (cfg.iss != "") { claims["iss"] = JsonValue::ofStr(cfg.iss); }
+            if (cfg.aud != "") { claims["aud"] = JsonValue::ofStr(cfg.aud); }
+            for (Pair e in p.claims) { claims[e.first] = JsonValue::ofStr(e.second); }
+            string payloadJson = JsonValue::ofObject(claims).render();
+            string headerB64 = encoding::base64UrlEncode(headerJson);
+            string payloadB64 = encoding::base64UrlEncode(payloadJson);
+            string signingInput = headerB64 + "." + payloadB64;
+            string sigB64 = encoding::base64UrlEncode(digest::hmacSha256(cfg.key, signingInput));
+            return signingInput + "." + sigB64;
+        }
+    }
+}

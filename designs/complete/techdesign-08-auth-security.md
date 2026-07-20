@@ -626,3 +626,82 @@ the session record); everything inside errorMapper so 401/403/429 render uniform
   invariants (§9.4) offered to Tracks 01/04; incremental-SHA256/HMAC-midstate ask noted
   for Track 09's log; open questions raised to owner: C5 `Auth.role` default (F-12),
   `@RateLimit` attribute addition, HttpException-with-headers (F-11).
+
+- 2026-07-19 — Core subsystem implemented in `packages/atlantis/src/auth/` (principal,
+  crypto, cookie, pbkdf2, strategy, session, bearer, guard, csrf, cors, headers, ratelimit,
+  audit), plus additive `App.useAuthentication()/useAuthorization()` in `kernel/facade.lev`.
+  Corpus: `packages/atlantis/tests/corpus/auth/` (oracle+IR green and byte-identical;
+  LLVM lane currently red — see below). Landed as-designed:
+  - Principal (id/name/roles/claims), `Auth::require`, session strategy (signed-cookie
+    envelope, in-memory store + sweep, rolling+absolute expiry, fixation defense on
+    `issue()`, CSRF token carried by every live record including anonymous pre-sessions),
+    bearer strategy (HS256 verify+mint, alg pinned before signature work, exp/nbf/iss/aud
+    + leeway, claim flattening), `Auth::middleware` first-match fold, guard enforcement
+    (401 vs 403 asymmetry, `role:`/`policy:` specs, `PolicyRegistry`, `validateGuards` boot
+    check), PBKDF2-HMAC-SHA256 (chunked, `Http::nextTick()` yield, upgrade-on-verify,
+    dummy-hash timing equalization, 100k floor / 210k default constants), constant-time
+    compare (verbatim per §6.2), CSRF (SameSite + synchronizer token + JSON header stance),
+    CORS (preflight ordering, wildcard+credentials boot error), security headers, token-
+    bucket rate limiting + login lockout, audit event vocabulary with redaction by
+    construction.
+  - **Deviations from the letter of the design** (owner should re-read before treating
+    this as final):
+    1. **R-4 `sysRandomBytes` → `sysRandom`.** The crypto ticket landed under a different
+       name (`designs/complete/techdesign-tls-crypto.md` §8 ruling) before this track
+       started; `Auth::randomBytes` is a direct pass-through, no gated interim/
+       `allowInsecureRandomDEV` path exists because none was needed (STOP S-2 moot).
+    2. **base64Url padding shim (P2) never built.** `encoding::base64UrlEncode/Decode`
+       already emit/accept unpadded per `tests/corpus/encoding`; F-6 does not fire.
+    3. **`@Auth`/`@NoAuth` attributes were never declared.** Track 02 only landed the
+       explicit-fluent surface (`.requireAuth()/.noAuth()/.auth(role)` → `RouteRec.
+       authMode`/`authRole`) — attribute-rule auto-wiring is blocked upstream on
+       LA-4/LA-16/LA-22 (LA-4 items A/B landed 2026-07-19, same day, but LA-16/LA-22 —
+       the splice mechanism attribute routing would need — remain an open, un-accepted
+       request, `designs/requests/request-metaprog-splices.md`). §5's GuardSpec is
+       therefore *derived* at request time from `Router.authModeOf`/`authRoleOf` (both
+       already public on the landed `Router`) rather than stored as a new field —
+       `.auth("policy:name")` threads the `policy:` prefix through the existing
+       `authRole` string with zero C5/Router-schema changes. `Auth::validateGuards`
+       replaces the design's boot-time attribute check with the equivalent walk over
+       `router.routes()`.
+    4. **No `attribute Auth`/`NoAuth` means no bare-`@Auth` question (F-12) to resolve** —
+       moot until Track 02's attribute layer lands.
+    5. **Session cookie's `Secure` determination** has no landed TLS-on-Context signal to
+       read (C2's frozen fields don't carry one) — `cookieShouldBeSecure` reads the
+       documented interim convention `ctx.items["tls"] == "1"` (no track stamps it yet)
+       OR `forceSecure`, whichever is true.
+    6. **HttpException-with-headers (F-11) never materialized** — rate-limit 429 and (by
+       extension) any future header-bearing throw uses the design's own documented
+       fallback: build and return the response directly from the middleware.
+  - **Not built / open:**
+    - Real RFC-vector PBKDF2 corpus (design's M1 "passing published PBKDF2-HMAC-SHA256
+      vectors") — the corpus proves the algorithm/format/upgrade-path self-consistently
+      at a tiny iteration count (engine cost reasons, see LLVM note below), not against
+      RFC 7914 §11 ground truth.
+    - P3's timing-ratio measurement (100k-compare equal/first-differs/last-differs on IR
+      vs LLVM) and P5's iteration/latency extrapolation were not run — no calibration
+      numbers exist yet to ratify the 210k default (§6.1's own M4 item).
+    - `@RateLimit` attribute (F-11's sibling ask) not raised further; per-route overrides
+      remain a plain composition-root config concern (`TokenBucketLimiter` + explicit
+      `rateLimitMiddleware(...)` calls), matching the design's stated v1 fallback.
+    - The literal M5 acceptance script (one continuous register→lockout→login→...→old-sid-
+      replay-401 narrative) was not written as one sequence; the corpus instead covers each
+      piece (issue/authenticate/revoke/reissue, role/policy guards, CSRF reject, bearer
+      round-trip, login lockout) as independent sections.
+  - **LLVM lane, known pre-existing platform issue (NOT a Track 08 defect):** the native
+    binary currently segfaults partway through the corpus on `Router`/`Context`
+    construction sequences. Bisected to a genuine, independently-reproducible minimal
+    repro (`known_bugs_1.md` #97: a function taking a class-typed parameter that also
+    returns from inside a `for` loop over `Array<Struct>` corrupts a later, unrelated
+    heap-touching call on LLVM) and fixed at the one site this track hit
+    (`cookie.lev`'s `cookieValue`). Re-verifying afterward showed the corpus still
+    crashes on LLVM, later and at a different point, for reasons that do NOT match that
+    narrow shape — and directly re-running the untouched, pre-existing
+    `packages/atlantis/tests/corpus/routing` corpus (Track 02, no Track 08 code
+    involved) confirmed IT ALSO segfaults on LLVM within its first two lines, matching
+    `known_bugs_1.md` #95's own description almost exactly. Conclusion: this is a
+    systemic, already-tracked, out-of-scope LLVM defect broad enough that essentially
+    any non-trivial Atlantis program touching `Router`/`Context` construction is
+    currently affected — not something introduced by or fixable within this track.
+    Oracle and IR are green and byte-identical (`auth.expected`); that pair is the
+    correctness reference until the compiler-side fix lands.
