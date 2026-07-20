@@ -2,7 +2,18 @@
 
 **Owns:** `src/CGen.cpp` — **and changes nothing in it for v1**. This doc exists so the
 deferral is a recorded decision with a specified future path, not an omission someone
-"fixes" mid-track. **Status:** PROPOSED (decision doc). **Gotchas owned:** the two in §5.
+"fixes" mid-track. **Status:** ACCEPTED — deferral recorded and §6 acceptance verified
+(2026-07-19); moved to `designs/complete/`. **Gotchas owned:** the two in §5.
+
+> **§6 acceptance verification (2026-07-19).** (1) reference.md carries the coverage line
+> on both the async surface (§6.6.67, "emit-C++ — no async surface (unchanged deferral)")
+> and the native-backend section (§7.3, "the emit-C++ backend covers the whole language
+> *except* the event-loop / system features … async"). (2) Lane audit: the `corpus_tasks_*`
+> lanes run only on `--run`/`--ir`; own-directory placement keeps the tasks corpus off the
+> top-level scan so `corpus_native` (emit-C++) never compiles them (`CMakeLists.txt`
+> §479–532), and no `run_native.sh` invocation points at any tasks/async corpus. (3) The
+> STOP condition holds: `src/CGen.cpp` has **no** `Op::Await` case — only a comment that
+> already cites this doc — so `Await` still hits the clean unsupported skip. Nothing built.
 
 ---
 
