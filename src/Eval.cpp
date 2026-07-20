@@ -1308,14 +1308,27 @@ Value Evaluator::evalCall(Expr* e) {
         // yields void, and the call below runs against a nullptr receiver —
         // silently wrong on --ir, a null-`this` segfault here (bug.md #55).
         Expr* recvExpr = callee->a.get();
-        if (callee->colon && recvExpr->kind == ExprKind::Member) {
-            Symbol* maybeBase = sema_.global->lookup(recvExpr->text);
-            if (maybeBase && maybeBase->kind == SymbolKind::Class) {
-                Value rv = eval(recvExpr->a.get());
-                if (throwing_) return vvoid();
-                if (rv.kind == VKind::Object && e->resolved)
-                    return callFunction(e->resolved, args, rv.obj, rv.obj->cls);
-            }
+        if (callee->colon && recvExpr->kind == ExprKind::Member && e->resolved) {
+            // `recv.Base::method(...)` — the inner `.Base` is a SOURCE QUALIFIER
+            // naming a base class (§4), not a field read on `recv`. Evaluate the
+            // real receiver (recvExpr->a) and dispatch statically to the
+            // checker-resolved base method.
+            //
+            // The base qualifier may be NAMESPACED (e.g. `Sonar::App` reached as
+            // `this.App::renderFrame()`), so this must NOT gate on a bare global
+            // class lookup of recvExpr->text — `sema_.global->lookup` misses
+            // every namespaced base, the guard is skipped, and the call falls
+            // through to the NS::fn path below where `bv` is Void and the base
+            // method runs with a nullptr `this` (the SonarApp live-loop crash:
+            // the first frame's `this.App::renderFrame()` ran on a null receiver,
+            // segfaulting the traversal). A genuine namespace qualifier
+            // (`Ns::fn()`) has recvExpr->kind == Name (not Member) and never
+            // reaches here; a Member receiver that evaluates to a real object is
+            // unambiguously a base-qualified instance call.
+            Value rv = eval(recvExpr->a.get());
+            if (throwing_) return vvoid();
+            if (rv.kind == VKind::Object && rv.obj)
+                return callFunction(e->resolved, args, rv.obj, rv.obj->cls);
         }
         Value bv = eval(callee->a.get());
         if (throwing_) return vvoid();
