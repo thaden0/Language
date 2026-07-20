@@ -260,8 +260,8 @@ generic runner:
 - **Compiler bugs found:** #91 (nested-ns rules; FIXED), #92 (attribute class
   shadowing bare types; FIXED), #93 (punctuation-only template string literals;
   FIXED, templates now use the literals directly), #94 (field-closure dot-call;
-  FIXED, direct calls restored throughout `db.lev`), #95 (pre-existing routing corpus
-  LLVM segfault, unrelated to this track — verified against clean `src/`).
+  FIXED, direct calls restored throughout `db.lev`), #95 (routing-corpus LLVM
+  allocator crash; FIXED with a stale value-struct cleanup guard).
 - **Real MySQL 8 acceptance** (M4/AG-4's live job): environment-gated, same
   posture as Track 05's landing (a MySQL server is present on this host but no
   test credentials exist; the Docker job in techdesign-05 §7.2 stands ready).

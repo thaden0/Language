@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #95 |
+| P0       | — |
 | P1       | — |
 | P2       | — |
 | P3       | — |
@@ -97,30 +97,6 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
-
-## #95 [P0] — atlantis routing corpus segfaults on LLVM (pre-existing at 2026-07-19 master)
-
-**Found:** 2026-07-19, running the new `packages/atlantis/tests/runtests.sh`
-across all corpus dirs during ORM Track 06 verification.
-**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
-primary backend) crashes mid-run on checker-accepted, previously-landed code
-(the crash-later variant counts).
-
-**Repro:**
-
-```
-./build/trident plan packages/atlantis/tests/corpus/routing --plan /tmp/r.lvplan --leviathan ./build/leviathan
-./build/leviathan --build-native /tmp/r.bin --plan /tmp/r.lvplan
-/tmp/r.bin        # prints 2 lines ("== M3 Era-A end-to-end ..." + "-- GET / --"), then dumps core
-```
-
-Oracle and IR runs of the same plan produce the full 40+-line expected output
-(`routing.expected`). Verified present with ALL of this session's compiler
-changes stashed (clean master `src/`), so it predates Track 06's work — the
-routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
-since regressed it. Not diagnosed further here (out of Track 06 scope).
-
----
 
 #91 found AND fixed 2026-07-19 (same session, owner-directed): rules and
 attributes declared in a NESTED namespace (`namespace Atlantis { namespace Orm
