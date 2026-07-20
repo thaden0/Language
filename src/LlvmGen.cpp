@@ -736,9 +736,10 @@ struct Gen {
         // walk above, but rooted at @main only. @ginit (prelude + namespace
         // global initializers) is deliberately NOT a root: a gated native
         // reached only through prelude initialization is tier 2's runtime
-        // trap, never a compile-time brick (the whole prelude lowers into
-        // every module — Resolver.cpp's parsePrelude concatenation — so a
-        // blanket compile-time fail would brick every wasm build). The coll
+        // trap, never a compile-time brick (the target-selected prelude lowers
+        // into every module — Resolver.cpp's parsePrelude, per-target segment
+        // load — so a blanket compile-time fail would brick every wasm build).
+        // The coll
         // seeding is skipped: Array/Map/Range bodies hold no gated natives.
         userReach.assign(mod.functions.size(), false);
         {

@@ -2211,7 +2211,10 @@ are also implemented and share this same front end.
     Moving the prelude to shipped source files is the goal — `parsePrelude()` gains a real
     file-reading seam; per-target selection (e.g. a wasm-only `kPreludeWasm`) is a packaging
     detail *within* that model (which files get shipped/loaded per target), not an alternative
-    to it. See §18.
+    to it. See §18. **SHIPPED 2026-07-19** (`designs/complete/techdesign-prelude-ship-as-files-opus.md`):
+    the eight segments ship as `prelude/*.lev`; `parsePrelude()` reads them from a resolved
+    directory (`--prelude` → `LV_PRELUDE_DIR` → next-to-binary → source tree) with a
+    build-generated embedded fallback; `wasm.lev` loads only for `wasm32*` targets.
 
 ---
 
@@ -2244,10 +2247,13 @@ closure trampoline).
   `examples/wasm-client/`. The `@extern` rules-engine bindgen (doc 06 §1) is **not built** — it
   targeted a per-method `__import` seam the reflective single-`dom_call` bridge abandoned, and a
   faithful generator needs metaprog scope beyond the bounded P4 roadmap; the hand-written `Dom`
-  prelude is the as-built binding surface. Per-target **stdlib packaging** now rides the §19 #18
-  ruling (ship as `.lev` files with a real `parsePrelude()` file-reading seam) — this track is
-  the *consumer* of that upstream refactor, which is not yet built; dev/wasm builds ride the
-  existing in-binary concat until it lands.
+  prelude is the as-built binding surface. Per-target **stdlib packaging** is now built (§19 #18,
+  `designs/complete/techdesign-prelude-ship-as-files-opus.md`): the prelude ships as `prelude/*.lev`
+  through a real `parsePrelude()` file-reading seam, and `wasm.lev` — the `Dom` surface — is
+  absent from native preludes **by selection** (only `wasm32*` targets load it). The OS-only
+  native **capability gate is unchanged**: it still traps/diagnoses the gated natives that remain
+  interleaved in the shared `std`/`rest` segments on wasm builds (R3 deliberately kept those in
+  the shared prelude rather than re-partitioning them).
 
 ---
 

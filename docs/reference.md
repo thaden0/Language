@@ -2797,6 +2797,12 @@ with zero violations — §15's claim, measured.
 Three native backends consume the same IR; only entry-reachable functions are emitted, and
 out-of-coverage constructs fail with a diagnostic:
 
+The stdlib prelude ships as `prelude/*.lev` files (eight segments), resolved `--prelude <dir>`
+→ `LV_PRELUDE_DIR` → next-to-binary `prelude/` → source-tree `../prelude`, with a
+build-generated embedded fallback baked into the compiler when no directory resolves;
+`wasm.lev` (the `Dom` surface) is loaded only for `wasm32*` targets, so native builds never
+see it.
+
 - **LLVM** (when built against LLVM ≥ 18) — **the primary, portable AOT backend**
   (`designs/complete/techdesign-portable-backend.md`): `--emit-llvm` / `--native-obj out.o` (direct
   object emission via `TargetMachine`, no external `llc`), linking the portable runtime v2
@@ -2829,7 +2835,7 @@ out-of-coverage constructs fail with a diagnostic:
     process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking sync reads, raw OS
     threads / shared-address `fork`. Select the branch at comptime with `target::os == "wasm"`.
   - **The `@extern` / DOM surface.** DOM is reached through the hand-written `Dom` prelude
-    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `runtime/../Resolver.cpp` `kPreludeWasm`):
+    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `prelude/wasm.lev`):
     opaque JS values wrapped in an `int` handle, marshaled by one reflective routine in
     `lv_host.js`, with DOM events surfaced as `InStream` endpoints and a closure trampoline
     for handlers (which may `await`). Note the *rules-engine `@extern` bindgen* that would

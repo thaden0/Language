@@ -22,8 +22,38 @@ add_library(levsyntax
 target_include_directories(levsyntax PUBLIC src)
 # --- end levsyntax ---
 
+# --- shipped prelude (techdesign-prelude-ship-as-files-opus.md §3/§5) ---
+# Canonical segment list, in concatenation order. This list is the single
+# source of truth (design R5): the generator bakes it into the embedded-
+# fallback table that Resolver::parsePrelude() and main.cpp's directory
+# validator both iterate. wasm = Track W W-M3 DOM bridge, wasm32*-only (R3).
+set(LV_PRELUDE_SEGMENTS core std rest regex_core regex_api web wasm expr)
+set(LV_PRELUDE_WASM_ONLY wasm)
+set(LV_PRELUDE_DIR ${CMAKE_SOURCE_DIR}/prelude)
+set(LV_PRELUDE_EMBEDDED ${CMAKE_BINARY_DIR}/generated/PreludeEmbedded.cpp)
+list(TRANSFORM LV_PRELUDE_SEGMENTS APPEND ".lev"
+     OUTPUT_VARIABLE LV_PRELUDE_FILES)
+list(TRANSFORM LV_PRELUDE_FILES PREPEND "${LV_PRELUDE_DIR}/"
+     OUTPUT_VARIABLE LV_PRELUDE_FILES)
+# Pass the lists comma-joined: a raw ;-list would be re-split by the shell
+# when the custom command's rule is generated. The script rejoins on ",".
+string(REPLACE ";" "," LV_PRELUDE_SEGMENTS_CSV "${LV_PRELUDE_SEGMENTS}")
+string(REPLACE ";" "," LV_PRELUDE_WASM_ONLY_CSV "${LV_PRELUDE_WASM_ONLY}")
+add_custom_command(
+  OUTPUT ${LV_PRELUDE_EMBEDDED}
+  COMMAND ${CMAKE_COMMAND}
+          -DOUT=${LV_PRELUDE_EMBEDDED}
+          -DPRELUDE_DIR=${LV_PRELUDE_DIR}
+          -DSEGMENTS=${LV_PRELUDE_SEGMENTS_CSV}
+          -DWASM_ONLY=${LV_PRELUDE_WASM_ONLY_CSV}
+          -P ${CMAKE_SOURCE_DIR}/cmake/GenPreludeEmbedded.cmake
+  DEPENDS ${LV_PRELUDE_FILES} ${CMAKE_SOURCE_DIR}/cmake/GenPreludeEmbedded.cmake
+  COMMENT "Generating embedded prelude fallback")
+# --- end shipped prelude ---
+
 # --- front-end library (shared by driver + tests) ---
 add_library(langfront
+  ${LV_PRELUDE_EMBEDDED}
   src/Parser.cpp
   src/AstPrinter.cpp
   src/Project.cpp
@@ -355,6 +385,12 @@ add_test(NAME corpus_math_transcendental_cpp
 add_test(NAME argv_differential
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_argv.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus")
+# ship-as-files prelude (techdesign-prelude-ship-as-files-opus.md §6.1):
+# per-target segment selection + directory-resolution tiers/fatals. Front-end
+# only, no wasm toolchain needed.
+add_test(NAME prelude_select
+         COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_select.sh
+                 $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
 # terminal raw mode (designs/terminal-raw-mode.md §7): non-tty degradation across
 # the four non-frozen engines, the frozen-ELF deferral, comptime hermeticity, and
 # a pty end-to-end that reads one keystroke with no Enter/echo and verifies the
