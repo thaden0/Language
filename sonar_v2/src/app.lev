@@ -82,6 +82,11 @@ namespace Sonar {
         Array<(Size) => void> resizeHandlers_ = [];
         int pollTimerId_ = 0 - 1;
         bool useSignalResize_ = true;   // F2 landed; poll interim is the fallback
+        // The standing SIGWINCH subscription (a signalfd watch on the loop). It
+        // MUST be released in stopSession — otherwise it keeps the runtime event
+        // loop non-empty after quit, so the process never drains/exits even
+        // though the terminal was already restored (arrows then echo raw ANSI).
+        InStream<int>? winchSub_ = None;
         int lastCols_ = 0;
         int lastRows_ = 0;
 
@@ -201,6 +206,12 @@ namespace Sonar {
             cancelTimerId(pollTimerId_); pollTimerId_ = 0 - 1;
             for (int t in timerTokens_) cancelTimerId(t);
             timerTokens_ = [];
+            // Release the SIGWINCH subscription (§8.4): without this its signalfd
+            // watch keeps the event loop alive, so the process hangs after quit
+            // with the terminal already restored (raw off) — arrows then echo as
+            // raw ANSI. close() unsubscribes via signal::off (SU-1).
+            InStream<int>? ws = winchSub_;
+            if (ws != None) { InStream<int> w = ws; w.close(); winchSub_ = None; }
             framePending_ = false;
             started_ = false;
         }
@@ -518,7 +529,9 @@ namespace Sonar {
 
         void subscribeResize() {
             if (useSignalResize_) {
-                signal::on(signal::WINCH).subscribe((n) => this.onWinch());
+                InStream<int> w = signal::on(signal::WINCH);
+                w.subscribe((n) => this.onWinch());
+                winchSub_ = w;
             } else {
                 // F2-not-landed interim: a 200ms size poll (deletable at F2).
                 pollTimerId_ = std::sysTimerStart(200, 200, (n) => this.onWinch());

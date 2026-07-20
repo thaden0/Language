@@ -103,7 +103,7 @@ void main() {
     ScriptedInput si3 = SonarTest::input();
     si3.key("Escape");
     SonarTest::pump(a3, si3);
-    settleTicks(60);
+    settleTicks(260);   // must exceed Sonar EscTimeoutMs (200) so the bare-ESC flush fires
     console.writeln("resolved: " + showResult(r3.get()));
     SonarTest::reset();
 
