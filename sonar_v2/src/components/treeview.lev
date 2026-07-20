@@ -476,7 +476,16 @@ namespace Sonar {
             else if (isSelected && focused) themeKey = "treeview.item.focused.selected";
             else if (isSelected) themeKey = "treeview.item.selected";
             Style st = resolveOrDefault(this, themeKey);
+            // Built-in selection visibility: no shipped theme styles treeview
+            // rows, and the default theme is intentionally empty, so a selected
+            // row would be indistinguishable. Guarantee a reverse-video highlight
+            // for the active (focused) selection regardless of theme — reverse is
+            // an attribute, not a color, so it honours the terminal-native
+            // "no theme required" contract. A theme that DOES style the row (adds
+            // colors/attrs) still gets them; reverse rides on top.
+            if (isSelected && focused) st = st.withAttrs(mergeAttrs(st.attrs, Attr::Reverse));
             Style expanderSt = resolveOrDefault(this, "treeview.expander");
+            if (isSelected && focused) expanderSt = expanderSt.withAttrs(mergeAttrs(expanderSt.attrs, Attr::Reverse));
             char space = ' ';
             s.fill(Rect(Point(content.x(), y), Size(content.w(), 1)), space, st);
 
