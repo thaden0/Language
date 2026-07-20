@@ -269,3 +269,20 @@ stop and escalate, not improvise.
   session-leader child mid-exit) was diagnosed and fixed via `TcpStream.keepFdOnEof()`.
   Helm H10 can now start against `Pty` on oracle + IR + LLVM. S3 (Windows ConPTY,
   HARD gating) remains.
+- 2026-07-19 — **S3 LANDED, gate G-PTY3 green — the Windows lane exists** (doc 03).
+  `lv_plat_win32.c` gained the ConPTY floor: the `CreatePseudoConsole` probe (D-P8's
+  runtime degrade, forced in tests via `LV_PTY_NO_CONPTY`), the loopback-socketpair
+  bridge with its two pump threads (D-W1 — the loop-side end is registered in the
+  existing socket table, so WSAPoll/send/recv needed **zero** changes), the pid→HANDLE
+  registry backing real `lv_plat_reap`/`lv_plat_kill` (D-W3, ruling on the wait and
+  never on the code value), the `LV_PTY_KILLED = 254` encoding (D-W4, now a documented
+  constant in `lv_plat.h`), and the D-W5 teardown ordering hung off `lv_plat_close`.
+  The **HARD** `LlvmGen.cpp` split landed as specified: `sysReap`/`sysKill` lower on
+  Windows, `sysSpawn`/`sysPidfdOpen` keep the frozen reject (assertions in
+  `run_sysnatives.sh` §12). New lane `tests/run_pty_win.sh` + `tests/pty_win_driver.lev`
+  + `tests/win_pty_quote.c`, registered as `pty_win_conpty`. Two findings recorded in
+  doc 03 §10: the argv→cmdline quoting table and the pre-1809 degrade execute green
+  under wine, but wine's ConPTY does not route child output through the pseudoconsole
+  pipes (the content asserts skip loudly there), and the `Pty` **prelude class** still
+  cannot be compiled for a Windows target because `TcpStream` drags the LA-30 tasks
+  reject in — the floor is Windows-clean, the class-level lane waits on the tasks gate.

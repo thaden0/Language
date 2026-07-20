@@ -2055,8 +2055,11 @@ active** (oracle, IR, emit-C++, LLVM) plus the **frozen, reference-only ELF back
    The pty floor (`sysPtySpawn`/`sysPtyResize` — the G-LANG-2 terminal half) followed at gate
    G-PTY2 via `runtime/lv_pty.c` + `lv_plat_pty_spawn/resize`
    (`designs/complete/techdesign-02-pty-llvm-native.md`); unlike spawn it lowers on **every**
-   target, Windows included, and degrades at runtime (`[]`) until ConPTY lands — the same
-   binary has to run on pre- and post-ConPTY floors. A
+   target, Windows included, and degrades at runtime (`[]`) rather than rejecting — the same
+   binary has to run on pre- and post-ConPTY floors. Gate G-PTY3 then landed the Windows
+   floor itself (`designs/complete/techdesign-03-pty-windows-conpty.md`): ConPTY on 1809+
+   behind a socketpair bridge, a pid→HANDLE registry, and the narrowed codegen reject —
+   `sysReap`/`sysKill` now lower on Windows, only `sysSpawn`/`sysPidfdOpen` still don't. A
    `PassBuilder` O2 module pipeline runs before object emission (`-O0`/`-O2` selectable);
    measured fast paths inline int/float `Arith`, `truth`/`Not`, fixed-offset field access,
    and checker-resolved dynamic calls rather than crossing into the runtime `.o` for each.

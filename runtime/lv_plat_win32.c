@@ -167,11 +167,18 @@ int lv_plat_open(const char* path, int bits, int mode) {
     return _open(path, flags, _S_IREAD | _S_IWRITE);
 }
 
+/* A pty master is a bridge socket (designs/pty/ 03 D-W1), so closing it must
+ * also run the D-W5 teardown: the socket close IS step 1 (it breaks the conin
+ * pump's recv), and the hook below does steps 2-4. Defined in the ConPTY
+ * section; a no-op for every ordinary socket. */
+static void lv_win_pty_on_close(int fd);
+
 void lv_plat_close(int fd) {
     if (fd >= LV_WIN_SOCK_BIAS) {
         SOCKET s = lv_win_sock_get(fd);
-        if (s != INVALID_SOCKET) closesocket(s);
+        if (s != INVALID_SOCKET) closesocket(s);   /* D-W5 step 1 */
         lv_win_sock_release(fd);
+        lv_win_pty_on_close(fd);                   /* D-W5 steps 2-4, if a pty */
     } else {
         _close(fd);
     }
@@ -229,27 +236,489 @@ int  lv_plat_signal_open(const int* sigs, int n) { (void)sigs; (void)n; return -
 int  lv_plat_signal_next(int fd) { (void)fd; return -1; }
 void lv_plat_signal_close(int fd) { (void)fd; }
 
-/* process floor: no Windows child-process story in v1 — the spawn/Channel
- * Windows-reject precedent. LlvmGen rejects sysSpawn* for a Windows target at
- * compile time (techdesign-spawn-llvm.md D4); these stubs keep the archive
- * linking and return the frozen failure sentinels if ever reached. */
+/* pipes-spawn floor: no Windows story in v1 — the spawn/Channel Windows-reject
+ * precedent. LlvmGen rejects sysSpawn/sysPidfdOpen for a Windows target at
+ * compile time (techdesign-spawn-llvm.md D4, narrowed to those two by
+ * designs/pty/ 03 §7); these stubs keep the archive linking and return the
+ * frozen failure sentinels if ever reached. lv_plat_reap/lv_plat_kill are NOT
+ * stubs any more — they are the registry-backed bodies in the ConPTY section
+ * below (D-W3), which is what let the codegen reject narrow. */
 int lv_plat_spawn(const char* path, char* const argv[], int fds[3]) {
     (void)path; (void)argv; (void)fds; return -1;
 }
+/* Stays -1 on Windows by ruling (D-W2): there is no pollable exit fd here, so
+ * the Pty prelude takes its existing 20 ms poll-reap fallback — zero new
+ * prelude code. Exit still *arrives* promptly as bridge-socket EOF. */
 int lv_plat_pidfd_open(int pid) { (void)pid; return -1; }
-int lv_plat_reap(int pid)       { (void)pid; return -1; }
-int lv_plat_kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
 
-/* pty floor: ConPTY lands in designs/pty/ 03. Until then the stubs keep the
- * archive linking; sysPtySpawn surfaces [] (runtime degrade, D-P8 — NOT a
- * compile-time reject; the same binary must run on pre- and post-S3 floors). */
+/* ======================= ConPTY floor (designs/pty/ 03) ===================
+ * The Windows pty lane. Four pieces, in order below:
+ *   1. the CreatePseudoConsole probe (D-P8: pre-1809 degrades at RUNTIME to
+ *      -1, which the language sees as the ordinary [] spawn failure — never a
+ *      compile-time reject, the same binary must run on both);
+ *   2. lv_win_socketpair — Windows has no socketpair(2), so the bridge pair is
+ *      built the classic way (loopback listener on port 0, connect, accept);
+ *   3. the pid -> {hProcess, HPCON, bridge} registry (D-W3) that backs
+ *      reap/kill/resize/close — reap NEVER goes to the OS by pid (K7/W2: the
+ *      registry holds the HANDLE, so pid reuse cannot alias a stranger);
+ *   4. the bridge itself (D-W1): ConPTY's anonymous pipes cannot be WSAPoll'd,
+ *      so two floor-internal pump threads move bytes between those pipes and a
+ *      loopback socketpair whose loop-side end IS the master fd the language
+ *      sees (registered in the socket table above, so lv_plat_poll/send/recv
+ *      work on it with ZERO changes). NO language code ever runs on a pump
+ *      thread — the signal self-pipe sanction, lv_plat.h.
+ * Exit detection is bridge EOF + poll-reap (D-W2); teardown ordering is D-W5
+ * (loop socket, then ClosePseudoConsole from the CALLING thread, then join). */
+
+/* MinGW's headers declare neither HPCON nor the three ConPTY entry points (we
+ * GetProcAddress them anyway, per the probe), and PROC_THREAD_ATTRIBUTE_
+ * PSEUDOCONSOLE is likewise absent: ProcThreadAttributeValue(22,F,T,F). */
+#ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
+#define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
+#endif
+
+typedef void* LvHPCON;   /* HPCON is an opaque handle; never dereferenced */
+typedef HRESULT (WINAPI* LvCreatePseudoConsoleFn)(COORD, HANDLE, HANDLE,
+                                                  DWORD, LvHPCON*);
+typedef HRESULT (WINAPI* LvResizePseudoConsoleFn)(LvHPCON, COORD);
+typedef void    (WINAPI* LvClosePseudoConsoleFn)(LvHPCON);
+
+static LvCreatePseudoConsoleFn g_conpty_create = NULL;
+static LvResizePseudoConsoleFn g_conpty_resize = NULL;
+static LvClosePseudoConsoleFn  g_conpty_close  = NULL;
+static int g_conpty_probed = 0;
+
+/* One cached GetProcAddress sweep. LV_PTY_NO_CONPTY=1 forces the pre-1809
+ * answer — the §6.6 test hook for the runtime-degrade path (an env probe, not
+ * a new exported symbol: the header surface stays additive-constant only). */
+static int lv_win_conpty_available(void) {
+    if (!g_conpty_probed) {
+        g_conpty_probed = 1;
+        const char* off = getenv("LV_PTY_NO_CONPTY");
+        if (!(off && off[0] && off[0] != '0')) {
+            HMODULE k32 = GetModuleHandleA("kernel32.dll");
+            if (k32) {
+                g_conpty_create = (LvCreatePseudoConsoleFn)(void*)
+                    GetProcAddress(k32, "CreatePseudoConsole");
+                g_conpty_resize = (LvResizePseudoConsoleFn)(void*)
+                    GetProcAddress(k32, "ResizePseudoConsole");
+                g_conpty_close  = (LvClosePseudoConsoleFn)(void*)
+                    GetProcAddress(k32, "ClosePseudoConsole");
+            }
+        }
+    }
+    return g_conpty_create && g_conpty_resize && g_conpty_close;
+}
+
+/* The socketpair(2) stand-in. The listener is bound to 127.0.0.1:0 and dropped
+ * the moment the pair exists; the accepted peer is checked against the
+ * connector's own local address so a racing local process cannot slip into the
+ * bridge (a loopback listener is reachable by anything on the machine). */
+static int lv_win_socketpair(SOCKET* out_a, SOCKET* out_b) {
+    lv_win_ensure_winsock();
+    SOCKET ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls == INVALID_SOCKET) return -1;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    int alen = (int)sizeof addr;
+    if (bind(ls, (struct sockaddr*)&addr, alen) == SOCKET_ERROR ||
+        listen(ls, 1) == SOCKET_ERROR ||
+        getsockname(ls, (struct sockaddr*)&addr, &alen) == SOCKET_ERROR) {
+        closesocket(ls); return -1;
+    }
+    SOCKET a = socket(AF_INET, SOCK_STREAM, 0);
+    if (a == INVALID_SOCKET) { closesocket(ls); return -1; }
+    if (connect(a, (struct sockaddr*)&addr, alen) == SOCKET_ERROR) {
+        closesocket(a); closesocket(ls); return -1;
+    }
+    struct sockaddr_in mine, theirs;
+    int mlen = (int)sizeof mine, tlen = (int)sizeof theirs;
+    memset(&mine, 0, sizeof mine); memset(&theirs, 0, sizeof theirs);
+    SOCKET b = accept(ls, (struct sockaddr*)&theirs, &tlen);
+    closesocket(ls);                       /* the pair is made; drop the door */
+    if (b == INVALID_SOCKET) { closesocket(a); return -1; }
+    if (getsockname(a, (struct sockaddr*)&mine, &mlen) == SOCKET_ERROR ||
+        theirs.sin_port != mine.sin_port ||
+        theirs.sin_addr.s_addr != mine.sin_addr.s_addr) {
+        closesocket(a); closesocket(b); return -1;   /* not our connection */
+    }
+    *out_a = a; *out_b = b;
+    return 0;
+}
+
+/* ---- registry (D-W3 / §4) ------------------------------------------------
+ * Same growth idiom as the socket table. Touched ONLY from the loop thread
+ * (spawn/reap/kill/resize/close all originate there); the pumps own just their
+ * handles and their socket end, so no lock is needed beyond the teardown join.
+ * Slot lifetime: allocated at spawn; the bridge half (pumps, pipes, HPCON,
+ * loop fd) is released by lv_plat_close's D-W5 teardown, the process half
+ * (hProcess/hThread) at reap-success; the slot frees when both are done. A
+ * program that never reaps leaks exactly one HANDLE per pty — the same honest
+ * stance POSIX takes about unreaped children. */
+typedef struct LvWinPty {
+    int     used;
+    int     pid;            /* 0 once reaped/collected */
+    HANDLE  hProcess, hThread;
+    LvHPCON hPC;
+    int     loopFd;         /* socket-table fd handed to the language; -1 torn */
+    SOCKET  pumpSide;       /* the pumps' end of the bridge */
+    HANDLE  inW, outR;      /* the parent's ends of ConPTY's pipes */
+    HANDLE  pumps[2];       /* 0 = conout, 1 = conin */
+    int     torn;           /* bridge already torn down (D-W5 ran) */
+} LvWinPty;
+
+static LvWinPty* g_ptys = NULL;
+static int       g_ptys_cap = 0;
+
+static LvWinPty* lv_win_pty_alloc(void) {
+    LvWinPty* e = NULL;
+    for (int i = 0; i < g_ptys_cap && !e; i++)
+        if (!g_ptys[i].used) e = &g_ptys[i];
+    if (!e) {
+        int newcap = g_ptys_cap ? g_ptys_cap * 2 : 4;
+        LvWinPty* grown = (LvWinPty*)realloc(g_ptys, (size_t)newcap * sizeof(LvWinPty));
+        if (!grown) return NULL;
+        g_ptys = grown;
+        memset(&g_ptys[g_ptys_cap], 0,
+               (size_t)(newcap - g_ptys_cap) * sizeof(LvWinPty));
+        e = &g_ptys[g_ptys_cap];
+        g_ptys_cap = newcap;
+    }
+    memset(e, 0, sizeof *e);
+    e->used = 1;                /* claimed immediately: the half-built slot is
+                                 * never handed out twice by a re-entrant path */
+    e->pumpSide = INVALID_SOCKET;
+    e->loopFd = -1;
+    return e;
+}
+
+static LvWinPty* lv_win_pty_by_pid(int pid) {
+    for (int i = 0; i < g_ptys_cap; i++)
+        if (g_ptys[i].used && g_ptys[i].pid == pid && pid > 0) return &g_ptys[i];
+    return NULL;
+}
+
+static LvWinPty* lv_win_pty_by_fd(int fd) {
+    for (int i = 0; i < g_ptys_cap; i++)
+        if (g_ptys[i].used && !g_ptys[i].torn && g_ptys[i].loopFd == fd)
+            return &g_ptys[i];
+    return NULL;
+}
+
+static void lv_win_pty_maybe_free(LvWinPty* e) {
+    if (e->torn && !e->hProcess) e->used = 0;
+}
+
+/* ---- the pumps (D-W1 / §3) ----------------------------------------------
+ * Fixed 4 KiB stack buffers, no allocator use, no callbacks — auditable in
+ * isolation. The conout pump NEVER pauses while the child lives (a full
+ * ConPTY buffer blocks the child); when the loop stops reading, the socket
+ * buffer fills, send blocks here, and the child blocks — the POSIX
+ * full-master analog, surfaced identically (D-P9). */
+typedef struct LvPumpArg { SOCKET sock; HANDLE pipe; } LvPumpArg;
+
+static DWORD WINAPI lv_win_pty_conout(LPVOID param) {
+    LvPumpArg a = *(LvPumpArg*)param;
+    free(param);
+    char buf[4096];
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(a.pipe, buf, (DWORD)sizeof buf, &got, NULL) || got == 0)
+            break;                       /* pipe broke: child/ConPTY is gone */
+        DWORD off = 0;
+        while (off < got) {
+            int wrote = send(a.sock, buf + off, (int)(got - off), 0);
+            if (wrote <= 0) goto done;   /* loop side closed */
+            off += (DWORD)wrote;
+        }
+    }
+done:
+    shutdown(a.sock, SD_SEND);           /* loop-side recv -> 0 == EOF (D-W2) */
+    return 0;
+}
+
+static DWORD WINAPI lv_win_pty_conin(LPVOID param) {
+    LvPumpArg a = *(LvPumpArg*)param;
+    free(param);
+    char buf[4096];
+    for (;;) {
+        int got = recv(a.sock, buf, (int)sizeof buf, 0);
+        if (got <= 0) break;             /* loop side closed */
+        int off = 0;
+        while (off < got) {
+            DWORD wrote = 0;
+            if (!WriteFile(a.pipe, buf + off, (DWORD)(got - off), &wrote, NULL) ||
+                wrote == 0)
+                return 0;                /* ConPTY input gone */
+            off += (int)wrote;
+        }
+    }
+    return 0;
+}
+
+static HANDLE lv_win_pump_start(LPTHREAD_START_ROUTINE body, SOCKET s, HANDLE pipe) {
+    LvPumpArg* a = (LvPumpArg*)malloc(sizeof *a);
+    if (!a) return NULL;
+    a->sock = s; a->pipe = pipe;
+    HANDLE t = CreateThread(NULL, 64 * 1024, body, a, 0, NULL);
+    if (!t) free(a);
+    return t;
+}
+
+/* D-W5 steps 2-4. The loop-side socket is closed by the CALLER before this
+ * runs (step 1), which is what makes the conin pump's recv fail.
+ * ClosePseudoConsole is called from HERE — the calling thread — never from the
+ * conout pump, which must keep draining until the pipe breaks on its own; that
+ * is the pre-24H2 deadlock rule (node-pty #415 / terminal #14160). Closing the
+ * pseudoconsole terminates the attached tree: the documented SIGHUP analogy. */
+static void lv_win_pty_teardown(LvWinPty* e) {
+    if (e->torn) return;
+    e->torn = 1;
+    e->loopFd = -1;
+    if (e->hPC && g_conpty_close) g_conpty_close(e->hPC);
+    e->hPC = NULL;
+    for (int i = 0; i < 2; i++) {
+        if (!e->pumps[i]) continue;
+        WaitForSingleObject(e->pumps[i], 2000);   /* bounded join (W3) */
+        CloseHandle(e->pumps[i]);
+        e->pumps[i] = NULL;
+    }
+    if (e->pumpSide != INVALID_SOCKET) { closesocket(e->pumpSide); e->pumpSide = INVALID_SOCKET; }
+    if (e->inW)  { CloseHandle(e->inW);  e->inW  = NULL; }
+    if (e->outR) { CloseHandle(e->outR); e->outR = NULL; }
+    lv_win_pty_maybe_free(e);
+}
+
+static void lv_win_pty_on_close(int fd) {
+    LvWinPty* e = lv_win_pty_by_fd(fd);
+    if (e) lv_win_pty_teardown(e);
+}
+
+/* ---- argv -> command line (§2, the CommandLineToArgvW inverse) -----------
+ * Windows takes ONE command-line string. The MSVCRT rules: quote an argument
+ * that is empty or holds whitespace/quotes; inside quotes, a run of
+ * backslashes is doubled only when it precedes a quote (or the closing quote),
+ * and an embedded quote is backslash-escaped. lpApplicationName carries the
+ * path separately, so the no-PATH-search contract is preserved regardless of
+ * what argv[0] says. */
+static int lv_win_cmd_push(char** buf, size_t* len, size_t* cap, const char* s, size_t n) {
+    if (*len + n + 1 > *cap) {
+        size_t next = *cap ? *cap : 256;
+        while (next < *len + n + 1) {
+            if (next > SIZE_MAX / 2) return -1;
+            next *= 2;
+        }
+        char* grown = (char*)realloc(*buf, next);
+        if (!grown) return -1;
+        *buf = grown; *cap = next;
+    }
+    memcpy(*buf + *len, s, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+    return 0;
+}
+
+static char* lv_win_build_cmdline(char* const argv[]) {
+    char* buf = NULL; size_t len = 0, cap = 0;
+    if (lv_win_cmd_push(&buf, &len, &cap, "", 0) != 0) return NULL;
+    for (int i = 0; argv && argv[i]; i++) {
+        const char* a = argv[i];
+        if (i && lv_win_cmd_push(&buf, &len, &cap, " ", 1) != 0) goto fail;
+        int needq = (a[0] == '\0');
+        for (const char* p = a; *p && !needq; p++)
+            if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\v' || *p == '"')
+                needq = 1;
+        if (!needq) {
+            if (lv_win_cmd_push(&buf, &len, &cap, a, strlen(a)) != 0) goto fail;
+            continue;
+        }
+        if (lv_win_cmd_push(&buf, &len, &cap, "\"", 1) != 0) goto fail;
+        for (const char* p = a;; p++) {
+            size_t slashes = 0;
+            while (*p == '\\') { slashes++; p++; }
+            if (*p == '\0') {
+                for (size_t s = 0; s < slashes * 2; s++)
+                    if (lv_win_cmd_push(&buf, &len, &cap, "\\", 1) != 0) goto fail;
+                break;
+            }
+            if (*p == '"') {
+                for (size_t s = 0; s < slashes * 2 + 1; s++)
+                    if (lv_win_cmd_push(&buf, &len, &cap, "\\", 1) != 0) goto fail;
+            } else {
+                for (size_t s = 0; s < slashes; s++)
+                    if (lv_win_cmd_push(&buf, &len, &cap, "\\", 1) != 0) goto fail;
+            }
+            if (lv_win_cmd_push(&buf, &len, &cap, p, 1) != 0) goto fail;
+        }
+        if (lv_win_cmd_push(&buf, &len, &cap, "\"", 1) != 0) goto fail;
+    }
+    return buf;
+fail:
+    free(buf);
+    return NULL;
+}
+
+/* UTF-8 in, UTF-16 out (R§B.2: the bytes on the bridge and in the command line
+ * are UTF-8; no codepage translation anywhere in this floor). CreateProcessW,
+ * not A, so a non-ASCII path or argument survives the trip. */
+static wchar_t* lv_win_widen(const char* s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t* w = (wchar_t*)malloc((size_t)n * sizeof(wchar_t));
+    if (!w) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) { free(w); return NULL; }
+    return w;
+}
+
 int lv_plat_pty_spawn(const char* path, char* const argv[],
                       int rows, int cols, int flags, int* master) {
-    (void)path; (void)argv; (void)rows; (void)cols; (void)flags; (void)master;
-    return -1;
+    /* flags bit0 (deterministic termios) is ACCEPTED AND IGNORED: there is no
+     * termios here, ConPTY owns the cooked behavior. Determinism on Windows
+     * comes from the behavioral test lane (doc 03 §6), never byte goldens —
+     * documented, not hidden. */
+    (void)flags;
+    if (!path || !path[0] || rows <= 0 || cols <= 0 || !master) return -1;
+    if (!lv_win_conpty_available()) return -1;   /* pre-1809: D-P8 degrade */
+    lv_win_ensure_winsock();
+
+    LvWinPty* e = lv_win_pty_alloc();
+    if (!e) return -1;
+
+    HANDLE inR = NULL, inW = NULL, outR = NULL, outW = NULL;
+    if (!CreatePipe(&inR, &inW, NULL, 0)) { e->used = 0; return -1; }
+    if (!CreatePipe(&outR, &outW, NULL, 0)) {
+        CloseHandle(inR); CloseHandle(inW); e->used = 0; return -1;
+    }
+    COORD size;
+    size.X = (SHORT)cols; size.Y = (SHORT)rows;
+    LvHPCON hPC = NULL;
+    HRESULT hr = g_conpty_create(size, inR, outW, 0, &hPC);   /* flags 0 ALWAYS:
+        PSEUDOCONSOLE_INHERIT_CURSOR's cursor-query handshake deadlocks an
+        unanswering host (pitfall #13) — banned by D-W5. */
+    CloseHandle(inR); CloseHandle(outW);   /* ConPTY owns those ends now; the
+        parent's copies MUST go or the child never sees EOF (the POSIX
+        close-the-slave analog). */
+    if (FAILED(hr) || !hPC) {
+        CloseHandle(inW); CloseHandle(outR); e->used = 0; return -1;
+    }
+
+    /* 0xc0000142 startup-race rule: hPC is validated before CreateProcess and
+     * nothing is torn down between the two except through the paths below. */
+    SIZE_T attrSize = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs =
+        (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attrSize);
+    wchar_t* wpath = lv_win_widen(path);
+    char*    cmd   = lv_win_build_cmdline(argv);
+    wchar_t* wcmd  = cmd ? lv_win_widen(cmd) : NULL;
+    free(cmd);
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    int ok = attrs && wpath && wcmd &&
+             InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize) &&
+             UpdateProcThreadAttribute(attrs, 0,
+                                       PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                       hPC, sizeof hPC, NULL, NULL);
+    if (ok) {
+        STARTUPINFOEXW si;
+        memset(&si, 0, sizeof si);
+        si.StartupInfo.cb = sizeof si;
+        si.lpAttributeList = attrs;
+        ok = CreateProcessW(wpath, wcmd, NULL, NULL, FALSE,
+                            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                            NULL, NULL, &si.StartupInfo, &pi) ? 1 : 0;
+        DeleteProcThreadAttributeList(attrs);
+    }
+    free(attrs); free(wpath); free(wcmd);
+    if (!ok) {
+        g_conpty_close(hPC);               /* no child exists: safe to close */
+        CloseHandle(inW); CloseHandle(outR);
+        e->used = 0;
+        return -1;
+    }
+
+    /* The bridge (D-W1). Its loop-side end is registered in the socket table,
+     * so it IS the master fd — WSAPoll/send/recv need no change at all. */
+    SOCKET loopSide = INVALID_SOCKET, pumpSide = INVALID_SOCKET;
+    int fd = -1;
+    if (lv_win_socketpair(&loopSide, &pumpSide) == 0) {
+        fd = lv_win_sock_register(loopSide);
+        if (fd < 0) { closesocket(loopSide); closesocket(pumpSide); }
+    }
+    if (fd < 0) {
+        TerminateProcess(pi.hProcess, LV_PTY_KILLED);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        g_conpty_close(hPC);
+        CloseHandle(inW); CloseHandle(outR);
+        e->used = 0;
+        return -1;
+    }
+    u_long nb = 1;
+    ioctlsocket(loopSide, FIONBIO, &nb);   /* the O_NONBLOCK master contract */
+
+    e->pumps[0] = lv_win_pump_start(lv_win_pty_conout, pumpSide, outR);
+    e->pumps[1] = lv_win_pump_start(lv_win_pty_conin,  pumpSide, inW);
+    e->used = 1;
+    e->pid = (int)pi.dwProcessId;
+    e->hProcess = pi.hProcess;
+    e->hThread  = pi.hThread;
+    e->hPC = hPC;
+    e->loopFd = fd;
+    e->pumpSide = pumpSide;
+    e->inW = inW;
+    e->outR = outR;
+    if (!e->pumps[0] || !e->pumps[1]) {    /* thread creation failed: unwind
+        through the SAME D-W5 sequence a normal close takes — a half-built
+        bridge is torn down exactly like a live one, never ad hoc. */
+        lv_plat_close(fd);
+        TerminateProcess(e->hProcess, LV_PTY_KILLED);
+        CloseHandle(e->hProcess); e->hProcess = NULL;
+        CloseHandle(e->hThread);  e->hThread  = NULL;
+        e->pid = 0;
+        lv_win_pty_maybe_free(e);
+        return -1;
+    }
+    *master = fd;
+    return e->pid;
 }
+
 int lv_plat_pty_resize(int master, int rows, int cols) {
-    (void)master; (void)rows; (void)cols; return -1;
+    if (rows <= 0 || cols <= 0) return -1;
+    LvWinPty* e = lv_win_pty_by_fd(master);
+    if (!e || !e->hPC || !g_conpty_resize) return -1;
+    COORD size;
+    size.X = (SHORT)cols; size.Y = (SHORT)rows;
+    return SUCCEEDED(g_conpty_resize(e->hPC, size)) ? 0 : -1;
+}
+
+/* D-W3. Ruled on the WAIT, never on the code value — that is what dodges the
+ * STILL_ACTIVE(259) ambiguity. A registry miss is -1: "not ours", the same
+ * answer POSIX's waitid gives for a non-child. Killed children report
+ * LV_PTY_KILLED naturally, because that is the code lv_plat_kill terminates
+ * with (D-W4) — never a fabricated 128+sig. */
+int lv_plat_reap(int pid) {
+    if (pid <= 0) return -1;
+    LvWinPty* e = lv_win_pty_by_pid(pid);
+    if (!e || !e->hProcess) return -1;
+    if (WaitForSingleObject(e->hProcess, 0) != WAIT_OBJECT_0) return -1;
+    DWORD code = 0;
+    if (!GetExitCodeProcess(e->hProcess, &code)) code = 0;
+    CloseHandle(e->hProcess); e->hProcess = NULL;
+    if (e->hThread) { CloseHandle(e->hThread); e->hThread = NULL; }
+    e->pid = 0;
+    lv_win_pty_maybe_free(e);
+    return (int)(code & 0xFF);
+}
+
+int lv_plat_kill(int pid, int sig) {
+    (void)sig;                 /* no signals here: terminate-or-nothing (D-W3) */
+    if (pid <= 0) return -1;
+    LvWinPty* e = lv_win_pty_by_pid(pid);
+    if (!e || !e->hProcess) return -1;
+    return TerminateProcess(e->hProcess, LV_PTY_KILLED) ? 0 : -1;
 }
 
 int64_t lv_plat_stat_size(const char* path) {

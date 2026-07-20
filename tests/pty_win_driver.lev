@@ -1,0 +1,160 @@
+// designs/pty/ 03 §6 — the Windows ConPTY behavioral driver.
+//
+// NEVER a byte golden (pitfall #9): ConPTY re-renders, and its VT stream is
+// version-dependent. Every assertion here is on VT-STRIPPED content ("contains
+// hi") or on an API result code, so the same program passes on 1809 and on
+// 24H2 without a per-build .expected.
+//
+// It drives the FLOOR natives directly (std::sysPtySpawn / sysRecv / sysSend /
+// sysPtyResize / sysKill / sysReap / sysClose) instead of the `Pty` prelude
+// class on purpose: `Pty` routes its master through `TcpStream`, whose
+// IDisposable over-marking pulls `TaskGroup::close` -> `sysTaskCancel` into
+// every build, and THAT native still takes the LA-30 tasks Windows reject. The
+// floor is what doc 03 lands; the prelude lane on Windows waits on the tasks
+// gate (recorded in doc 03 §10).
+//
+// usage: pty_win_driver <case> [shell-path]
+//   probe | echo | more | resize | kill | load
+// One line of output per case, prefixed by the case name.
+
+string SHELL = "C:\\Windows\\System32\\cmd.exe";
+
+// ~20 lines, a stripper and not a parser (§6): drop ESC-introduced sequences
+// (CSI, OSC, and the two-byte forms) plus CR, keep everything else.
+string strip(string s) {
+    string out = "";
+    int i = 0;
+    while (i < s.length()) {
+        int c = s.byteAt(i);
+        if (c == 27) {                                   // ESC
+            i = i + 1;
+            if (i < s.length() && s.byteAt(i) == 93) {   // OSC: ESC ] ... BEL
+                while (i < s.length() && s.byteAt(i) != 7) { i = i + 1; }
+                i = i + 1;
+            } else if (i < s.length() && s.byteAt(i) == 91) {   // CSI: ESC [ .. final
+                i = i + 1;
+                while (i < s.length() && s.byteAt(i) < 64) { i = i + 1; }
+                i = i + 1;
+            } else {
+                i = i + 1;                               // two-byte escape
+            }
+        } else if (c == 13) {
+            i = i + 1;                                   // CR (ConPTY writes CRLF)
+        } else {
+            out = out + s.subStr(i, 1);
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+// Read the master until EOF (the conout pump's shutdown, D-W2) or the budget
+// runs out. A spin, not a watch: this driver deliberately owns no event loop.
+string drain(int fd, int budgetMs) {
+    string acc = "";
+    int deadline = std::sysNow() + budgetMs;
+    bool live = true;
+    while (live && std::sysNow() < deadline) {
+        string? chunk = std::sysRecv(fd, 4096);
+        if (chunk == None) { live = false; }
+        else { acc = acc + (chunk ?? ""); }
+    }
+    return acc;
+}
+
+// Poll-reap (D-W2: no pidfd on Windows — the prelude's own fallback shape).
+int reap(int pid, int budgetMs) {
+    int deadline = std::sysNow() + budgetMs;
+    int code = 0 - 1;
+    while (code < 0 && std::sysNow() < deadline) { code = std::sysReap(pid); }
+    return code;
+}
+
+// 6. pre-1809 probe path: with LV_PTY_NO_CONPTY=1 the floor's cached function
+// pointers stay NULL, spawn returns [] and NOTHING hangs.
+void caseProbe(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "echo hi"], 24, 80, 0);
+    console.writeln("probe: " + r.length().toString());
+    if (r.length() == 2) {
+        std::sysKill(r[0], 15);
+        console.writeln("probe reap: " + reap(r[0], 5000).toString());
+        std::sysClose(r[1]);
+    }
+}
+
+// 1. spawn `cmd /c echo hi` -> stripped output contains `hi`; exit 0.
+void caseEcho(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "echo hi"], 24, 80, 0);
+    if (r.length() != 2) { console.writeln("echo: SPAWN-FAILED"); return; }
+    string got = strip(drain(r[1], 10000));
+    int code = reap(r[0], 10000);
+    console.writeln("echo: " + got.contains("hi").toString() +
+                    " " + code.toString());
+    std::sysClose(r[1]);
+}
+
+// 2. write `ping\r\n` to `cmd /c more` -> stripped output contains `ping`;
+//    EOF via ^Z + CRLF (the cmd convention); the exit is observed.
+void caseMore(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "more"], 24, 80, 0);
+    if (r.length() != 2) { console.writeln("more: SPAWN-FAILED"); return; }
+    std::sysSend(r[1], "ping\r\n");
+    std::sysSend(r[1], "\x1a\r\n");                 // ^Z: cmd's console EOF
+    string got = strip(drain(r[1], 10000));
+    int code = reap(r[0], 10000);
+    console.writeln("more: " + got.contains("ping").toString() +
+                    " " + (code >= 0).toString());
+    std::sysClose(r[1]);
+}
+
+// 3. resize 30x100 -> ResizePseudoConsole rc 0. No output assert: `mode con`
+//    is locale-dependent, so the API rc + no-hang IS the v1 assertion.
+void caseResize(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "more"], 24, 80, 0);
+    if (r.length() != 2) { console.writeln("resize: SPAWN-FAILED"); return; }
+    int rc = std::sysPtyResize(r[1], 30, 100);
+    std::sysKill(r[0], 15);
+    int code = reap(r[0], 10000);
+    console.writeln("resize: " + rc.toString() + " " + code.toString());
+    std::sysClose(r[1]);
+}
+
+// 4. kill -> exit code LV_PTY_KILLED (254) EXACTLY (D-W4 pinned: never a
+//    fabricated 128+sig, that band is POSIX-only).
+void caseKill(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "more"], 24, 80, 0);
+    if (r.length() != 2) { console.writeln("kill: SPAWN-FAILED"); return; }
+    int krc = std::sysKill(r[0], 15);
+    int code = reap(r[0], 10000);
+    console.writeln("kill: " + krc.toString() + " " + code.toString());
+    std::sysClose(r[1]);
+}
+
+// 5. teardown under load: a chatty child, master closed MID-STREAM. The whole
+//    D-W5 ordering is on trial here (ClosePseudoConsole from the calling
+//    thread while the conout pump keeps draining); the assertion is that this
+//    line prints at all — a deadlock is a hang, not a wrong answer.
+void caseLoad(string shell) {
+    Array<int> r = std::sysPtySpawn(shell, ["/c", "dir /s C:\\Windows\\System32"],
+                                    24, 80, 0);
+    if (r.length() != 2) { console.writeln("load: SPAWN-FAILED"); return; }
+    drain(r[1], 300);                               // let the stream get going
+    std::sysClose(r[1]);                            // mid-stream close: D-W5
+    int code = reap(r[0], 10000);
+    console.writeln("load: ok " + (code >= 0).toString());
+}
+
+void run() {
+    Array<string> a = env::args();
+    string mode = a.length() > 1 ? a[1] : "probe";
+    string shell = a.length() > 2 ? a[2] : SHELL;
+    if (mode == "probe")       { caseProbe(shell); }
+    else if (mode == "echo")   { caseEcho(shell); }
+    else if (mode == "more")   { caseMore(shell); }
+    else if (mode == "resize") { caseResize(shell); }
+    else if (mode == "kill")   { caseKill(shell); }
+    else if (mode == "load")   { caseLoad(shell); }
+    else { console.writeln("usage: pty_win_driver probe|echo|more|resize|kill|load"); }
+}
+
+run();

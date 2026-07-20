@@ -1725,10 +1725,38 @@ under a terminal emulator.
 Floor: `sysPtySpawn(path, args, rows, cols, flags) -> Array<int>` (`[pid, masterFd]`, `[]`
 on failure; `flags` bit0 selects the deterministic profile) and `sysPtyResize(masterFd,
 rows, cols)`. Oracle + IR + **LLVM** (G-PTY2, `designs/complete/techdesign-02-pty-llvm-native.md`:
-`runtime/lv_pty.c` over the `lv_plat_pty_spawn/resize` floor). Windows **degrades at
-runtime** rather than rejecting at compile time — the same binary must run on pre- and
-post-ConPTY floors, so `sysPtySpawn` lowers on every target and the Windows stubs return
-`[]` until ConPTY lands. emit-C++ defers cleanly (deliberate system-layer policy).
+`runtime/lv_pty.c` over the `lv_plat_pty_spawn/resize` floor). emit-C++ defers cleanly
+(deliberate system-layer policy).
+
+**Windows (G-PTY3, `designs/complete/techdesign-03-pty-windows-conpty.md`).** The floor is
+**ConPTY**, and it **degrades at runtime** rather than rejecting at compile time — the same
+binary must run on pre- and post-ConPTY hosts, so `sysPtySpawn` lowers on every target:
+- **Windows 10 1809 / Server 2019 or newer** — a real pseudoconsole. ConPTY's anonymous
+  pipes cannot be polled, so the floor bridges them to a loopback socketpair whose loop-side
+  end *is* the master fd; the bytes are UTF-8 both ways and no language code ever runs on a
+  bridge thread.
+- **Older than 1809** — `CreatePseudoConsole` is absent, `sysPtySpawn` returns `[]`, and a
+  `Pty` resolves `127` like any other spawn failure. No compile error, no hang.
+- **Exit encoding differs by platform and that is deliberate.** The `128+signal` band is
+  POSIX-only; Windows has no signals, so a child *we* killed reports the documented sentinel
+  **`254`** (`LV_PTY_KILLED`) — chosen clear of `127` (exec failure) and `255`. Normal exits
+  are the ordinary `code & 0xFF` on both. Code that branches on `143` is branching on
+  POSIX-lane behavior.
+- **What the stream carries differs too**: ConPTY re-renders output, so the master carries
+  *its* VT stream rather than the child's raw bytes, and it is version-dependent — assert
+  behavior after stripping escapes, never byte-for-byte output. There is no termios on
+  Windows: `Pty::Deterministic`'s profile bit is accepted and ignored (ConPTY owns the cooked
+  behavior).
+- `sysReap`/`sysKill` **lower on Windows** (they read a floor-internal pid→handle registry
+  filled by `sysPtySpawn`, so pid reuse can never alias a stranger's process). `Process`
+  (pipes-spawn) still rejects at compile time on a Windows target.
+- **Standing limitation:** the `Pty` *prelude class* still cannot be compiled for a Windows
+  target, because it routes its master through `TcpStream`, whose `IDisposable` over-marking
+  drags `sysTaskCancel` into the build — and the task natives keep their own Windows reject
+  (`tasks: unsupported on Windows (v1)`, the LA-30 pump pin, which also blocks `TcpStream`
+  and `TcpListener` there). The `sysPty*`/`sysReap`/`sysKill` **floor natives** compile and
+  run on Windows today; lifting the class-level lane is the tasks gate's work, not the pty
+  floor's.
 
 ### 6.6.54 Promises and await
 `Promise<T>` (`resolve(v)`, `isReady()`, `get()`, `then(cb)`; construct `Promise()` pending

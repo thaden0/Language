@@ -215,3 +215,65 @@ compile, `sysSpawn`/`sysPidfdOpen` still reject with the frozen message.
 ## 10. Implementation log (append-only)
 
 - 2026-07-16 — doc created (S3 of designs/pty/). Awaiting G-PTY2.
+- 2026-07-19 — **IMPLEMENTED (G-PTY3).** Everything in §§1-5 and §7 landed as designed;
+  §6's lane landed with one honest deviation and one blocker found, both below.
+
+  **What landed.** `runtime/lv_plat_win32.c` — the cached `CreatePseudoConsole` probe
+  (typedef'd locally: MinGW declares neither `HPCON` nor the three entry points, and
+  `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` is absent, so it is defined as its documented
+  `0x00020016`), `lv_win_socketpair`, the registry, the two pumps, spawn/resize/reap/kill,
+  and the D-W5 teardown reached through `lv_plat_close`. `runtime/lv_plat.h` gained exactly
+  one additive symbol, `LV_PTY_KILLED`. `src/LlvmGen.cpp` §7's split is verbatim.
+  Compile-verified under **both** MinGW toolchains (`x86_64-w64-mingw32-gcc` and
+  `clang -target x86_64-pc-windows-gnu`), archives rebuilt for both prebuilt triples.
+
+  **Deviations, recorded not hidden.**
+  - **The §6.6 test hook is an env probe, not a symbol.** `LV_PTY_NO_CONPTY=1` makes the
+    probe answer "pre-1809". Nulling a static pointer from outside would have meant a new
+    exported hook in `lv_plat.h`; the env read costs one `getenv` on the first spawn and
+    keeps the header surface additive-constant-only.
+  - **The socketpair accept is peer-verified.** A loopback listener is reachable by any
+    local process, so the accepted peer's address/port is checked against the connector's
+    own before the pair is used. Not in the design; cheap, and the alternative is a bridge
+    a stranger can win a race for.
+  - **`lv_win_socketpair`'s listener is closed immediately after accept**, and both pumps
+    share the one pump-side SOCKET (full-duplex): conout `send`s, conin `recv`s. Only the
+    teardown path ever closes it, after the bounded joins.
+
+  **Finding 1 — wine's ConPTY is partial, exactly as risk W5 predicted.** `wine-10.x` has
+  `CreatePseudoConsole`/`ClosePseudoConsole` and the process/registry path works end to end
+  there (§6.4's kill → **254** and §6.5's mid-stream teardown under `dir /s System32` both
+  pass under wine, no hang), but the child keeps writing to the *inherited* console instead
+  of the pseudoconsole pipes, and `ResizePseudoConsole` fails. So §6.1/§6.2/§6.3 cannot be
+  asserted there. `tests/run_pty_win.sh` therefore **probes the bridge and skips those three
+  loudly** on a non-Windows runner, while treating the same symptom as a **FAILURE** on a
+  native Windows host — probe-and-skip, never a false green (R§D.4 discipline).
+
+  **Finding 2 (blocker for the class-level lane, NOT the floor) — the `Pty` prelude class
+  cannot be compiled for a Windows target, because of the *tasks* reject, not this floor.**
+  `Pty` routes its master through `TcpStream`, whose `IDisposable` over-marking pulls
+  `TaskGroup::close` → `sysTaskCancel` into every build (the mechanism `Resolver.cpp`
+  documents at the root-binds block), and `sysTaskCancel` still takes LA-30's
+  `tasks: unsupported on Windows (v1)`. Any `TcpStream`/`TcpListener`/`Process`/`Pty`
+  program already fails to compile for a Windows triple today for this reason — it predates
+  S3 and is why the wine corpus lane carries no net corpus. Consequences, all recorded
+  rather than improvised around:
+  - §6's behavioral driver (`tests/pty_win_driver.lev`) drives the **floor natives**
+    (`std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/`sysKill`/`sysReap`) instead of
+    the `Pty` class. That is what doc 03 lands, and it is fully exercised.
+  - Lifting the class-level lane means narrowing the tasks reject (the wasm two-tier
+    reachability gate is the obvious shape) — **LA-30's ruling to make, not this design's.**
+    Not attempted here; §7's ABI note scopes S3 to gating surgery on the four process rows.
+  - **Filed, not just noted:** `known_bugs_2.md` **#96 [P1]** (the defect — the reject's
+    blast radius reaches three classes that are not task features) and
+    `designs/requests/request-windows-task-gate.md` (the feature request — minimum: the
+    two-tier narrowing; maximum: the win32 fiber leg, LA-30 G5). The request carries one
+    open question for whoever designs it: whether the same over-approximation also drags
+    `sysSpawn` in, which the tasks reject currently masks.
+
+  **Test lane.** `tests/run_pty_win.sh` (registered as `pty_win_conpty`, gated on the
+  MinGW cross compiler) in three tiers: the floor compile+archive is the CI-enforced part;
+  the W4 quoting table (`tests/win_pty_quote.c`, 8 cases including the trailing-backslash
+  and backslash-before-quote forms) and the §6.6 pre-1809 degrade need only a runner; the
+  content cases need a live bridge. `tests/run_sysnatives.sh` §12 pins the §7 split
+  (sysSpawn/sysPidfdOpen reject, sysReap/sysKill/sysPty* lower) with no toolchain needed.

@@ -802,3 +802,22 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   - **Next gate G-H5** = H12 settings/keymap/theme + workspace search, and the self-host milestone
     (edit Helm's own source in Helm). The `HelmShell` body is the EditorView mount point; the
     `CommandRegistry`/`MenuModel`/palette surface is ready for the settings + search commands.
+
+- **2026-07-19 — H10's Windows story now exists: G-PTY3 landed the ConPTY floor**
+  (`designs/complete/techdesign-03-pty-windows-conpty.md`). Windows 10 1809 / Server 2019+
+  get a real pseudoconsole behind the same `sysPtySpawn`/`sysPtyResize` surface (ConPTY's
+  un-pollable pipes ride a floor-internal bridge onto the existing WSAPoll loop); older
+  hosts degrade at runtime to `[]`, which is exactly the `ok()`-false branch the 2026-07-19
+  entry above already told H10 to write. Two things H10 must design for, both platform
+  facts rather than gaps:
+  - **The VT it receives on Windows is ConPTY's re-render, not the child's bytes**, and it
+    is Windows-version-dependent. The parser consumes VT on both platforms — just different
+    VT — so terminal tests must assert post-strip *behavior*, never byte goldens.
+  - **A killed child reports `254` on Windows, not `143`** (no signals there; `LV_PTY_KILLED`
+    is a documented sentinel in the exited band). Any "was it killed?" branch must not be
+    written against the POSIX `128+sig` band.
+  Standing caveat for the embedded-terminal panel: the `Pty` *prelude class* still cannot be
+  compiled for a Windows target — it routes its master through `TcpStream`, which drags
+  `sysTaskCancel` and the LA-30 **tasks** Windows reject into the build (the same reject
+  already blocks `TcpStream`/`TcpListener` there). The pty *floor natives* are Windows-clean
+  today; the class-level Windows lane waits on the tasks gate, not on this floor.

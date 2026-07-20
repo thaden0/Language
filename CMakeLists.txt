@@ -1705,3 +1705,22 @@ else()
   message(STATUS "B-M5: Windows wine corpus lane SKIPPED "
                  "(need wine + a MinGW-w64 cross compiler; not found)")
 endif()
+
+# G-PTY3 (designs/pty/ 03 §6): the Windows ConPTY behavioral lane. NEVER byte
+# goldens — ConPTY re-renders, so the asserts are post-VT-strip content, API
+# result codes, and "it finished at all". The script self-skips in tiers: the
+# MinGW floor compile is the CI-enforced part (the B-M5 standard), the quoting
+# table (W4) and the pre-1809 degrade need only a runner, and the content
+# cases need a live ConPTY bridge — wine spawns and reaps but does not route
+# the child's output through the pseudoconsole pipes, so they skip LOUDLY
+# there (risk W5) instead of failing or hanging.
+if (LVRT_CROSS_MINGW64)
+  add_test(NAME pty_win_conpty
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_pty_win.sh"
+                   $<TARGET_FILE:leviathan> "x86_64-pc-windows-gnu")
+  set_tests_properties(pty_win_conpty PROPERTIES TIMEOUT 900)
+  message(STATUS "G-PTY3: Windows ConPTY lane ENABLED (cc=${LVRT_CROSS_MINGW64})")
+else()
+  message(STATUS "G-PTY3: Windows ConPTY lane SKIPPED "
+                 "(need a MinGW-w64 cross compiler; not found)")
+endif()
