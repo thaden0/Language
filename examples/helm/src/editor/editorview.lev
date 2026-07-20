@@ -336,6 +336,7 @@ namespace Helm {
             if (e.isCtrl(cV)) { this.paste();  e.handled = true; return; }
 
             // Editing.
+            if (e.code == KeyCode::Tab && e.mods == 0)       { this.insertText("    "); e.handled = true; return; }
             if (e.code == KeyCode::Enter && e.mods == 0)     { this.insertText("\n"); e.handled = true; return; }
             if (e.code == KeyCode::Backspace && e.mods == 0) { this.backspace();      e.handled = true; return; }
             if (e.code == KeyCode::Delete && e.mods == 0)    { this.deleteForward();  e.handled = true; return; }

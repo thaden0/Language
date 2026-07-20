@@ -1692,25 +1692,33 @@ int Lowerer::lowerCall(Expr* e) {
         // `recv.Base::method(...)` — a base-qualified call. The inner `.Base` is
         // a SOURCE QUALIFIER naming a base class, not a field read, and dispatch
         // is STATIC to the checker-resolved base method (info.md §6.9), run on
-        // the real receiver `recv`. Without this, lowerExpr(callee->a) below
-        // lowers a nonexistent "Base" member read as the receiver -> the call
-        // runs against a detached value (silently blank on --ir, null-`this`
+        // the real receiver `recv` (callee->a->a). Without this, lowerExpr(callee->a)
+        // below lowers a nonexistent "Base" member read as the receiver -> the
+        // call runs against a detached value (silently blank on --ir, null-`this`
         // segfault on the oracle/LLVM) (bug.md #55).
+        //
+        // The base qualifier may be NAMESPACED (e.g. `Sonar::App` reached as
+        // `this.App::renderFrame()`), so this must NOT gate on a bare global class
+        // lookup of callee->a->text — `sema_.global->lookup` misses every
+        // namespaced base, the guard is skipped, and the call drops to the
+        // field-read receiver below with a null `this` (the SonarApp live-loop
+        // segfault: the first frame's `this.App::renderFrame()` ran on a null
+        // receiver). The free-function / namespace forms of `X::fn()` were all
+        // handled above and resolve to a `!hasThis` function; reaching here with
+        // `callee->colon`, a Member qualifier, and an instance method (hasThis)
+        // is unambiguously a base-qualified instance call on `recv`.
         if (callee->colon && callee->a->kind == ExprKind::Member && e->resolved) {
-            Symbol* maybeBase = sema_.global->lookup(callee->a->text);
-            if (maybeBase && maybeBase->kind == SymbolKind::Class) {
-                auto it = mod_->byDecl.find(e->resolved);
-                if (it != mod_->byDecl.end()) {
-                    int recv = lowerExpr(callee->a->a.get());
-                    std::vector<int> argRegs;
-                    for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
-                    int base = F().nregs;
-                    { int r = newReg(); emit(Op::Move, r, recv); }
-                    emitArgCopies(argRegs, e->list);
-                    int dst = newReg();
-                    emit(Op::Call, dst, it->second, base, 1 + (int)argRegs.size());
-                    return dst;
-                }
+            auto it = mod_->byDecl.find(e->resolved);
+            if (it != mod_->byDecl.end() && mod_->functions[it->second].hasThis) {
+                int recv = lowerExpr(callee->a->a.get());
+                std::vector<int> argRegs;
+                for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
+                int base = F().nregs;
+                { int r = newReg(); emit(Op::Move, r, recv); }
+                emitArgCopies(argRegs, e->list);
+                int dst = newReg();
+                emit(Op::Call, dst, it->second, base, 1 + (int)argRegs.size());
+                return dst;
             }
         }
         // method call: receiver.method(args) — dynamic dispatch by name/decl
