@@ -2283,11 +2283,12 @@ Type Checker::typeOfCallInner(const Expr* e, std::vector<char>& lambdaWalked) {
                 // this the override makes resolveDispatch return true, `resolved`
                 // is nulled, and the call dynamically dispatches back to the
                 // override — defeating the whole point of the idiom (bug.md #55).
-                bool baseQualified = false;
-                if (callee->colon && callee->a->kind == ExprKind::Member) {
-                    Symbol* q = scope_ ? scope_->lookup(callee->a->text) : nullptr;
-                    if (q && q->kind == SymbolKind::Class) baseQualified = true;
-                }
+                // Reaching this class-receiver branch already excludes a
+                // namespace-qualified free function.  The structural
+                // `recv.Base::method` shape is therefore sufficient; looking
+                // up bare `Base` again loses sibling/nested namespace context.
+                bool baseQualified = callee->colon &&
+                                     callee->a->kind == ExprKind::Member;
                 call->resolved = (!baseQualified && resolveDispatch(bt.sym, m, e->span))
                                      ? nullptr : m;
                 Type r = genericReturn(bt.sym, m, bt, argTypes, e, &lambdaWalked);

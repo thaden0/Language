@@ -1714,20 +1714,21 @@ int Lowerer::lowerCall(Expr* e) {
         // runs against a detached value (silently blank on --ir, null-`this`
         // segfault on the oracle/LLVM) (bug.md #55).
         if (callee->colon && callee->a->kind == ExprKind::Member && e->resolved) {
-            Symbol* maybeBase = sema_.global->lookup(callee->a->text);
-            if (maybeBase && maybeBase->kind == SymbolKind::Class) {
-                auto it = mod_->byDecl.find(e->resolved);
-                if (it != mod_->byDecl.end()) {
-                    int recv = lowerExpr(callee->a->a.get());
-                    std::vector<int> argRegs;
-                    for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
-                    int base = F().nregs;
-                    { int r = newReg(); emit(Op::Move, r, recv); }
-                    emitArgCopies(argRegs, e->list);
-                    int dst = newReg();
-                    emit(Op::Call, dst, it->second, base, 1 + (int)argRegs.size());
-                    return dst;
-                }
+            // The checker-resolved target is authoritative. A real base method
+            // has a receiver; a nested namespace function does not. Looking up
+            // the bare base spelling in the GLOBAL scope missed bases declared
+            // in an enclosing namespace and lowered `recv.Base` as a field.
+            auto it = mod_->byDecl.find(e->resolved);
+            if (it != mod_->byDecl.end() && mod_->functions[it->second].hasThis) {
+                int recv = lowerExpr(callee->a->a.get());
+                std::vector<int> argRegs;
+                for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
+                int base = F().nregs;
+                { int r = newReg(); emit(Op::Move, r, recv); }
+                emitArgCopies(argRegs, e->list);
+                int dst = newReg();
+                emit(Op::Call, dst, it->second, base, 1 + (int)argRegs.size());
+                return dst;
             }
         }
         // method call: receiver.method(args) — dynamic dispatch by name/decl

@@ -307,6 +307,13 @@ bool Evaluator::isMethodOf(Symbol* cls, const Stmt* decl) {
     if (!cls || !decl) return false;
     for (const Slot& s : cls->shape.slots)
         if (s.isMethod && s.decl == decl) return true;
+    // An override replaces the inherited slot in a derived class's flattened
+    // shape, but a base-qualified call deliberately resolves to the hidden
+    // base declaration. Walk the declared bases so that target still counts as
+    // an instance method of the derived receiver.
+    if (cls->decl)
+        for (const TypeRefPtr& base : cls->decl->bases)
+            if (isMethodOf(base->resolvedSymbol, decl)) return true;
     return false;
 }
 
@@ -1321,13 +1328,16 @@ Value Evaluator::evalCall(Expr* e) {
         // silently wrong on --ir, a null-`this` segfault here (bug.md #55).
         Expr* recvExpr = callee->a.get();
         if (callee->colon && recvExpr->kind == ExprKind::Member) {
-            Symbol* maybeBase = sema_.global->lookup(recvExpr->text);
-            if (maybeBase && maybeBase->kind == SymbolKind::Class) {
-                Value rv = eval(recvExpr->a.get());
-                if (throwing_) return vvoid();
-                if (rv.kind == VKind::Object && e->resolved)
-                    return callFunction(e->resolved, args, rv.obj, rv.obj->cls);
-            }
+            // Evaluate the authored receiver and trust the checker-resolved
+            // method. Re-looking up the bare base name globally misses a base
+            // declared in an enclosing namespace. A nested namespace function
+            // evaluates this would-be receiver to void and simply falls through
+            // to the ordinary namespaced-function path below.
+            Value rv = eval(recvExpr->a.get());
+            if (throwing_) return vvoid();
+            if (rv.kind == VKind::Object && rv.obj && e->resolved &&
+                isMethodOf(rv.obj->cls, e->resolved))
+                return callFunction(e->resolved, args, rv.obj, rv.obj->cls);
         }
         Value bv = eval(callee->a.get());
         if (throwing_) return vvoid();

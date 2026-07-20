@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #96 |
+| P0       | — |
 | P1       | #97 |
 | P2       | — |
 | P3       | — |
@@ -28,80 +28,6 @@ separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two 
 Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
 green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
-
----
-
-## #96 [P0] — a real terminal answering `term::size()`'s CPR fallback segfaults a compiled-LLVM app
-
-**Found:** 2026-07-19, first-ever live (`App.run()`) exercise of `examples/helm`
-compiled with `trident build --out` (H10/H12 landed; this is the first Sonar-based
-app in the repo to be run interactively as a native binary in a real terminal —
-every prior golden test drives the event loop headlessly via `TestRenderer`/
-`pumpOnce`, never a live pty). Not Helm- or Sonar-library-specific: the crash is
-inside the language runtime's own `term::size()` cursor-position-report (CPR)
-fallback (`runtime/lv_loop.c` / `runtime/lv_plat.h`, prelude decl in
-`src/Resolver.cpp`), so any compiled app on any actively-maintained engine that
-reaches this path in a real terminal is exposed.
-**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
-primary backend) segfaults for ordinary, checker-accepted code; the fault
-manifests several closure-call frames downstream of the triggering input (the
-CPR response bytes), the classic "surfaces away from the causing site" shape.
-
-**Repro** (needs a real pty — a plain pipe/redirect never reaches the crash,
-see Verification below):
-
-```
-cd examples/helm
-build/trident build . --out /tmp/helm-bin
-python3 - <<'PYEOF'
-import pty, os, time, select, signal
-pid, fd = pty.fork()
-if pid == 0:
-    os.environ["HELM_RUN"] = "1"
-    os.execvp("/tmp/helm-bin", ["/tmp/helm-bin", "."])
-else:
-    out = b""; responded = False
-    for _ in range(20):
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if fd in r:
-            chunk = os.read(fd, 65536)
-            if not chunk: break
-            out += chunk
-            if not responded and b"\x1b[6n" in out:
-                os.write(fd, b"\x1b[24;80R")   # a real terminal's CPR answer
-                responded = True
-    os.kill(pid, signal.SIGKILL)
-    _, status = os.waitpid(pid, 0)
-    print("signaled:", os.WIFSIGNALED(status), os.WTERMSIG(status) if os.WIFSIGNALED(status) else None)
-PYEOF
-# -> signaled: True 11   (SIGSEGV)
-```
-
-Also reproduces directly from an interactive shell: `HELM_RUN=1 /tmp/helm-bin .`
-run from a real terminal segfaults immediately after startup
-("Helm 0.1.0-dev …" then "Segmentation fault (core dumped)").
-
-**Expected:** the app prints its startup line, enters raw mode, queries the
-terminal size via `\x1b[999C\x1b[999B\x1b[6n` (move-to-bottom-right + CPR) when
-`TIOCGWINSZ` isn't trusted, receives the `\x1b[<row>;<col>R` reply, and proceeds
-into the frame loop.
-**Actual:** SIGSEGV shortly after the CPR reply is read, inside the input
-callback chain (`lv_task_trampoline` → `lv_run_closure_thunk` → four opaque
-LLVM-generated frames with no symbol names in this build). Backtrace has no
-line-level info — this build isn't compiled with debug symbols, and the
-generated function names (`f1287`, `f2198`, …) don't map back to `.lev` source
-without a symbol table, so the root cause is unisolated beyond "somewhere in
-the CPR-response parse/dispatch path."
-
-**Verification gaps (for whoever picks this up):** (1) Whether oracle/IR share
-the crash is **not confirmed** — the same pty-based repro against
-`leviathan --plan build/plan.lvplan --run`/`--ir` produced zero observable
-output at all within a several-second window (no crash, no startup line, no
-hang-then-flush), unlike the LLVM binary which prints immediately. This may be
-an unrelated stdio-buffering difference between the tree-walk/IR interpreter
-and the compiled binary when stdout is a pty, rather than the same bug being
-masked — not diagnosed. (2) No workaround identified; anyone needing to run a
-compiled Sonar app interactively in a real terminal today will hit this.
 
 ---
 
