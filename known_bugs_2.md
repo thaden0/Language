@@ -18,8 +18,8 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #94 |
-| P1       | — |
+| P0       | #94, #96 |
+| P1       | #97 |
 | P2       | — |
 | P3       | — |
 
@@ -69,6 +69,137 @@ takes the ordinary closure-value call path.
 throughout `packages/atlantis/src/orm/db.lev` (search "field-closure
 dot-call"); `packages/atlantis-mysql/src/pool.lev` (`var f = fn;`) already
 used the same idiom.
+
+---
+
+## #96 [P0] — a real terminal answering `term::size()`'s CPR fallback segfaults a compiled-LLVM app
+
+**Found:** 2026-07-19, first-ever live (`App.run()`) exercise of `examples/helm`
+compiled with `trident build --out` (H10/H12 landed; this is the first Sonar-based
+app in the repo to be run interactively as a native binary in a real terminal —
+every prior golden test drives the event loop headlessly via `TestRenderer`/
+`pumpOnce`, never a live pty). Not Helm- or Sonar-library-specific: the crash is
+inside the language runtime's own `term::size()` cursor-position-report (CPR)
+fallback (`runtime/lv_loop.c` / `runtime/lv_plat.h`, prelude decl in
+`src/Resolver.cpp`), so any compiled app on any actively-maintained engine that
+reaches this path in a real terminal is exposed.
+**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
+primary backend) segfaults for ordinary, checker-accepted code; the fault
+manifests several closure-call frames downstream of the triggering input (the
+CPR response bytes), the classic "surfaces away from the causing site" shape.
+
+**Repro** (needs a real pty — a plain pipe/redirect never reaches the crash,
+see Verification below):
+
+```
+cd examples/helm
+build/trident build . --out /tmp/helm-bin
+python3 - <<'PYEOF'
+import pty, os, time, select, signal
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["HELM_RUN"] = "1"
+    os.execvp("/tmp/helm-bin", ["/tmp/helm-bin", "."])
+else:
+    out = b""; responded = False
+    for _ in range(20):
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if fd in r:
+            chunk = os.read(fd, 65536)
+            if not chunk: break
+            out += chunk
+            if not responded and b"\x1b[6n" in out:
+                os.write(fd, b"\x1b[24;80R")   # a real terminal's CPR answer
+                responded = True
+    os.kill(pid, signal.SIGKILL)
+    _, status = os.waitpid(pid, 0)
+    print("signaled:", os.WIFSIGNALED(status), os.WTERMSIG(status) if os.WIFSIGNALED(status) else None)
+PYEOF
+# -> signaled: True 11   (SIGSEGV)
+```
+
+Also reproduces directly from an interactive shell: `HELM_RUN=1 /tmp/helm-bin .`
+run from a real terminal segfaults immediately after startup
+("Helm 0.1.0-dev …" then "Segmentation fault (core dumped)").
+
+**Expected:** the app prints its startup line, enters raw mode, queries the
+terminal size via `\x1b[999C\x1b[999B\x1b[6n` (move-to-bottom-right + CPR) when
+`TIOCGWINSZ` isn't trusted, receives the `\x1b[<row>;<col>R` reply, and proceeds
+into the frame loop.
+**Actual:** SIGSEGV shortly after the CPR reply is read, inside the input
+callback chain (`lv_task_trampoline` → `lv_run_closure_thunk` → four opaque
+LLVM-generated frames with no symbol names in this build). Backtrace has no
+line-level info — this build isn't compiled with debug symbols, and the
+generated function names (`f1287`, `f2198`, …) don't map back to `.lev` source
+without a symbol table, so the root cause is unisolated beyond "somewhere in
+the CPR-response parse/dispatch path."
+
+**Verification gaps (for whoever picks this up):** (1) Whether oracle/IR share
+the crash is **not confirmed** — the same pty-based repro against
+`leviathan --plan build/plan.lvplan --run`/`--ir` produced zero observable
+output at all within a several-second window (no crash, no startup line, no
+hang-then-flush), unlike the LLVM binary which prints immediately. This may be
+an unrelated stdio-buffering difference between the tree-walk/IR interpreter
+and the compiled binary when stdout is a pty, rather than the same bug being
+masked — not diagnosed. (2) No workaround identified; anyone needing to run a
+compiled Sonar app interactively in a real terminal today will hit this.
+
+---
+
+## #97 [P1] — sockets/process/pty classes cannot be compiled for a Windows target: prelude over-marking drags the task natives in
+
+**Found:** 2026-07-19, implementing the pty floor's Windows lane
+(`designs/complete/techdesign-03-pty-windows-conpty.md` S3/G-PTY3).
+**Priority justification:** P1.2 — the only workaround is per-use: every track
+that wants sockets, a child process, or a pty on a Windows target must
+independently discover this and hand-roll the floor natives at each site; no
+single workaround retires it. (P2.3 also matches — a documented feature fails
+loud on one lane while working on the others — but P1 is evaluated first and
+P1.2 fits the workaround shape exactly.)
+
+**NOT the bug:** that `spawn`/`Channel`/`TaskGroup` are unsupported on a
+Windows target. That is a deliberate ruling (LA-30 G5: win32 needs the Fiber
+API, so tasks stay pump-pinned — `runtime/lv_task.c:27-57`), documented in
+`docs/reference.md`. The bug is its **blast radius**.
+
+**Repro** — no task feature anywhere in the program:
+
+```
+$ printf 'TcpListener l = TcpListener(9099);\n' > t.lev
+$ leviathan --native-obj t.o --target x86_64-pc-windows-gnu t.lev
+error: LLVM backend: tasks: unsupported on Windows (v1) — 'sysTaskCancel'
+       has no Windows lowering
+```
+
+Identical failure for `TcpStream`, `Process`, and `Pty`. Expected: these
+compile for a Windows triple (nothing in any design rejects them, and
+`docs/reference.md` documents sockets/`Process`/`Pty` without a Windows
+carve-out — only threads/`spawn` carry one). Actual: a whole capability family
+is unbuildable for the target, and the diagnostic names a native the program
+never mentions, so the message mis-attributes the cause.
+
+**Root-cause pointer:** two independent contributors; narrowing **either** one
+fixes it.
+1. Prelude over-marking (`src/Resolver.cpp:3232` documents this exact
+   mechanism breaking `--build` once before): marking is arity-blind and
+   by-name, so `TcpStream`/`File`'s `close()` also marks `TaskGroup::close()`,
+   whose body reaches `std::sysTaskCancel` (`src/Resolver.cpp:1414`).
+2. The reject is **emission**-gated, not reachability-gated
+   (`src/LlvmGen.cpp:2752-2765`): it fires when the row is emitted, reachable
+   or not. The wasm gate immediately above it already has the two-tier shape
+   (reachable → diagnostic; prelude-only → `lvrt_unsupported` trap) that would
+   answer this.
+
+**Owner ruling needed before a fix lands** (which of the two to narrow is a
+gate question, not a pty question): recorded as
+`designs/requests/request-windows-task-gate.md`.
+
+**Workaround (debt sites):** drive the **floor natives** directly instead of
+the prelude class — `std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/
+`sysKill`/`sysReap` compile and run on Windows today. Applied in
+`tests/pty_win_driver.lev` (the G-PTY3 behavioral lane, which is why it does
+not use `Pty`). `tests/run_wine_cross.sh` avoids the area entirely — its scope
+note excludes net corpus.
 
 ---
 

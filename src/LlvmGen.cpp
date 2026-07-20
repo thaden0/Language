@@ -2904,19 +2904,27 @@ struct Gen {
                                 "atan2", FunctionType::get(f64Ty, {f64Ty, f64Ty}, false));
                             storeTP(b, regs[in.a], i64C(2),
                                     b.CreateBitCast(b.CreateCall(f, {y, x}), i64Ty));
-                        } else if (n == "sysSpawn" || n == "sysPidfdOpen" ||
-                                   n == "sysReap" || n == "sysKill") {
+                        } else if (n == "sysSpawn" || n == "sysPidfdOpen") {
                             // G-LANG-2 process floor (techdesign-spawn-llvm.md §5):
-                            // POSIX-only, the threads Windows-reject precedent (D4).
+                            // pipes-spawn stays POSIX-only, the threads
+                            // Windows-reject precedent (D4). The pty path is the
+                            // sanctioned Windows child story (designs/pty/ 03).
                             if (targetWindows) {
                                 fail("process spawn: unsupported on Windows (v1) — '" + n +
                                      "' has no Windows lowering (techdesign-spawn-llvm.md)");
                             } else if (n == "sysSpawn") {
                                 b.CreateCall(rtSysSpawn, {regs[in.a], arg(0), arg(1)});
                                 retainDst();   // fresh heap Array<int> -> +1 (D1, sysArgs parity)
-                            } else if (n == "sysPidfdOpen") {
+                            } else {  // sysPidfdOpen
                                 b.CreateCall(rtSysPidfdOpen, {regs[in.a], arg(0)});
-                            } else if (n == "sysReap") {
+                            }
+                        } else if (n == "sysReap" || n == "sysKill") {
+                            // Windows-clean since designs/pty/ 03 (D-P10/D-W3):
+                            // both have registry-backed win32 bodies keyed by the
+                            // pids lv_plat_pty_spawn hands out, so the reject
+                            // narrowed to the two rows above. Scalar rows: no
+                            // retain, no ABI change — gating surgery only.
+                            if (n == "sysReap") {
                                 b.CreateCall(rtSysReap, {regs[in.a], arg(0)});
                             } else {  // sysKill
                                 b.CreateCall(rtSysKill, {regs[in.a], arg(0), arg(1)});
@@ -2924,9 +2932,9 @@ struct Gen {
                         } else if (n == "sysPtySpawn" || n == "sysPtyResize") {
                             // Pty floor (designs/pty/ 02 §3.2): a SEPARATE arm from
                             // the sysSpawn family — no Windows reject, that is
-                            // D-P8's runtime degrade. ConPTY lands in designs/pty/
-                            // 03; until then the win32 stubs return the frozen
-                            // failure sentinels and the language sees [].
+                            // D-P8's runtime degrade. Since designs/pty/ 03 the
+                            // win32 floor IS ConPTY; on a pre-1809 host the same
+                            // binary still degrades at runtime to [].
                             if (n == "sysPtySpawn") {
                                 b.CreateCall(rtSysPtySpawn,
                                              {regs[in.a], arg(0), arg(1), arg(2), arg(3), arg(4)});

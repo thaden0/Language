@@ -140,9 +140,13 @@ int     lv_plat_connect_result(int fd);
  *   Returns -1 on pipe/fork failure (exec failure is the child's 127 instead).
  * lv_plat_pidfd_open: pollable fd, read-ready when pid exits; -1 unavailable.
  * lv_plat_reap: -1 still running / not ours; 0..255 exited; 128+sig signaled.
- *   Never blocks.
+ *   Never blocks. Win32 (designs/pty/ 03 D-W3): the answer comes from a
+ *   floor-internal pid->HANDLE registry filled by lv_plat_pty_spawn, never
+ *   from OpenProcess-by-pid (pid reuse); the 128+sig band is POSIX-only —
+ *   see LV_PTY_KILLED.
  * lv_plat_kill: 0/-1. Callers refuse pid <= 0 above this line; the floor
- *   refuses it again (broadcast forms never reach kill(2)).                  */
+ *   refuses it again (broadcast forms never reach kill(2)). Win32: the signal
+ *   number is accepted and ignored beyond terminate-vs-nothing (no signals). */
 int     lv_plat_spawn(const char* path, char* const argv[], int fds[3]);
 int     lv_plat_pidfd_open(int pid);
 int     lv_plat_reap(int pid);
@@ -161,6 +165,14 @@ int     lv_plat_kill(int pid, int sig);
 int     lv_plat_pty_spawn(const char* path, char* const argv[],
                           int rows, int cols, int flags, int* master);
 int     lv_plat_pty_resize(int master, int rows, int cols);
+
+/* Win32 exit encoding for a pty child WE killed (designs/pty/ 03 D-W4).
+ * Windows has no signals, so there is no honest 128+sig to report:
+ * lv_plat_kill TerminateProcess()es with this code and lv_plat_reap returns it
+ * verbatim. 254 is in the exited band and clear of 127 (exec failure) and 255
+ * (the usual exit(-1)). POSIX lanes are unaffected — they still report
+ * 128+SIGTERM = 143, which is why kill goldens are a POSIX-lane assertion. */
+#define LV_PTY_KILLED 254
 
 /* poll: a platform-opaque record so a future Win32 floor can back it with
  * WSAPOLLFD (whose SOCKET fd type differs in width from POSIX's int)

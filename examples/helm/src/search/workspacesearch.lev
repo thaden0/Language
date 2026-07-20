@@ -1,0 +1,93 @@
+// H12 — workspace search (§5, "workspace search (grep)"). Runs entirely
+// in-process over the language's own `Regex` engine (docs/reference.md
+// §6.4.6) rather than shelling out to an external `grep` — deliberately: this
+// is the one H12 capability that does NOT gate on H09/`Proc`, since `Proc` is
+// interpreter-only (G-LANG-2) while `Regex` has no such floor dependency.
+// Keeping search in-process keeps it off that constraint for no cost.
+//
+// Walks the workspace tree with the same `std::sysListDir`/`std::isDir`
+// natives `FileTree` already uses (H05); a small skip-list keeps `.git`/
+// `build`/vendor dirs out of the scan. Capped at `maxResults_` (a v1 perf
+// guard, the §K1 precedent) — `truncated()` tells the caller whether the cap
+// actually bit, so a result view can say so rather than silently under-report.
+
+uses Sonar;
+
+namespace Helm {
+
+    Array<string> defaultSkipDirs = [".git", "build", "node_modules", ".trident"];
+
+    class WorkspaceSearch {
+        string        root_;
+        Array<string> skipDirs_   = defaultSkipDirs;
+        int           maxResults_ = 500;
+        bool          truncated_  = false;
+        Array<SearchMatch> results_ = [];
+
+        new WorkspaceSearch(string root) { root_ = stripTrailingSlash(root); }
+
+        void setMaxResults(int n) { maxResults_ = n > 1 ? n : 1; }
+        bool truncated() => truncated_;
+        bool isSkipped(string name) => skipDirs_.contains(name);
+
+        // `useRegex` takes the query as a pattern; otherwise it's escaped to a
+        // literal substring search — one engine, one code path
+        // (`regex::escape`). A malformed user pattern throws `RegexException`;
+        // callers decide whether to surface that (info.md §16: no silent-
+        // distant footguns).
+        Regex compile(string query, bool useRegex, bool caseSensitive) {
+            string pattern = useRegex ? query : regex::escape(query);
+            return Regex(pattern, caseSensitive ? "" : "i");
+        }
+
+        Array<SearchMatch> search(string query, bool useRegex, bool caseSensitive) {
+            results_   = [];
+            truncated_ = false;
+            Regex re = this.compile(query, useRegex, caseSensitive);
+            this.walk(root_, re);
+            return results_;
+        }
+
+        // Depth-first walk, accumulating into `results_` — a class field, not
+        // a threaded local/parameter: arrays are pure, so a recursive call
+        // reassigning a captured local wouldn't write back to its caller (the
+        // G-H2 closure footgun); `this.results_ = this.results_.add(...)`
+        // persists because `this` is shared reference identity.
+        void walk(string dir, Regex re) {
+            if (truncated_) return;
+            Array<string> entries = std::sysListDir(dir) ?? [];
+            Array<string> sorted  = entries.sortBy((e) => e);
+            for (string name in sorted) {
+                if (truncated_) return;
+                string full = joinPath(dir, name);
+                if (std::isDir(full)) {
+                    if (!this.isSkipped(name)) this.walk(full, re);
+                } else {
+                    this.searchFile(full, re);
+                }
+            }
+        }
+
+        void searchFile(string path, Regex re) {
+            string text;
+            try {
+                using File f = File(path, std::read);
+                text = f.read(f.size());
+            } catch (IRuntimeException e) {
+                return;   // unreadable/binary/permission-denied — skip, not fatal
+            }
+            int lineNo = 0;
+            for (string line in text.split("\n")) {
+                lineNo = lineNo + 1;
+                if (truncated_) return;
+                Match? m = re.find(line);
+                if (m != None) {
+                    Match mm = m;
+                    results_ = results_.add(SearchMatch(path, lineNo, mm.index + 1, line.trim()));
+                    if (results_.length() >= maxResults_) { truncated_ = true; return; }
+                }
+            }
+        }
+    }
+
+}
