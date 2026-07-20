@@ -8,8 +8,9 @@ native, ABI, ownership-lowering, TLS, or backend-specific code.
 `designs/requests/accepted/request-http-streaming-response.md`.
 **Primary consumer:** Atlantis Track 01's `ChunkedBody` / `mkStreaming` seam in
 `packages/atlantis/src/kernel/seam.lev`.
-**Depends on:** the landed Track 09 HTTP stack, `TcpStream` queue-and-drain writes,
-`sysWatchWrite`, LA-30 stackful suspension, and the existing chunk encoder.
+**Depends on:** the landed Track 09 HTTP stack in file-backed `prelude/std.lev`,
+`TcpStream` queue-and-drain writes, `sysWatchWrite`, LA-30 stackful suspension, and the
+existing chunk encoder.
 
 ---
 
@@ -65,7 +66,7 @@ Five decisions are locked:
 
 ### 1.1 The existing write path is asynchronous but not observable
 
-`src/Resolver.cpp`'s `TcpStream.send` tries `sysSend` once, stores a short-write tail in
+`prelude/std.lev`'s `TcpStream.send` tries `sysSend` once, stores a short-write tail in
 one string, and registers `sysWatchWrite`; another `send` while draining concatenates more
 data:
 
@@ -179,6 +180,12 @@ No implementation blocker was found. The feature is standard-library state manag
 landed primitives. The only necessary widening beyond the request's literal API is
 `TcpStream.flush()` so “incremental” is true at the transport queue and connection close is
 ordered after output.
+
+The repository sync immediately before finalization landed the shipped-source prelude
+design: `prelude/std.lev` is now the single source of truth, and the compiler's embedded
+fallback is generated from it. Implementation edits `prelude/std.lev`, never a deleted
+`kPreludeStd` constant or generated fallback. The same sync added `TcpStream.eofKeepsFd` /
+`retireRead()` for PTY ownership, so callback detachment must preserve that path (§3.1).
 
 ---
 
@@ -335,6 +342,13 @@ unwatching (and clear `hasCloseCb`). Today those stored callbacks can retain the
 `HttpConnection` after the fd is gone. Streaming makes repeated long-lived connection churn
 an acceptance path, so leaving that connection → stream → callback → connection cycle is
 not acceptable.
+
+Preserve the newly landed PTY EOF contract while doing so. `pump()` / `pumpAll()` currently
+call `retireRead()` before invoking `onClosed`; ordinary sockets close there, while a PTY
+with `eofKeepsFd` only retires the read watch and keeps the master fd until reap. Snapshot
+the close callback before retirement, retire/detach, then invoke the snapshot exactly once.
+Never make read EOF close a PTY master, and settle any discarded PTY-side write tail/flush
+waiter as `false`. The `corpus_sys_pty_*` gates in §7.6 pin this ordering.
 
 ### 3.2 Bounded single-producer memory
 
@@ -577,7 +591,7 @@ source before/with `end`; `onClose` is the premature-disconnect hook, not a gene
 
 ### 6.1 May edit
 
-- `src/Resolver.cpp`
+- `prelude/std.lev`
   - `TcpStream` flush state;
   - `ChunkedSink`;
   - `HttpResponse` body mode/head rendering; and
@@ -592,6 +606,8 @@ source before/with `end`; `onClose` is the premature-disconnect hook, not a gene
 
 ### 6.2 Do not touch
 
+- `src/Resolver.cpp`, `src/PreludeEmbedded.hpp`, `cmake/GenPreludeEmbedded.cmake`, and
+  build-generated prelude fallback files: `prelude/std.lev` is the only source to edit.
 - `src/RuntimeNatives.cpp`, `src/RuntimeLoop.*`, `runtime/**`, `src/LlvmGen.cpp`: the
   substrate already exists and this design adds no native.
 - `src/X64*`: frozen backend.
@@ -688,7 +704,7 @@ Run at minimum:
 ```sh
 cmake --build build --target leviathan lvrt
 ctest --test-dir build --output-on-failure -R \
-  'http_streaming|corpus_http_parse|corpus_(treewalk|ir|llvm_full)|tls_integration'
+  'http_streaming|corpus_http_parse|corpus_(treewalk|ir|llvm_full)|tls_integration|prelude_select|corpus_sys_pty'
 ```
 
 The implementation should narrow this regex if the local build lacks optional TLS/LLVM,
@@ -711,8 +727,8 @@ streaming result.
 **Scope:** `TcpStream.flush`, waiter settlement, fatal/close paths, focused socket tests.
 
 **Gate:** immediate, short-write, peer-close, fatal-write, and multiple-waiter cases settle
-exactly once on oracle/IR/LLVM; existing socket/process/TLS queue-and-drain tests remain
-green.
+exactly once on oracle/IR/LLVM; existing socket/process/TLS queue-and-drain and PTY EOF
+ownership tests remain green.
 
 ### S2 — response mode and connection state machine
 
@@ -786,6 +802,8 @@ Stop and revise this design rather than improvising if any of these occurs:
 5. Meeting the feature requires exposing the raw `TcpStream` or adding a second server
    handler/result model.
 6. Any proposed fix touches the frozen X64 backend or weakens existing TLS/socket semantics.
+7. Callback teardown makes `TcpStream.retireRead()` close a PTY master at read EOF or changes
+   the PTY's reap-owned fd lifetime.
 
 If none triggers, this remains a Sonnet-class, prelude-only implementation.
 
