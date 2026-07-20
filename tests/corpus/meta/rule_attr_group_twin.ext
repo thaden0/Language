@@ -1,0 +1,24 @@
+// Hand-written twin of rule_attr_group.ext: same rule, same fields, but each
+// `@Column` marker uses the ordinary stacked-decorator spelling instead of
+// the `@attr(Column);` grouped sugar. Must produce byte-identical output.
+namespace Orm {
+    attribute Table { string name; }
+    attribute Column { }
+    rule buildSchema {
+        match @Table(t) on class C
+        inject `Array<string> schema() =>
+            [ $t.name, $for f in C.fields.where((x) => x.hasAttr("Column")) : $f.name ];`
+               at member of C
+    }
+}
+uses Orm;
+
+@Table("users")
+class User {
+    @Column int id;
+    @Column string name;
+    int internalCounter;
+}
+
+User u = User();
+console.write(u.schema().joinToString(","));

@@ -1,0 +1,141 @@
+// Atlantis Track 08 — token-bucket rate limiting + login lockout (design §9.2).
+namespace Atlantis {
+    namespace Auth {
+
+        // A CLASS, not a struct (design's own sketch used `struct Bucket`) —
+        // deliberate deviation: storing a struct as a `Map<K, Struct>` CLASS
+        // FIELD corrupts memory on LLVM past ~2 entries (router.lev's own §1.3
+        // note, filed bug). A class reference sidesteps it, same as
+        // session.lev's SessionRecord.
+        class Bucket {
+            float tokens;
+            int lastMs;
+            new Bucket(float tokens, int lastMs) {
+                this.tokens = tokens;
+                this.lastMs = lastMs;
+            }
+        }
+
+        struct RateDecision {
+            bool allowed;
+            int retryAfterSec;
+            new RateDecision(bool allowed, int retryAfterSec) {
+                this.allowed = allowed;
+                this.retryAfterSec = retryAfterSec;
+            }
+        }
+
+        class TokenBucketLimiter : SweepTimer {
+            Map<string, Bucket> buckets = Map();
+
+            // refill = elapsed*rate/60000 capped at burst; tokens<1 => denied +
+            // retryAfterSec = ceil((1-tokens)*60000/rate/1000).
+            RateDecision allow(string key, float ratePerMin, float burst, int nowMs) {
+                Bucket cur = this.buckets.atOrNone(key) ?? Bucket(burst, nowMs);
+                float elapsedMs = (nowMs - cur.lastMs).toFloat();
+                float refilled = cur.tokens + elapsedMs * ratePerMin / 60000.0;
+                float capped = refilled > burst ? burst : refilled;
+                if (capped < 1.0) {
+                    this.buckets[key] = Bucket(capped, nowMs);
+                    float deficitMs = (1.0 - capped) * 60000.0 / ratePerMin;
+                    return RateDecision(false, (deficitMs / 1000.0).ceil().toInt());
+                }
+                this.buckets[key] = Bucket(capped - 1.0, nowMs);
+                return RateDecision(true, 0);
+            }
+
+            // Sweep evicts entries idle > idleMs (design: 10 min). `.without()`
+            // is LLVM-unsafe by name (bug.md #18) — rebuild via bracket-sugar.
+            void sweepIdle(int nowMs, int idleMs) {
+                Map<string, Bucket> next = Map();
+                for (Pair e in this.buckets) {
+                    if (nowMs - e.second.lastMs <= idleMs) { next[e.first] = e.second; }
+                }
+                this.buckets = next;
+            }
+
+            // Not auto-armed (see session.lev's InMemorySessionStore note on
+            // why a repeating timer must not start itself) — the composition
+            // root calls this once the app is actually serving.
+            void startSweep() {
+                TokenBucketLimiter self = this;
+                this.armSweep(60000, (tick) => { self.sweepIdle(Http::nowMs(), 600000); });
+            }
+        }
+
+        string defaultIpKeySelector(Http::Context ctx) => ctx.items.atOr("remoteAddr", "");
+        string principalKeySelector(Http::Context ctx) => ctx.user?.id ?? "";
+
+        // Denied => 429 + Retry-After, returned directly (F-11: HttpException
+        // carrying headers is a Track 01 coordination ask, not landed — this is
+        // the design's own documented fallback, C2-legal).
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse rateLimitMiddleware(
+            TokenBucketLimiter limiter, (Http::Context) => string keySelector, float ratePerMin, float burst) =>
+            (ctx, next) => {
+                string key = keySelector(ctx);
+                RateDecision d = limiter.allow(key, ratePerMin, burst, Http::nowMs());
+                if (!d.allowed) {
+                    HttpResponse r = HttpResponse(429, "rate limited");
+                    r.withHeader("Retry-After", d.retryAfterSec.toString());
+                    return r;
+                }
+                return next(ctx);
+            };
+
+        // Login throttling/lockout (design §9.2): failure counters keyed
+        // "login:acct:<idLower>" / "login:ip:<ip>" over fixed 15-min windows.
+        // A CLASS (map-storage safety, same reasoning as Bucket above).
+        class FailureWindow {
+            int count;
+            int windowStartMs;
+            new FailureWindow(int count, int windowStartMs) {
+                this.count = count;
+                this.windowStartMs = windowStartMs;
+            }
+        }
+
+        class LoginThrottle : SweepTimer {
+            Map<string, FailureWindow> windows = Map();
+            int windowMs = 900000;      // 15 min
+            int accountThreshold = 5;
+            int ipThreshold = 20;
+
+            bool isLocked(string key, int nowMs, int threshold) {
+                FailureWindow cur = this.windows.atOrNone(key) ?? FailureWindow(0, nowMs);
+                if (nowMs - cur.windowStartMs > this.windowMs) { return false; }   // window expired
+                return cur.count >= threshold;
+            }
+            bool accountLocked(string acctIdLower, int nowMs) =>
+                this.isLocked("login:acct:" + acctIdLower, nowMs, this.accountThreshold);
+            bool ipCoolingDown(string ip, int nowMs) =>
+                this.isLocked("login:ip:" + ip, nowMs, this.ipThreshold);
+
+            void recordFailure(string key, int nowMs) {
+                FailureWindow prev = this.windows.atOrNone(key) ?? FailureWindow(0, nowMs);
+                FailureWindow cur = (nowMs - prev.windowStartMs > this.windowMs) ? FailureWindow(0, nowMs) : prev;
+                this.windows[key] = FailureWindow(cur.count + 1, cur.windowStartMs);
+            }
+            void recordAccountFailure(string acctIdLower, int nowMs) { this.recordFailure("login:acct:" + acctIdLower, nowMs); }
+            void recordIpFailure(string ip, int nowMs) { this.recordFailure("login:ip:" + ip, nowMs); }
+
+            // Counters reset on success (design §9.2).
+            void reset(string key) {
+                Map<string, FailureWindow> next = Map();
+                for (Pair e in this.windows) { if (e.first != key) { next[e.first] = e.second; } }
+                this.windows = next;
+            }
+            void resetAccount(string acctIdLower) { this.reset("login:acct:" + acctIdLower); }
+            void resetIp(string ip) { this.reset("login:ip:" + ip); }
+
+            void startSweep() {
+                LoginThrottle self = this;
+                this.armSweep(60000, (tick) => { self.sweepIdle(Http::nowMs()); });
+            }
+            void sweepIdle(int nowMs) {
+                Map<string, FailureWindow> next = Map();
+                for (Pair e in this.windows) { if (nowMs - e.second.windowStartMs <= this.windowMs) { next[e.first] = e.second; } }
+                this.windows = next;
+            }
+        }
+    }
+}

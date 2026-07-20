@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #94, #96 |
-| P1       | #97, #99 |
+| P1       | #97, #98 |
 | P2       | — |
 | P3       | — |
 
@@ -201,71 +201,100 @@ the prelude class — `std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/
 not use `Pty`). `tests/run_wine_cross.sh` avoids the area entirely — its scope
 note excludes net corpus.
 
-## #99 [P1] — LA-18 specialization can't determine a type tuple from a lambda-typed argument alone
+## #98 [P1] — a rule cannot match an attribute declared in a different namespace than the rule itself
 
-**Found:** 2026-07-20, implementing Atlantis Track 07 (`designs/atlantis/techdesign-07-mcp-openapi.md`,
-probe T7-P1) — the `makeTool<A,R>(string, string, Array<ParamSpec>, (A) => R fn)` adapter shape.
-**Priority justification:** P1.2 — the only workaround is per-use (a plain witness value of type `A`
-in the call, or explicit `fn::<A, R>(...)` type arguments); every future LA-18 consumer that infers a
-`specializationRequired` generic's type purely from a lambda-literal argument's declared parameter
-type must independently discover one of those two workarounds. Not P0: it is a loud compile error
-(`cannot determine a concrete type tuple`), never silent, and a per-call fix exists.
+**Renumbered from #96** (2026-07-19, same day) to resolve a cross-branch bug-
+number collision on merge — origin/master independently filed a DIFFERENT #96
+(the `term::size()` CPR segfault above) and #97 (the Windows task-gate entry
+above) the same day. This entry's content is otherwise unchanged; any prior
+reference to "known_bugs_2.md #96" for the cross-namespace rule-matching
+finding now means #98.
 
-**NOT the bug:** `A::member` itself. Calling a static-shaped labeled ctor on a function-level generic
-type parameter works exactly as `designs/complete/techdesign-generic-static-members.md` (LA-18)
-describes — confirmed directly (`packages/atlantis/tests/probes/mcp_p1_generic_labeled_ctor_type_param.lev`
-compiles and runs once the `A::Zero()` call is removed, and a companion witness-argument repro below
-compiles and runs with it present). The bug is narrower: **which call shapes let the specialization
-pass *see* the concrete type**.
+**Independently re-confirmed** 2026-07-20 by a second, concurrent agent working the same
+Atlantis Track 07 doc from a stale worktree copy (its own T7-P6 probe, minimal
+sibling-namespace repro, identical result) — filed a second time as a would-be #99 before
+the collision was discovered at merge; folded in here rather than kept as a duplicate
+entry. That session's T7-P1 probe also adds a sharper root-cause note worth keeping: the
+practical failure Track 07 hit isn't only "type-position splicing" in general — a narrower,
+separately-reproducible LA-18 gap is that the specialization-tuple collector can't
+determine a generic's concrete type when the *only* evidence in the call is a
+lambda-literal argument's declared parameter type (`wrap("x", (Left a) => a)` against
+`wrap<A,R>(string, (A) => R fn)` fails with "cannot determine a concrete type tuple"; a
+plain witness value of type `A`, or explicit `fn::<A,R>(...)` turbofish, both work around
+it). Not re-filed as its own entry since the practical consequence for any Track-07-shaped
+rule is the same as this entry's: co-locate / hand-wire, don't fight the splice.
 
-**Repro:**
+**Found:** 2026-07-19, Atlantis Track 07 M0 probe T7-P6
+(`packages/atlantis/tests/probes/mcp_p6_two_rules_stack.lev`), while
+validating the C1 2026-07-18 amendment's premise (rules/attributes live in
+the subsystem namespace that *consumes* them, e.g. Track 07's `schemaJson`
+rule in `Atlantis::OpenApi` matching `@Serializable`, declared in `Atlantis`).
+**Priority justification:** P1.2 — no single fix retires the risk; every
+future subsystem whose rule needs to match another subsystem's attribute
+(exactly the shape C1's own "multi-consumer" tiebreak anticipates as normal)
+must independently know to co-locate the rule in the attribute's namespace
+instead. Not P0: a workaround exists (same-namespace co-location) and no
+track is unconditionally blocked.
+
+**Repro (minimal, no nesting relationship — plain siblings):**
 
 ```
-namespace Probe {
-    () => string wrap<A, R>(string tag, (A) => R fn) {
-        string eager = A::Zero().tag();      // <- specializationRequired because of this
-        return () => tag + ":" + eager;
+namespace SibA {
+    attribute Foo {}
+}
+namespace SibB {
+    rule ruleB {
+        match @Foo on struct S
+        inject `string __fromB() => "B";` at member of S
     }
 }
-uses Probe;
-class Left { new Zero() { } string tag() => "L"; }
-var l = Probe::wrap("left", (Left a) => a);   // ERROR
-console.writeln(l());
+uses SibA;
+uses SibB;
+
+@Foo
+struct Thing { int x; }
+
+void main() {
+    Thing t = Thing();
+    console.writeln(t.__fromB());   // expected "B"
+}
+main();
 ```
 
-```
-error: cannot determine a concrete type tuple for generic 'wrap' at this call site
-```
+**Expected:** `ruleB` matches `@Foo` (visible, imported via `uses SibA;`) and
+injects `__fromB` into `Thing`, printing `B`.
+**Actual:** a diagnostic (`warning: attribute '@Foo' matched no imported rule
+(missing 'uses SibB'?)`) fires even though `uses SibB;` IS present, `ruleB`
+never fires, and the call `t.__fromB()` fails at runtime: `Uncaught
+RuntimeException: cannot resolve call target '__fromB'`. Confirmed the same
+result whether the two namespaces are unrelated siblings (above), or one is
+nested one level inside the other in either direction (attribute in the
+outer namespace + rule in a nested inner namespace, matching Track 07's
+actual C1-amended layout) — the failure is not about nesting depth or
+direction, only about the rule and the attribute being declared in different
+namespace blocks at all. When both are declared in the SAME namespace block
+(regardless of how deeply that namespace is itself nested — e.g. Track 06's
+`Atlantis::Orm` rules matching `Atlantis::Orm`'s own attributes, bug #91's
+now-fixed regression floor), matching works correctly — confirmed by this
+same probe file's `ruleOuter`/`__fromOuter` case, which passes.
 
-Deleting the `A::Zero()` line (making `wrap` an ordinary, non-`::`-using generic) makes the identical
-call compile and run — plain generic checking infers `A`/`R` from the lambda argument's declared
-type just fine (`inferConstruction`/`genericReturn`, the same machinery LA-18 §4.1 point 4 says its
-own tuple collector reuses). Only the **specialization-set collection** step added by LA-18 fails to
-pick up the tuple here.
+**Root-cause pointer:** not investigated (framework agents don't debug
+compiler internals per the Atlantis overview §0.4(b)/(h)); likely the same
+family as #91 (rule/attribute namespace keying in `Rules.cpp`), but #91's fix
+(keying by full qualified path) evidently did not extend to cross-namespace
+*matching* — only to same-namespace rules/attributes nested arbitrarily deep.
 
-**Confirmed workarounds (both compile and run correctly):**
-1. A plain witness *value* argument of type `A` alongside the lambda:
-   `A witness<A>(A w) => A::Zero().tag(); apply6(Left())` — succeeds (no lambda involved at all).
-2. Explicit generic type arguments at the call site, `::<...>` syntax:
-   `Probe::apply3::<Left, Left>("hi", (Left a) => a)` — succeeds; note the call-site spelling is
-   `name::<T1,T2>(...)`, not `name<T1,T2>(...)` (the latter parses as a chained comparison and a
-   separate, pre-existing diagnostic — "cannot reference generic function ... in value position" —
-   points at the `::<...>` spelling).
-
-**Root-cause pointer:** not yet narrowed inside `Checker.cpp`'s specialization-set collector (the
-LA-18 M1 code path, `designs/complete/techdesign-generic-static-members.md` §4.1 point 4); the
-collector evidently keys off argument-VALUE type inference and does not additionally consult a
-lambda-LITERAL argument's own declared parameter type the way ordinary (non-specialization) generic
-checking does.
-
-**Workaround (debt sites):** Atlantis Track 07's `@Tool` rule cannot emit a fully-generic,
-lambda-argument-inferred `makeTool<A,R>(...)` call from a rule template (the rule has no bound
-declaration for a matched method's parameter TYPE to spell an explicit `::<AddArgs, int>` — only
-`$p.name`/`$p.type` as string VALUES, confirmed separately, see T7-P5). Track 07 implements its
-design's own pre-authorized §3.5 fallback ladder rung 3 instead: the rule generates tool metadata
-(name/description/param descriptors) only; typed dispatch adapters are hand-written in the app's
-composition root, where the concrete DTO type is already spelled by the author. Debt site:
-`packages/atlantis/src/mcp/**` once implemented.
+**Workaround (debt site):** co-locate a rule with the attribute it matches,
+in the attribute's OWN namespace, even when C1's placement guidance would
+otherwise put the rule in a different (more specific) subsystem namespace.
+Applied in `packages/atlantis/src/openapi/schema.lev` (Track 07): the
+`serializableSchema` rule matches `@Serializable`, declared in flat
+`Atlantis` by Track 03's (still-unmigrated) `src/json/serializable.lev` — so
+it is declared inside `namespace Atlantis { ... }` directly, not nested
+`Atlantis::OpenApi`, with a comment pointing here. Revisit when either this
+bug is fixed, or Track 03 completes its own C1 migration (at which point the
+rule should move to `Atlantis::Json` instead, once cross-namespace matching
+works or `@Serializable` lands there).
 
 ---
 

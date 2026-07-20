@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #95 |
+| P0       | #95, #99 |
 | P1       | #93, #98 |
 | P2       | — |
 | P3       | — |
@@ -221,6 +221,112 @@ ordinary checked project file, and the prelude is not on the checker's or the
 rule engine's path at all, file-backed or not. That design's DOM-surface rewrite
 is parked on this bug (or on a project-file placement instead of prelude) rather
 than worked around.
+
+## #99 [P0] — a function taking a class-typed parameter that also returns from inside a `for` loop over `Array<Struct>` corrupts a LATER unrelated call on LLVM
+
+**Found:** 2026-07-19, implementing Atlantis Track 08 (Auth & Security),
+exercising the session-cookie strategy's `authenticate()` path on the native
+binary.
+**Priority justification:** P0.3 — an actively-maintained engine (LLVM) hits
+silent state corruption whose symptom (a crash) surfaces at a later,
+unrelated call site, not at the faulting expression itself — the classic
+crash-later variant explicitly named in P0.3's definition.
+
+**Repro (minimal, bisected down from Track 08's `Auth::cookieValue`):**
+
+```
+uses Atlantis::Http;      // brings in Context/HttpRequest
+
+struct Pair2 { string name; string value;
+    new Pair2(string name, string value) { this.name = name; this.value = value; } }
+
+Array<Pair2> buildPairs(string s) {
+    Array<Pair2> out = [];
+    for (string part in s.split(";")) {
+        int eq = part.indexOf("=");
+        if (eq < 0) { continue; }
+        out = out.add(Pair2(part.subStr(0, eq), part.subStr(eq + 1, part.length() - (eq + 1))));
+    }
+    return out;
+}
+
+// The bug needs BOTH: (a) a class-typed parameter (here Context — UNUSED in
+// the body below, its mere presence in the signature is enough) and (b) an
+// early `return` from inside a `for` loop over Array<Struct>.
+string? myCookieValue(Context ctx, string name) {
+    string header = "a=v1.r3GNDygAj3fpO3Bg1qXc-P7VcVEmOzHww38cKvLRGqc.1784511493991.Zg6jEz2MeRy95zjB7lzztmuETwvMmXh2ggW57RC6bVM";
+    Array<Pair2> pairs = buildPairs(header);
+    for (Pair2 p in pairs) {
+        if (p.name == name) { return p.value; }     // <- early return, the second ingredient
+    }
+    return None;
+}
+
+HttpRequest mkReq() { HttpRequest r = HttpRequest(); r.parse("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n"); return r; }
+
+void main() {
+    Context ctx = Context(mkReq());
+    console.writeln(myCookieValue(ctx, "a") ?? "none");
+    console.writeln("about to hash");
+    string sig = digest::hmacSha256("key", "msg");   // <- ANY later heap-touching call
+    console.writeln("sig len=" + sig.length().toString());   // never printed — core dump
+}
+```
+
+Oracle and IR print all three lines correctly; the native binary prints
+`"about to hash"` then dumps core inside the *unrelated* `hmacSha256` call —
+the `Context ctx` parameter is never read in `myCookieValue`'s body, only
+declared. Bisected by elimination while debugging Track 08's real
+`cookieValue(Http::Context ctx, string name)` (identical shape: parses a
+`Cookie:` header via `Http::reqHeader`, then `for (CookiePair p in pairs) {
+if (p.name == name) { return p.value; } }`): removing the `Context`
+parameter (switching to a plain `string` parameter) makes the crash
+disappear with the early `return` left in place; separately, replacing the
+early `return` with an accumulator variable (`string? found = None; ... found
+= p.value; ... return found;`) makes it disappear with the `Context`
+parameter left in place — so BOTH ingredients are individually necessary,
+neither alone suffices, and merely binding the loop's iterable to a local
+`Array` first (a workaround that DOES fix a superficially similar-looking
+case, e.g. router.lev's "bind the intermediate to a local first" note) does
+**not** fix this one. An existing landed pattern combining a `for` loop over
+`Array<Struct>` (`Router.finalize`'s rebuild loop,
+`packages/atlantis/src/routing/router.lev`) with NO early return and NO
+class-typed parameter in the same function is unaffected, consistent with
+both ingredients being required together. Not diagnosed further here (out of
+Track 08 scope) — plausibly the same family as #90 (a loop-body early-exit
+failing to release/finalize a live reference before the function returns,
+here the class-typed parameter's own reference, corrupting the allocator for
+the next heap-touching call), but unconfirmed.
+
+**Workaround (debt sites):** in any function that also takes a class-typed
+parameter (`Context`, `Router`, a strategy/store object, ...), replace an
+early `return` from inside a `for` loop over `Array<Struct>` with an
+accumulator variable, returned once after the loop. Applied in
+`packages/atlantis/src/auth/cookie.lev` (`cookieValue`) — the one site Track
+08 hit combining both ingredients (`formField` in `csrf.lev` has the early
+return but no class-typed parameter, so it was very likely never affected;
+converted to the same accumulator shape anyway as cheap insurance, not
+because it was independently confirmed to crash).
+
+**Relationship to #95:** applying this workaround did NOT make Track 08's
+full auth corpus (`packages/atlantis/tests/corpus/auth/`) LLVM-clean — it
+still crashes on LLVM, later in the run, on plain `Router`/`Context`
+construction sequences that don't match this entry's specific two-ingredient
+shape at all (confirmed: the crash point moves around depending on unrelated
+prior heap activity, e.g. reordering which test function runs first changes
+*where* it crashes, never *whether*). Directly re-verified in this session
+that #95's own repro (the untouched, pre-existing `packages/atlantis/tests/
+corpus/routing` corpus, no Track 08 code involved at all) still segfaults on
+LLVM within the first two lines of output. Conclusion: this entry's repro is
+a real, independently-reproducible, minimal instance, but it is very likely
+one symptom of the SAME broader systemic defect #95 already tracks (general
+heap corruption from some class of object construction/early-return sequence
+on LLVM, not specific to Auth's code) — severe enough that essentially any
+non-trivial Atlantis LLVM program touching `Router`/`Context` construction
+is currently affected. Track 08's corpus therefore ships with oracle+IR as
+its passing reference (both green and byte-identical) and its LLVM lane
+left red, same posture #95 already established for the routing corpus —
+not a new regression to chase down inside Track 08.
 
 ---
 

@@ -1,0 +1,26 @@
+// T7-P2: a rule injects `new Empty() { }` into a struct; construct via the
+// labeled ctor; read fields back — proves the injectable labeled ctor +
+// zero-default struct field initialization the schemaJson rule needs
+// (design §4.1).
+namespace ProbeP2 {
+    attribute EmptyProbe {}
+    rule emptyProbeRule {
+        match @EmptyProbe on struct S
+        inject `new Empty() { }` at member of S
+    }
+}
+uses ProbeP2;
+
+@EmptyProbe
+struct Coord {
+    int x;
+    int y;
+    string label;
+    bool flag;
+}
+
+void main() {
+    Coord c = Coord::Empty();
+    console.writeln(c.x.toString() + "," + c.y.toString() + ",[" + c.label + "]," + c.flag.toString());
+}
+main();

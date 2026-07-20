@@ -1,0 +1,101 @@
+// Atlantis Track 07 — M4 acceptance corpus (design §9 M4): ApiClient/
+// ApiException against a real in-process server (one event loop, same
+// pattern as Track 01's loopback corpus) — 2xx path, problem+json -> typed
+// exception, and the demo UsersClient (§6.1's exact convention) hitting it
+// through a typed wrapper. Timeout -> exception is NOT exercised: HttpClient
+// has no request-timeout knob yet (reference.md §6.6.6 "deferred: request
+// timeout") — nothing to test until that lands.
+uses Atlantis;
+uses Atlantis::Http;
+uses Atlantis::Log;
+uses Atlantis::Client;
+
+@Serializable
+struct UserDto : IJsonSerializable {
+    int id;
+    string name;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.id), Atlantis::__atlEnc(this.name)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+// The convention the docs teach (design §6.1) — a thin typed wrapper over
+// ApiClient, naming the concrete DTO type statically (ordinary app code, not
+// a splice — no LA-16 concern here).
+class UsersClient : ApiClient {
+    new UsersClient(HttpClient http, string host, int port) {
+        ApiClient::ApiClient(http, host, port);
+    }
+    Promise<UserDto> get(int id) {
+        JsonValue v = await this.getJson("/users/" + id.toString());
+        return Promise(UserDto::FromJson(v));
+    }
+}
+
+JsonValue userJson(int id, string name) {
+    Map<string, JsonValue> m = Map();
+    m["id"] = JsonValue::ofNum(id.toFloat());
+    m["name"] = JsonValue::ofStr(name);
+    return JsonValue::ofObject(m);
+}
+
+void main() {
+    int port = 18092;
+    CaptureSink sink = CaptureSink();
+    Logger log = Logger(sink, 0);
+
+    Pipeline p = Pipeline();
+    p.use(ErrorMapper(log).mw());
+    var app = p.build((c) => {
+        Context ctx = c;
+        if (ctx.method() == "GET" && ctx.path() == "/users/1") {
+            return Respond::json(200, userJson(1, "Ada").render());
+        } else if (ctx.method() == "GET" && ctx.path() == "/users/999") {
+            throw NotFoundException("user 999");
+        } else if (ctx.method() == "POST" && ctx.path() == "/users") {
+            return Respond::json(201, userJson(2, "Bob").render());
+        } else {
+            throw NotFoundException(ctx.path());
+        }
+    });
+
+    Server srv = Server(port, app);
+    srv.start();
+
+    HttpClient httpClient = HttpClient();
+    ApiClient api = ApiClient(httpClient, "127.0.0.1", port);
+
+    console.writeln("== 2xx path (getJson) ==");
+    JsonValue u1 = await api.getJson("/users/1");
+    console.writeln(u1.render());
+
+    console.writeln("== 2xx path (postJson) ==");
+    Map<string, JsonValue> body = Map();
+    body["name"] = JsonValue::ofStr("Bob");
+    JsonValue created = await api.postJson("/users", JsonValue::ofObject(body));
+    console.writeln(created.render());
+
+    console.writeln("== problem+json -> typed ApiException ==");
+    bool threw = false;
+    int status = 0;
+    string detail = "";
+    try {
+        await api.getJson("/users/999");
+    } catch (ApiException e) {
+        threw = true;
+        status = e.status;
+        detail = e.detail;
+    }
+    console.writeln("threw=" + threw.toString() + " status=" + status.toString() +
+        " detailHasUser999=" + detail.contains("999").toString());
+
+    console.writeln("== typed UsersClient (design §6.1) ==");
+    UsersClient uc = UsersClient(httpClient, "127.0.0.1", port);
+    UserDto dto = await uc.get(1);
+    console.writeln(dto.id.toString() + "," + dto.name);
+
+    srv.stop();
+}

@@ -54,6 +54,19 @@ namespace Atlantis {
             // auth guard, Track 08 — not yet built in this repo).
             App useRouting() { this.pipeline.use(this.router.resolveMiddleware()); return this; }
 
+            // Atlantis Track 08 — additive, same shape as every other `useX`
+            // above (an App that never touches auth serves exactly as before).
+            // `strategies` is the explicit ordered precedence list (design §2);
+            // `reg` is the composition root's named-policy registry (design §5).
+            App useAuthentication(Array<Auth::IAuthStrategy> strategies) {
+                this.pipeline.use(Auth::middleware(strategies));
+                return this;
+            }
+            App useAuthorization(Auth::PolicyRegistry reg) {
+                this.pipeline.use(Auth::guard(this.router, reg));
+                return this;
+            }
+
             // Track 02 §0R.1 — lowers a fluent `Route<C>` into one `RouteRec`
             // per requested verb, sharing one handler thunk (§1.1: multiple
             // verbs on one route share one controller.action key).
@@ -69,7 +82,7 @@ namespace Atlantis {
                     // namespace itself) across this qualification boundary, a
                     // filed compiler bug (see the design's §13 log).
                     var rec = Routing::RouteRec(verb, r.path, "Route", r.actionKey(),
-                                                 [], "", r.authMode, r.authRole);
+                                                 [], "", r.authMode, r.authRole, None, "");
                     this.router.record(rec, handler);
                 }
                 this.routesRegistered = true;

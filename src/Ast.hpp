@@ -313,6 +313,9 @@ enum class AnchorKind {
     BodyTop, BodyBottom,   // top/bottom of body (matched method) — Phase 3
     Marker,                // marker "name" — Phase 3
     NamespaceScope,        // namespace N — Phase 3
+    SpliceSite,            // splice Name — named-anchor design: inject at a program-
+                           // global, user-placed `@Name();` splice site (in its
+                           // surrounding lexical scope), not a subject-local marker.
     BodyReplace,           // replace `...` — Layer D, Phase 4 (§2.3): overwrites the
                            // `rewrites body of <bind>` target's body; `$body` splices
                            // the original body back in (composition, not obliteration).
@@ -328,6 +331,8 @@ struct RuleAction {
     AnchorKind anchor = AnchorKind::CtorBottom;
     std::string_view target;         // the bound name the anchor refers to (C, m)
     std::string_view markerName;     // Marker anchors (Phase 3)
+    bool spliceMulti = false;        // `at splice Name multi` — fan out into every
+                                     // matching site instead of demanding exactly one
     // The parsed quasiquote template; which field is set follows the anchor kind
     // (ctor/body anchors -> statement list; member of -> one member; expr later).
     std::vector<StmtPtr> tmplStmts;
@@ -430,6 +435,12 @@ struct Stmt {
     // derived `(==)`. The synthesis pass erases and regenerates these each run
     // (the two-pass resolver can change a struct's field list between passes).
     bool isSynthEq = false;
+    // Named-anchor design: an `@Name();` statement-position splice site. Parsed to
+    // a StmtKind::Empty carrying the attribute's simple name in `name` (bare, no
+    // quotes — distinct from `@anchor("name")` markers, whose name is quoted). The
+    // node STAYS in the tree (like a marker) so `--expand` shows the site; every
+    // later pass already ignores Empty, so no new handling is needed there.
+    bool isSpliceSite = false;
     bool callable = false;
     Selector selector;
     TypeRefPtr type;

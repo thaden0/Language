@@ -1,0 +1,81 @@
+// Atlantis Track 07 — M2 acceptance corpus (design §9 M2 / §3.6's round trip,
+// adapted per rules.lev's documented fallback-ladder deviation): `@Tool`
+// generates METADATA (name/description/params) via the mcpToolMeta rule;
+// the actual typed dispatch is hand-wired via `registerRun`, naming the
+// concrete param type statically (`AddArgs::FromJson`/`AddArgs::Empty()`).
+// `schemaJson()`/`Empty()` (schema.lev) still generate purely from
+// `@Serializable` — that half of §3.6 IS fully attribute-driven.
+uses Atlantis;
+uses Atlantis::OpenApi;
+uses Atlantis::Mcp;
+
+@Serializable
+struct AddArgs : IJsonSerializable {
+    int a;
+    int b;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.a), Atlantis::__atlEnc(this.b)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+class MathService : ToolSource {
+    @Tool("add", "Adds two integers and returns the sum")
+    int add(AddArgs args) => args.a + args.b;
+
+    new MathService() {
+        this.registerRun("add", "Adds two integers and returns the sum",
+            AddArgs::Empty().schemaJson(),
+            (JsonValue a) => guard("add", () => content(this.add(AddArgs::FromJson(a)))));
+    }
+}
+
+// A @Tool that's declared but never registered — exercises the boot warning
+// (rules.lev's warnUnwiredTools).
+class GhostService : ToolSource {
+    @Tool("ghost", "Never wired up")
+    int ghost(AddArgs args) => 0;
+}
+
+JsonValue parseOrNull(string s) => json::parse(s) ?? JsonValue::ofNull();
+
+void main() {
+    console.writeln("== @Tool metadata (fully rule-generated, zero hand code) ==");
+    MathService svc = MathService();
+    for (ToolMeta meta in svc.toolMetas()) {
+        console.writeln(meta.name + ": " + meta.description);
+        for (ParamSpec p in meta.params) {
+            console.writeln("  param " + p.name + ": " + p.type);
+        }
+    }
+
+    console.writeln("== registered tool (hand-wired run, schema from schemaJson()) ==");
+    IToolSource svcAsSource = svc;
+    Array<IToolSource> sources = [svcAsSource];
+    McpServer server = McpServer(sources).withInfo("math-app", "1.0.0");
+
+    console.writeln("-- tools/list --");
+    console.writeln(server.dispatch(parseOrNull("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")).render());
+
+    console.writeln("-- tools/call add(2,3) --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":2,\"b\":3}}}")).render());
+
+    console.writeln("-- tools/call add missing field 'b' -> guard() catches ValidationException, isError:true --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":2}}}")).render());
+
+    console.writeln("-- tools/call add wrong type for 'a' -> guard() catches ValidationException --");
+    console.writeln(server.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":\"x\",\"b\":1}}}")).render());
+
+    console.writeln("== boot warning: a @Tool method declared but never registerRun'd ==");
+    GhostService ghost = GhostService();
+    IToolSource ghostAsSource = ghost;
+    Array<IToolSource> ghostSources = [ghostAsSource];
+    McpServer ghostServer = McpServer(ghostSources);
+    console.writeln("ghostServer tool count=" + ghostServer.dispatch(parseOrNull(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}")).at("result").at("tools").size().toString());
+}

@@ -1,0 +1,16 @@
+// Hand-written twin of rule_splice_binds.ext: the configure() body the named
+// splice anchor expands to, written by hand. Byte-identical --run / --ir output
+// (same .expected) — the acceptance proof that the spliced `bind` inherits
+// configure's binder scope like ordinary code.
+interface IService { string name(); }
+
+class RealService : IService { string name() => "real"; }
+
+string resolve(IService s) => s.name();
+
+string configure() {
+    bind IService => RealService();
+    return resolve();
+}
+
+console.writeln(configure());

@@ -1,0 +1,72 @@
+// Atlantis Track 07 — `@Summary` (design §5.4) + `/llms.txt`.
+//
+// DEVIATION: the design's own sketch has the opSummary rule inject
+// `this.__noteSummary(...)` onto the Controller BASE (Track 02-owned) —
+// its own text flags an alternative: "Track 02 exposes it via an
+// Atlantis::OpenApi::ISummarySource it inherits". Rather than add a method+
+// field to another track's widely-used `Controller` base (a bigger, more
+// invasive cross-track edit than RouteRec's two additive fields), this rule
+// calls a plain namespace-level function — no base-class dependency at all,
+// works on ANY class regardless of whether it inherits Controller.
+// `noteSummary`'s key is `$C.name + "." + $m.name` (class name + method
+// name) — the composition root's hand-built `RouteRec.controller`/`.action`
+// values must match this spelling for `summaryFor` to join them (§5.1's own
+// hand-fixture approach; Era-A's `AddRoute` hardcodes `controller = "Route"`
+// today, so real Era-A integration is a follow-up once Track 02 exposes real
+// controller names — noted, not blocking this track's own deliverable).
+namespace Atlantis {
+    namespace OpenApi {
+
+        Map<string, string> __summaries = Map();
+        void noteSummary(string key, string text) {
+            __summaries[key] = text;
+        }
+        string summaryFor(Routing::RouteRec rec) {
+            if (rec.summary != "") {
+                return rec.summary;
+            } else {
+                return __summaries.atOr(rec.key(), "");
+            }
+        }
+
+        attribute Summary { string text; }
+
+        rule opSummary {
+            match @Summary(s) on method m in class C
+            inject `Atlantis::OpenApi::noteSummary($C.name + "." + $m.name, $s.text);`
+                at bottom of C.constructor
+        }
+
+        // §5.4 `/llms.txt` — markdown built at boot from the same records +
+        // tool metadata. Plain handler-producing function (ordinary C2 shape,
+        // same mounting philosophy as MCP's own `.handler()`, §2.1) — no
+        // Http::App method addition needed; app code mounts it however it
+        // mounts anything else.
+        string buildLlmsTxt(Array<Routing::RouteRec> records, Array<Mcp::ToolMeta> tools, AppInfo appInfo) {
+            string out = "# " + appInfo.name + " (v" + appInfo.version + ")\n\n";
+            out = out + "## Routes\n";
+            for (Routing::RouteRec rec in records) {
+                string s = summaryFor(rec);
+                string suffix = s != "" ? (" — " + s) : "";
+                out = out + "- " + rec.verb + " " + toOpenApiPath(rec.path) + suffix + "\n";
+            }
+            out = out + "\n## Tools\n";
+            for (Mcp::ToolMeta t in tools) {
+                out = out + "- " + t.name + " — " + t.description + "\n";
+            }
+            out = out + "\nSee /openapi.json for the full API schema and /mcp for the MCP endpoint.\n";
+            out = out + "All errors are application/problem+json (RFC 9457).\n";
+            return out;
+        }
+
+        (Http::Context) => HttpResponse llmsTxtHandler(Array<Routing::RouteRec> records,
+                                                         Array<Mcp::ToolMeta> tools, AppInfo appInfo) {
+            string body = buildLlmsTxt(records, tools, appInfo);
+            return (c) => {
+                HttpResponse r = HttpResponse(200, body);
+                r.withHeader("Content-Type", "text/markdown; charset=utf-8");
+                return r;
+            };
+        }
+    }
+}

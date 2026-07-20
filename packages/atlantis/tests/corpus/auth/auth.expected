@@ -1,0 +1,79 @@
+== pbkdf2 ==
+format ok=true
+verify correct=true upgraded=false
+verify wrong=false
+verify+upgrade ok=true upgraded=true
+verify dummy=false
+verify malformed=false
+iterations floor enforced=true
+== constant-time ==
+equal=true
+diffFirst=false
+diffLast=false
+diffLen=false
+== cookie codec ==
+count=3
+a=1
+b=2
+c=3
+sid=abc123; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=1800
+sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0
+== session ==
+issued cookie nonEmpty=true
+authenticated id=u1
+csrfToken present=true
+tampered cookie authenticated=false
+revoke cookie clears=true
+after revoke authenticated=false
+reissued cookie differs=true
+== bearer ==
+verified id=u2
+verified role admin=true
+alg-none rejected=true
+tampered sig rejected=true
+wrong key rejected=true
+iss/aud ok=true
+iss/aud mismatch=true
+== guard ==
+noauth
+auth
+role:admin
+policy:canEdit
+validateGuards ok=true
+validateGuards missing-policy threw=true
+open status=200
+me(no auth) threw=true status=401
+me(authed) status=200
+admin(no role) threw=true status=403
+admin(with role) status=200
+edit(no policy) threw=true status=403
+edit(with policy) status=200
+== require ==
+require(no user) threw=true status=401
+require(with user) id=u9
+== csrf ==
+GET status=200
+POST matching status=200
+POST bad threw=true
+JSON+ajax status=200
+JSON no-ajax threw=true
+bearer exempt status=200
+== cors ==
+preflight ok status=204 acao=https://good.example
+preflight bad status=204 acao=-
+simple status=200 acao=https://good.example vary=Origin
+wildcard+credentials threw=true
+== security headers ==
+nosniff=nosniff
+xfo=DENY
+referrer=strict-origin-when-cross-origin
+hsts(no tls)=-
+csp nonEmpty=true
+hsts(tls) nonEmpty=true
+== rate limit ==
+d1=true d2=true d3=true d4=false retryAfter>0=true
+d5(after 1s)=true
+== login throttle ==
+locked after 4=false
+locked after 5=true
+locked after reset=false

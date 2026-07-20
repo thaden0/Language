@@ -1,0 +1,44 @@
+// Atlantis Track 08 — security headers (design §9.1). Applied on the way out;
+// sets a header only if the handler didn't already set it.
+namespace Atlantis {
+    namespace Auth {
+
+        struct SecurityHeadersConfig {
+            string frameOptions;     // "DENY" | "SAMEORIGIN" | "" (off)
+            bool hstsEnabled;        // only ever emitted when the request came over TLS
+            int hstsMaxAgeSec;
+            string csp;              // "" = no default CSP emitted
+            new SecurityHeadersConfig(string frameOptions, bool hstsEnabled, int hstsMaxAgeSec, string csp) {
+                this.frameOptions = frameOptions;
+                this.hstsEnabled = hstsEnabled;
+                this.hstsMaxAgeSec = hstsMaxAgeSec;
+                this.csp = csp;
+            }
+        }
+        SecurityHeadersConfig defaultSecurityHeadersConfig() =>
+            SecurityHeadersConfig("DENY", true, 31536000, "default-src 'self'; frame-ancestors 'none'");
+
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse securityHeadersMiddleware(SecurityHeadersConfig cfg) =>
+            (ctx, next) => {
+                HttpResponse r = next(ctx);
+                if ((r.headers.first("X-Content-Type-Options") ?? "") == "") {
+                    r.withHeader("X-Content-Type-Options", "nosniff");
+                }
+                if (cfg.frameOptions != "" && (r.headers.first("X-Frame-Options") ?? "") == "") {
+                    r.withHeader("X-Frame-Options", cfg.frameOptions);
+                }
+                if ((r.headers.first("Referrer-Policy") ?? "") == "") {
+                    r.withHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+                }
+                bool isTls = ctx.items.atOr("tls", "") == "1";
+                if (cfg.hstsEnabled && isTls && (r.headers.first("Strict-Transport-Security") ?? "") == "") {
+                    r.withHeader("Strict-Transport-Security",
+                        "max-age=" + cfg.hstsMaxAgeSec.toString() + "; includeSubDomains");
+                }
+                if (cfg.csp != "" && (r.headers.first("Content-Security-Policy") ?? "") == "") {
+                    r.withHeader("Content-Security-Policy", cfg.csp);
+                }
+                return r;
+            };
+    }
+}

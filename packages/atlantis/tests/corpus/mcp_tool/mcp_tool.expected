@@ -1,0 +1,15 @@
+== @Tool metadata (fully rule-generated, zero hand code) ==
+add: Adds two integers and returns the sum
+  param args: AddArgs
+== registered tool (hand-wired run, schema from schemaJson()) ==
+-- tools/list --
+{"jsonrpc":"2.0","id":1.000000,"result":{"tools":[{"name":"add","description":"Adds two integers and returns the sum","inputSchema":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}}]}}
+-- tools/call add(2,3) --
+{"jsonrpc":"2.0","id":2.000000,"result":{"content":[{"type":"text","text":"5"}],"isError":false}}
+-- tools/call add missing field 'b' -> guard() catches ValidationException, isError:true --
+{"jsonrpc":"2.0","id":3.000000,"result":{"content":[{"type":"text","text":"b: missing"}],"isError":true}}
+-- tools/call add wrong type for 'a' -> guard() catches ValidationException --
+{"jsonrpc":"2.0","id":4.000000,"result":{"content":[{"type":"text","text":"a: expected integer"}],"isError":true}}
+== boot warning: a @Tool method declared but never registerRun'd ==
+WARNING: @Tool("ghost") declared but never registered via registerRun/addRaw — the tool metadata exists but the tool will not appear in tools/list (design §3.5 fallback ladder rung 3)
+ghostServer tool count=0

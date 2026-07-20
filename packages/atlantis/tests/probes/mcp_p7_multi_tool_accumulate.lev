@@ -1,0 +1,38 @@
+// T7-P7: three attributed methods in one class; ctor-bottom injections
+// accumulate into one array field, in declaration order — the shape the
+// real mcpTool rule needs for `__mcpTools` (design §3.3).
+namespace ProbeP7 {
+    struct Item {
+        string name;
+        new Item(string name) { this.name = name; }
+    }
+    attribute ItemProbe { string name; }
+    rule itemProbeRule {
+        match @ItemProbe(a) on method m in class C
+        inject `this.__probeItems = this.__probeItems.add(Item($a.name));`
+            at bottom of C.constructor
+    }
+}
+uses ProbeP7;
+
+class Basket {
+    Array<Item> __probeItems = [];
+
+    @ItemProbe("apple")
+    void noop1() {}
+
+    @ItemProbe("banana")
+    void noop2() {}
+
+    @ItemProbe("cherry")
+    void noop3() {}
+}
+
+void main() {
+    Basket b = Basket();
+    console.writeln(b.__probeItems.length().toString());
+    for (Item i in b.__probeItems) {
+        console.writeln(i.name);
+    }
+}
+main();

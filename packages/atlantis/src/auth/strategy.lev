@@ -1,0 +1,26 @@
+// Atlantis Track 08 — the strategy seam (design §2). First-match over an
+// ordered Array<IAuthStrategy> built explicitly in the composition root (DI is
+// lexical/compile-time — the array itself is the explicit ordering/precedence).
+namespace Atlantis {
+    namespace Auth {
+
+        interface IAuthStrategy {
+            // None = "this strategy does not claim the request" — no credentials
+            // of my kind, OR bad credentials of my kind (bad signature, expired
+            // token): both return None in v1. The guard (guard.lev) turns
+            // absence into 401; strategies emit audit events so an operator can
+            // tell the cases apart (audit.lev).
+            Principal? authenticate(Http::Context ctx);
+        }
+
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse middleware(Array<IAuthStrategy> strategies) =>
+            (ctx, next) => {
+                int i = 0;
+                while (i < strategies.length() && ctx.user == None) {
+                    ctx.user = strategies.at(i).authenticate(ctx);
+                    i = i + 1;
+                }
+                return next(ctx);                    // guard decides whether None is fatal
+            };
+    }
+}

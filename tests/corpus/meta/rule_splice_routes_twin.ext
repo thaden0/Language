@@ -1,0 +1,13 @@
+// Hand-written twin of rule_splice_routes.ext: the addRoutes() body the named
+// splice anchor expands to, written out by hand. Its --run / --ir output is
+// byte-identical to the rule version's (same .expected) — the acceptance proof
+// that `at splice InjectRoutes` lands each @Route method's registration at the
+// @InjectRoutes() site, in addRoutes's own scope, exactly like hand code.
+string addRoutes() {
+    string sink = "";
+    sink = sink + "/" + ";";
+    sink = sink + "/about" + ";";
+    return sink;
+}
+
+console.writeln(addRoutes());

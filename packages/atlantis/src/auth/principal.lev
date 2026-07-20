@@ -1,0 +1,45 @@
+// Atlantis Track 08 — Principal, the auth-facing identity carried on Context.user
+// (design §1). Replaces the Track 01 seed (kernel/auth_seed.lev) verbatim-by-name/
+// namespace, per that file's own transfer note; ownership of Atlantis::Auth is
+// exclusive to this track (design header).
+//
+// Claims are flat string values (v1 — JWT nesting flattened, §4.5); roles are
+// Array<string> (tiny lists, COW value, `contains` is fine — no Set needed).
+namespace Atlantis {
+    namespace Auth {
+        class Principal {
+            string id;
+            string name;
+            Array<string> roles;
+            Map<string, string> claims = Map();
+            new Principal(string id, string name, Array<string> roles, Map<string, string> claims) {
+                this.id = id;
+                this.name = name;
+                this.roles = roles;
+                this.claims = claims;
+            }
+            bool hasRole(string r) => this.roles.contains(r);
+            string? claim(string k) => this.claims.atOrNone(k);
+        }
+
+        // `Map<K,V>()` only infers K/V as the WHOLE initializer of a declared-
+        // target-typed local (config.lev's `empty()`), not nested in a call
+        // argument or an `??` operand (compiler limitation) — this gives every
+        // such spot in this track a properly-typed empty value to use instead.
+        Map<string, string> emptyClaims() {
+            Map<string, string> m = Map();
+            return m;
+        }
+
+        // On guarded routes the guard middleware (guard.lev) guarantees ctx.user !=
+        // None before the handler runs; the *type* stays Principal?, so this is the
+        // one-line narrowing idiom (design §1). Throws C4's UnauthorizedException,
+        // which Track 01's ErrorMapper turns into 401 — also the right answer on an
+        // @NoAuth route that wants "must be logged in anyway".
+        Principal require(Http::Context ctx) {
+            Principal? u = ctx.user;
+            if (u == None) { throw Http::UnauthorizedException(); }
+            return u ?? Principal("", "", [], emptyClaims());   // unreachable after the throw
+        }
+    }
+}
