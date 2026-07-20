@@ -1,0 +1,49 @@
+// H12 — the search-results panel model. An `ITableSource` over the latest
+// search (location / preview columns), the same shape as H07's ProblemsModel
+// (severity/location/message) — `resultAt(row)` is the click-to-jump seam,
+// ready for when the editor mounts live (an H04 rider, same status Problems'
+// `diagnosticAt` is in today).
+
+uses Sonar;
+
+namespace Helm {
+
+    const int SearchColLocation = 0;
+    const int SearchColPreview  = 1;
+
+    class SearchResultsModel : ITableSource {
+        Array<SearchMatch> rows_      = [];
+        string             query_     = "";
+        bool               truncated_ = false;
+
+        void setResults(string query, Array<SearchMatch> matches, bool truncated) {
+            query_     = query;
+            rows_      = matches;
+            truncated_ = truncated;
+        }
+        void clear() { query_ = ""; rows_ = []; truncated_ = false; }
+
+        string query()     => query_;
+        int    count()     => rows_.length();
+        bool   isEmpty()   => rows_.isEmpty();
+        bool   truncated() => truncated_;
+
+        // The SearchMatch a row maps to — the shell reads this on row-activate
+        // to open the file and place the caret (click-to-jump).
+        SearchMatch? resultAt(int row) {
+            if (row < 0 || row >= rows_.length()) return None;
+            return rows_[row];
+        }
+
+        // ---- ITableSource -----------------------------------------------
+        int rowCount() => rows_.length();
+        int colCount() => 2;
+        string cellAt(int r, int c) {
+            if (r < 0 || r >= rows_.length()) return "";
+            SearchMatch m = rows_[r];
+            if (c == SearchColLocation) return m.path + ":" + m.line.toString() + ":" + m.col.toString();
+            return m.preview;
+        }
+    }
+
+}

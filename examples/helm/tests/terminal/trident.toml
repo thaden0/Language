@@ -1,0 +1,13 @@
+name    = "helm-terminal-test"
+entry   = "Helm::main"
+sources = [
+    "terminal_test.lev",
+    "../../src/terminal/vtparser.lev",
+    "../../src/terminal/ptybridge.lev",
+    "../../src/terminal/terminalview.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

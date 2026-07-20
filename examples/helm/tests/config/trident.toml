@@ -1,0 +1,16 @@
+name    = "helm-config-test"
+entry   = "Helm::main"
+sources = [
+    "config_test.lev",
+    "../../src/config/configtoml.lev",
+    "../../src/config/settings.lev",
+    "../../src/config/configstore.lev",
+    "../../src/command/command.lev",
+    "../../src/workspace/paths.lev",
+    "../../src/workspace/workspace.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"

@@ -1,0 +1,38 @@
+== literal, case-insensitive (default) ==
+  fixtures/proj/a.lev:2:5 | let needle_token = 1;
+  fixtures/proj/sub/b.lev:1:25 | fn f() { return another needle_token here; }
+  fixtures/proj/sub/b.lev:2:4 | // NEEDLE_TOKEN upper
+count: 3
+truncated: n
+== literal, case-sensitive ==
+  fixtures/proj/a.lev:2:5 | let needle_token = 1;
+  fixtures/proj/sub/b.lev:1:25 | fn f() { return another needle_token here; }
+count: 2
+== regex ==
+  fixtures/proj/a.lev:2:5 | let needle_token = 1;
+  fixtures/proj/sub/b.lev:1:25 | fn f() { return another needle_token here; }
+  fixtures/proj/sub/b.lev:2:4 | // NEEDLE_TOKEN upper
+count: 3
+== cap at 1 result ==
+  fixtures/proj/a.lev:2:5 | let needle_token = 1;
+truncated: y
+== no matches ==
+count: 0
+truncated: n
+== .git skip (scratch fixture) ==
+  scratch_search/real.lev:1:5 | let needle_token = 2;
+count: 1
+== malformed regex throws ==
+threw RegexException
+== SearchResultsModel ==
+empty: y
+query: needle_token
+rowCount: 3
+colCount: 2
+  row 0: [fixtures/proj/a.lev:2:5] [let needle_token = 1;]
+  row 1: [fixtures/proj/sub/b.lev:1:25] [fn f() { return another needle_token here; }]
+  row 2: [fixtures/proj/sub/b.lev:2:4] [// NEEDLE_TOKEN upper]
+cellAt OOB: []
+resultAt(0).path: fixtures/proj/a.lev
+resultAt OOB: n
+after clear, empty: y

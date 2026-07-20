@@ -1,0 +1,354 @@
+// H10 — the VT/ANSI byte-stream parser (§8): "an `ansi` inverse of Sonar's
+// `ansi_renderer`". `AnsiRenderer` (sonar_v2/src/ansi_renderer.lev) diffs a
+// `Surface` and EMITS escape sequences; `VtParser` consumes a child's output
+// bytes and MUTATES a `Surface` — the same cell format, the same escape
+// vocabulary (cursor.lev's `sgrFgNum`/`sgrBgNum` inverted here), running
+// backwards. Every char comparison goes through `.code()` (never a char
+// literal in call/ternary position — toml.lev's own discipline, footgun
+// precedent bug #50/#62/#63).
+//
+// Bounded scope (§8, non-goal: not xterm-completeness, matching Sonar's own
+// stance): cursor motion (CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP), erase (ED/EL),
+// SGR (16-color + bold/underline/reverse — Sonar's own C6 cell format has no
+// 256-color/truecolor channel to feed anyway), scroll (LF-at-bottom + SU/SD),
+// and the alt screen (?1049/?47/?1047). NOT implemented: DECSTBM scroll
+// regions (always full-screen), cursor save/restore outside the alt-screen
+// pair, sixel/DEC line-drawing specials, single-char ESC ops other than RIS
+// ('c') and the charset-designator two-byte forms (consumed and discarded, so
+// they don't leak their trailing byte onto the screen as text) — an honest v1
+// gap alongside Sonar's own non-goals.
+
+uses Sonar;
+
+namespace Helm {
+
+    const int VtGround  = 0;
+    const int VtEscape  = 1;
+    const int VtCsi     = 2;
+    const int VtOsc     = 3;
+    const int VtOscEsc  = 4;
+    const int VtEscArg  = 5;   // one more byte to discard (charset designators)
+
+    Style vtBlankStyle() { Style s = Style(Color::Default, Color::Default, 0); return s; }
+
+    // attrs minus `bit` if present — the div/mod-loop convention style.lev's
+    // `mergeAttrs` already uses (bitwise ops are unused in this codebase).
+    int clearAttrBit(int attrs, int bit) {
+        if ((attrs / bit) % 2 == 1) return attrs - bit;
+        return attrs;
+    }
+
+    Color colorFromAnsi16(int n) {
+        Color? c = Color::fromCode(n);
+        return c == None ? Color::Default : c;
+    }
+
+    class VtParser {
+        int rows_;
+        int cols_;
+        Surface primary_;
+        Surface alt_;
+        bool altActive_ = false;
+
+        int cx_ = 0;
+        int cy_ = 0;
+        int savedCx_ = 0;
+        int savedCy_ = 0;
+        bool cursorVisible_ = true;
+        Style curStyle_ = vtBlankStyle();
+
+        int    state_       = VtGround;
+        string csiParams_   = "";
+        bool   csiPrivate_  = false;
+
+        new VtParser(int rows, int cols) {
+            rows_ = rows > 1 ? rows : 1;
+            cols_ = cols > 1 ? cols : 1;
+            primary_ = Surface(cols_, rows_);
+            alt_     = Surface(cols_, rows_);
+            this.reset();
+        }
+
+        Surface screen() => altActive_ ? alt_ : primary_;
+        int  cursorRow()     => cy_;
+        int  cursorCol()     => cx_;
+        bool cursorVisible() => cursorVisible_;
+        int  rows() => rows_;
+        int  cols() => cols_;
+
+        void reset() {
+            state_      = VtGround;
+            csiParams_  = "";
+            csiPrivate_ = false;
+            cx_ = 0; cy_ = 0;
+            savedCx_ = 0; savedCy_ = 0;
+            cursorVisible_ = true;
+            altActive_ = false;
+            curStyle_ = vtBlankStyle();
+            primary_.clear(vtBlankStyle());
+            alt_.clear(vtBlankStyle());
+        }
+
+        // Rebuilds both surfaces at the new size (v1: content is not
+        // reflowed/preserved — no scrollback in v1 either, §4.3-precedent
+        // "big files open read-only" honest limit applies here too).
+        void resize(int newRows, int newCols) {
+            int r = newRows > 1 ? newRows : 1;
+            int c = newCols > 1 ? newCols : 1;
+            if (r == rows_ && c == cols_) return;
+            rows_ = r; cols_ = c;
+            primary_ = Surface(cols_, rows_);
+            alt_     = Surface(cols_, rows_);
+            primary_.clear(vtBlankStyle());
+            alt_.clear(vtBlankStyle());
+            cx_ = this.clampCol(cx_);
+            cy_ = this.clampRow(cy_);
+        }
+
+        int clampRow(int r) { if (r < 0) return 0; if (r > rows_ - 1) return rows_ - 1; return r; }
+        int clampCol(int c) { if (c < 0) return 0; if (c > cols_ - 1) return cols_ - 1; return c; }
+
+        // ---- feed (the parse loop) -------------------------------------------
+
+        void feed(string chunk) {
+            for (char c in chunk.chars()) this.feedChar(c);
+        }
+
+        void feedChar(char c) {
+            if (state_ == VtGround) { this.ground(c); return; }
+            if (state_ == VtEscape) { this.escape(c); return; }
+            if (state_ == VtCsi)    { this.csi(c); return; }
+            if (state_ == VtOsc)    { this.osc(c); return; }
+            if (state_ == VtOscEsc) { this.oscEsc(c); return; }
+            if (state_ == VtEscArg) { state_ = VtGround; return; }
+        }
+
+        void ground(char c) {
+            int code = c.code();
+            if (code == 0x1b) { state_ = VtEscape; return; }
+            if (code == 0x0d) { cx_ = 0; return; }                    // CR
+            if (code == 0x0a) { this.lineFeed(); return; }             // LF
+            if (code == 0x08) { if (cx_ > 0) cx_ = cx_ - 1; return; }  // BS
+            if (code == 0x09) { this.tab(); return; }                  // TAB
+            if (code < 0x20) return;                                   // other C0 (incl. BEL): ignore
+            this.putChar(c);
+        }
+
+        void putChar(char c) {
+            Surface s = this.screen();
+            s.put(cx_, cy_, c, curStyle_);
+            int w = glyphWidth(c);
+            cx_ = cx_ + w;
+            if (cx_ >= cols_) { cx_ = 0; this.lineFeed(); }   // simple autowrap
+        }
+
+        void tab() {
+            int next = ((cx_ / 8) + 1) * 8;
+            cx_ = next < cols_ ? next : cols_ - 1;
+        }
+
+        void lineFeed() {
+            if (cy_ + 1 >= rows_) this.scrollUp();
+            else cy_ = cy_ + 1;
+        }
+
+        // Row-by-row, each call's src/dst are disjoint rowBytes-sized regions
+        // (never overlapping within one `blit` call, regardless of any
+        // self-blit semantics) — the same discipline Surface.fill's own
+        // row-replication doubling trick relies on.
+        void scrollUp() {
+            Surface s = this.screen();
+            int rowBytes = cols_ * 8;
+            for (int y in 1..rows_ - 1) s.cells().blit((y - 1) * rowBytes, s.cells(), y * rowBytes, rowBytes);
+            s.fill(Rect(Point(0, rows_ - 1), Size(cols_, 1)), ' ', vtBlankStyle());
+        }
+        void scrollDown() {
+            Surface s = this.screen();
+            int rowBytes = cols_ * 8;
+            for (int y in 1..rows_ - 1) {
+                int destY = rows_ - y;
+                s.cells().blit(destY * rowBytes, s.cells(), (destY - 1) * rowBytes, rowBytes);
+            }
+            s.fill(Rect(Point(0, 0), Size(cols_, 1)), ' ', vtBlankStyle());
+        }
+        void scrollUpN(int n)   { for (int i in 1..n) this.scrollUp(); }
+        void scrollDownN(int n) { for (int i in 1..n) this.scrollDown(); }
+
+        // ---- ESC dispatch -----------------------------------------------------
+
+        void escape(char c) {
+            state_ = VtGround;
+            int code = c.code();
+            if (code == 0x5b) { state_ = VtCsi; csiParams_ = ""; csiPrivate_ = false; return; }  // '['
+            if (code == 0x5d) { state_ = VtOsc; return; }                                         // ']'
+            if (code == 0x63) { this.reset(); return; }                                            // 'c' RIS
+            // Charset designators (ESC ( / ) / * / +  <one more byte>) and DEC
+            // line-size (ESC # <one more byte>): consume the argument byte so
+            // it never leaks onto the screen as text.
+            if (code == 0x28 || code == 0x29 || code == 0x2a || code == 0x2b || code == 0x23) {
+                state_ = VtEscArg;
+                return;
+            }
+            // Any other single-char ESC op (DECSC/DECRC, IND, RI, ...) is out
+            // of the v1 bounded subset — silently ignored.
+        }
+
+        // ---- OSC (title-setting etc.) — swallowed, not painted ----------------
+
+        void osc(char c) {
+            int code = c.code();
+            if (code == 0x07) { state_ = VtGround; return; }     // BEL terminator
+            if (code == 0x1b) { state_ = VtOscEsc; return; }     // possible ST (ESC \)
+        }
+        void oscEsc(char c) {
+            if (c.code() == 0x5c) state_ = VtGround;             // ST complete
+            else state_ = VtOsc;                                  // not ST: resume swallowing
+        }
+
+        // ---- CSI --------------------------------------------------------------
+
+        void csi(char c) {
+            int code = c.code();
+            if (code == 0x3f && csiParams_.isEmpty()) { csiPrivate_ = true; return; }   // '?'
+            if (code >= 0x30 && code <= 0x3f) { csiParams_ = csiParams_ + c.toString(); return; }
+            if (code >= 0x40 && code <= 0x7e) {
+                this.dispatchCsi(c, csiParams_, csiPrivate_);
+                state_ = VtGround;
+                return;
+            }
+            // intermediate bytes (0x20-0x2f): not tracked, out of v1 scope.
+        }
+
+        Array<int> parseCsiParams(string params) {
+            if (params.isEmpty()) return [];
+            Array<int> out = [];
+            for (string part in params.split(";")) out = out.add(part.isEmpty() ? 0 : toIntSimple(part));
+            return out;
+        }
+        int toIntSimple(string s) {
+            int n = 0;
+            Array<char> cs = s.chars();
+            for (char c in cs) {
+                int d = c.code() - 48;
+                if (d >= 0 && d <= 9) n = n * 10 + d;
+            }
+            return n;
+        }
+        // Cursor-motion params default to 1 when omitted OR explicitly 0.
+        int paramOr1(Array<int> ps, int i) {
+            if (i >= ps.length()) return 1;
+            return ps[i] <= 0 ? 1 : ps[i];
+        }
+        // Raw param (SGR/erase-mode need the literal 0, not collapsed to 1).
+        int paramRaw(Array<int> ps, int i, int fallback) => i < ps.length() ? ps[i] : fallback;
+
+        void dispatchCsi(char final, string paramsText, bool priv) {
+            Array<int> ps = this.parseCsiParams(paramsText);
+            int fc = final.code();
+            if (priv) { this.dispatchPrivate(fc, ps); return; }
+            if (fc == 0x41) { this.moveCursor(0 - this.paramOr1(ps, 0), 0); return; }              // A CUU
+            if (fc == 0x42) { this.moveCursor(this.paramOr1(ps, 0), 0); return; }                   // B CUD
+            if (fc == 0x43) { this.moveCursor(0, this.paramOr1(ps, 0)); return; }                   // C CUF
+            if (fc == 0x44) { this.moveCursor(0, 0 - this.paramOr1(ps, 0)); return; }               // D CUB
+            if (fc == 0x45) { cy_ = this.clampRow(cy_ + this.paramOr1(ps, 0)); cx_ = 0; return; }   // E CNL
+            if (fc == 0x46) { cy_ = this.clampRow(cy_ - this.paramOr1(ps, 0)); cx_ = 0; return; }   // F CPL
+            if (fc == 0x47) { cx_ = this.clampCol(this.paramOr1(ps, 0) - 1); return; }               // G CHA
+            if (fc == 0x48 || fc == 0x66) { this.cup(ps); return; }                                  // H/f CUP/HVP
+            if (fc == 0x4a) { this.eraseDisplay(this.paramRaw(ps, 0, 0)); return; }                  // J ED
+            if (fc == 0x4b) { this.eraseLine(this.paramRaw(ps, 0, 0)); return; }                     // K EL
+            if (fc == 0x53) { this.scrollUpN(this.paramOr1(ps, 0)); return; }                        // S SU
+            if (fc == 0x54) { this.scrollDownN(this.paramOr1(ps, 0)); return; }                      // T SD
+            if (fc == 0x6d) { this.sgr(ps); return; }                                                // m SGR
+            // DECSTBM ('r'), cursor save/restore ('s'/'u'), device status ('n'),
+            // etc. are out of the v1 bounded subset — ignored.
+        }
+
+        void dispatchPrivate(int fc, Array<int> ps) {
+            if (fc != 0x68 && fc != 0x6c) return;   // only 'h'(set)/'l'(reset) DEC private modes
+            bool on = fc == 0x68;
+            int mode = this.paramRaw(ps, 0, 0);
+            if (mode == 25) { cursorVisible_ = on; return; }
+            if (mode == 1049 || mode == 47 || mode == 1047) { this.setAltScreen(on); return; }
+        }
+
+        void cup(Array<int> ps) {
+            int row = this.paramOr1(ps, 0) - 1;
+            int col = this.paramOr1(ps, 1) - 1;
+            cy_ = this.clampRow(row);
+            cx_ = this.clampCol(col);
+        }
+        void moveCursor(int dRow, int dCol) {
+            cy_ = this.clampRow(cy_ + dRow);
+            cx_ = this.clampCol(cx_ + dCol);
+        }
+
+        void eraseLineFrom(int fromCol) {
+            if (fromCol >= cols_) return;
+            this.screen().fill(Rect(Point(fromCol, cy_), Size(cols_ - fromCol, 1)), ' ', vtBlankStyle());
+        }
+        void eraseLineTo(int toColInclusive) {
+            int n = toColInclusive + 1;
+            if (n <= 0) return;
+            if (n > cols_) n = cols_;
+            this.screen().fill(Rect(Point(0, cy_), Size(n, 1)), ' ', vtBlankStyle());
+        }
+        void eraseLineWhole() {
+            this.screen().fill(Rect(Point(0, cy_), Size(cols_, 1)), ' ', vtBlankStyle());
+        }
+        void eraseLine(int mode) {
+            if (mode == 0) this.eraseLineFrom(cx_);
+            else if (mode == 1) this.eraseLineTo(cx_);
+            else this.eraseLineWhole();
+        }
+
+        void eraseDisplay(int mode) {
+            Surface s = this.screen();
+            if (mode == 0) {
+                this.eraseLineFrom(cx_);
+                if (cy_ + 1 < rows_) s.fill(Rect(Point(0, cy_ + 1), Size(cols_, rows_ - cy_ - 1)), ' ', vtBlankStyle());
+            } else if (mode == 1) {
+                this.eraseLineTo(cx_);
+                if (cy_ > 0) s.fill(Rect(Point(0, 0), Size(cols_, cy_)), ' ', vtBlankStyle());
+            } else {
+                s.clear(vtBlankStyle());
+            }
+        }
+
+        void setAltScreen(bool on) {
+            if (on == altActive_) return;
+            if (on) {
+                savedCx_ = cx_; savedCy_ = cy_;
+                altActive_ = true;
+                alt_.clear(vtBlankStyle());
+                cx_ = 0; cy_ = 0;
+            } else {
+                altActive_ = false;
+                cx_ = this.clampCol(savedCx_);
+                cy_ = this.clampRow(savedCy_);
+            }
+        }
+
+        // 16-color SGR (Sonar's own C6 cell format has no 256/truecolor
+        // channel — mirrors cursor.lev's sgrFgNum/sgrBgNum, inverted).
+        void sgr(Array<int> ps) {
+            if (ps.isEmpty()) { curStyle_ = vtBlankStyle(); return; }
+            for (int n in ps) {
+                if (n == 0) curStyle_ = vtBlankStyle();
+                else if (n == 1) curStyle_ = curStyle_.withAttrs(mergeAttrs(curStyle_.attrs, Attr::Bold));
+                else if (n == 4) curStyle_ = curStyle_.withAttrs(mergeAttrs(curStyle_.attrs, Attr::Underline));
+                else if (n == 7) curStyle_ = curStyle_.withAttrs(mergeAttrs(curStyle_.attrs, Attr::Reverse));
+                else if (n == 22) curStyle_ = curStyle_.withAttrs(clearAttrBit(curStyle_.attrs, Attr::Bold));
+                else if (n == 24) curStyle_ = curStyle_.withAttrs(clearAttrBit(curStyle_.attrs, Attr::Underline));
+                else if (n == 27) curStyle_ = curStyle_.withAttrs(clearAttrBit(curStyle_.attrs, Attr::Reverse));
+                else if (n == 39) curStyle_ = curStyle_.withFg(Color::Default);
+                else if (n == 49) curStyle_ = curStyle_.withBg(Color::Default);
+                else if (n >= 30 && n <= 37) curStyle_ = curStyle_.withFg(colorFromAnsi16(n - 30));
+                else if (n >= 90 && n <= 97) curStyle_ = curStyle_.withFg(colorFromAnsi16(n - 90 + 8));
+                else if (n >= 40 && n <= 47) curStyle_ = curStyle_.withBg(colorFromAnsi16(n - 40));
+                else if (n >= 100 && n <= 107) curStyle_ = curStyle_.withBg(colorFromAnsi16(n - 100 + 8));
+                // 38/48 (256/truecolor) — no target cell channel to hold it; ignored.
+            }
+        }
+    }
+
+}

@@ -1,0 +1,151 @@
+// H12 — the settings/keymap TOML subset parser (§9 footgun #10: no JSON on
+// LLVM, TOML only). A small generalization of Sonar's own toml.lev
+// (theme.lev's `parseThemeToml` is hardwired to a fixed fg/bg/attrs shape):
+// helm.toml's [keymap] table has one arbitrary command-id key per accelerator
+// and [theme] has a single `name` key, so this parses ANY `[section]` into
+// (key -> raw value string) pairs instead of folding straight into a fixed
+// struct. Same house style as toml.lev: line-oriented, `#` comments, no
+// arrays/inline tables/multiline strings/floats/quoted keys — a parse error
+// throws `SonarException` with a mandatory "source:line:col:" prefix, never a
+// silent skip.
+
+uses Sonar;
+
+namespace Helm {
+
+    // One key/value pair under a table. A `class` row (never `Array<struct>`
+    // — footgun #5), the same shape as Diagnostic/FileNode.
+    class ConfigEntry {
+        string section;
+        string key;
+        string raw;      // the value text, unquoted if it was quoted
+        new ConfigEntry(string s, string k, string r) { section = s; key = k; raw = r; }
+    }
+
+    class ConfigDoc {
+        Array<ConfigEntry> entries_ = [];
+
+        Array<ConfigEntry> entries() => entries_;
+
+        void put(string section, string key, string raw) {
+            entries_ = entries_.add(ConfigEntry(section, key, raw));
+        }
+
+        string? get(string section, string key) {
+            for (ConfigEntry e in entries_) {
+                if (e.section == section && e.key == key) return e.raw;
+            }
+            return None;
+        }
+
+        // Every key registered under one section, in file order (the
+        // [keymap] table's command ids aren't known ahead of time).
+        Array<string> sectionKeys(string section) {
+            Array<string> out = [];
+            for (ConfigEntry e in entries_) if (e.section == section) out = out.add(e.key);
+            return out;
+        }
+
+        bool isEmpty() => entries_.isEmpty();
+    }
+
+    string configPos(string source, int line, int col) {
+        return source + ":" + line.toString() + ":" + col.toString() + ": ";
+    }
+
+    // 0-based index of the first non-space/non-tab char at or after `start`;
+    // returns the length when the rest is all whitespace. (toml.lev's own
+    // helper, duplicated rather than cross-package-imported — Helm never
+    // depends on Sonar internals below its public surface.)
+    int firstNonWsFromCfg(string line, int start) {
+        Array<char> cs = line.chars();
+        int i = start;
+        while (i < cs.length()) {
+            int c = cs[i].code();
+            if (c != 32 && c != 9) return i;
+            i = i + 1;
+        }
+        return cs.length();
+    }
+
+    bool lastCharIsCfg(string s, string ch) {
+        if (s.isEmpty()) return false;
+        return s.subStr(s.length() - 1, 1) == ch;
+    }
+
+    // Unwrap a `"..."` value (throws on an unterminated string). A bare
+    // (unquoted) value is also accepted — taken verbatim up to the first '#'
+    // or trailing whitespace — so a hand-edited `theme = dark` still parses.
+    string extractCfgValue(string v, string source, int line, int col) {
+        if (v.startsWith("\"")) {
+            string rest = v.subStr(1, v.length() - 1);
+            int close = rest.indexOf("\"");
+            if (close < 0)
+                throw SonarException(configPos(source, line, col) + "unterminated string value");
+            return rest.subStr(0, close);
+        }
+        int hash = v.indexOf("#");
+        string bare = hash >= 0 ? v.subStr(0, hash) : v;
+        return bare.trim();
+    }
+
+    ConfigDoc parseConfigToml(string text, string source) {
+        ConfigDoc doc = ConfigDoc();
+        Array<string> lines = text.split("\n");
+        bool hasCurrent = false;
+        string currentSection = "";
+        int lineNo = 0;
+        for (string rawLine in lines) {
+            lineNo = lineNo + 1;
+            string t = rawLine.trim();
+            if (t.isEmpty()) continue;
+            if (t.startsWith("#")) continue;
+            int lead = firstNonWsFromCfg(rawLine, 0) + 1;   // 1-based column
+
+            if (t.startsWith("[")) {
+                if (!lastCharIsCfg(t, "]"))
+                    throw SonarException(configPos(source, lineNo, lead) + "expected ']' to close table header");
+                string inner = t.subStr(1, t.length() - 2).trim();
+                if (inner.isEmpty())
+                    throw SonarException(configPos(source, lineNo, lead) + "empty table header '[]'");
+                if (inner.contains("\""))
+                    throw SonarException(configPos(source, lineNo, lead) + "quoted keys are not supported");
+                currentSection = inner;
+                hasCurrent = true;
+            } else {
+                if (!hasCurrent)
+                    throw SonarException(configPos(source, lineNo, lead) + "key/value pair before any [table] header");
+                int eqRaw = rawLine.indexOf("=");
+                if (eqRaw < 0)
+                    throw SonarException(configPos(source, lineNo, lead) + "expected '=' in key/value pair");
+                string key = rawLine.subStr(0, eqRaw).trim();
+                if (key.isEmpty())
+                    throw SonarException(configPos(source, lineNo, lead) + "empty key");
+                int valStart = firstNonWsFromCfg(rawLine, eqRaw + 1);
+                string valRaw = rawLine.subStr(valStart, rawLine.length() - valStart);
+                int vcol = valStart + 1;
+                string val = extractCfgValue(valRaw, source, lineNo, vcol);
+                doc.put(currentSection, key, val);
+            }
+        }
+        return doc;
+    }
+
+    // ---- serialization (settings.save) -----------------------------------
+    // Every value is written quoted; `parseConfigToml` reads a quoted value
+    // back byte-identically, so save -> load round-trips.
+    string writeConfigToml(ConfigDoc doc) {
+        StringBuilder out = StringBuilder();
+        string lastSection = "\x00";   // sentinel: never a real section name
+        for (ConfigEntry e in doc.entries()) {
+            if (e.section != lastSection) {
+                if (lastSection != "\x00") out.add("\n");
+                out.add("[" + e.section + "]\n");
+                lastSection = e.section;
+            }
+            out.add(e.key + " = \"" + e.raw + "\"\n");
+        }
+        return out.toString();
+    }
+
+}

@@ -1,0 +1,14 @@
+name    = "helm-search-test"
+entry   = "Helm::main"
+sources = [
+    "search_test.lev",
+    "../../src/search/searchresult.lev",
+    "../../src/search/workspacesearch.lev",
+    "../../src/search/searchresultsmodel.lev",
+    "../../src/workspace/paths.lev",
+]
+
+[[dep]]
+path    = "../../../../sonar_v2"
+version = "0.2.0"
+as      = "Sonar"
