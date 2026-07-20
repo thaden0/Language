@@ -1355,11 +1355,17 @@ void RuleEngine::orderRules() {
 bool RuleEngine::declKindMatches(const Stmt* d, std::string_view kind) const {
     // `method` and `function` are the same node shape; the encloser clause
     // (`in class C`) enforces context, so accept either for callable members.
+    // `type` (techdesign-splices-desugars-sonnet.md §2) is the subject-position
+    // analogue of the encloser's existing `class`-also-matches-struct/interface
+    // leniency — new and additive; `class`/`struct` alone stay exact.
     for (const DeclInfo& di : decls_)
         if (di.decl == d)
             return di.kindWord == kind ||
                    ((kind == "method" || kind == "function") &&
-                    (di.kindWord == "method" || di.kindWord == "function"));
+                    (di.kindWord == "method" || di.kindWord == "function")) ||
+                   (kind == "type" &&
+                    (di.kindWord == "class" || di.kindWord == "struct" ||
+                     di.kindWord == "interface"));
     return false;
 }
 
@@ -2697,19 +2703,41 @@ void RuleEngine::warnDanglingAttrs(std::vector<StmtPtr>& rootItems) {
                 // that is the actionable "you forgot a `uses`" case. An attribute
                 // no rule anywhere consumes is legitimate inert data (§4.1), not
                 // a mistake, so it stays silent.
+                // techdesign-splices-desugars-sonnet.md §2.3(3): a rule for this
+                // attribute may exist but never fire because its subject kind
+                // (e.g. `on class`) can't match this declaration's kind (e.g. a
+                // `struct`) — that is a DIFFERENT mistake than a missing `uses`,
+                // and blaming `uses` sends the author down the wrong trail.
                 std::string hint;
                 bool ruleExists = false;
+                bool kindCompatibleRuleExists = false;
+                std::string mismatchRuleName, mismatchKind;
                 for (const OwnedRule& r : rules_) {
                     const RuleMatch& m = *r.node->ruleMatch;
                     if (m.hasAttr && m.attrName == a.name) {
                         ruleExists = true;
-                        if (r.ns != "<root>") { hint = r.ns; break; }
+                        if (declKindMatches(item.get(), m.subject.kindWord)) {
+                            kindCompatibleRuleExists = true;
+                            if (r.ns != "<root>") hint = r.ns;
+                        } else if (mismatchRuleName.empty()) {
+                            mismatchRuleName = r.ns == "<root>" ? std::string(r.node->name)
+                                                                : r.ns + "::" + std::string(r.node->name);
+                            mismatchKind = m.subject.kindWord;
+                        }
                     }
                 }
                 if (!ruleExists) continue;
-                std::string msg = "attribute '@" + std::string(a.name) +
-                    "' matched no imported rule";
-                if (!hint.empty()) msg += " (missing 'uses " + hint + "'?)";
+                std::string msg;
+                if (!kindCompatibleRuleExists && !mismatchRuleName.empty()) {
+                    msg = "attribute '@" + std::string(a.name) + "' has a rule '" +
+                        mismatchRuleName + "' that matches '" + mismatchKind +
+                        "' subjects, but this is a '" + declKindWord(item.get()) +
+                        "' — did you mean 'on type' / 'on " + declKindWord(item.get()) + "'?";
+                } else {
+                    msg = "attribute '@" + std::string(a.name) +
+                        "' matched no imported rule";
+                    if (!hint.empty()) msg += " (missing 'uses " + hint + "'?)";
+                }
                 sink_.warning(a.span, msg);
             }
             if (item->kind == StmtKind::Namespace || item->kind == StmtKind::Class)

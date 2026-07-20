@@ -1,0 +1,22 @@
+// techdesign-splices-desugars-sonnet.md §2 addendum: `on type C` matches
+// class, struct, AND interface subjects (the subject-position analogue of
+// the encloser clause's existing `in class C`-also-matches-struct leniency).
+// One rule fires identically on a class and a struct here — the hand-written
+// class+struct twin pair is rule_subject_type_twin.ext.
+namespace Marker {
+    attribute Serializable { }
+    rule tag {
+        match @Serializable(x) on type C
+        inject `int kindTag() => 1;` at member of C
+    }
+}
+uses Marker;
+
+@Serializable
+class Widget { }
+
+@Serializable
+struct Point { int x; int y; }
+
+console.writeln(Widget().kindTag());
+console.writeln(Point(1, 2).kindTag());

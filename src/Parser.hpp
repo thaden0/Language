@@ -114,7 +114,11 @@ private:
     void parseTypeParams(std::vector<std::string_view>& out);   // <T, U> on class/fn/method
 
     // --- metaprogramming surface (§16.5) ---
-    std::vector<AttrUse> parseAttrUses();          // `@Name(args)`* before a decl
+    // `@Name(args)`* before a decl, plus `@attr(A, B);` grouped-attribute sugar
+    // (techdesign-splices-desugars-sonnet.md §1). `lastWasGroup`, if given, is
+    // set to whether the most recently parsed prefix segment was a group —
+    // callers use it to pick the right "dangling attribute" diagnostic.
+    std::vector<AttrUse> parseAttrUses(bool* lastWasGroup = nullptr);
     StmtPtr parseAttributeDecl(Access access);     // `attribute Name { fields }`
     StmtPtr tryParseComptime();                    // comptime var / if / expr-stmt
     bool nextStartsExpr(size_t ahead) const;       // token can begin an expression

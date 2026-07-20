@@ -1329,10 +1329,13 @@ StmtPtr Parser::parseStatement() {
 
 // Attribute wrapper for members: `@Column public int id;` etc.
 StmtPtr Parser::parseClassMember(Access sectionAccess, bool sectionConst) {
-    std::vector<AttrUse> attrs = parseAttrUses();
+    bool lastWasGroup = false;
+    std::vector<AttrUse> attrs = parseAttrUses(&lastWasGroup);
     StmtPtr m = parseClassMemberInner(sectionAccess, sectionConst);
     if (!attrs.empty()) {
         if (m && m->kind == StmtKind::Member) m->attrs = std::move(attrs);
+        else if (lastWasGroup) sink_.error(attrs.front().span,
+                         "@attr(...) must precede a declaration");
         else sink_.error(attrs.front().span,
                          "an attribute must precede a member declaration");
     }
@@ -1516,9 +1519,51 @@ StmtPtr Parser::parseEnum(Access access) {
 // ---------------------------------------------------------------------------
 
 // `@Name(args)` / `@NS::Name(args)`, zero or more, before a declaration.
-std::vector<AttrUse> Parser::parseAttrUses() {
+std::vector<AttrUse> Parser::parseAttrUses(bool* lastWasGroup) {
     std::vector<AttrUse> out;
+    if (lastWasGroup) *lastWasGroup = false;
     while (at(TokenKind::At)) {
+        // `@attr(Name1, Name2, …);` (techdesign-splices-desugars-sonnet.md §1) —
+        // statement/member-position sugar for `@Name1 @Name2 …` on the next
+        // declaration. `attr` is a contextual keyword only in this exact shape
+        // (`@` `attr` `(` at a decorator-prefix position, a shape no ordinary
+        // decorator use — with or without an attribute literally named `attr`
+        // — collides with, since a real `@attr(...)` decorator never continues
+        // with a bare `;` right after its ')').
+        if (peek(1).kind == TokenKind::Identifier && peek(1).text == "attr" &&
+            peek(2).kind == TokenKind::LParen) {
+            advance();                               // '@'
+            advance();                               // 'attr'
+            advance();                               // '('
+            do {
+                AttrUse a;
+                a.span = cur().span;
+                if (!at(TokenKind::Identifier)) { error("attribute name"); break; }
+                a.name = cur().text;
+                advance();
+                while (at(TokenKind::ColonColon)) {
+                    advance();
+                    if (!at(TokenKind::Identifier)) { error("attribute name"); break; }
+                    a.path.push_back(a.name);
+                    a.name = cur().text;
+                    advance();
+                }
+                if (pos_ > 0) a.span.length = tokens_[pos_ - 1].span.end() - a.span.offset;
+                out.push_back(std::move(a));
+            } while (accept(TokenKind::Comma));
+            expect(TokenKind::RParen, "')'");
+            expect(TokenKind::Semicolon, "';'");
+            sawMeta_ = true;
+            if (lastWasGroup) *lastWasGroup = true;
+            // A body's declaration loop always attempts to parse a member/item
+            // even at its closing brace (there is no "nothing left" sentinel
+            // return), so it cascades unrelated errors rather than surfacing
+            // this specific one — check directly, here, where the dangling
+            // group is actually detected (design point F.4).
+            if (at(TokenKind::RBrace) || atEnd())
+                sink_.error(cur().span, "@attr(...) must precede a declaration");
+            continue;
+        }
         AttrUse a;
         a.span = cur().span;
         advance();                                   // '@'
@@ -1535,6 +1580,7 @@ std::vector<AttrUse> Parser::parseAttrUses() {
         if (at(TokenKind::LParen)) a.args = parseArgs();
         if (pos_ > 0) a.span.length = tokens_[pos_ - 1].span.end() - a.span.offset;
         sawMeta_ = true;
+        if (lastWasGroup) *lastWasGroup = false;
         out.push_back(std::move(a));
     }
     return out;
@@ -2114,7 +2160,8 @@ StmtPtr Parser::parseNamespace() {
 // Attributes bind to the declaration that follows them (§16.5 Layer A). The
 // wrapper keeps the existing item grammar untouched and just attaches.
 StmtPtr Parser::parseTopLevelItem() {
-    std::vector<AttrUse> attrs = parseAttrUses();
+    bool lastWasGroup = false;
+    std::vector<AttrUse> attrs = parseAttrUses(&lastWasGroup);
     StmtPtr item = parseTopLevelItemInner();
     if (!attrs.empty()) {
         bool declLike = item && (item->kind == StmtKind::Class ||
@@ -2122,6 +2169,8 @@ StmtPtr Parser::parseTopLevelItem() {
                                  item->kind == StmtKind::Var ||
                                  (item->kind == StmtKind::Member && item->callable));
         if (declLike) item->attrs = std::move(attrs);
+        else if (lastWasGroup) sink_.error(attrs.front().span,
+                         "@attr(...) must precede a declaration");
         else sink_.error(attrs.front().span,
                          "an attribute must precede a declaration "
                          "(class, struct, function, field, or namespace)");

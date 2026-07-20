@@ -427,33 +427,22 @@ namespace Atlantis {
     // then keys, then R1 (FromJson skeleton) -> R2 (per-field apply) -> R3
     // (seal), each appending into the SAME rule-injected constructor. ====
     //
-    // NEW FINDING (not in the design's own §1/§10 capability matrix, found
-    // implementing this track): rule SUBJECT-kind matching is EXACT
-    // (declKindMatches, Rules.cpp:1317 — `di.kindWord == kind`, no leniency),
-    // unlike ENCLOSER-kind matching (`in class C`, Rules.cpp:1152-1155),
-    // which explicitly also accepts `struct`/`interface` ancestors. So
-    // `match @Attr on class C` does NOT fire on `@Attr struct S { ... }` —
-    // confirmed with a minimal standalone repro (`on class C` silent no-op
-    // on a struct subject; an `on struct C` twin fires correctly, same
-    // template, same class). Since §2.1's contract needs BOTH `struct` DTOs
-    // and `class` entities to generate identically, every SUBJECT-position
-    // class-level rule below ships as a class/struct PAIR (R2 -- the only
-    // field-subject, ENCLOSER-position rule -- already covers both via the
-    // existing leniency, proven by P-1b). A symmetry ask (unify class/struct
-    // at subject position, or an `on type C` kind) is filed as an addendum
-    // to designs/requests/request-metaprog-splices.md; duplication is the
-    // interim, and it is exact and mechanical (verified safe).
+    // Subject-kind matching (`on class`/`on struct`) is EXACT (declKindMatches,
+    // Rules.cpp) -- `match @Attr on class C` does NOT fire on `@Attr struct
+    // S { ... }`. Since §2.1's contract needs BOTH `struct` DTOs and `class`
+    // entities to generate identically, every subject-position class-level
+    // rule below uses `on type C` (techdesign-splices-desugars-sonnet.md §2
+    // addendum), the subject-position kind-word that matches class/struct/
+    // interface in one rule -- replacing the class/struct rule PAIRS this
+    // track originally shipped as an interim workaround (R2 -- the only
+    // field-subject, ENCLOSER-position rule -- already covered both via the
+    // encloser clause's own `in class C`-also-matches-struct leniency).
 
     // §5.2: refuses unsupported shapes with a named diagnostic. `where`
     // always evaluates to `... && false`, so this rule never actually fires
     // -- it exists purely to run __atlGuard's checks (§5.2's sentinel idiom).
-    rule serializableGuardClass {
-        match @Serializable on class C
-        where Atlantis::__atlGuard(C) && false
-        inject `0;` at bottom of C.constructor
-    }
-    rule serializableGuardStruct {
-        match @Serializable on struct C
+    rule serializableGuard {
+        match @Serializable on type C
         where Atlantis::__atlGuard(C) && false
         inject `0;` at bottom of C.constructor
     }
@@ -472,15 +461,8 @@ namespace Atlantis {
     //
     // __atlKeys() DOES generate today: `$f.name` is a value-hole field read,
     // not a member-name splice (§1's capability matrix).
-    rule serializableKeysClass {
-        match @Serializable on class C
-        where C.hasBase("IJsonSerializable")
-        inject `Array<string> __atlKeys() =>
-            [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : $f.name ];`
-            at member of C
-    }
-    rule serializableKeysStruct {
-        match @Serializable on struct C
+    rule serializableKeys {
+        match @Serializable on type C
         where C.hasBase("IJsonSerializable")
         inject `Array<string> __atlKeys() =>
             [ $for f in C.fields.where((x) => !x.hasAttr("JsonIgnore")) : $f.name ];`
@@ -490,20 +472,8 @@ namespace Atlantis {
     // R1: skeleton. Guarded (§3.3) so a hand-written `FromJson` overrides
     // generation instead of colliding with it (P-6 confirmed labeled ctors
     // are visible in C.methods by their label name).
-    rule serializableFromJsonSkeletonClass {
-        match @Serializable on class C
-        where C.hasBase("IJsonSerializable") &&
-              C.methods.where((m) => m.name == "FromJson").length() == 0
-        inject `JsonValue? __atlSrc;` at member of C
-        inject `int __atlIdx;` at member of C
-        inject `new FromJson(JsonValue v) {
-            Atlantis::__atlRequireObject(v);
-            this.__atlSrc = v;
-            this.__atlIdx = 0;
-        }` at member of C
-    }
-    rule serializableFromJsonSkeletonStruct {
-        match @Serializable on struct C
+    rule serializableFromJsonSkeleton {
+        match @Serializable on type C
         where C.hasBase("IJsonSerializable") &&
               C.methods.where((m) => m.name == "FromJson").length() == 0
         inject `JsonValue? __atlSrc;` at member of C
@@ -532,13 +502,8 @@ namespace Atlantis {
     }
 
     // R3: epilogue -- drop the parse tree (H-8: FromJson never retains `v`).
-    rule serializableSealClass {
-        match @Serializable on class C
-        where C.hasBase("IJsonSerializable")
-        inject `this.__atlSrc = None;` at bottom of C.constructor
-    }
-    rule serializableSealStruct {
-        match @Serializable on struct C
+    rule serializableSeal {
+        match @Serializable on type C
         where C.hasBase("IJsonSerializable")
         inject `this.__atlSrc = None;` at bottom of C.constructor
     }
@@ -559,37 +524,8 @@ namespace Atlantis {
     // fixed Array<int|float|bool|string>/Map<string,string> overloads above
     // are supported for collection fields in v1, logged per §5.1's own
     // designed degradation.
-    rule serializableNestedClass {
-        match @Serializable on class C
-        where C.hasBase("IJsonSerializable")
-        inject `$C __atlDec(JsonValue? src, Array<string> keys, int idx, $C witness) {
-            if (src == None) { return witness; }
-            else {
-                string key = keys.at(idx);
-                JsonValue? item = src.atOrNone(key);
-                if (item == None) { Atlantis::__atlMissing(key); return witness; }
-                else { return $C::FromJson(item); }
-            }
-        }
-        $C? __atlDec(JsonValue? src, Array<string> keys, int idx, $C? witness) {
-            if (src == None) { return witness; }
-            else {
-                string key = keys.at(idx);
-                JsonValue? item = src.atOrNone(key);
-                if (item == None) { return None; }
-                else {
-                    if (item.isNull()) { return None; }
-                    else { return $C::FromJson(item); }
-                }
-            }
-        }
-        JsonValue __atlEnc($C? witness) {
-            if (witness == None) { return JsonValue::ofNull(); }
-            else { return witness.toJson(); }
-        }` at namespace Atlantis
-    }
-    rule serializableNestedStruct {
-        match @Serializable on struct C
+    rule serializableNested {
+        match @Serializable on type C
         where C.hasBase("IJsonSerializable")
         inject `$C __atlDec(JsonValue? src, Array<string> keys, int idx, $C witness) {
             if (src == None) { return witness; }

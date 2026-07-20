@@ -297,6 +297,14 @@ add_test(NAME rule_if_reject_kindmix            # M41: statement in an expr-posi
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_kindmix.ext"
                  "expected expression")
+# techdesign-splices-desugars-sonnet.md §1.2 point 4: a trailing `@attr(A);`
+# grouped-attribute group with no following declaration is a parse error, not
+# a silently-dropped attribute.
+add_test(NAME rule_attr_group_reject_dangling
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_attr_group_dangling.ext"
+                 "@attr(...) must precede a declaration")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir
