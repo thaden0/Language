@@ -2344,6 +2344,52 @@ is **additive (`inject`) XOR a rewriter (`replace`), never both** (M30).
   the round budget, default 8, `--reentrant-budget` overrides). Only `reentrant`
   rules re-trigger — the safe majority still sees the tree exactly once.
 
+### Body-generating rules (Layer D) — `generates` / `replace` / M36
+```
+namespace Bindgen {
+    attribute Extern { string op; }
+    rule bindStr generates body of m {
+        match @Extern(e) on method m
+        replace `return Host::str($e.op, $_args);`
+    }
+}
+class Widget {
+    @Extern("getAttribute")
+    string attr(string name) => "";     // placeholder; discarded, never runs
+}
+```
+The sibling of `rewrites`/`replace`/`$body`: `generates body of <bind>` overwrites
+the target's body wholesale and **discards** the original outright, for a rule
+whose whole point is that there is no meaningful original to compose with — a
+bindgen stub, an FFI shim, a codec, any "declare the signature, machine-fill the
+body" generator. Signature and generation data (an `@Extern`-shaped attribute,
+say) live on the same hand-written declaration; only the body is generated, so
+this never collides with M33's declare-vs-inject check (nothing is injected).
+
+- **`$body` is unavailable** in a `generates` template — referencing it is
+  **M36** ("the original body is discarded, so `$body` is unavailable; use
+  `rewrites` to keep it"). This is the sanctioned, opt-in counterpart to M32's
+  "a `replace` that drops the body is silent obliteration": `generates` makes
+  the drop explicit at the rule header instead of forbidding it.
+- **The target still needs a body to overwrite** — `generates` cannot declare a
+  bodyless method; give it a type-valid placeholder (`=> this`, `=> ""`, `{ }`,
+  …). The placeholder never runs; it exists only so the declaration parses and
+  (where the file is checked) type-checks before the rule stage replaces it.
+- **`$_args`** (§ Rules, `$_params`/`$_args`) forwards the matched method's own
+  parameters verbatim; overload resolution over a hand-written helper family can
+  then place each argument in whatever downstream slot its type/position implies
+  — a `generates` template stays branch-free even when different call shapes
+  need different marshaling, because the type system, not template `$for`/`$if`,
+  does the dispatching.
+- Everything else about `rewrites` — M35 (target must be a callable match bind),
+  M33 (two whole-body rewrites, `rewrites` or `generates`, on one body do not
+  compose), `reentrant`, pass-2 ordering (rewriters/generators run after all
+  additive `inject`s) — applies identically.
+- **Caveat:** rules and attributes declared inside the compiler's own prelude
+  (`prelude/*.lev`) never fire — the rule stage only ever walks the file(s)
+  being compiled, never the prelude's own tree. `generates`/`rewrites`/macros
+  work as documented in ordinary project files only. See known-bugs #98.
+
 Expression macros (Layer D-lite) also ship (see Rules, above).
 
 ### Procedural macros (F4) — comptime code returns code

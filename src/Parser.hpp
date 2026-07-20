@@ -107,7 +107,7 @@ private:
     // --- rules (§16.5 Layer B) ---
     StmtPtr parseRule(Access access);              // `rule Name { match ... inject ... }`
     void parseRuleMatch(RuleMatch& out);           // the match clause
-    void parseRuleAction(RuleAction& out);         // one inject clause + anchor
+    void parseRuleAction(RuleAction& out, bool generates); // one inject/replace clause + anchor
     // --- expression macros (Phase 3 §7) ---
     StmtPtr parseMacroDecl(Access access);         // `macro Name(params) => \`expr\`;`
     // Fragment parsers: re-lex a quasiquote's payload (with holes) into AST.

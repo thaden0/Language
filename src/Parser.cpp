@@ -1448,18 +1448,25 @@ StmtPtr Parser::parseRule(Access access) {
     advance();                                       // 'rule'
     r->name = cur().text;
     advance();                                       // name
-    // Two independent contextual markers on the rule header (Layer D, Phase 4):
-    //   `rewrites body of <bind>` (§2.1) — this rule REPLACES the named bind's body
+    // Two independent contextual markers on the rule header (Layer D, Phase 4;
+    // `generates` added by the bindgen metaprog scope design):
+    //   `rewrites body of <bind>` (§2.1) — this rule REPLACES the named bind's body,
+    //                                      splicing the original back in via `$body`
+    //   `generates body of <bind>`       — sibling: REPLACES the body and DISCARDS the
+    //                                      original; `$body` is unavailable (M36)
     //   `reentrant` (§4)                 — this rule may re-trigger on generated code
-    // Either order; a rule may carry both (exotic but legal).
+    // `rewrites` and `generates` are mutually exclusive; either may combine with
+    // `reentrant` in either order (exotic but legal).
     for (int i = 0; i < 2 && at(TokenKind::Identifier); ++i) {
-        if (cur().text == "rewrites" && !r->ruleRewrites) {
-            r->ruleRewrites = true;
-            advance();                               // 'rewrites'
+        if ((cur().text == "rewrites" || cur().text == "generates") &&
+            !r->ruleRewrites && !r->ruleGenerates) {
+            bool generates = cur().text == "generates";
+            if (generates) r->ruleGenerates = true; else r->ruleRewrites = true;
+            advance();                               // 'rewrites' | 'generates'
             if (at(TokenKind::Identifier) && cur().text == "body") advance();
-            else error("'body' after 'rewrites'");
+            else error(generates ? "'body' after 'generates'" : "'body' after 'rewrites'");
             if (at(TokenKind::Identifier) && cur().text == "of") advance();
-            else error("'of' after 'rewrites body'");
+            else error(generates ? "'of' after 'generates body'" : "'of' after 'rewrites body'");
             if (at(TokenKind::Identifier)) { r->rewritesTarget = cur().text; advance(); }
             else error("the bound name whose body is replaced");
         } else if (cur().text == "reentrant" && !r->ruleReentrant) {
@@ -1473,24 +1480,28 @@ StmtPtr Parser::parseRule(Access access) {
     if (at(TokenKind::KwMatch)) parseRuleMatch(*r->ruleMatch);
     else error("'match' clause");
 
+    bool bodyRewriteHeader = r->ruleRewrites || r->ruleGenerates;
     while (at(TokenKind::KwInject) ||
            (at(TokenKind::Identifier) && cur().text == "replace")) {
         RuleAction a;
-        parseRuleAction(a);
+        parseRuleAction(a, r->ruleGenerates);
         // M30 (§2.1): a rule is additive (`inject`) XOR a rewriter (`replace`),
-        // never both. `replace` demands a `rewrites` header; `inject` forbids one.
-        bool isReplace = a.anchor == AnchorKind::BodyReplace;
-        if (isReplace && !r->ruleRewrites)
-            sink_.error(a.span, "'replace' is only legal in a 'rewrites' rule "
-                        "(add 'rewrites body of <bind>' to the rule header)");
-        else if (!isReplace && r->ruleRewrites)
-            sink_.error(a.span, "a 'rewrites' rule uses 'replace', not 'inject' "
-                        "(a rule is additive or a rewriter, never both)");
+        // never both. `replace` demands a `rewrites`/`generates` header; `inject`
+        // forbids one.
+        bool isReplace = a.anchor == AnchorKind::BodyReplace ||
+                          a.anchor == AnchorKind::BodyGenerate;
+        if (isReplace && !bodyRewriteHeader)
+            sink_.error(a.span, "'replace' is only legal in a 'rewrites' or "
+                        "'generates' rule (add 'rewrites body of <bind>' or "
+                        "'generates body of <bind>' to the rule header)");
+        else if (!isReplace && bodyRewriteHeader)
+            sink_.error(a.span, "a 'rewrites'/'generates' rule uses 'replace', not "
+                        "'inject' (a rule is additive or a rewriter, never both)");
         r->ruleActions.push_back(std::move(a));
     }
     if (r->ruleActions.empty())
-        error(r->ruleRewrites ? "at least one 'replace' clause"
-                              : "at least one 'inject' clause");
+        error(bodyRewriteHeader ? "at least one 'replace' clause"
+                                : "at least one 'inject' clause");
 
     expect(TokenKind::RBrace, "'}'");
     return r;
@@ -1602,8 +1613,9 @@ void Parser::parseRuleMatch(RuleMatch& out) {
     }
 }
 
-// inject `template` at <anchor>   |   replace `template`   (Layer D, Phase 4 §2.1)
-void Parser::parseRuleAction(RuleAction& out) {
+// inject `template` at <anchor>   |   replace `template`   (Layer D, Phase 4 §2.1;
+// `generates` sibling added by the bindgen metaprog scope design)
+void Parser::parseRuleAction(RuleAction& out, bool generates) {
     out.span = cur().span;
     bool isReplace = at(TokenKind::Identifier) && cur().text == "replace";
     advance();                                       // 'inject' | 'replace'
@@ -1617,10 +1629,12 @@ void Parser::parseRuleAction(RuleAction& out) {
     advance();
 
     // `replace` has no `at <anchor>` — the target is the rule's `rewrites body of
-    // <bind>`. Its template is a statement fragment (`$body` splices the original
-    // body, §2.2). Set the anchor and parse; the header records the target bind.
+    // <bind>` / `generates body of <bind>`. Its template is a statement fragment
+    // (`$body` splices the original body for `rewrites`; unavailable for
+    // `generates`, M36). Set the anchor and parse; the header records the target
+    // bind.
     if (isReplace) {
-        out.anchor = AnchorKind::BodyReplace;
+        out.anchor = generates ? AnchorKind::BodyGenerate : AnchorKind::BodyReplace;
         out.tmplStmts = parseStmtsFragment(out.quasiSpan);
         return;
     }
@@ -2005,14 +2019,16 @@ StmtPtr Parser::parseTopLevelItemInner() {
         peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::LBrace)
         return parseAttributeDecl(acc);
 
-    // `rule Name { ... }` / `rule Name rewrites … { ... }` / `rule Name reentrant …`
-    // — contextual keyword. Recognized by the triple: Identifier("rule") Identifier
-    // then '{' or a header marker ("rewrites" | "reentrant", Layer D Phase 4).
+    // `rule Name { ... }` / `rule Name rewrites … { ... }` / `rule Name generates …`
+    // / `rule Name reentrant …` — contextual keyword. Recognized by the triple:
+    // Identifier("rule") Identifier then '{' or a header marker ("rewrites" |
+    // "generates" | "reentrant", Layer D Phase 4 / bindgen metaprog scope).
     if (at(TokenKind::Identifier) && cur().text == "rule" &&
         peek(1).kind == TokenKind::Identifier &&
         (peek(2).kind == TokenKind::LBrace ||
          (peek(2).kind == TokenKind::Identifier &&
-          (peek(2).text == "rewrites" || peek(2).text == "reentrant"))))
+          (peek(2).text == "rewrites" || peek(2).text == "generates" ||
+           peek(2).text == "reentrant"))))
         return parseRule(acc);
 
     // `macro Name(params) => \`expr\`;` — contextual keyword (Phase 3 §7).

@@ -302,6 +302,12 @@ enum class AnchorKind {
     BodyReplace,           // replace `...` — Layer D, Phase 4 (§2.3): overwrites the
                            // `rewrites body of <bind>` target's body; `$body` splices
                            // the original body back in (composition, not obliteration).
+    BodyGenerate,          // replace `...` — Layer D, bindgen metaprog scope: sibling of
+                           // BodyReplace for a `generates body of <bind>` rule. Overwrites
+                           // the target's body wholesale and DISCARDS the original — `$body`
+                           // is unavailable (M36) since there is no original to splice.
+                           // Sanctioned, opt-in obliteration where BodyReplace's M32
+                           // ("splice $body or it's silent obliteration") does not apply.
 };
 
 struct RuleAction {
@@ -433,11 +439,17 @@ struct Stmt {
     std::unique_ptr<RuleMatch> ruleMatch;
     std::vector<RuleAction> ruleActions;
     bool ruleRewrites = false;                 // `rewrites` marker (Layer D, Phase 4)
+    bool ruleGenerates = false;                // `generates` marker (Layer D, bindgen
+                                               // metaprog scope): sibling of `rewrites` that
+                                               // discards the original body instead of
+                                               // requiring `$body` to splice it back;
+                                               // mutually exclusive with ruleRewrites
     bool ruleReentrant = false;                // `reentrant` marker (Layer D, Phase 4 §4):
                                                // this rule may re-trigger on rule-generated
                                                // code (the gated fixpoint opt-in)
-    std::string_view rewritesTarget;           // `rewrites body of <bind>`: the match bind
-                                               // whose body a `replace` action overwrites
+    std::string_view rewritesTarget;           // `rewrites body of <bind>` / `generates body
+                                               // of <bind>`: the match bind whose body a
+                                               // `replace` action overwrites
     // `macro Name(params) => \`expr\`;` (Phase 3 §7) reuses this same node shape:
     // ruleMatch/ruleActions/ruleRewrites are unused; `generics` repurposed for the
     // macro's parameter names (both are string_view vectors; documented reuse per

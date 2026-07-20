@@ -260,6 +260,31 @@ int main() {
           "rule rb { match @B on class C inject `string tag() => \"x\";` at member of C } } "
           "uses W; @A @B class K { int base = 0; } K k = K();");
 
+    // --- Layer D (bindgen metaprog scope): generates/replace/M36 ------------
+    // The happy path: a `generates body of m` rule discards the placeholder
+    // body outright — no `$body` reference required (output proof lives in
+    // tests/corpus/meta/rule_body_generate.ext).
+    CLEAN("namespace W { attribute Gen {} rule g generates body of m { "
+          "match @Gen on method m replace `return 99;` } } "
+          "uses W; class K { @Gen int f(int n) => n * 2; } K k = K(); k.f(3);");
+    // M36: `$body` referenced in a `generates` template — there is no original
+    // to splice, so this is an error (the mirror of `rewrites`' M32).
+    ERRORS("namespace W { attribute Gen {} rule g generates body of m { "
+           "match @Gen on method m replace `return $body + 1;` } }");
+    // M35 still applies to `generates`: the target must be a callable match bind.
+    ERRORS("namespace W { attribute Gen {} rule g generates body of f { "
+           "match @Gen on field f replace `return 0;` } }");
+    // M30 still applies to `generates`: `inject` is not legal in a body-rewrite
+    // rule regardless of which keyword (`rewrites`/`generates`) heads it.
+    ERRORS("namespace W { attribute Gen {} rule g generates body of m { "
+           "match @Gen on method m inject `log = 1;` at top of body } }");
+    // M33: a `generates` and a `rewrites` rule both targeting one body still do
+    // not compose (the unified whole-body-replacement collision).
+    ERRORS("namespace W { attribute A {} attribute B {} "
+           "rule ra generates body of m { match @A on method m replace `return 1;` } "
+           "rule rb rewrites body of m { match @B on method m replace `return $body + 2;` } } "
+           "uses W; class K { @A @B int f() => 1; } K k = K();");
+
     // --- Layer D (Phase 4 §4): reentrant rules -----------------------------
     // The gated fixpoint: a non-reentrant `seed` injects a @Grown method, and a
     // `reentrant` rule re-triggers on that generated attribute. Converges (the
