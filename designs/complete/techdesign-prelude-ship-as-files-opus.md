@@ -1,6 +1,6 @@
 # Tech Design: Ship the Stdlib Prelude as `.lev` Files (`parsePrelude()` file seam + per-target selection)
 
-**Status:** NOT IMPLEMENTED — design ready for implementation.
+**Status:** IMPLEMENTED — landed on `agent0` in `6bf297a` (M1) + `38b59ce` (M2–M5); in `designs/complete/`.
 **Complexity:** opus (core-compiler decision-making: driver resolution tiers, Resolver
 seam, build-system plumbing; zero backend work).
 **Date:** 2026-07-19.
