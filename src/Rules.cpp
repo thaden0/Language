@@ -69,8 +69,9 @@ bool RuleEngine::run(Program& program) {
     // M22 (§7): static, independent of whether/where a macro is ever called —
     // fires even for a macro nobody uses yet.
     validateMacroDecls();
-    // M32/M35 (§2.3): static checks on `rewrites` rules, likewise fire-or-not
-    // independent — a malformed rewriter is an error even if it never matches.
+    // M32/M35/M36 (§2.3; M36 added by the bindgen metaprog scope design): static
+    // checks on `rewrites`/`generates` rules, likewise fire-or-not independent —
+    // a malformed rewriter/generator is an error even if it never matches.
     validateRewriteRules();
     comptimeScope_ = sema_.global;   // §8: root-level comptime is scope-complete
     // B. Comptime fold walk ONLY — vars/ifs/exprs. Macro-call expansion does
@@ -715,15 +716,19 @@ void RuleEngine::validateMacroDecls() {
     }
 }
 
-// Layer D (§2.3): static checks on `rewrites` rules at collection time, run
-// once per rule independent of whether it ever fires — M35 (the `rewrites body
-// of <bind>` target names a callable match bind) and M32 (`$body` is referenced
-// exactly once across the rule's replace templates: zero drops the original
-// body silently, more than once duplicates its side effects).
+// Layer D (§2.3): static checks on `rewrites`/`generates` rules at collection
+// time, run once per rule independent of whether it ever fires — M35 (the
+// target bind names a callable match bind), M32 (a `rewrites` rule's `$body`
+// is referenced exactly once across its replace templates: zero drops the
+// original body silently, more than once duplicates its side effects), and
+// M36 (a `generates` rule's replace templates never reference `$body` — there
+// is no original to splice; bindgen metaprog scope design).
 void RuleEngine::validateRewriteRules() {
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleRewrites || !r.node->ruleMatch) continue;
+        bool generates = r.node->ruleGenerates;
+        if ((!r.node->ruleRewrites && !generates) || !r.node->ruleMatch) continue;
         const RuleMatch& m = *r.node->ruleMatch;
+        const char* verb = generates ? "generates" : "rewrites";
 
         // M35: the target bind must name a callable match bind (subject or an
         // encloser of method/function kind). A field/class/struct bind has no
@@ -738,30 +743,39 @@ void RuleEngine::validateRewriteRules() {
             if (tgt == lv.bind) { found = true; callable = isCallableKind(lv.kindWord); }
         if (!found)
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
-                        "' rewrites body of '" + std::string(tgt) +
+                        "' " + verb + " body of '" + std::string(tgt) +
                         "', which is not a name bound by its match clause");
         else if (!callable)
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
-                        "' rewrites body of '" + std::string(tgt) +
+                        "' " + verb + " body of '" + std::string(tgt) +
                         "', which is not a callable (only a method/function has a "
                         "body to replace)");   // M35
 
-        // M32: exactly one `$body` across every replace template.
+        // M32 (`rewrites`): exactly one `$body` across every replace template.
+        // M36 (`generates`): `$body` must never appear — there is no original.
         int n = 0;
         for (const RuleAction& act : r.node->ruleActions) {
-            if (act.anchor != AnchorKind::BodyReplace) continue;
+            if (act.anchor != AnchorKind::BodyReplace && act.anchor != AnchorKind::BodyGenerate)
+                continue;
             for (const StmtPtr& s : act.tmplStmts) countHoleRefsStmt(s.get(), "$body", n);
         }
-        if (n == 0)
+        if (generates) {
+            if (n > 0)
+                sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
+                            "' is a 'generates' rule — the original body is "
+                            "discarded, so '$body' is unavailable; use 'rewrites' "
+                            "to keep it");   // M36
+        } else if (n == 0) {
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
                         "' never references '$body' — a 'replace' that drops the "
                         "original body is silent obliteration; splice '$body' to "
                         "keep it");   // M32
-        else if (n > 1)
+        } else if (n > 1) {
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
                         "' references '$body' " + std::to_string(n) + " times — a "
                         "'rewrites' rule may splice the original body at most once "
                         "(splicing it twice duplicates its side effects)");   // M32
+        }
     }
 }
 
@@ -1653,12 +1667,12 @@ void RuleEngine::runRulePasses(bool reentrantOnly) {
     // Two passes over the offset-ordered rule list keep both halves
     // deterministic regardless of a rewriter's source position.
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleMatch || r.node->ruleRewrites) continue;
+        if (!r.node->ruleMatch || r.node->ruleRewrites || r.node->ruleGenerates) continue;
         if (reentrantOnly && !r.node->ruleReentrant) continue;
         matchAndExpandRule(r);
     }
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleMatch || !r.node->ruleRewrites) continue;
+        if (!r.node->ruleMatch || !(r.node->ruleRewrites || r.node->ruleGenerates)) continue;
         if (reentrantOnly && !r.node->ruleReentrant) continue;
         matchAndExpandRule(r);
     }
@@ -1833,25 +1847,31 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                            std::make_move_iterator(cloned.end()));
             markerInsertCount_[markerNode] += n;
 
-        } else if (act.anchor == AnchorKind::BodyReplace) {
-            // Layer D (§2.3): overwrite the `rewrites body of <bind>` target's
-            // body, splicing the original back in wherever `$body` appears.
+        } else if (act.anchor == AnchorKind::BodyReplace ||
+                   act.anchor == AnchorKind::BodyGenerate) {
+            // Layer D (§2.3) / bindgen metaprog scope: overwrite the `rewrites
+            // body of <bind>` / `generates body of <bind>` target's body. A
+            // `rewrites` action splices the original back in wherever `$body`
+            // appears; a `generates` action discards it outright (M36 already
+            // rejected any `$body` reference in this template at validate time).
+            bool isGenerate = act.anchor == AnchorKind::BodyGenerate;
             std::string_view tgt = r.node->rewritesTarget;
             Stmt* subj = nullptr;
             auto bit = b.find(tgt);
             if (bit != b.end()) subj = bit->second.declStmt;
             if (!subj || !subj->callable || !subj->memberBody) {
                 sink_.error(act.span, "rule '" + std::string(r.node->name) +
-                            "' rewrites body of '" + std::string(tgt) +
+                            "' " + (isGenerate ? "generates" : "rewrites") +
+                            " body of '" + std::string(tgt) +
                             "', but it has no body to replace");   // M35 (expansion)
                 continue;
             }
             std::string qualName = (r.ns == "<root>" ? std::string(r.node->name)
                                                      : r.ns + "::" + std::string(r.node->name));
-            // §3 confluence: only one replace may own a body (no order composes
-            // two independent whole-body replacements). The two rules are named
-            // in stable source-offset order (orderRules), so the report is
-            // reproducible: the earlier replacer owns the mark, the later trips it.
+            // §3 confluence: only one replace/generate may own a body (no order
+            // composes two independent whole-body rewrites). The two rules are
+            // named in stable source-offset order (orderRules), so the report is
+            // reproducible: the earlier owner owns the mark, the later trips it.
             auto prev = replacedBy_.find(subj);
             if (prev != replacedBy_.end()) {
                 sink_.error(act.span, "rule '" + prev->second + "' and rule '" +
@@ -1861,12 +1881,13 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                 continue;
             }
             replacedBy_[subj] = qualName;
-            // Capture the original body under `$body` (normalized to a Block so
-            // the statement form has a vector), clone the template — which
-            // splices it — then overwrite. The clone reads replaceBodyOrig_
-            // before the overwrite frees the old body.
+            // `rewrites`: capture the original body under `$body` (normalized to
+            // a Block so the statement form has a vector), clone the template —
+            // which splices it — then overwrite. The clone reads replaceBodyOrig_
+            // before the overwrite frees the old body. `generates` leaves
+            // replaceBodyOrig_ null: there is nothing to splice, by design.
             normalizeMemberBody(subj);
-            replaceBodyOrig_ = subj->memberBody.get();
+            if (!isGenerate) replaceBodyOrig_ = subj->memberBody.get();
             std::vector<StmtPtr> cloned;
             cloneStmtListBody(act.tmplStmts, b, err, cloned);
             replaceBodyOrig_ = nullptr;

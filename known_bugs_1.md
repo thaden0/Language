@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #95 |
-| P1       | #93 |
+| P1       | #93, #98 |
 | P2       | — |
 | P3       | — |
 
@@ -152,6 +152,75 @@ Oracle and IR runs of the same plan produce the full 40+-line expected output
 changes stashed (clean master `src/`), so it predates Track 06's work — the
 routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
 since regressed it. Not diagnosed further here (out of Track 06 scope).
+
+## #98 [P1] — metaprogramming rules/attributes declared in the prelude silently never fire
+
+**Found:** 2026-07-19, implementing `designs/techdesign-bindgen-metaprog-scope.md`
+(the DOM `@extern` bindgen's `generates body of` primitive) — running its own §13
+spike 1 ("does the rule stage run over wherever the Dom surface lives").
+**Priority justification:** P1.1 — ordinary, checker-accepted CALLER code (a plain
+`.lev` program invoking a prelude-declared, attribute-annotated symbol) silently
+gets the wrong value at exit 0, no diagnostic, because the annotating rule never
+fires. Compounded by P1.2: the workaround (keep any rule/attribute/macro-driven
+declaration OUT of the prelude; ship it as an ordinary project file instead) must
+be independently rediscovered by every future track that wants to author prelude
+surface with metaprogramming — this design walked straight into it, assuming the
+ship-as-files migration (#38b59ce) would resolve it, and it doesn't.
+
+**Repro** (prelude edit + a plain caller program):
+
+```
+$ cat >> prelude/wasm.lev <<'EOF'
+
+namespace WasmSpike {
+    attribute GenSpike { }
+    rule genSpikeRule generates body of m {
+        match @GenSpike on method m
+        replace `return 12345;`
+    }
+    @GenSpike
+    int __spikeProbe() => 0;
+}
+EOF
+$ printf 'console.writeln(WasmSpike::__spikeProbe());\n' > t.ext
+$ build/leviathan --target wasm32-unknown-unknown --ir t.ext
+0
+```
+
+Expected (attribute/rule co-location fires on every other checked file in the
+language — `tests/corpus/meta/rule_body_generate.ext` and the rest of the
+`generates`/`rewrites` corpus confirm this): `12345`, the rule-generated body.
+Actual: the placeholder `=> 0` body runs untouched — no error, no warning, exit 0.
+(Revert the `prelude/wasm.lev` edit after reproducing; it is not a real feature.)
+
+**Root-cause pointer:** `main.cpp` constructs exactly one `RuleEngine` and calls
+`engine->run(program)` exactly once (`src/main.cpp:539`, `:557`), always on the
+user's own parsed file tree. `Resolver::parsePrelude()` (`src/Resolver.cpp:153-183`)
+parses the prelude into a wholly separate `Program` (`preludeProgram_`) using a
+throwaway `DiagnosticSink dummy` ("the prelude is trusted; ignore its
+diagnostics") and hands it to the `RuleEngine` constructor's `prelude` parameter
+— which `RuleEngine` uses ONLY for `eval_.initGlobals(prelude)` (pure
+comptime-value seeding, `src/Rules.cpp:16-28`). Nothing in `RuleEngine` —
+`collectRules`, `indexDecls`, `runRules` — ever walks `preludeProgram_`'s items;
+grep confirms no reference to `prelude` anywhere past the constructor. This
+predates the ship-as-files migration (`38b59ce`, `6bf297a`) and is unaffected by
+it: ship-as-files changed where the prelude's TEXT is sourced from (`prelude/*.lev`
+files vs. embedded bytes), not whether its AST is ever handed to the rule engine
+— confirmed by reproducing the bug against post-migration `prelude/wasm.lev`
+(a real file) exactly as easily as the pre-migration embedded string.
+
+**Workaround (debt sites):** none inside the prelude — a rule/attribute/macro
+declared in any `prelude/*.lev` segment is dead code by construction. Ship the
+metaprogramming-authored surface as an ordinary project `.lev` file compiled
+alongside the consumer instead. This is exactly the fork
+`techdesign-bindgen-metaprog-scope.md`'s DOM adoption (§5/§6) hit: its
+"Recommended" placement (`dom.lev` as a prelude/stdlib segment) assumed landing
+ship-as-files would make prelude rule-stage participation "the demonstrated
+§4.3(e) case" — it doesn't, because §4.3(e) demonstrated rules firing on an
+ordinary checked project file, and the prelude is not on the checker's or the
+rule engine's path at all, file-backed or not. That design's DOM-surface rewrite
+is parked on this bug (or on a project-file placement instead of prelude) rather
+than worked around.
 
 ---
 

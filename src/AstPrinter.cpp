@@ -413,6 +413,7 @@ struct Printer {
                 }
                 std::string head = "Rule " + sv(s->name);
                 if (s->ruleRewrites) head += " rewrites";
+                if (s->ruleGenerates) head += " generates";
                 line(indent, head);
                 if (s->ruleMatch) {
                     const RuleMatch& m = *s->ruleMatch;
