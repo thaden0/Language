@@ -45,6 +45,21 @@ namespace Helm {
         ContentBar panelBar_  = ContentBar();
         ContentBar statusBar_ = ContentBar();
 
+        // Live workspace area — the §3 dock mounted into `body_` at G-H5: the
+        // file-tree sidebar (H05), the editor tab group (H04), and the panel
+        // tabs (H07). The components already exist and pass their goldens; this
+        // is the H01 assembly the snapshot lane deferred as "riders".
+        TreeView    tree_         = TreeView();
+        Tabs        editorTabs_   = Tabs();
+        Tabs        panelTabs_    = Tabs();
+        FileTree    fileTree_     = FileTree(".");                 // real root set in mountWorkspace
+        EditorView  activeEditor_ = EditorView(TextBuffer::Empty()); // real buffer set in mountWorkspace
+        int         focusIdx_     = 0;   // 0=editor, 1=tree, 2=panels (F6 cycles)
+        // Open editor tabs, parallel to editorTabs_'s children, so tab-switch
+        // commands can re-focus the right EditorView by index.
+        Array<EditorView> editors_ = [];
+        int         editorIdx_    = 0;   // active editor tab
+
         // Resolved tool paths + workspace (a live command spawns these).
         string wsRoot_     = ".";
         string testsDir_   = "./tests";
@@ -162,11 +177,19 @@ namespace Helm {
             c.register("helm.engine.llvm",   "Engine: llvm",    "Run", () => this.chooseEngine(EngineLlvm));
             c.register("helm.togglePanel", "Toggle Panel",      "View", () => this.togglePanel());
             c.setKey("helm.togglePanel", "^`");
+            c.register("helm.focusNext", "Focus Next Pane",     "View", () => this.cycleFocus());
+            c.setKey("helm.focusNext", "F6");
+            c.register("helm.focusPrev", "Focus Previous Pane", "View", () => this.cycleFocusBack());
+            c.setKey("helm.focusPrev", "S-F6");
+            c.register("helm.nextTab", "Next Editor Tab",       "View", () => this.nextTab());
+            c.setKey("helm.nextTab", "C-PageDown");
+            c.register("helm.prevTab", "Previous Editor Tab",   "View", () => this.prevTab());
+            c.setKey("helm.prevTab", "C-PageUp");
             // Palette overlay + editor save are live-shell riders (H01/H04); the
             // commands exist now so the accelerator + menu surface is complete.
             c.register("helm.palette", "Command Palette…",      "View", () => {});
             c.setKey("helm.palette", "^P");
-            c.register("helm.save",    "Save",                  "File", () => {});
+            c.register("helm.save",    "Save",                  "File", () => this.doSave());
             c.setKey("helm.save", "^S");
             c.register("helm.quit",    "Quit",                  "File", () => this.quit());
             c.setKey("helm.quit", "^Q");
@@ -231,8 +254,127 @@ namespace Helm {
 
             app_.add(menuBar_);
             app_.add(body_);
-            app_.add(panelBar_);
             app_.add(statusBar_);
+
+            // G-H5: fill the (previously blank) body with the live dock and
+            // focus the editor so keystrokes reach a real buffer. The panel
+            // strip (panelBar_) is subsumed by the in-body panel tabs, so it is
+            // no longer a live child — renderShell() still paints it for the
+            // deterministic golden snapshot.
+            this.mountWorkspace();
+        }
+
+        // §3 dock assembly (H01): sidebar tree | (editor tabs / panel tabs),
+        // mounted into body_ and focused. Every widget here is a landed,
+        // golden-tested component (EditorView H04, FileTree H05, panels H07).
+        void mountWorkspace() {
+            FileTree ft = FileTree(wsRoot_);
+            fileTree_ = ft;
+            tree_.setSource(ft);
+            tree_.setExpanded(TreeNodeId(0), true);   // show the workspace root's entries
+            tree_.onActivate((nid) => this.openNode(nid));
+
+            EditorView ed = EditorView(TextBuffer::FromString(this.welcomeText()));
+            activeEditor_ = ed;
+            editors_ = editors_.add(ed);
+            editorTabs_.add("welcome", ed);
+
+            ListView  outv  = ListView();  outv.setSource(panels_.output);
+            TableView probv = TableView(); probv.setSource(panels_.problems);
+            TableView testv = TableView(); testv.setSource(panels_.tests);
+            panelTabs_.add("Output",   outv);
+            panelTabs_.add("Problems", probv);
+            panelTabs_.add("Test",     testv);
+
+            SplitBox vsplit = SplitBox();
+            vsplit.setAxis(Axis::Vertical);
+            vsplit.setRatio(72);
+            vsplit.add(editorTabs_);
+            vsplit.add(panelTabs_);
+
+            SplitBox hsplit = SplitBox();
+            hsplit.setAxis(Axis::Horizontal);
+            hsplit.setRatio(22);
+            hsplit.add(tree_);
+            hsplit.add(vsplit);
+
+            body_.add(hsplit);
+            app_.focus(ed);
+        }
+
+        // F6 cycles keyboard focus across the three panes by calling app.focus
+        // directly (robust against focus-ring traversal quirks in the nested
+        // SplitBox/Tabs layout). Tab is left to the editor as an indent key.
+        void focusPane(int idx) {
+            focusIdx_ = idx;
+            if (idx == 0)      { app_.focus(activeEditor_); }
+            else if (idx == 1) { app_.focus(tree_); }
+            else               { app_.focus(panelTabs_); }
+        }
+        void cycleFocus()     { this.focusPane((focusIdx_ + 1) % 3); }
+        void cycleFocusBack() { this.focusPane((focusIdx_ + 2) % 3); }
+
+        // Enter on a tree row: open a file in a fresh editor tab and focus it
+        // (a directory row expands/collapses inside the tree itself).
+        void openNode(TreeNodeId nid) {
+            string p = fileTree_.pathOf(nid);
+            if (std::isDir(p)) { return; }
+            // If the file is already open, just switch to its tab.
+            int existing = this.tabForPath(p);
+            if (existing >= 0) { this.showTab(existing); return; }
+            EditorView ed = EditorView(TextBuffer::FromFile(p));
+            editors_ = editors_.add(ed);
+            editorTabs_.add(this.baseName(p), ed);
+            this.showTab(editors_.length() - 1);   // open AND switch to it
+        }
+
+        int tabForPath(string p) {
+            int i = 0;
+            for (EditorView e in editors_) {
+                if (e.buffer().path() == p) { return i; }
+                i = i + 1;
+            }
+            return 0 - 1;
+        }
+
+        // Make tab `idx` the visible AND focused editor.
+        void showTab(int idx) {
+            int n = editors_.length();
+            if (n == 0) { return; }
+            int c = idx < 0 ? 0 : (idx >= n ? n - 1 : idx);
+            editorIdx_ = c;
+            editorTabs_.select(c);
+            activeEditor_ = editors_[c];
+            focusIdx_ = 0;
+            app_.focus(activeEditor_);
+        }
+        void nextTab() { this.showTab(editorIdx_ + 1); }
+        void prevTab() { this.showTab(editorIdx_ - 1); }
+
+        // ^S — save the active editor's buffer (a path-less welcome buffer is a
+        // no-op; only file-backed buffers write).
+        void doSave() {
+            if (!activeEditor_.buffer().path().isEmpty()) { activeEditor_.buffer().save(); }
+        }
+
+        string baseName(string path) {
+            Array<string> parts = path.split("/");
+            if (parts.length() == 0) { return path; }
+            return parts[parts.length() - 1];
+        }
+
+        string welcomeText() {
+            return "Helm — a terminal IDE for Leviathan\n" +
+                   "\n" +
+                   "  Type here to edit.  Tab indents.  Arrows move the cursor.\n" +
+                   "  F6 / Shift-F6      switch focus: editor / tree / panels\n" +
+                   "  Enter (in tree)     open the selected file (switches to it)\n" +
+                   "  Ctrl-PgDn / PgUp    switch between open editor tabs\n" +
+                   "\n" +
+                   "  ^S save   ^B build   F5 run   ^; test   ^C or ^Q quit\n" +
+                   "\n" +
+                   "Press F6 to focus the file tree on the left, then use the\n" +
+                   "arrow keys and Enter to open a file.\n";
         }
 
         // The panel-tab strip: the four bottom tabs, the active one bracketed

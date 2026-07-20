@@ -14,7 +14,15 @@ namespace Sonar {
     // A bare ESC (or an ESC-prefixed CSI/SS3 sequence) sitting incomplete is
     // ambiguous until either more bytes arrive or this much time passes; the
     // RUN LOOP (T09) owns the timer and calls flushPending() on expiry.
-    const int EscTimeoutMs = 50;
+    //
+    // 200ms, not a tighter value: a real terminal delivers an arrow key as the
+    // 3-byte burst `ESC [ A`, but those bytes can reach the app in SEPARATE
+    // reads — the poll wakes on the first byte (VMIN=1), the app renders a frame
+    // (tens of ms), then the rest arrives — or split further by network latency
+    // (ssh/mosh/tmux). A 50ms window fired mid-frame and leaked the `[A` tail as
+    // literal text (`^[[A` in the buffer). 200ms clears a slow frame plus modest
+    // latency while keeping a deliberate lone-Escape press comfortably snappy.
+    const int EscTimeoutMs = 200;
 
     const string PasteTerminator = "\x1b[201~";
     const int PasteTerminatorLen = 6;
