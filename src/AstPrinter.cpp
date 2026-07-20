@@ -82,6 +82,7 @@ std::string typeStr(const TypeRef* t) {
 }
 
 std::string exprStr(const Expr* e);
+std::string srcString(const Expr* e);
 
 std::string exprList(const std::vector<ExprPtr>& es) {
     std::string out;
@@ -109,7 +110,6 @@ std::string exprStr(const Expr* e) {
     switch (e->kind) {
         case ExprKind::IntLit:
         case ExprKind::FloatLit:
-        case ExprKind::StringLit:
         case ExprKind::BoolLit:
         case ExprKind::Name:
             // LA-32 §4.6: a pinned generic VALUE reference (`identity::<int>`, no
@@ -119,6 +119,13 @@ std::string exprStr(const Expr* e) {
             if (!e->explicitTypeArgs.empty())
                 return sv(e->text) + "::<" + typeList(e->explicitTypeArgs, ", ") + ">";
             return sv(e->text);
+        case ExprKind::StringLit:
+            // Unlike names and numeric literals, interpolation/quasiquote raw
+            // segments store their contents without quote characters.  The
+            // source printer already restores those delimiters; the debug AST
+            // printer must do the same or punctuation-only strings look like
+            // operators/attributes after rule expansion.
+            return srcString(e);
         case ExprKind::This:     return "this";
         case ExprKind::Member: {
             std::string out = exprStr(e->a.get()) +

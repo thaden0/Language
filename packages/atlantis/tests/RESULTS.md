@@ -258,8 +258,8 @@ generic runner:
 ## Findings / deviations from the design text (each logged in techdesign-06-orm.md §16)
 
 - **Compiler bugs found:** #91 (nested-ns rules; FIXED), #92 (attribute class
-  shadowing bare types; FIXED), #93 (punctuation-only template string literals
-  corrupted; OPEN, worked around via `ctx()`/`ctxRow()` helpers), #94
+  shadowing bare types; FIXED), #93 (punctuation-only template string literals;
+  FIXED, templates now use the literals directly), #94
   (field-closure dot-call silent no-op on LLVM; OPEN, worked around via
   local-copy-then-call throughout `db.lev`), #95 (pre-existing routing corpus
   LLVM segfault, unrelated to this track — verified against clean `src/`).

@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #95 |
-| P1       | #93 |
+| P1       | — |
 | P2       | — |
 | P3       | — |
 
@@ -97,39 +97,6 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.3** The fix already landed; only regression-test coverage is missing.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
-
-## #93 [P1] — punctuation-only string literals inside inject templates are corrupted
-
-**Found:** 2026-07-19, implementing ORM Track 06 (M1).
-**Priority justification:** P1.1 — the corrupted expression compiles and runs,
-silently producing a wrong value (no diagnostic); observed on the oracle, so
-every engine inherits it.
-
-**Repro:** a rule template containing a string literal that is only punctuation
-or starts with `@`:
-
-```
-rule r {
-    match @Table(t) on class C
-    inject `string ctx() => $t.name + "." + $f.name;` at member of C
-}
-```
-
-Under `--ast-after-rules` the injected body reads `(("users" + .) + "id")` —
-the `"."` literal degraded to a bare `.` token; likewise `"@Row " + $f.name`
-degraded to `(@Row  + "userId")`. The program still compiles and the concat
-yields a wrong string (the corrupted operand contributes garbage/empty), so
-any code building messages from template literals is silently wrong.
-
-**Root-cause pointer:** the quasiquote template clone path (`Rules.cpp`
-cloneExpr / template re-lex) appears to lose the string-literal kind for
-tokens that would re-lex as punctuation/attribute markers.
-
-**Workaround (debt sites):** move the literal into an ordinary helper function
-and call it from the template — the ORM does this with
-`Atlantis::Orm::ctx(table, col)` / `ctxRow(col)`
-(`packages/atlantis/src/orm/orm.lev`); templates never carry punctuation-only
-or `@`-leading string literals.
 
 ## #95 [P0] — atlantis routing corpus segfaults on LLVM (pre-existing at 2026-07-19 master)
 
