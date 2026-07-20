@@ -413,5 +413,37 @@ else
   echo "FAIL emit-cpp (expected clean pty deferral, got rc=$pty_cpp_rc): $pty_cpp"; fail=1
 fi
 
+# --- 12. the Windows codegen gating split (designs/pty/ 03 §7, D-P10) -------
+# S3 narrowed the process-floor Windows reject: sysReap/sysKill gained real
+# registry-backed win32 bodies (D-W3) and now LOWER on a Windows triple, while
+# sysSpawn/sysPidfdOpen keep the frozen reject (pipes-spawn on Windows is still
+# future work). sysPtySpawn/sysPtyResize have lowered everywhere since S2 —
+# their Windows story is a RUNTIME degrade (D-P8), never a compile error.
+# --native-obj stops after object emission, so this needs no MinGW toolchain.
+WIN_TRIPLE=x86_64-pc-windows-gnu
+win_reject() {   # win_reject <label> <program>
+  printf '%s\n' "$2" > "$work/wingate.lev"
+  out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1)
+  if [ $? -ne 0 ] && echo "$out" | grep -q "process spawn: unsupported on Windows"; then
+    echo "ok   win-gate $1 (rejects)"
+  else
+    echo "FAIL win-gate $1 (expected the frozen Windows reject): $out"; fail=1
+  fi
+}
+win_lowers() {   # win_lowers <label> <program>
+  printf '%s\n' "$2" > "$work/wingate.lev"
+  if out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1); then
+    echo "ok   win-gate $1 (lowers)"
+  else
+    echo "FAIL win-gate $1 (expected Windows lowering): $out"; fail=1
+  fi
+}
+win_reject "sysSpawn"      'console.writeln(std::sysSpawn("/bin/true", []).length().toString());'
+win_reject "sysPidfdOpen"  'console.writeln(std::sysPidfdOpen(1).toString());'
+win_lowers "sysReap/sysKill" 'console.writeln(std::sysReap(999999).toString());
+console.writeln(std::sysKill(999999, 15).toString());'
+win_lowers "sysPty*"         'console.writeln(std::sysPtySpawn("C:\\x.exe", [], 24, 80, 0).length().toString());
+console.writeln(std::sysPtyResize(3, 30, 100).toString());'
+
 echo "sys-natives differential done"
 exit $fail

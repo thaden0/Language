@@ -1,0 +1,110 @@
+
+namespace std {
+    // The JS/DOM host bridge (hard-06). op selects the operation; h0 is the
+    // primary node handle (0 = document/none), h1 a secondary handle (child /
+    // closure-table index), a/b string args ("" when unused). The three
+    // return-type-distinguished decls share one C entry (lvrt_hostcall); the
+    // result's dynamic tag is decided host-side by op. Marshaling — every
+    // Leviathan value <-> JS value conversion — is one reflective routine in
+    // lv_host.js (doc 05 §3), never one import per method.
+    int    sysHostI(string op, int h0, int h1, string a, string b);
+    string sysHostS(string op, int h0, int h1, string a, string b);
+    void   sysHostV(string op, int h0, int h1, string a, string b);
+    // Register a handler closure as a doc-05 §5 ROOT (retained host-side) ->
+    // its closure-table index. addEventListener rides sysHostV with h1 = idx;
+    // removeEventListener rides sysHostV and releases idx; the live count is
+    // sysHostI("cloCount", 0, 0, "", "") (the §5 leak pin).
+    int    sysHostCloReg((int) => void cb);
+    // The reflective round-trip probe (doc 05 §8): marshal v to JS and return a
+    // host-side rendering (exercises every tag). Not a DOM op; pins only.
+    string sysHostEcho<T>(T v);
+}
+
+// A DOM event, handle-wrapped (doc 05 §2). The bridge hands the trampoline a
+// bare int handle; this wraps it so user handlers take a typed DomEvent.
+class DomEvent {
+    int h;
+    new DomEvent(int handle) { h = handle; }
+    int handle() => h;
+    string type() => std::sysHostS("eventType", h, 0, "", "");
+    // value of a form control the event targeted ("" if none) — enough for the
+    // Atlantis demo's input handling without a full Event surface.
+    string targetValue() => std::sysHostS("eventTargetValue", h, 0, "", "");
+}
+
+// A DOM node, handle-wrapped (doc 05 §2): an int slot, nothing more. Leviathan
+// never dereferences the handle — only the JS glue does. Methods chain, mapping
+// 1:1 onto the bridge ops.
+class DomNode {
+    int h;
+    new DomNode(int handle) { h = handle; }
+    int handle() => h;
+    bool exists() => h != 0;                    // getElementById miss -> 0
+
+    DomNode setAttr(string name, string value) {
+        std::sysHostV("setAttribute", h, 0, name, value);
+        return this;
+    }
+    string attr(string name) => std::sysHostS("getAttribute", h, 0, name, "");
+    DomNode setText(string t) {
+        std::sysHostV("setText", h, 0, t, "");
+        return this;
+    }
+    string text() => std::sysHostS("getText", h, 0, "", "");
+    DomNode append(DomNode child) {
+        std::sysHostV("appendChild", h, child.h, "", "");
+        return this;
+    }
+
+    // Events as a §13 stream endpoint (doc 05 §6): one host listener per
+    // subscription feeds the trampoline, which pushes DomEvents into an ordinary
+    // StreamBuffer. The closure is a §5 root; the stream's IDisposable teardown
+    // detaches the listener AND releases the root (removeEventListener), so
+    // `using` / close() returns the closure table to size 0 (the leak pin).
+    InStream<DomEvent> events(string type) {
+        StreamBuffer<DomEvent> buf = StreamBuffer();
+        OutStream<DomEvent> w = OutStream(buf);
+        int idx = std::sysHostCloReg((int eh) => w << DomEvent(eh));
+        std::sysHostV("addEventListener", h, idx, type, "");
+        InStream<DomEvent> r = InStream(buf);
+        int node = h;
+        r.onDispose = () => std::sysHostV("removeEventListener", node, idx, type, "");
+        r.hasDispose = true;
+        return r;
+    }
+
+    // Direct handler form; returns a listener token (the closure index) so a
+    // caller can off() it — the churn-corpus "bind before holding" discipline
+    // (doc 05 §5).
+    int on(string type, (DomEvent) => void cb) {
+        var c = cb;
+        int idx = std::sysHostCloReg((int eh) => { var f = c; f(DomEvent(eh)); });
+        std::sysHostV("addEventListener", h, idx, type, "");
+        return idx;
+    }
+    void off(string type, int listener) {
+        std::sysHostV("removeEventListener", h, listener, type, "");
+    }
+
+    // Synthesize an event on this node — a real DOM dispatchEvent (in a page the
+    // user clicks; a headless harness / test self-dispatches through the same
+    // API, doc 05 §8).
+    void dispatch(string type) {
+        std::sysHostV("dispatchEvent", h, 0, type, "");
+    }
+    void click() { this.dispatch("click"); }
+
+    void release() { std::sysHostV("release", h, 0, "", ""); }
+}
+
+// The document surface (doc 05 §2): the well-known entry points. document-scoped
+// ops ignore the primary handle (h0 = 0). A getElementById miss returns a
+// DomNode with handle 0 (exists() == false).
+namespace Dom {
+    DomNode body()            => DomNode(std::sysHostI("documentBody", 0, 0, "", ""));
+    DomNode create(string t)  => DomNode(std::sysHostI("createElement", 0, 0, t, ""));
+    DomNode textNode(string s)=> DomNode(std::sysHostI("createTextNode", 0, 0, s, ""));
+    DomNode byId(string id)   => DomNode(std::sysHostI("getElementById", 0, 0, id, ""));
+    // The §5 leak-pin meter: live closure roots (0 when every listener is off).
+    int listenerCount()       => std::sysHostI("cloCount", 0, 0, "", "");
+}

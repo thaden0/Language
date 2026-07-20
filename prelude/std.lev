@@ -1,0 +1,1663 @@
+
+// The standard exception hierarchy. Interfaces define CATCHABILITY (catch by
+// contract); classes provide the standard payload. A thrown value must
+// implement IException. The `std` namespace is implicitly imported.
+namespace std {
+    // The system-call floor (§16's bottom shelf): the ONLY native seam for
+    // I/O, declared here in the language; C++ stands behind these until the
+    // gated Block/raw-memory features land, at which point they collapse to
+    // `syscall(nr, ...)` written in the language's own unsafe layer.
+    // INTERIM: string-carried until Block exists. sysReadLine returns "" at
+    // end of input (a Result-shaped signal replaces this later).
+    int sysWrite(int fd, string data);
+    string sysReadLine(int fd);
+    // The static-side natives.md's `class string { static ... }` sketch
+    // anticipated has no plumbing (no `static` keyword/token exists) — this is
+    // the fallback the design pre-registered for exactly that gap (Track 04
+    // M3, problem #6): a free function. 1-byte string from a byte value
+    // 0..255; out of range throws RuntimeException, same as string.byteAt.
+    string byteToString(int b);
+    // Track 03 §1: char factory (homed as a std:: free function — class
+    // static-side fields don't exist). Out-of-range / surrogate -> RuntimeException.
+    char charFromCode(int code);
+
+    // LA-20: comptime file inclusion. At compile time the comptime driver
+    // intercepts this call (by symbol identity, Eval.cpp callFunction) and
+    // returns the declared build input's content as a comptime string. At
+    // runtime there is nothing to intercept — a program that reaches this
+    // body asked for a compile-time construct at runtime, and runtime
+    // failures are loud (§12.6): a real, catchable RuntimeException.
+    string import(string path) {
+        throw RuntimeException("import() is compile-time-only: call it from comptime context (LA-20)");
+    }
+
+    // Track 05 §2: Array<T> has no specialization mechanism, so the numeric
+    // aggregates are overloaded free functions (resolution by argument type
+    // — suggested-features §6.2), not methods. `min`/`max` return `T?` (None
+    // on empty); `sum`/`average` are 0/nan-on-empty via ordinary arithmetic
+    // (average's int/float mixed division promotes, matching arithPrim).
+    int sum(Array<int> a) {
+        int s = 0;
+        for (int x in a) s = s + x;
+        return s;
+    }
+    float sum(Array<float> a) {
+        float s = 0.0;
+        for (float x in a) s = s + x;
+        return s;
+    }
+    int? min(Array<int> a) {
+        if (a.isEmpty()) return None;
+        int m = a.at(0);
+        for (int x in a) if (x < m) m = x;
+        return m;
+    }
+    int? max(Array<int> a) {
+        if (a.isEmpty()) return None;
+        int m = a.at(0);
+        for (int x in a) if (m < x) m = x;
+        return m;
+    }
+    float? min(Array<float> a) {
+        if (a.isEmpty()) return None;
+        float m = a.at(0);
+        for (float x in a) if (x < m) m = x;
+        return m;
+    }
+    float? max(Array<float> a) {
+        if (a.isEmpty()) return None;
+        float m = a.at(0);
+        for (float x in a) if (m < x) m = x;
+        return m;
+    }
+    float average(Array<int> a) {
+        float total = 0.0;
+        for (int x in a) total = total + x;
+        return total / a.length();
+    }
+    float average(Array<float> a) {
+        float total = 0.0;
+        for (float x in a) total = total + x;
+        return total / a.length();
+    }
+
+    int sysOpen(string path, int flags);
+    int sysClose(int fd);
+    string sysRead(int fd, int max);
+    int sysStat(string path, int field);   // 0=exists, 1=size, 2=mtime, 3=isDir
+    // The process argument vector, argv[0] first (argv.md). A pure Array<string>
+    // materialized fresh per call — an exec-time process fact, not a stream, so
+    // it rides the floor like sysStat rather than the event loop. Denied in
+    // comptime automatically (the `sys*`-prefix hermeticity gate).
+    Array<string> sysArgs();
+    // Terminal raw mode (designs/terminal-raw-mode.md). Scalar in/out, the
+    // sysStat shape: 0 ok, -1 not-a-tty/fail. sys*-prefixed, so comptime-denied
+    // automatically (a build never toggles the build machine's terminal).
+    int sysTermRaw(int fd);
+    int sysTermRestore(int fd);
+    // Terminal floor completion (designs/techdesign-terminal-floor.md). All
+    // sys*-prefixed, so comptime-denied automatically (a build never sizes or
+    // signal-watches the build machine's terminal). sysWinSize(fd, field):
+    // field 0=rows, 1=cols; -1 = failure (the sysStat field-indexed shape).
+    // sysTermIsRaw(fd): raw-mode state, the term::size() cursor-report guard.
+    // sysSignal* build the signal stream in-language over sysWatch (§3): open a
+    // readable fd blocking the given signals, drain one signo per Next call
+    // (-1 = none now), close + unblock. SIGKILL/SIGSTOP in the set -> fd -1.
+    int  sysWinSize(int fd, int field);
+    bool sysTermIsRaw(int fd);
+    int  sysSignalOpen(Array<int> sigs);
+    int  sysSignalNext(int fd);
+    int  sysSignalClose(int fd);
+    // Process exit (designs/exit-codes.md §3.2). sysSetExitCode records the code
+    // for normal completion; sysExit terminates immediately (typed int but never
+    // returns — the language has no Never; documented). Both sys*-prefixed, so
+    // comptime-denied automatically — a build cannot terminate the compiler or
+    // set a build-time exit code.
+    int sysSetExitCode(int code);
+    int sysExit(int code);
+    int sysTimerStart(int delayMs, int intervalMs, (int) => void cb);
+    int sysTimerCancel(int id);
+    // Track 08 F2 (contract C6): wall-clock epoch milliseconds. DateTime.now()
+    // is its consumer (Track 09). sys*-prefixed, so comptime-denied by the
+    // hermeticity gate (a build never reads the wall clock).
+    int sysNow();
+    // Track 08 F2/F3/F4/F6 floor natives. All sys*-prefixed, so comptime-denied
+    // automatically (the hermeticity gate: a build never reads the monotonic
+    // clock, entropy, the filesystem shape, a tty, or DNS). Optional returns
+    // carry the three-state fact (§9): None is distinct from "" / [].
+    int sysMonotonic();                       // CLOCK_MONOTONIC ms (durations)
+    string sysRandom(int n);                  // n crypto-random bytes (string-carried); n>1MB throws
+    bool sysIsTty(int fd);                     // fd is a terminal
+    string? sysEnv(string key);               // None = variable unset
+    int sysMkdir(string path);                // 0 ok / -1 fail
+    int sysRemove(string path);               // unlink, rmdir on a dir; 0/-1
+    int sysRename(string from, string to);    // 0/-1
+    Array<string>? sysListDir(string path);   // entry names (no . / ..); None = not a dir
+    string? sysResolve(string host);          // first A record (dotted-quad); None = fail
+
+    // A Promise is a ONE-SHOT stream (§14): a value that arrives later. `await`
+    // parks on the event loop until `ready`, then yields `value` — so await and
+    // stream-pull are the same suspension, two surfaces. No function coloring:
+    // await pumps the loop, so any function may await (the engine reads `ready`
+    // and `value` directly, as it does for Range/Pair).
+    class Promise<T> {
+        T value;
+        bool ready = false;
+        (T) => void cont;
+        bool hasCont = false;
+        new Promise() { }
+        new Promise(T v) { value = v; ready = true; }    // pre-resolved promise
+        void resolve(T v) {
+            value = v;
+            ready = true;
+            if (hasCont) { var cb = cont; cb(v); }
+        }
+        bool isReady() => ready;
+        T get() => value;
+        void then((T) => void cb) {
+            if (ready) { var c = cb; c(value); }
+            else { cont = cb; hasCont = true; }
+        }
+    }
+
+    // Track 10 (techdesign-threads-2, LA-1): a Worker<T> is the handle to a
+    // value produced on another execution unit. It IS a Promise<T> — no second
+    // suspension surface; `await w` is the join (R-2). The boundary is
+    // COPY-ALWAYS (§2 D1'): `spawn` snapshots the body's captures now, so a
+    // later mutation of a captured original is unobserved (acceptance #1), and
+    // the result is copied back at join, so a counted value lives on exactly one
+    // execution unit and the non-atomic refcount fast path is preserved. On the
+    // interpreters a worker is a cooperative loop task (a 0-delay timer, run in
+    // spawn order — deterministic §7); on LLVM it is a real OS thread (§4).
+    //
+    // techdesign-threads-3 §3.2: the minimal reject slot. If the body throws,
+    // the worker rejects with the exception's message (v1 carrier); `await`
+    // rethrows it as a RuntimeException at the join (§3.3). A Worker/Promise
+    // handle is NOT transferable across a thread boundary (A-1) — a cross-thread
+    // resolve would invoke the stored continuation on the wrong thread, the very
+    // race D1' exists to prevent; Channel<T> is the one sanctioned conduit.
+    // (failMessage is a plain string, not an IException field: a Promise-typed
+    // or optional-generic field crashes default construction — bug.md #1.)
+    class Worker<T> : Promise<T> {
+        bool failed = false;
+        string failMessage = "";
+        new Worker() { }
+        void reject(IException e) {
+            failed = true;
+            failMessage = e.message;
+            ready = true;              // wakes the awaiter; Await checks failed first
+        }
+    }
+
+    // The flatten/rebuild floor (§4.4): deep-copy a value across a thread
+    // boundary. On the single-heap interpreters it is one deep copy that rejects
+    // a value which cannot cross in v1 (nested closure, fd-carrier, Block, or a
+    // Worker/Promise handle per A-1) — loud and local (§6). One mechanism serves
+    // every crossing: the spawn-body capture (T binds to the body's closure
+    // type), the join result, and channel sends.
+    T sysThreadTransfer<T>(T value);
+
+    // techdesign-threads-3 §2 — the capability-probe seam. sysThreadStart runs
+    // `body` on a real OS thread and returns its join fd where true threads exist
+    // (LLVM/POSIX); it returns -1 on the serial engines (no true threads here), so
+    // one prelude `spawn` body drives a cooperative task on the interpreters and a
+    // pthread on LLVM without an engine-forked prelude. sysThreadResult drains the
+    // join fd, rebuilds the worker's result into THIS thread's heap, reaps the
+    // thread, and throws the rebuilt exception if the worker failed — it is only
+    // ever reached on the true-thread leg (the -1 path never registers a watch).
+    int sysThreadStart<T>(() => T body);
+    T sysThreadResult<T>(int joinFd);
+
+    // spawn(closure) -> Worker<T> (R-1). The capture snapshot happens now (so a
+    // later mutation of a captured original is unobserved, acceptance #1). One
+    // body, two execution legs behind the sysThreadStart probe (§3.1): on the
+    // serial engines (jfd < 0) the body runs as a cooperative loop task in spawn
+    // order; on LLVM it is already running on its pthread and the join-fd watch
+    // rebuilds+reaps on THIS loop when it signals. Either leg routes an uncaught
+    // body throw to `reject` (the join then rethrows at `await`).
+    Worker<T> spawn<T>(() => T body) {
+        Worker<T> w = Worker();
+        // The true-thread leg flattens the body's captures INSIDE sysThreadStart
+        // (before pthread_create), so acceptance #1 holds there without a
+        // pre-snapshot — and skipping it matters: a redundant main-heap copy of a
+        // captured graph would leak per spawn if the graph has a cycle (§15). The
+        // cooperative leg has no such flatten, so it takes the snapshot itself.
+        int jfd = std::sysThreadStart(body);          // -1 = no true threads here
+        if (jfd < 0) {
+            // Cooperative leg (oracle/IR): snapshot the captures NOW (acceptance
+            // #1), then run the body as an immediate loop task, spawn-ordered.
+            var snap = std::sysThreadTransfer(body);
+            std::sysTimerStart(0, 0, (n) => {
+                try { w.resolve(std::sysThreadTransfer(snap())); }
+                catch (IException e) { w.reject(e); }
+            });
+        } else {
+            // True-thread leg (LLVM): the body is ALREADY running on its pthread;
+            // the watch fires on THIS loop when the worker signals, and the
+            // result/throw rebuild + reap happen inside sysThreadResult, here.
+            std::sysWatch(jfd, (fd) => {
+                try { w.resolve(std::sysThreadResult(fd)); }
+                catch (IException e) { w.reject(e); }
+            });
+        }
+        return w;
+    }
+
+    // === LA-30 B2 (doc 06): cancellation, timeouts, structured concurrency ===
+    // The natives are a floor over the doc-1 task substrate's B2 extensions
+    // (lv_task.c: cancel mark + shield mask + id registry + N=2 multi-park +
+    // join park). Ids — not object handles — cross the native boundary (no ARC
+    // entanglement in the registry). All of these require the task scheduler:
+    // under LANG_PUMP=1 the parking/spawning trio raises (the pump is a dying
+    // escape hatch, deleted at M6) and the id-only pair no-ops.
+
+    // sysTaskRun(body): start `body` as a same-thread group-owned task -> its
+    // registry id. sysTaskCancel(id): mark cancelled — delivered as a
+    // CancelledException at the task's NEXT park (§2, never preemption);
+    // idempotent, 0 for done/unknown ids. sysTaskShield(delta): the §8 shield
+    // counter — cancel delivery is masked while >0 (TaskGroup.close()'s unwind
+    // guard; internal, not a user surface). sysTaskJoinAll(ids): PARK until
+    // every id is done -> count (a rethrow point: CancelledException /
+    // drained-loop RuntimeException). sysAwaitAny2(a, b): PARK on both promises
+    // -> 0/1 = which settled first (reads no value fields — the value read and
+    // failed-rethrow stay in the ordinary `await` issued after it returns).
+    int sysTaskRun(() => void body);
+    int sysTaskCancel(int id);
+    int sysTaskShield(int delta);
+    int sysTaskJoinAll(Array<int> ids);
+    int sysAwaitAny2<T>(Promise<T> a, Promise<bool> b);
+
+    // TaskGroup (§3): structured concurrency with zero new syntax — it IS a
+    // resource, so `using TaskGroup g = TaskGroup();` runs close() on every exit
+    // edge (§5.2: fall-off/return/throw/break), cancelling stragglers then
+    // joining every child; no orphan task outlives its lexical scope. `run` (a
+    // same-thread task: cheap, cancellable) is deliberately NOT `spawn` (a thread:
+    // parallel, uncancellable) — the naming carries the semantics and the two must
+    // never blur. The group holds ids, not handles.
+    class TaskGroup : IDisposable {
+        Array<int> live;
+        new TaskGroup() { }
+        // The wrapper is the §2 absorption rule: an UNCAUGHT CancelledException
+        // in a group-owned child is absorbed at the group boundary (cancellation
+        // is not a program error); every other uncaught throw stays
+        // program-uncaught (C2). A child may catch it itself and refuse — with
+        // the visibility §8's close() report gives that choice.
+        void run(() => void body) {
+            int id = std::sysTaskRun(() => {
+                try { body(); }
+                catch (ICancelledException e) { }
+            });
+            live = live.add(id);
+        }
+        void cancelAll() {
+            for (int id in live) std::sysTaskCancel(id);
+        }
+        // close() = cancelAll, then join everything. Shielded (§8): a task
+        // closing a group while itself being cancelled must not have the
+        // delivery abort its join — the mark holds and fires at its next
+        // UNshielded park, so `using` + cancel cannot livelock. No `finally`
+        // exists (reference §5.2's stance), hence the catch-restore-rethrow.
+        void close() {
+            std::sysTaskShield(1);
+            cancelAll();
+            try { std::sysTaskJoinAll(live); }
+            catch (IException e) {
+                std::sysTaskShield(0 - 1);
+                live = [];
+                throw e;
+            }
+            std::sysTaskShield(0 - 1);
+            live = [];
+        }
+    }
+
+    // awaitTimeout (§3): park on {work, timer}; the timeout arm is an ordinary
+    // loop timer resolving an ordinary Promise (no raw timer->park edge, so no
+    // stale-wake hazard: an abandoned arm just resolves a dead promise). On
+    // timeout -> None (expected absence via the union rule — an outcome, not a
+    // failure). The winner path re-awaits `work`: it is ready, so the await is
+    // the no-yield fast path AND the one place the value read + Worker-failed
+    // rethrow live (G15/S2 discipline). v1 narrowing (documented): timeout
+    // stops the WAIT; it cancels nothing — no promise->producer-task mapping
+    // exists, so compose `awaitTimeout(p, ms)` + `g.cancelAll()` for the
+    // kernel's kill-switch shape (§7). A `Worker` is never cancelled by
+    // timeout either way (threads cannot be wall-clock killed — kernel §7).
+    T? awaitTimeout<T>(Promise<T> work, int ms) {
+        if (work.isReady()) {
+            T ready = await work;
+            return ready;
+        }
+        Promise<bool> timer = Promise();
+        int tid = std::sysTimerStart(ms, 0, (n) => { timer.resolve(true); });
+        int who = 0;
+        try { who = std::sysAwaitAny2(work, timer); }
+        catch (IException e) {
+            // cancellation (or a drained loop) landed at OUR park: retire the
+            // timer arm so it cannot keep the loop alive, then rethrow.
+            std::sysTimerCancel(tid);
+            throw e;
+        }
+        if (who == 0) {
+            std::sysTimerCancel(tid);
+            T v = await work;
+            return v;
+        }
+        return None;
+    }
+
+    // OverflowPolicy (§3.3/§13): the forced pairing — a channel capacity comes
+    // WITH a policy for a full buffer. `block` = backpressure (park the
+    // producer), `drop` = discard the new item, `error` = throw at send. `grow`
+    // is deliberately absent (F-6: a lock-free ring cannot resize under a
+    // concurrent peer without a locked path — a silent-distant cliff). Carried as
+    // a small int (0/1/2) with these named accessors — the `OverflowPolicy` enum
+    // surface the design names lands once prelude enums desugar (Track 03 enum
+    // desugaring currently runs on the user program only).
+    int overflowBlock() => 0;
+    int overflowDrop()  => 1;
+    int overflowError() => 2;
+
+    // The Channel native ring (techdesign-threads-3 §6) — the LLVM leg behind the
+    // same probe as spawn. sysChannelNew returns a channel id (>= 0) where a real
+    // lock-free ring + two eventfds exist (LLVM/POSIX) and -1 where they don't
+    // (the interpreters, which run the in-process queue). send/receive/close then
+    // delegate to the process-global record over the id; the Channel object
+    // carries only scalars, so a captured handle relocates by plain field copy —
+    // both rebuilt handles name the same record (portal semantics, §3.4).
+    int sysChannelNew(int capacity, int policy);
+    int sysChannelSend<T>(int id, T value);        // may throw (closed / overflow)
+    T? sysChannelReceive<T>(int id);               // None = closed AND drained (F-8)
+    int sysChannelClose(int id);
+
+    // Channel<T> (R-4): a single-producer / single-consumer conduit between
+    // execution units. Behind the id>=0 probe (§3.4) it is the native lock-free
+    // ptr-slot ring + two eventfds (LLVM); on the serial engines (id<0) it is an
+    // in-process queue on the one loop — `send` copies the value in (flatten §4.4)
+    // and either hands it straight to a parked receiver or enqueues it; `receive()`
+    // is a Promise<T?> resolving with the next item, or None once the channel is
+    // closed AND drained (F-8, the sysRecv `string?` precedent — the receiver
+    // narrows with `!= None`). A captured Channel handle is a portal (§6): both
+    // units feed the SAME endpoint. On the serial engines a running task cannot
+    // park mid-body, so `block` degrades to enqueue (unbounded) while `drop`/
+    // `error` still enforce capacity at send.
+    class Channel<T> {
+        Array<T> buf;
+        Array<Promise> waiters;      // raw Promise: a Promise<T?> field crashes
+                                     // default-construction (nested-optional bug)
+        bool closed = false;
+        int cap = 0;
+        int policy = 0;
+        int id = 0 - 1;              // >= 0 = native ring (LLVM); -1 = in-process
+
+        new Channel(int capacity, int p) {
+            cap = capacity; policy = p;
+            id = std::sysChannelNew(capacity, p);
+        }
+
+        void send(T value) {
+            if (id >= 0) { std::sysChannelSend(id, value); return; }   // native ring
+            if (closed) { throw RuntimeException("send on a closed channel"); }
+            var v = std::sysThreadTransfer(value);      // copy-in (isolation)
+            if (waiters.length() > 0) {                 // hand straight to a parked receiver
+                Promise w = waiters.first();
+                waiters = waiters.skip(1);
+                w.resolve(v);
+                return;
+            }
+            if (cap > 0 && buf.length() >= cap) {
+                if (policy == 1) { return; }                                   // drop
+                if (policy == 2) { throw RuntimeException("channel overflow"); }  // error
+            }
+            buf = buf.add(v);
+        }
+
+        Promise<T?> receive() {
+            Promise<T?> p = Promise();
+            if (id >= 0) {                              // native ring: park+dequeue in the native
+                p.resolve(std::sysChannelReceive(id));
+                return p;
+            }
+            if (buf.length() > 0) {                     // ready item
+                T v = buf.first();
+                buf = buf.skip(1);
+                p.resolve(v);
+            } else if (closed) {                        // closed AND drained -> None (F-8)
+                p.resolve(None);
+            } else {
+                waiters = waiters.add(p);               // park until a send or close
+            }
+            return p;
+        }
+
+        void close() {
+            if (id >= 0) { std::sysChannelClose(id); return; }
+            closed = true;
+            for (Promise w in waiters) { w.resolve(None); }
+            waiters = waiters.skip(waiters.length());
+        }
+    }
+
+    // A timer is a SYSTEM STREAM (§13): the loop pushes tick numbers into a
+    // real StreamBuffer, so subscribe/pull are the ordinary stream machinery.
+    // The program keeps running while timers are live; cancel() releases the
+    // work (one-shots release themselves after firing).
+    class Timer {
+        int id = 0 - 1;
+        StreamBuffer<int> buf = StreamBuffer();
+        new Timer(int delayMs, int intervalMs) {
+            OutStream<int> w = OutStream(buf);
+            id = std::sysTimerStart(delayMs, intervalMs, (n) => w << n);
+        }
+        InStream<int> ticks() => InStream(buf);
+        void subscribe((int) => void cb) {
+            InStream<int> r = InStream(buf);
+            r.subscribe(cb);
+        }
+        void cancel() { std::sysTimerCancel(id); }
+    }
+    Timer every(int ms) => Timer(ms, ms);
+    Timer after(int ms) => Timer(ms, 0);
+
+    // --- sockets: the network is just more streams (§13) ---------------------
+    int sysTcpConnect(string host, int port);   // -1 on failure; ':' in host = IPv6
+    int sysTcpListen(int port);                  // socket+bind+listen, -1 on fail
+    int sysTcpListen(int port, bool reusePort);  // sets SO_REUSEPORT before bind
+    int sysCpuCount();                           // online logical processors (>= 1)
+    int cpuCount() => sysCpuCount();
+    int sysAccept(int fd);                       // -1 if none pending
+    // sysSend: bytes written; -1 retryable (would-block), -2 fatal (peer gone).
+    // Works on pipes too (F7: a Process stdin takes the same call).
+    int sysSend(int fd, string data);
+    string? sysRecv(int fd, int max);            // None = peer closed; "" = none now
+    // Track 03 M4 — zero-copy Block I/O overloads. Arity-distinct from the
+    // string forms (overload resolution by argument type selects). Read and
+    // recv fill the Block from offset 0; write and send take an explicit
+    // [off, off+len) window. Every off/len is bounds-checked (throws).
+    int  sysRead(int fd, Block b, int max);           // bytes read into b; 0 at EOF
+    int  sysWrite(int fd, Block b, int off, int len); // bytes written from b[off,off+len)
+    int  sysSend(int fd, Block b, int off, int len);  // like sysSend(string): -1/-2 split
+    int? sysRecv(int fd, Block b, int max);           // None = peer closed; 0 = none now
+    int sysWatch(int fd, (int) => void cb);      // fire cb when fd is read-ready
+    int sysUnwatch(int id);                      // cancels read AND write watches
+    // Track 08 F5: the connect-timeout floor (all three composed in-language by
+    // connectTimeout below). sys*-prefixed => comptime-denied automatically.
+    int sysTcpConnectNb(string host, int port);  // fd even mid-connect; -1 = immediate fail
+    int sysWatchWrite(int fd, (int) => void cb); // fire cb when fd is write-ready
+    int sysConnectResult(int fd);                // SO_ERROR: 0 connected, else errno-shaped
+    // LA-29 (techdesign-socket-options.md): advisory send/recv buffer sizing.
+    // Names the INTENT (bytes per direction); the OS mapping (SO_SNDBUF/SO_RCVBUF)
+    // is hidden in the floor — the same shape as sysTcpListen's reusePort bool
+    // hiding SO_REUSEPORT. A NON-POSITIVE value leaves that direction UNCHANGED.
+    // Returns 0 (every requested direction applied) | -1 (a requested setsockopt
+    // failed). BEST-EFFORT: the kernel clamps (Linux doubles + enforces a floor;
+    // Windows/BSD differ) — a caller must not assume an exact size. A permanent
+    // systems capability (flow-control tuning any real stack needs), not a test
+    // hook. sys*-prefixed => comptime-denied automatically.
+    int sysSocketBuffer(int fd, int sendBytes, int recvBytes);
+    // --- TLS + crypto floor (LA-2, techdesign-tls-crypto.md §3) ------------
+    // The fd IS the socket fd (wrap-in-place): arm TLS over a connected (client)
+    // or accepted (server) socket, then sysSend/sysRecv/sysClose route through
+    // the session transparently and sysWatch* keep polling the raw fd. All
+    // sys*-prefixed => comptime-denied automatically. Full-arity natives plus
+    // thin prelude wrapper overloads carry the ticket's short call shapes (no
+    // reliance on native defaulted params — the surface is identical either way).
+    //   verifyMode: 0 full (chain + hostname, HttpClient's only mode) | 1 chain
+    //   only | 2 encrypt-only (no verification; greppable, never a default).
+    //   caFile "" = system roots (+ SSL_CERT_FILE/DIR env); else an ADDITIONAL
+    //   trust anchor. alpn "" = no ALPN; else "h2,http/1.1".
+    int sysTlsConnect(int fd, string host, string alpn, string caFile, int verifyMode);
+    int sysTlsConnect(int fd, string host, string alpn) => sysTlsConnect(fd, host, alpn, "", 0);
+    int sysTlsConnect(int fd, string host)             => sysTlsConnect(fd, host, "", "", 0);
+    int sysTlsAccept(int fd, string certPath, string keyPath, string alpn);
+    int sysTlsAccept(int fd, string certPath, string keyPath) => sysTlsAccept(fd, certPath, keyPath, "");
+    int sysTlsHandshake(int fd);                 // one step: 0 done | 1 want-read | 2 want-write | -1
+    string sysTlsError(int fd);                  // "" | latest error detail for the fd
+    string sysTlsAlpn(int fd);                   // negotiated ALPN protocol | ""
+    int sysTlsVersion(int fd);                   // 12 | 13 | 0 (no session / not established)
+    // R-3: RSA public-key encrypt for auth handshakes (key transport, not a
+    // general crypto surface). None on parse/capacity/encrypt failure. padding
+    // "oaep" (default, caching_sha2_password) | "pkcs1" (legacy sha256_password).
+    string? sysRsaEncrypt(string pubKeyPem, string bytes, string padding);
+    string? sysRsaEncrypt(string pubKeyPem, string bytes) => sysRsaEncrypt(pubKeyPem, bytes, "oaep");
+    // Track 08 F7: spawn floor. [pid, stdinFd, stdoutFd, stderrFd], [] = spawn
+    // failure (exec failure instead arrives as exit code 127 via sysReap).
+    Array<int> sysSpawn(string path, Array<string> args);
+    int sysPidfdOpen(int pid);                   // pollable fd, ready when pid exits
+    int sysReap(int pid);                        // -1 running; else code (128+sig if signaled)
+    int sysKill(int pid, int sig);               // 0/-1; pid <= 0 refused
+    // G-LANG-2 terminal half (designs/pty/): [pid, masterFd] | [] on failure.
+    // One fd, read+write — a pty fuses stdout/stderr. rows/cols <= 0 refused.
+    // flags bit0 = deterministic termios (goldens). Resize: kernel SIGWINCHes
+    // the child; 0/-1.
+    Array<int> sysPtySpawn(string path, Array<string> args, int rows, int cols, int flags);
+    int sysPtyResize(int masterFd, int rows, int cols);
+
+    // A connected socket, wearing the stream surface. Reads are event-driven:
+    // onData subscribes a read-watch that recvs and delivers chunks; None from
+    // the kernel means the peer closed, which fires onClose and releases the
+    // watch (so the loop can exit). Writes are synchronous (fine for the sizes
+    // a request/response carries; Block + backpressure refine this later).
+    class TcpStream {
+        int fd = 0 - 1;
+        int watchId = 0 - 1;
+        (string) => void onChunk;
+        () => void onClosed;
+        bool watching = false;
+        bool hasCloseCb = false;
+        string pending = "";
+        bool draining = false;
+        int drainId = 0 - 1;
+        bool eofKeepsFd = false;
+
+        new TcpStream(int f) { fd = f; }
+        int rawFd() => fd;                   // the underlying socket fd (TLS wrap-in-place)
+
+        // Writes and close are guarded on fd >= 0: after close() the fd
+        // NUMBER may be recycled by the OS for an unrelated connection
+        // (POSIX hands out the lowest free descriptor), so a write through
+        // a stale handle would corrupt someone else's stream. Found via the
+        // lcurl fixture: a leftover per-connection timer wrote its payload
+        // into the NEXT client's connection. Stale operations are no-ops.
+        TcpStream (<<)(string s) {
+            send(s);
+            return this;
+        }
+        // Queue-and-drain (Track 08 F5.6, closing curl-design §2.1): the fd is
+        // non-blocking, so a large payload short-writes. The unsent tail is
+        // buffered and a write-watch drains it as the kernel makes room. A
+        // fatal send (-2: peer gone) drops the buffer — the read side observes
+        // the close and delivers it; writes never throw.
+        void send(string s) {
+            if (fd < 0) return;
+            if (draining) { pending = pending + s; return; }
+            int n = std::sysSend(fd, s);
+            if (n == 0 - 2) return;
+            if (n < 0) n = 0;
+            if (n < s.length()) {
+                pending = s.subStr(n, s.length() - n);
+                draining = true;
+                TcpStream self = this;
+                drainId = std::sysWatchWrite(fd, (ready) => self.drain());
+            }
+        }
+        void drain() {
+            if (fd < 0) return;
+            int n = std::sysSend(fd, pending);
+            if (n == 0 - 2) { pending = ""; stopDrain(); return; }
+            if (n < 0) return;                   // spurious wake; keep watching
+            if (n >= pending.length()) { pending = ""; stopDrain(); }
+            else pending = pending.subStr(n, pending.length() - n);
+        }
+        void stopDrain() {
+            if (draining) { std::sysUnwatch(drainId); draining = false; drainId = 0 - 1; }
+        }
+
+        void onData((string) => void cb) {
+            onChunk = cb;
+            watching = true;
+            // Capture `this` into a local so the loop callback (a lambda) reaches
+            // the object via an ordinary captured variable — not the implicit
+            // receiver, which a lambda does not close over.
+            TcpStream self = this;
+            watchId = std::sysWatch(fd, (ready) => self.pump());
+        }
+        void onClose(() => void cb) { onClosed = cb; hasCloseCb = true; }
+        // Pty ONLY (designs/pty/ D-P5): read-EOF must NOT close the descriptor.
+        // A pty master is the tty's hangup switch — closing it the instant the
+        // child drops the slave SIGHUPs that child, and a session leader still
+        // running its exit path dies 129 instead of exiting 0 (found by the
+        // sys_pty golden under load: cat gets EOF from VEOF, closes 0/1/2, our
+        // read errors EIO -> collapsed to close -> master closed -> SIGHUP,
+        // all before cat reaches _exit). The owner closes at REAP instead.
+        void keepFdOnEof() { eofKeepsFd = true; }
+
+        // EOF arrived on the read side. Stop watching either way — an EOF'd fd
+        // reports ready forever, so a live watch busy-spins — but hand the fd
+        // itself to close() only when we own the retirement.
+        void retireRead() {
+            if (eofKeepsFd) {
+                stopDrain();
+                if (watching) { std::sysUnwatch(watchId); watching = false; }
+            } else {
+                close();
+            }
+        }
+
+        // Invoked by the loop when the socket is read-ready.
+        void pump() {
+            if (fd < 0) return;                  // stale watch after close()
+            string? chunk = std::sysRecv(fd, 4096);
+            if (chunk == None) {                 // peer closed -> deliver close
+                retireRead();
+                if (hasCloseCb) { var cb = onClosed; cb(); }
+            } else if (chunk != None) {
+                var cb = onChunk;
+                cb(chunk);                       // narrowed to string
+            }
+        }
+        // Drain everything already buffered on the descriptor NOW: pump until
+        // EOF (delivered as the usual close) or would-block. Process (F7) calls
+        // this when the child's exit races output still sitting in the pipe —
+        // the pidfd can poll ready before the loop has pumped the last chunks.
+        void pumpAll() {
+            if (!watching) return;               // no consumer: nothing to deliver
+            bool more = true;
+            while (more) {
+                if (fd < 0) { more = false; }
+                else {
+                    string? chunk = std::sysRecv(fd, 4096);
+                    if (chunk == None) {
+                        retireRead();
+                        if (hasCloseCb) { var ccb = onClosed; ccb(); }
+                        more = false;
+                    } else {
+                        string got = chunk ?? "";
+                        if (got.isEmpty()) { more = false; }
+                        else { var cb = onChunk; cb(got); }
+                    }
+                }
+            }
+        }
+        // Idempotent: the fd is invalidated so a second close() (or a write
+        // through a retained handle) can never hit a recycled descriptor.
+        void close() {
+            if (fd < 0) return;
+            stopDrain();
+            if (watching) { std::sysUnwatch(watchId); watching = false; }
+            std::sysClose(fd);
+            fd = 0 - 1;
+        }
+    }
+
+    // A listening socket presented as a STREAM OF CONNECTIONS: subscribing
+    // registers an accept-watch that pushes a TcpStream per incoming client.
+    class TcpListener {
+        int fd = 0 - 1;
+        int watchId = 0 - 1;
+        bool listening = false;
+        (TcpStream) => void onConn;
+        new TcpListener(int port) { fd = std::sysTcpListen(port); }
+        bool ok() => fd >= 0;
+
+        void connections((TcpStream) => void cb) {
+            onConn = cb;
+            listening = true;
+            TcpListener self = this;
+            watchId = std::sysWatch(fd, (ready) => self.acceptAll());
+        }
+        void acceptAll() {
+            var cb = onConn;
+            int cfd = std::sysAccept(fd);
+            while (cfd >= 0) {                    // drain the accept backlog
+                cb(TcpStream(cfd));
+                cfd = std::sysAccept(fd);
+            }
+        }
+        // Same stale-fd discipline as TcpStream.close(): idempotent, and the
+        // fd is invalidated so a retained handle can't touch a recycled one.
+        void stop() {
+            if (fd < 0) return;
+            if (listening) { std::sysUnwatch(watchId); listening = false; }
+            std::sysClose(fd);
+            fd = 0 - 1;
+        }
+    }
+
+    // --- connect with a deadline (Track 08 F5.4) ------------------------------
+    // The in-language composition the non-blocking floor exists for: nb-connect
+    // + write-watch + SO_ERROR verdict + a one-shot Timer. cb receives the
+    // connected fd (non-blocking, ready for TcpStream), or -1 — refused,
+    // unreachable, bad literal, or deadline hit; the fd is closed on every
+    // failure path. One-shot state machine: whichever of writable/expire fires
+    // first settles it, the loser sees `done` and does nothing.
+    class ConnectAttempt {
+        int fd = 0 - 1;
+        int watchId = 0 - 1;
+        int timerId = 0 - 1;
+        bool done = false;
+        (int) => void onDone;
+
+        void begin(string host, int port, int ms, (int) => void cb) {
+            onDone = cb;
+            fd = std::sysTcpConnectNb(host, port);
+            if (fd < 0) { settle(0 - 1); return; }
+            ConnectAttempt self = this;
+            watchId = std::sysWatchWrite(fd, (ready) => self.writable());
+            timerId = std::sysTimerStart(ms, 0, (n) => self.expire());
+        }
+        void writable() {
+            if (done) return;
+            int e = std::sysConnectResult(fd);
+            if (e == 0) { settle(fd); }
+            else { std::sysClose(fd); settle(0 - 1); }
+        }
+        void expire() {
+            if (done) return;
+            std::sysClose(fd);
+            settle(0 - 1);
+        }
+        void settle(int result) {
+            done = true;
+            if (watchId >= 0) { std::sysUnwatch(watchId); watchId = 0 - 1; }
+            if (timerId >= 0) { std::sysTimerCancel(timerId); timerId = 0 - 1; }
+            var cb = onDone;
+            cb(result);
+        }
+    }
+    void connectTimeout(string host, int port, int ms, (int) => void cb) {
+        ConnectAttempt a = ConnectAttempt();
+        a.begin(host, port, ms, cb);
+    }
+
+    // --- TLS handshake drives (LA-2, techdesign-tls-crypto.md §6.1/6.2) --------
+    // The lazy-at-the-floor handshake driven LOUDLY above: sysTlsConnect/Accept
+    // arm the session and step once; these drive it to completion. One-shot
+    // state machine mirroring ConnectAttempt — step the handshake, and on
+    // want-read/want-write (re)arm a watch in that direction, on done call
+    // cb(fd), on failure call cb(-1) (sysTlsError already carries the reason).
+    // Every path unwatches. No T? narrowing in prelude bodies — int fd / -1
+    // sentinels only. The §2.3 poll augmentation lets the steady-state TcpStream
+    // watches keep progressing across a TLS 1.3 KeyUpdate's direction flip; this
+    // drive arms the exact direction each handshake step needs.
+    class TlsDrive {
+        int fd = 0 - 1;
+        int watchId = 0 - 1;
+        bool watching = false;
+        bool done = false;
+        (int) => void onDone;
+
+        void begin(int f, (int) => void cb) {
+            fd = f;
+            onDone = cb;
+            step();
+        }
+        void step() {
+            if (done) return;
+            int r = std::sysTlsHandshake(fd);
+            if (r == 0) { settle(fd); return; }         // handshake complete
+            if (r < 0) { settle(0 - 1); return; }       // failure (sysTlsError set)
+            stopWatch();                                // switch direction cleanly
+            TlsDrive self = this;
+            if (r == 1) { watchId = std::sysWatch(fd, (ready) => self.step()); watching = true; }
+            else        { watchId = std::sysWatchWrite(fd, (ready) => self.step()); watching = true; }
+        }
+        void settle(int result) {
+            done = true;
+            stopWatch();
+            var cb = onDone;
+            cb(result);
+        }
+        void stopWatch() {
+            if (watching) { std::sysUnwatch(watchId); watching = false; watchId = 0 - 1; }
+        }
+    }
+    // Drive an already-armed fd's handshake; cb(fd) on success, cb(-1) on failure.
+    void tlsDrive(int fd, (int) => void cb) {
+        TlsDrive d = TlsDrive();
+        d.begin(fd, cb);
+    }
+    // Client: arm + drive + LOUD failure. Throws RuntimeException("TLS handshake:
+    // <reason>") on setup or handshake failure (cert verify, hostname mismatch —
+    // verify BEFORE the first byte of protocol, §2.2). cb(fd) on success.
+    void tlsConnect(int fd, string host, string alpn, string caFile,
+                    int verifyMode, (int) => void cb) {
+        int armed = std::sysTlsConnect(fd, host, alpn, caFile, verifyMode);
+        if (armed < 0) {
+            throw RuntimeException("TLS handshake: " + std::sysTlsError(fd) +
+                                   " (host '" + host + "', fd " + fd + ")");
+        }
+        var c = cb;
+        string h = host;
+        std::tlsDrive(fd, (result) => {
+            if (result < 0) {
+                throw RuntimeException("TLS handshake: " + std::sysTlsError(fd) +
+                                       " (host '" + h + "', fd " + fd + ")");
+            }
+            c(result);
+        });
+    }
+    // Server: arm + drive + a one-shot deadline (slowloris posture, §4 #10).
+    // Expiry or failure closes the fd and calls cb(-1) — server policy is DROP,
+    // never throw: one bad client must not unwind the accept loop.
+    class TlsAccept {
+        int fd = 0 - 1;
+        int watchId = 0 - 1;
+        int timerId = 0 - 1;
+        bool watching = false;
+        bool done = false;
+        (int) => void onDone;
+
+        void begin(int f, string cert, string key, string alpn, int deadlineMs, (int) => void cb) {
+            fd = f;
+            onDone = cb;
+            int armed = std::sysTlsAccept(fd, cert, key, alpn);
+            if (armed < 0) { settle(0 - 1); return; }
+            TlsAccept self = this;
+            timerId = std::sysTimerStart(deadlineMs, 0, (n) => self.expire());
+            step();
+        }
+        void step() {
+            if (done) return;
+            int r = std::sysTlsHandshake(fd);
+            if (r == 0) { settle(fd); return; }
+            if (r < 0) { settle(0 - 1); return; }
+            stopWatch();
+            TlsAccept self = this;
+            if (r == 1) { watchId = std::sysWatch(fd, (ready) => self.step()); watching = true; }
+            else        { watchId = std::sysWatchWrite(fd, (ready) => self.step()); watching = true; }
+        }
+        void expire() {
+            if (done) return;
+            settle(0 - 1);
+        }
+        void settle(int result) {
+            done = true;
+            stopWatch();
+            if (timerId >= 0) { std::sysTimerCancel(timerId); timerId = 0 - 1; }
+            if (result < 0 && fd >= 0) { std::sysClose(fd); }   // drop, don't throw
+            var cb = onDone;
+            cb(result);
+        }
+        void stopWatch() {
+            if (watching) { std::sysUnwatch(watchId); watching = false; watchId = 0 - 1; }
+        }
+    }
+    void tlsAccept(int fd, string cert, string key, string alpn, int deadlineMs, (int) => void cb) {
+        TlsAccept a = TlsAccept();
+        a.begin(fd, cert, key, alpn, deadlineMs, cb);
+    }
+
+    // --- Process: a child process wearing the stream surface (Track 08 F7) ----
+    // Thin in-language wrapper over the spawn floor. The three pipes are
+    // TcpStreams (pipes are fds; sysSend/sysRecv take both), so stdin writes
+    // queue-and-drain and stdout/stderr ride the ordinary read-watch loop.
+    // Reaping is the design's no-SIGCHLD route: exitCode() opens a pidfd,
+    // watches it like any other fd, and on readiness collects the code with a
+    // non-blocking waitid — resolving the Promise and closing every owned fd
+    // (problem #4's churn guarantee). A program that never calls exitCode()
+    // keeps no reap machinery alive and may exit with children live
+    // (documented: standard Unix, no magic — they are not reaped).
+    class Process {
+        int pid = 0 - 1;
+        int pidfd = 0 - 1;
+        int reapWatchId = 0 - 1;
+        int reapTimerId = 0 - 1;
+        bool reaping = false;
+        bool exited = false;
+        TcpStream stdinS = TcpStream(0 - 1);
+        TcpStream stdoutS = TcpStream(0 - 1);
+        TcpStream stderrS = TcpStream(0 - 1);
+        Promise<int> exitP = Promise();
+
+        new Process(string path, Array<string> args) {
+            Array<int> r = std::sysSpawn(path, args);
+            if (r.length() == 4) {
+                pid = r.at(0);
+                stdinS = TcpStream(r.at(1));
+                stdoutS = TcpStream(r.at(2));
+                stderrS = TcpStream(r.at(3));
+            }
+        }
+        bool ok() => pid > 0;
+
+        void write(string s) { stdinS.send(s); }
+        // /bin/cat-style children read until stdin EOF: closing our end IS the
+        // protocol. Idempotent (TcpStream discipline).
+        void closeStdin() { stdinS.close(); }
+        void onStdout((string) => void cb) { stdoutS.onData(cb); }
+        void onStderr((string) => void cb) { stderrS.onData(cb); }
+        void kill() {
+            if (pid > 0 && !exited) {
+                std::sysKill(pid, 15);
+                stdinS.close();          // SIGTERM'd child reads no more
+            }
+        }
+
+        Promise<int> exitCode() {
+            if (exited || reaping) return exitP;
+            if (pid <= 0) {              // spawn failure: the 127 convention
+                exited = true;           // (problem #3 — "could not run")
+                exitP.resolve(127);
+                return exitP;
+            }
+            reaping = true;
+            pidfd = std::sysPidfdOpen(pid);
+            Process self = this;
+            if (pidfd >= 0) {
+                reapWatchId = std::sysWatch(pidfd, (ready) => self.tryReap());
+            } else {
+                // pidfd unavailable (exotic kernel): coarse poll-reap fallback.
+                // Still no signals, still non-blocking.
+                reapTimerId = std::sysTimerStart(20, 20, (n) => self.tryReap());
+            }
+            return exitP;
+        }
+        void tryReap() {
+            if (exited) return;
+            int code = std::sysReap(pid);
+            if (code < 0) return;        // spurious wake; child still running
+            exited = true;
+            if (reapWatchId >= 0) { std::sysUnwatch(reapWatchId); reapWatchId = 0 - 1; }
+            if (reapTimerId >= 0) { std::sysTimerCancel(reapTimerId); reapTimerId = 0 - 1; }
+            if (pidfd >= 0) { std::sysClose(pidfd); pidfd = 0 - 1; }
+            stdinS.close();
+            // The child's last output can race the pidfd readiness: deliver
+            // whatever is still in the pipes BEFORE closing them, then resolve.
+            stdoutS.pumpAll();
+            stderrS.pumpAll();
+            stdoutS.close();
+            stderrS.close();
+            exitP.resolve(code);
+        }
+    }
+
+    // A child on a pseudo-terminal (designs/pty/ D-P1): ONE merged byte stream —
+    // there is no separate stderr on a pty. The master fd rides TcpStream (send
+    // queue-and-drain, read-watch delivery, D-P9); exit rides the pidfd-watch/
+    // poll-reap pair exactly like Process. EOF protocol: a pty has no closable
+    // write half — canonical mode's VEOF does it: write("\x04").
+    // Retirement (D-P5): reap success -> pumpAll -> close -> resolve; a master
+    // close alone (child side gone) fires onClose but never resolves exitCode.
+    // The master fd is therefore pinned open until the REAP (keepFdOnEof): it
+    // is the tty's hangup switch, and dropping it the moment the child closes
+    // the slave SIGHUPs a session leader that is still running its exit path.
+    class Pty {
+        int pid = 0 - 1;
+        int pidfd = 0 - 1;
+        int reapWatchId = 0 - 1;
+        int reapTimerId = 0 - 1;
+        bool reaping = false;
+        bool exited = false;
+        TcpStream io = TcpStream(0 - 1);
+        Promise<int> exitP = Promise();
+
+        new Pty(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 0);
+            if (r.length() == 2) {
+                pid = r.at(0);
+                io = TcpStream(r.at(1));
+                io.keepFdOnEof();                       // D-P5: close at reap, not at EOF
+            }
+        }
+        // The frozen deterministic termios profile (echo family off) — goldens.
+        new Deterministic(string path, Array<string> args, int rows, int cols) {
+            Array<int> r = std::sysPtySpawn(path, args, rows, cols, 1);
+            if (r.length() == 2) {
+                pid = r.at(0);
+                io = TcpStream(r.at(1));
+                io.keepFdOnEof();                       // D-P5: close at reap, not at EOF
+            }
+        }
+        bool ok() => pid > 0;
+
+        void write(string s) { io.send(s); }
+        void onData((string) => void cb) { io.onData(cb); }
+        void onClose(() => void cb) { io.onClose(cb); }
+        int resize(int rows, int cols) {
+            if (io.rawFd() < 0) return 0 - 1;            // stale-fd guard (TcpStream discipline)
+            return std::sysPtyResize(io.rawFd(), rows, cols);
+        }
+        void kill() {
+            if (pid > 0 && !exited) { std::sysKill(pid, 15); }
+            // do NOT close io here: D-P5 — the dying child's last output is still
+            // in the line discipline; tryReap drains it.
+        }
+
+        Promise<int> exitCode() {
+            if (exited || reaping) return exitP;
+            if (pid <= 0) {                              // spawn failure: 127 (F7 convention)
+                exited = true;
+                exitP.resolve(127);
+                return exitP;
+            }
+            reaping = true;
+            pidfd = std::sysPidfdOpen(pid);
+            Pty self = this;
+            if (pidfd >= 0) {
+                reapWatchId = std::sysWatch(pidfd, (ready) => self.tryReap());
+            } else {
+                // pidfd unavailable (exotic kernel; Windows, doc 03): poll-reap.
+                reapTimerId = std::sysTimerStart(20, 20, (n) => self.tryReap());
+            }
+            return exitP;
+        }
+        void tryReap() {
+            if (exited) return;
+            int code = std::sysReap(pid);
+            if (code < 0) return;                        // spurious wake
+            exited = true;
+            if (reapWatchId >= 0) { std::sysUnwatch(reapWatchId); reapWatchId = 0 - 1; }
+            if (reapTimerId >= 0) { std::sysTimerCancel(reapTimerId); reapTimerId = 0 - 1; }
+            if (pidfd >= 0) { std::sysClose(pidfd); pidfd = 0 - 1; }
+            io.pumpAll();                                // drain BEFORE close (D-P5, pitfall #11)
+            io.close();
+            exitP.resolve(code);
+        }
+    }
+
+    // --- HTTP: a Layer-2 reshaping over TCP streams, entirely in-language -----
+    // Framework-grade (Track 09 F4): ordered case-insensitive HeaderMap, chunked
+    // transfer both directions, server-side keep-alive + a 500 error path, and a
+    // real client. All in-language over TcpStream; still text bodies until Block.
+
+    // One header line. A struct (data, no identity) — order + duplicates are
+    // preserved by HeaderMap, so Set-Cookie survives.
+    struct Header {
+        string name = "";
+        string value = "";
+    }
+    // An ordered multimap with case-insensitive name matching (RFC 7230 §3.2).
+    // Backed by Array<Header> so entries() keeps insertion order + duplicates.
+    // Internal lookups use firstOr/allOf (plain values, no int?/string? crossing
+    // a prelude boundary — the static backends misread narrowed unions there).
+    class HeaderMap {
+        Array<Header> items = [];
+        HeaderMap add(string name, string value) {
+            Header h;
+            h.name = name;
+            h.value = value;
+            items = items.add(h);
+            return this;
+        }
+        // replace every existing entry of `name`, then append once.
+        HeaderMap set(string name, string value) {
+            string ln = name.toLower();
+            Array<Header> next = [];
+            for (Header h in items) { if (h.name.toLower() != ln) next = next.add(h); }
+            Header nh;
+            nh.name = name;
+            nh.value = value;
+            next = next.add(nh);
+            items = next;
+            return this;
+        }
+        bool has(string name) {
+            string ln = name.toLower();
+            bool got = false;
+            for (Header h in items) { if (h.name.toLower() == ln) got = true; }
+            return got;
+        }
+        // first value for `name`, or `dflt` — the narrowing-free internal form.
+        string firstOr(string name, string dflt) {
+            string ln = name.toLower();
+            string found = dflt;
+            bool got = false;
+            for (Header h in items) {
+                if (!got && h.name.toLower() == ln) { found = h.value; got = true; }
+            }
+            return found;
+        }
+        string? first(string name) => this.has(name) ? this.firstOr(name, "") : None;
+        Array<string> all(string name) {
+            string ln = name.toLower();
+            Array<string> r = [];
+            for (Header h in items) { if (h.name.toLower() == ln) r = r.add(h.value); }
+            return r;
+        }
+        HeaderMap remove(string name) {
+            string ln = name.toLower();
+            Array<Header> next = [];
+            for (Header h in items) { if (h.name.toLower() != ln) next = next.add(h); }
+            items = next;
+            return this;
+        }
+        Array<Header> entries() => items;
+        int length() => items.length();
+        // "Name: value\r\n" per entry (no trailing blank line). Plain `+`
+        // concatenation, NOT StringBuilder: StringBuilder.toString() lowers to
+        // the post-freeze `concatAll` native, absent on the frozen ELF backend
+        // that the corpus/elf HTTP programs still target.
+        string render() {
+            string r = "";
+            for (Header h in items) { r = r + h.name + ": " + h.value + "\r\n"; }
+            return r;
+        }
+    }
+
+    // Chunked transfer decoder (RFC 7230 §4.1), ported from lcurl's
+    // fragmentation-proof state machine (curl-design §5.6): feed arbitrary byte
+    // fragments, get back the dechunked body incrementally. `bad` on a malformed
+    // size line; `isDone` after the terminating 0-chunk.
+    class ChunkedDecoder {
+        string buf = "";
+        int state = 0;     // 0 size line, 1 data, 2 trailing CRLF, 3 trailer, 4 done
+        int need = 0;
+        bool isDone = false;
+        bool bad = false;
+        string feed(string chunk) {
+            buf = buf + chunk;
+            string outp = "";
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                if (state == 0) {
+                    int nl = buf.indexOf("\r\n");
+                    if (nl >= 0) {
+                        string sizeLine = buf.subStr(0, nl);
+                        buf = buf.subStr(nl + 2, buf.length() - (nl + 2));
+                        int semi = sizeLine.indexOf(";");
+                        string sizeHex = (semi >= 0 ? sizeLine.subStr(0, semi) : sizeLine).trim();
+                        int size = 0;
+                        bool ok = sizeHex.length() > 0;
+                        int k = 0;
+                        while (k < sizeHex.length()) {
+                            int d = encoding::hexNibble(sizeHex.byteAt(k));
+                            if (d < 0) ok = false;
+                            else size = size * 16 + d;
+                            k = k + 1;
+                        }
+                        if (!ok) { bad = true; isDone = true; return outp; }
+                        if (size == 0) state = 3; else { need = size; state = 1; }
+                        progress = true;
+                    }
+                } else if (state == 1) {
+                    if (buf.length() > 0) {
+                        int take = need < buf.length() ? need : buf.length();
+                        if (take > 0) {
+                            outp = outp + buf.subStr(0, take);
+                            buf = buf.subStr(take, buf.length() - take);
+                            need = need - take;
+                            progress = true;
+                        }
+                        if (need == 0) { state = 2; progress = true; }
+                    }
+                } else if (state == 2) {
+                    if (buf.length() >= 2) {
+                        buf = buf.subStr(2, buf.length() - 2);
+                        state = 0;
+                        progress = true;
+                    }
+                } else if (state == 3) {
+                    int nl = buf.indexOf("\r\n");
+                    if (nl >= 0) {
+                        string line = buf.subStr(0, nl);
+                        buf = buf.subStr(nl + 2, buf.length() - (nl + 2));
+                        if (line.isEmpty()) { state = 4; isDone = true; }
+                        progress = true;
+                    }
+                }
+            }
+            return outp;
+        }
+    }
+    // Encoder side (trivial): one chunk, then the terminator.
+    string chunkEncode(string data) => data.length().toHex() + "\r\n" + data + "\r\n";
+    string chunkEnd() => "0\r\n\r\n";
+
+    // Parse the "Name: value" lines of a header block into a HeaderMap. Blank
+    // names / missing colons are skipped; values are trimmed.
+    HeaderMap parseHeaderLines(string block) {
+        HeaderMap hm = HeaderMap();
+        string hs = block;
+        while (hs.length() > 0) {
+            int nl = hs.indexOf("\r\n");
+            string line = nl >= 0 ? hs.subStr(0, nl) : hs;
+            hs = nl >= 0 ? hs.subStr(nl + 2, hs.length() - (nl + 2)) : "";
+            int colon = line.indexOf(":");
+            if (colon >= 0) {
+                string k = line.subStr(0, colon).trim();
+                string v = line.subStr(colon + 1, line.length() - (colon + 1)).trim();
+                if (k.length() > 0) hm.add(k, v);
+            }
+        }
+        return hm;
+    }
+    // Content-Length as a plain int (-1 = absent/invalid) — no int? narrowing.
+    int bodyLenOf(HeaderMap hm) {
+        string cl = hm.firstOr("Content-Length", "");
+        if (cl.length() == 0) return 0 - 1;
+        int v = 0;
+        int i = 0;
+        while (i < cl.length()) {
+            int c = cl.byteAt(i);
+            if (c < 48 || c > 57) return 0 - 1;
+            v = v * 10 + (c - 48);
+            i = i + 1;
+        }
+        return v;
+    }
+
+    class HttpRequest {
+        string method = "";
+        string path = "";
+        string version = "";
+        string body = "";
+        HeaderMap headers;
+        // incremental parse state (HttpConnection drives feed())
+        string acc = "";
+        bool headersDone = false;
+        bool complete = false;
+        int bodyNeeded = 0;
+
+        void parseHead(string head) {
+            int lineEnd = head.indexOf("\r\n");
+            string reqLine = lineEnd >= 0 ? head.subStr(0, lineEnd) : head;
+            int sp1 = reqLine.indexOf(" ");
+            method = sp1 >= 0 ? reqLine.subStr(0, sp1) : reqLine;
+            string rest = sp1 >= 0 ? reqLine.subStr(sp1 + 1, reqLine.length() - (sp1 + 1)) : "";
+            int sp2 = rest.indexOf(" ");
+            path = sp2 >= 0 ? rest.subStr(0, sp2) : rest;
+            version = sp2 >= 0 ? rest.subStr(sp2 + 1, rest.length() - (sp2 + 1)) : "";
+            string hs = lineEnd >= 0 ? head.subStr(lineEnd + 2, head.length() - (lineEnd + 2)) : "";
+            headers = std::parseHeaderLines(hs);
+        }
+        // one-shot parse of a fully-buffered request (kept for direct callers).
+        void parse(string raw) {
+            int headerEnd = raw.indexOf("\r\n\r\n");
+            string head = headerEnd >= 0 ? raw.subStr(0, headerEnd) : raw;
+            this.parseHead(head);
+            if (headerEnd >= 0) body = raw.subStr(headerEnd + 4, raw.length() - (headerEnd + 4));
+        }
+        // incremental: feed bytes; true once the full request (head + body by
+        // Content-Length) is available. Extra trailing bytes are dropped
+        // (buffered-but-serial: no pipelining in v1 — documented).
+        bool feed(string chunk) {
+            if (complete) return true;
+            acc = acc + chunk;
+            if (!headersDone) {
+                int he = acc.indexOf("\r\n\r\n");
+                if (he < 0) return false;
+                this.parseHead(acc.subStr(0, he));
+                acc = acc.subStr(he + 4, acc.length() - (he + 4));
+                headersDone = true;
+                int bl = std::bodyLenOf(headers);
+                bodyNeeded = bl > 0 ? bl : 0;
+            }
+            if (acc.length() >= bodyNeeded) {
+                body = acc.subStr(0, bodyNeeded);
+                complete = true;
+                return true;
+            }
+            return false;
+        }
+        string header(string name) => headers.firstOr(name, "");
+    }
+
+    class HttpResponse {
+        int status = 200;
+        string reasonText = "";
+        string body = "";
+        HeaderMap headers;
+        bool keepAlive = false;
+        new HttpResponse(int s, string b) { status = s; body = b; headers = HeaderMap(); }
+        HttpResponse withHeader(string name, string value) { headers.set(name, value); return this; }
+        string reason() {
+            if (reasonText.length() > 0) return reasonText;
+            if (status == 200) return "OK";
+            if (status == 201) return "Created";
+            if (status == 204) return "No Content";
+            if (status == 301) return "Moved Permanently";
+            if (status == 302) return "Found";
+            if (status == 400) return "Bad Request";
+            if (status == 401) return "Unauthorized";
+            if (status == 403) return "Forbidden";
+            if (status == 404) return "Not Found";
+            if (status == 500) return "Internal Server Error";
+            return "OK";
+        }
+        // Content-Length + Connection are computed here; any user header of those
+        // names is dropped so the wire copy stays authoritative. Plain `+`
+        // concatenation (ELF has no StringBuilder.toString/concatAll — see
+        // HeaderMap.render); int operands convert implicitly, as the old code did.
+        string render() {
+            string extra = "";
+            for (Header h in headers.entries()) {
+                string ln = h.name.toLower();
+                if (ln != "content-length" && ln != "connection") {
+                    extra = extra + h.name + ": " + h.value + "\r\n";
+                }
+            }
+            string conn = keepAlive ? "keep-alive" : "close";
+            return "HTTP/1.1 " + status + " " + this.reason() +
+                   "\r\nContent-Length: " + body.length() +
+                   "\r\nConnection: " + conn + "\r\n" + extra + "\r\n" + body;
+        }
+        // Parse a fully-buffered response; decodes a chunked body transparently.
+        void parse(string raw) {
+            int lineEnd = raw.indexOf("\r\n");
+            string statusLine = lineEnd >= 0 ? raw.subStr(0, lineEnd) : raw;
+            int sp1 = statusLine.indexOf(" ");
+            string rest = sp1 >= 0 ? statusLine.subStr(sp1 + 1, statusLine.length() - (sp1 + 1)) : statusLine;
+            int sp2 = rest.indexOf(" ");
+            string code = sp2 >= 0 ? rest.subStr(0, sp2) : rest;
+            int? parsedStatus = code.toInt();
+            status = parsedStatus != None ? parsedStatus : 0;   // 0: unparseable status line
+            reasonText = sp2 >= 0 ? rest.subStr(sp2 + 1, rest.length() - (sp2 + 1)) : "";
+            int bodyStart = raw.indexOf("\r\n\r\n");
+            headers = HeaderMap();
+            if (bodyStart >= 0 && lineEnd >= 0) {
+                headers = std::parseHeaderLines(raw.subStr(lineEnd + 2, bodyStart - (lineEnd + 2)));
+                string rawBody = raw.subStr(bodyStart + 4, raw.length() - (bodyStart + 4));
+                if (headers.firstOr("Transfer-Encoding", "").toLower() == "chunked") {
+                    ChunkedDecoder dec = ChunkedDecoder();
+                    body = dec.feed(rawBody);
+                } else {
+                    body = rawBody;
+                }
+            }
+        }
+    }
+
+    // One server-side connection. Drives HttpRequest.feed incrementally; on a
+    // complete request runs the handler under a try/catch (an uncaught throw ->
+    // 500 + Connection: close, loop survives — the framework error-page seed).
+    // Keep-alive: if neither side closes and the per-conn cap isn't hit, the
+    // parser is re-armed for the next request; every other path routes through
+    // closeConn() so no watch is left armed (the §2.3 lifetime invariant).
+    class HttpConnection {
+        TcpStream conn;
+        (HttpRequest) => HttpResponse handler;
+        HttpRequest req;
+        bool closed = false;
+        int served = 0;
+        int maxRequests = 100;
+        new HttpConnection(TcpStream c, (HttpRequest) => HttpResponse h) {
+            conn = c;
+            handler = h;
+            req = HttpRequest();
+        }
+        void start() {
+            HttpConnection self = this;
+            conn.onData((chunk) => self.feed(chunk));
+        }
+        void closeConn() {
+            if (closed) return;
+            closed = true;
+            conn.close();
+        }
+        void feed(string chunk) {
+            if (closed) return;
+            if (!req.feed(chunk)) return;               // not a full request yet
+            HttpResponse resp = HttpResponse(500, "Internal Server Error");
+            bool ok = false;
+            try {
+                var h = handler;
+                resp = h(req);
+                ok = true;
+            } catch (IException e) {
+                resp = HttpResponse(500, "Internal Server Error");
+                ok = false;
+            }
+            bool wantKeep = ok && req.header("Connection").toLower() != "close" && served < maxRequests;
+            resp.keepAlive = wantKeep;
+            conn << resp.render();
+            if (wantKeep) {
+                served = served + 1;
+                req = HttpRequest();                    // re-arm for the next request
+            } else {
+                this.closeConn();
+            }
+        }
+    }
+
+    class HttpServer {
+        TcpListener listener;
+        (HttpRequest) => HttpResponse handler;
+        bool tls = false;
+        string certPath = "";
+        string keyPath = "";
+        new HttpServer(int port) { listener = TcpListener(port); }
+        // HTTPS: same handler surface, cert/key stored; accept() wraps each
+        // connection via tlsAccept and starts the HttpConnection only once the
+        // handshake completes (a failed client handshake is a dropped
+        // connection — the accept loop survives). Zero handler-facing change.
+        new HttpServer(int port, string cert, string key) {
+            listener = TcpListener(port);
+            tls = true; certPath = cert; keyPath = key;
+        }
+        bool ok() => listener.ok();
+        void handle((HttpRequest) => HttpResponse h) {
+            handler = h;
+            HttpServer self = this;
+            listener.connections((conn) => self.accept(conn));
+        }
+        void accept(TcpStream conn) {
+            if (!tls) {
+                HttpConnection hc = HttpConnection(conn, handler);
+                hc.start();
+                return;
+            }
+            var h = handler;
+            std::tlsAccept(conn.rawFd(), certPath, keyPath, "", 10000, (sfd) => {
+                if (sfd < 0) return;                    // handshake failed / deadline: drop
+                HttpConnection hc = HttpConnection(TcpStream(sfd), h);
+                hc.start();
+            });
+        }
+        void stop() { listener.stop(); }
+    }
+
+    // Client: blocking connect + send, then read the response through the loop
+    // until the peer closes, and parse (chunked bodies decode in parse()).
+    class HttpResponseReader {
+        TcpStream stream;
+        (HttpResponse) => void onResp;
+        string acc = "";
+        new HttpResponseReader(TcpStream s, (HttpResponse) => void cb) {
+            stream = s;
+            onResp = cb;
+        }
+        void start() {
+            HttpResponseReader self = this;
+            stream.onData((chunk) => self.feed(chunk));
+            stream.onClose(() => self.finish());
+        }
+        void feed(string chunk) { acc = acc + chunk; }
+        void finish() {
+            HttpResponse resp = HttpResponse(0, "");
+            resp.parse(acc);
+            var cb = onResp;
+            cb(resp);
+        }
+    }
+
+    class HttpClient {
+        // The general form: method + explicit headers + body. Sends Connection:
+        // close (one connection per request — client pooling is a framework-era
+        // follow-up). Host/port/path form; URL-string parsing + redirects are
+        // the documented next step.
+        void request(string method, string host, int port, string path,
+                     HeaderMap headers, string body, (HttpResponse) => void onResp) {
+            int fd = std::sysTcpConnect(host, port);
+            // Same guard as requestTls: don't feed a failed connect (-1) into
+            // sysSend/TcpStream — surface the connect error plainly.
+            if (fd < 0) {
+                throw RuntimeException("TCP connect failed (host '" + host +
+                                       "', port " + port + ")");
+            }
+            string extra = "";
+            for (Header h in headers.entries()) {
+                string ln = h.name.toLower();
+                if (ln != "host" && ln != "connection" && ln != "content-length") {
+                    extra = extra + h.name + ": " + h.value + "\r\n";
+                }
+            }
+            string clh = body.length() > 0 ? ("Content-Length: " + body.length() + "\r\n") : "";
+            string reqstr = method + " " + path + " HTTP/1.1\r\nHost: " + host +
+                            "\r\nConnection: close\r\n" + extra + clh + "\r\n" + body;
+            std::sysSend(fd, reqstr);
+            TcpStream stream = TcpStream(fd);
+            HttpResponseReader reader = HttpResponseReader(stream, onResp);
+            reader.start();
+        }
+        void get(string host, int port, string path, (HttpResponse) => void onResp) {
+            this.request("GET", host, port, path, HeaderMap(), "", onResp);
+        }
+        void post(string host, int port, string path, string body, (HttpResponse) => void onResp) {
+            this.request("POST", host, port, path, HeaderMap(), body, onResp);
+        }
+        // Await-able form: the callback reshaped into a Promise (§14 — a promise
+        // is a one-shot stream). `HttpResponse r = await client.fetch(...);`
+        Promise<HttpResponse> fetch(string host, int port, string path) {
+            Promise<HttpResponse> p = Promise();
+            this.get(host, port, path, (resp) => p.resolve(resp));
+            return p;
+        }
+
+        // --- HTTPS (LA-2 §6.3): connect + full verification + identical tail ---
+        // Always verifyMode 0 (chain + hostname). tlsConnect throws a loud named
+        // RuntimeException on verification failure (before the first byte of
+        // protocol). URL parsing stays deferred (info.md §19 #17) — explicit
+        // host/port/path, same as the plaintext client.
+        void requestTls(string method, string host, int port, string path,
+                        HeaderMap headers, string body, (HttpResponse) => void onResp) {
+            int fd = std::sysTcpConnect(host, port);
+            // Fail on the real cause: a TCP connect failure (fd < 0) must not be
+            // handed to tlsConnect, which would report it as an empty-reason
+            // "TLS handshake:  (host '...', fd -1)". Surface the connect error.
+            if (fd < 0) {
+                throw RuntimeException("TCP connect failed (host '" + host +
+                                       "', port " + port + ")");
+            }
+            string extra = "";
+            for (Header h in headers.entries()) {
+                string ln = h.name.toLower();
+                if (ln != "host" && ln != "connection" && ln != "content-length") {
+                    extra = extra + h.name + ": " + h.value + "\r\n";
+                }
+            }
+            string clh = body.length() > 0 ? ("Content-Length: " + body.length() + "\r\n") : "";
+            string reqstr = method + " " + path + " HTTP/1.1\r\nHost: " + host +
+                            "\r\nConnection: close\r\n" + extra + clh + "\r\n" + body;
+            var onr = onResp;
+            std::tlsConnect(fd, host, "", "", 0, (cfd) => {
+                std::sysSend(cfd, reqstr);
+                TcpStream stream = TcpStream(cfd);
+                HttpResponseReader reader = HttpResponseReader(stream, onr);
+                reader.start();
+            });
+        }
+        void getTls(string host, int port, string path, (HttpResponse) => void onResp) {
+            this.requestTls("GET", host, port, path, HeaderMap(), "", onResp);
+        }
+        void postTls(string host, int port, string path, string body, (HttpResponse) => void onResp) {
+            this.requestTls("POST", host, port, path, HeaderMap(), body, onResp);
+        }
+        Promise<HttpResponse> fetchTls(string host, int port, string path) {
+            Promise<HttpResponse> p = Promise();
+            this.getTls(host, port, path, (resp) => p.resolve(resp));
+            return p;
+        }
+    }
+
+    // Path attributes, usable without opening (File wraps these per-instance).
+    bool fileExists(string path) => sysStat(path, 0) == 1;
+    int fileSize(string path) => sysStat(path, 1);
+    int fileModified(string path) => sysStat(path, 2);
+    // request-stat-isdir.md: one stat(2) word instead of a per-entry sysListDir
+    // probe; also correct on an unreadable directory, which a listDir-based
+    // probe misclassifies as a file.
+    bool isDir(string path) => sysStat(path, 3) == 1;
+
+    // Open-mode flags: plain values whose (|) is an ordinary operator method —
+    // `std::read | std::write` is operators-as-methods, NOT a union type.
+    class OpenMode {
+        int bits = 0;
+        new OpenMode(int b) { bits = b; }
+        OpenMode (|)(OpenMode o) => OpenMode(bits | o.bits);
+        bool has(OpenMode o) => (bits & o.bits) == o.bits;
+    }
+    const OpenMode read = OpenMode(1);
+    const OpenMode write = OpenMode(2);
+    const OpenMode append = OpenMode(4);
+    const OpenMode binary = OpenMode(8);    // inert until Block lands (text-only reads)
+
+    interface IFileException : IException { }
+    class FileException : Exception, IFileException {
+        new FileException(string msg) { Exception::Exception(msg); }
+    }
+
+    // File streams: fd-backed endpoints with the stream operator surface.
+    class FileInStream {
+        int fd = 0;
+        new FileInStream(int f) { fd = f; }
+        string pull() => std::sysReadLine(fd);      // "" = end of input (interim)
+        string read(int max) => std::sysRead(fd, max);
+    }
+    class FileOutStream {
+        int fd = 0;
+        new FileOutStream(int f) { fd = f; }
+        FileOutStream (<<)(string s) {
+            std::sysWrite(fd, s);
+            return this;
+        }
+    }
+
+    // techdesign-02 F3: the `using` contract — a type declares deterministic
+    // cleanup by implementing this and a `using` declaration calls close() on
+    // every block-exit edge (fallthrough/return/throw/break/continue).
+    interface IDisposable {
+        void close();
+    }
+
+    // The File object: owns the descriptor + mode; construction opens.
+    class File : IDisposable {
+        string path;
+        OpenMode mode = OpenMode(0);
+        int fd = 0 - 1;
+        bool opened = false;
+
+        new File(string p, OpenMode m) {
+            path = p;
+            mode = m;
+            open();
+        }
+
+        void open() {
+            if (opened) throw FileException("already open: " + path);
+            fd = std::sysOpen(path, mode.bits);
+            if (fd < 0) throw FileException("cannot open: " + path);
+            opened = true;
+        }
+        void close() {
+            if (!opened) throw FileException("not open: " + path);
+            std::sysClose(fd);
+            opened = false;
+            fd = 0 - 1;
+        }
+        bool isOpen() => opened;
+
+        bool exists() => std::fileExists(path);
+        int size() => std::fileSize(path);
+        int modified() => std::fileModified(path);
+
+        FileInStream reader() => FileInStream(fd);
+        FileOutStream writer() => FileOutStream(fd);
+
+        void write(string s) { std::sysWrite(fd, s); }
+        void writeln(string s) { std::sysWrite(fd, s + "\n"); }
+        string readln() => std::sysReadLine(fd);
+        string read(int max) => std::sysRead(fd, max);
+        // Track 03 M4 — zero-copy Block overloads over the same sys floor.
+        int read(Block b, int max) => std::sysRead(fd, b, max);
+        void write(Block b, int off, int len) { std::sysWrite(fd, b, off, len); }
+    }
+
+    interface IException {
+        string message;
+        string toString();
+    }
+    class Exception : IException {
+        string message;
+        new Exception(string msg) { message = msg; }
+        string toString() => message;
+    }
+    interface IRuntimeException : IException { }
+    class RuntimeException : Exception, IRuntimeException {
+        new RuntimeException(string msg) { Exception::Exception(msg); }
+    }
+    interface ILogicException : IException { }
+    class LogicException : Exception, ILogicException {
+        new LogicException(string msg) { Exception::Exception(msg); }
+    }
+    // LA-30 B2 (doc 06 §2): cancellation is an exception delivered at park
+    // points, and only there — an ordinary IException carrier, catchable by
+    // type or interface like everything else (no second error channel, the same
+    // collapse LA-19 makes for rejection). A task MAY catch it and refuse
+    // cancellation (with the visibility that implies); a group's close() absorbs
+    // it at the join, while an unowned callback rides the normal uncaught path.
+    interface ICancelledException : IException { }
+    class CancelledException : Exception, ICancelledException {
+        new CancelledException(string msg) { Exception::Exception(msg); }
+    }
+}

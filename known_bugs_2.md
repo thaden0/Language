@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | #94, #96 |
-| P1       | — |
+| P1       | #97 |
 | P2       | — |
 | P3       | — |
 
@@ -143,6 +143,63 @@ an unrelated stdio-buffering difference between the tree-walk/IR interpreter
 and the compiled binary when stdout is a pty, rather than the same bug being
 masked — not diagnosed. (2) No workaround identified; anyone needing to run a
 compiled Sonar app interactively in a real terminal today will hit this.
+
+---
+
+## #97 [P1] — sockets/process/pty classes cannot be compiled for a Windows target: prelude over-marking drags the task natives in
+
+**Found:** 2026-07-19, implementing the pty floor's Windows lane
+(`designs/complete/techdesign-03-pty-windows-conpty.md` S3/G-PTY3).
+**Priority justification:** P1.2 — the only workaround is per-use: every track
+that wants sockets, a child process, or a pty on a Windows target must
+independently discover this and hand-roll the floor natives at each site; no
+single workaround retires it. (P2.3 also matches — a documented feature fails
+loud on one lane while working on the others — but P1 is evaluated first and
+P1.2 fits the workaround shape exactly.)
+
+**NOT the bug:** that `spawn`/`Channel`/`TaskGroup` are unsupported on a
+Windows target. That is a deliberate ruling (LA-30 G5: win32 needs the Fiber
+API, so tasks stay pump-pinned — `runtime/lv_task.c:27-57`), documented in
+`docs/reference.md`. The bug is its **blast radius**.
+
+**Repro** — no task feature anywhere in the program:
+
+```
+$ printf 'TcpListener l = TcpListener(9099);\n' > t.lev
+$ leviathan --native-obj t.o --target x86_64-pc-windows-gnu t.lev
+error: LLVM backend: tasks: unsupported on Windows (v1) — 'sysTaskCancel'
+       has no Windows lowering
+```
+
+Identical failure for `TcpStream`, `Process`, and `Pty`. Expected: these
+compile for a Windows triple (nothing in any design rejects them, and
+`docs/reference.md` documents sockets/`Process`/`Pty` without a Windows
+carve-out — only threads/`spawn` carry one). Actual: a whole capability family
+is unbuildable for the target, and the diagnostic names a native the program
+never mentions, so the message mis-attributes the cause.
+
+**Root-cause pointer:** two independent contributors; narrowing **either** one
+fixes it.
+1. Prelude over-marking (`src/Resolver.cpp:3232` documents this exact
+   mechanism breaking `--build` once before): marking is arity-blind and
+   by-name, so `TcpStream`/`File`'s `close()` also marks `TaskGroup::close()`,
+   whose body reaches `std::sysTaskCancel` (`src/Resolver.cpp:1414`).
+2. The reject is **emission**-gated, not reachability-gated
+   (`src/LlvmGen.cpp:2752-2765`): it fires when the row is emitted, reachable
+   or not. The wasm gate immediately above it already has the two-tier shape
+   (reachable → diagnostic; prelude-only → `lvrt_unsupported` trap) that would
+   answer this.
+
+**Owner ruling needed before a fix lands** (which of the two to narrow is a
+gate question, not a pty question): recorded as
+`designs/requests/request-windows-task-gate.md`.
+
+**Workaround (debt sites):** drive the **floor natives** directly instead of
+the prelude class — `std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/
+`sysKill`/`sysReap` compile and run on Windows today. Applied in
+`tests/pty_win_driver.lev` (the G-PTY3 behavioral lane, which is why it does
+not use `Pty`). `tests/run_wine_cross.sh` avoids the area entirely — its scope
+note excludes net corpus.
 
 ---
 
