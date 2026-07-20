@@ -126,6 +126,12 @@ enum class ExprKind {
     ForSplice,   // `$for` <ident> in <expr> : <element>  (Phase 3 §5; template-only:
                  // array-literal element position, expanded by cloneExpr's Array
                  // case — text=loop var, a=iterator expr, b=element template)
+    ForkSplice,  // `$if (pred) { e } $else { e }` in expression (array-element)
+                 // position — expansion-time branch selection (B2, techdesign
+                 // -splices-conditional). template-only: a=cond, b=then-expr,
+                 // c=else-expr (c may itself be a ForkSplice for `$else if`).
+                 // Folded away by cloneArrayElements to its taken branch; never
+                 // lowered.
 };
 
 // One arm of a `match`. The pattern is a type (`Type => ...`), a value/range
@@ -257,6 +263,14 @@ enum class StmtKind {
                  // iteration. name=loop var, expr=iterator, thenBranch=body.
                  // Parses only inside quasiquote fragments; expanded by the
                  // rule engine's statement-list clone (Rules.cpp), never lowered.
+    ForkSplice,  // template-only (B2, techdesign-splices-conditional): `$if
+                 // (pred) { frag } $else if (pred) { frag } $else { frag }` —
+                 // expansion-time branch selection at statement/member/item
+                 // position. expr=cond, thenBranch=then-fragment (a Block wrapping
+                 // the fragment's stmts/members/items), elseBranch=else-fragment
+                 // (a Block, or another ForkSplice for the `$else if` chain, or
+                 // null when there is no `$else`). Folded by cloneStmtInto to the
+                 // taken branch's fragment, spliced flat; never lowered.
 };
 
 // One `catch (Type name?) body` clause. Selection is resolution by type: the
@@ -302,6 +316,12 @@ enum class AnchorKind {
     BodyReplace,           // replace `...` — Layer D, Phase 4 (§2.3): overwrites the
                            // `rewrites body of <bind>` target's body; `$body` splices
                            // the original body back in (composition, not obliteration).
+    BodyGenerate,          // replace `...` — Layer D, bindgen metaprog scope: sibling of
+                           // BodyReplace for a `generates body of <bind>` rule. Overwrites
+                           // the target's body wholesale and DISCARDS the original — `$body`
+                           // is unavailable (M36) since there is no original to splice.
+                           // Sanctioned, opt-in obliteration where BodyReplace's M32
+                           // ("splice $body or it's silent obliteration") does not apply.
 };
 
 struct RuleAction {
@@ -433,11 +453,17 @@ struct Stmt {
     std::unique_ptr<RuleMatch> ruleMatch;
     std::vector<RuleAction> ruleActions;
     bool ruleRewrites = false;                 // `rewrites` marker (Layer D, Phase 4)
+    bool ruleGenerates = false;                // `generates` marker (Layer D, bindgen
+                                               // metaprog scope): sibling of `rewrites` that
+                                               // discards the original body instead of
+                                               // requiring `$body` to splice it back;
+                                               // mutually exclusive with ruleRewrites
     bool ruleReentrant = false;                // `reentrant` marker (Layer D, Phase 4 §4):
                                                // this rule may re-trigger on rule-generated
                                                // code (the gated fixpoint opt-in)
-    std::string_view rewritesTarget;           // `rewrites body of <bind>`: the match bind
-                                               // whose body a `replace` action overwrites
+    std::string_view rewritesTarget;           // `rewrites body of <bind>` / `generates body
+                                               // of <bind>`: the match bind whose body a
+                                               // `replace` action overwrites
     // `macro Name(params) => \`expr\`;` (Phase 3 §7) reuses this same node shape:
     // ruleMatch/ruleActions/ruleRewrites are unused; `generics` repurposed for the
     // macro's parameter names (both are string_view vectors; documented reuse per

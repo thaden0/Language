@@ -1,0 +1,20 @@
+// Hand-written twin of rule_if_splice.ext: the marshaling body the B2 binding
+// rule expands to, written out by hand. Its --run / --ir output is byte-identical
+// to the rule version's (same .expected) — the acceptance proof that `$if`
+// selects exactly the taken branch per field and emits nothing else.
+class Show {
+    int id;
+    int page;
+    int payload;
+    int untagged;
+    Array<string> bind() {
+        Array<string> out = [];
+        out = out.add("path " + "id");
+        out = out.add("query " + "page");
+        out = out.add("body " + "payload");
+        return out;
+    }
+}
+
+Show s = Show();
+console.writeln(s.bind().joinToString("\n"));

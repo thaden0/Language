@@ -1,0 +1,42 @@
+// Bindgen metaprog scope (techdesign-bindgen-metaprog-scope.md §3/§4.3a): the
+// end-to-end shape the DOM bindgen relies on. A `generates` rule forwards a
+// method's own parameters verbatim with `$_args`; overload resolution over a
+// small hand-written marshal-helper family picks the overload whose signature
+// matches the parameter shape, and THAT overload places each argument in its
+// slot. The rule itself is branch-free — no per-parameter logic at all.
+namespace Marshal {
+    // Mock seam standing in for std::sysHost{I,S,V} — records the (op, h1, a, b)
+    // tuple the rule's `$_args` forwarding + overload resolution produced.
+    string act(string op, int h1, string a, string b) => op + "|" + h1 + "|" + a + "|" + b;
+
+    string __act(int h, string op)                       => act(op, 0, "", "");
+    string __act(int h, string op, string a)              => act(op, 0, a, "");
+    string __act(int h, string op, string a, string b)    => act(op, 0, a, b);
+    string __act(int h, string op, Handle child)          => act(op, child.h, "", "");
+
+    struct Handle { int h; }
+
+    attribute Ext { string op; }
+    rule bindAct generates body of m {
+        match @Ext(e) on method m
+        replace `return Marshal::__act(0, $e.op, $_args);`
+    }
+}
+uses Marshal;
+
+class Widget {
+    @Ext("getText")
+    string text() => "";                          // no args -> a=b=""
+    @Ext("setAttribute")
+    string setAttr(string name, string value) => ""; // two strings -> a, b
+    @Ext("getAttribute")
+    string attr(string name) => "";                // one string -> a
+    @Ext("appendChild")
+    string append(Handle child) => "";              // handle param -> h1
+}
+
+Widget w = Widget();
+console.writeln(w.text());
+console.writeln(w.setAttr("id", "x"));
+console.writeln(w.attr("id"));
+console.writeln(w.append(Handle(9)));

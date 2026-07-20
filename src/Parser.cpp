@@ -611,10 +611,68 @@ ExprPtr Parser::parseArrayElement() {
         expect(TokenKind::KwIn, "'in'");
         fs->a = parseExpr(0);
         expect(TokenKind::Colon, "':'");
-        fs->b = parseExpr(0);
+        // The per-iteration element may itself be a `$if` (the techdesign §4
+        // `$for p : $if (…) {…} $else {…}` binding case in expression position).
+        if (at(TokenKind::Identifier) && cur().text == "$if") {
+            SourceSpan isp = cur().span;
+            advance();
+            fs->b = parseForkSpliceExpr(isp);
+        } else {
+            fs->b = parseExpr(0);
+        }
         return fs;
     }
+    if (at(TokenKind::Identifier) && cur().text == "$if") {
+        // B2 expression position: `$if (c) { e } $else { e }` selects one array
+        // element at expansion time (techdesign-splices-conditional §2).
+        SourceSpan sp = cur().span;
+        advance();                                   // '$if'
+        return parseForkSpliceExpr(sp);
+    }
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        // M41: `$else` with no `$if` (techdesign-splices-conditional §3.3).
+        sink_.error(cur().span, "$else without a preceding $if");
+        advance();
+    }
     return parseExpr(0);
+}
+
+// B2 expression position (techdesign-splices-conditional §2). The leading `$if`
+// is already consumed. Each branch is a single brace-delimited expression; the
+// `$else if` chain desugars to nested ForkSplice in `c`.
+ExprPtr Parser::parseForkSpliceExpr(SourceSpan sp) {
+    auto node = mkExpr(ExprKind::ForkSplice, sp);
+    expect(TokenKind::LParen, "'('");
+    node->a = parseExpr(0);
+    expect(TokenKind::RParen, "')'");
+    node->b = parseForkBranchExpr();
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        SourceSpan esp = cur().span;
+        advance();                                   // '$else'
+        if (at(TokenKind::KwIf)) {
+            advance();                               // 'if' of `$else if`
+            node->c = parseForkSpliceExpr(esp);      // nested fork (desugar)
+        } else {
+            node->c = parseForkBranchExpr();
+        }
+    }
+    return node;
+}
+
+// A `{ <expr> }` branch of an expression-position `$if`. Braces delimit a single
+// expression (which may itself be a nested `$if`).
+ExprPtr Parser::parseForkBranchExpr() {
+    expect(TokenKind::LBrace, "'{'");
+    ExprPtr e;
+    if (at(TokenKind::Identifier) && cur().text == "$if") {
+        SourceSpan sp = cur().span;
+        advance();
+        e = parseForkSpliceExpr(sp);
+    } else {
+        e = parseExpr(0);
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return e;
 }
 
 // Statement/decl/member-position `$for` splice (LA-4 item J + the item-position
@@ -634,12 +692,88 @@ StmtPtr Parser::parseForSpliceStmt(SpliceBody body) {
     expect(TokenKind::KwIn, "'in'");
     fs->expr = parseExpr(0);
     expect(TokenKind::Colon, "':'");
-    switch (body) {
-        case SpliceBody::Stmt:   fs->thenBranch = parseStatement(); break;
-        case SpliceBody::Item:   fs->thenBranch = parseTopLevelItem(); break;
-        case SpliceBody::Member: fs->thenBranch = parseClassMember(Access::Public); break;
-    }
+    // The body is a single fragment element — an ordinary statement/item/member,
+    // or a reserved-head splice (`$for`, `$if`), so `$for p : $if (…) {…} $else
+    // {…}` composes (the techdesign §4 binding case).
+    fs->thenBranch = parseFragmentStmt(body);
     return fs;
+}
+
+// One element of a statement/member/item fragment: dispatch reserved hole-heads
+// to their splice productions, else the ordinary parser for `body`. Shared by
+// the fragment loops (parseStmtsFragment et al.), by parseForSpliceStmt's body,
+// and by parseForkBranch's branch bodies — so every splice nests in every other.
+StmtPtr Parser::parseFragmentStmt(SpliceBody body) {
+    if (at(TokenKind::Identifier) && cur().text == "$for")
+        return parseForSpliceStmt(body);
+    if (at(TokenKind::Identifier) && cur().text == "$if")
+        return parseForkSpliceStmt(body);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        // M41: `$else` with no preceding `$if` (techdesign-splices-conditional
+        // §3.3). Consume it so the fragment loop makes progress.
+        sink_.error(cur().span, "$else without a preceding $if");
+        advance();
+        return nullptr;
+    }
+    switch (body) {
+        case SpliceBody::Stmt:   return parseStatement();
+        case SpliceBody::Item:   return parseTopLevelItem();
+        case SpliceBody::Member: return parseClassMember(Access::Public);
+    }
+    return nullptr;   // unreachable; silences -Wreturn-type
+}
+
+// B2 statement/member/item position (techdesign-splices-conditional §2):
+// `$if (cond) <frag> ( $else if (cond) <frag> )* ( $else <frag> )?`. Consumes
+// the leading `$if`, then defers to parseForkTail.
+StmtPtr Parser::parseForkSpliceStmt(SpliceBody body) {
+    SourceSpan sp = cur().span;
+    advance();                                   // '$if'
+    return parseForkTail(body, sp);
+}
+
+// Parses `(cond) <then-frag> [ $else <else-frag> | $else if … ]` — entered once
+// for `$if` and once per desugared `$else if`. Each `$else if` becomes a nested
+// ForkSplice in `elseBranch`, so the whole chain is a right-leaning tree the
+// fold (cloneStmtInto) walks by ordinary recursion.
+StmtPtr Parser::parseForkTail(SpliceBody body, SourceSpan sp) {
+    auto node = std::make_unique<Stmt>(StmtKind::ForkSplice);
+    node->span = sp;
+    expect(TokenKind::LParen, "'('");
+    node->expr = parseExpr(0);
+    expect(TokenKind::RParen, "')'");
+    node->thenBranch = parseForkBranch(body);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        SourceSpan esp = cur().span;
+        advance();                               // '$else'
+        if (at(TokenKind::KwIf)) {
+            advance();                           // 'if' of `$else if`
+            node->elseBranch = parseForkTail(body, esp);   // nested fork (desugar)
+        } else {
+            node->elseBranch = parseForkBranch(body);
+        }
+    }
+    return node;
+}
+
+// A `{ <frag> }` branch of a statement-position `$if`: a brace group of the same
+// fragment kind as the enclosing template, collected into a Block so the fold
+// splices its members flat (the same shape ForSplice's `{ }` body uses). The
+// kind is fixed by `body`, so both branches are structurally the same kind —
+// parse-time half of M41 (techdesign-splices-conditional §3.3).
+StmtPtr Parser::parseForkBranch(SpliceBody body) {
+    SourceSpan sp = cur().span;
+    expect(TokenKind::LBrace, "'{'");
+    auto blk = std::make_unique<Stmt>(StmtKind::Block);
+    blk->span = sp;
+    while (!at(TokenKind::RBrace) && !atEnd()) {
+        size_t before = pos_;
+        StmtPtr s = parseFragmentStmt(body);
+        if (s && s->kind != StmtKind::Empty) blk->body.push_back(std::move(s));
+        if (pos_ == before) { error("a fragment in $if branch"); break; }
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return blk;
 }
 
 ExprPtr Parser::parsePostfix(ExprPtr base) {
@@ -963,6 +1097,17 @@ StmtPtr Parser::parseStatement() {
     // in a generated method/ctor body, which the fragment-loop checks miss.
     if (at(TokenKind::Identifier) && cur().text == "$for")
         return parseForSpliceStmt(SpliceBody::Stmt);
+    // Statement-position `$if` conditional splice (B2). Same reasoning as `$for`:
+    // it lexes only inside a quasiquote, and a generated method/ctor body is
+    // parsed by this ordinary statement routine, not the fragment loop — so the
+    // recognition must live here to catch a `$if` nested in a body.
+    if (at(TokenKind::Identifier) && cur().text == "$if")
+        return parseForkSpliceStmt(SpliceBody::Stmt);
+    if (at(TokenKind::Identifier) && cur().text == "$else") {
+        sink_.error(cur().span, "$else without a preceding $if");   // M41
+        advance();
+        return nullptr;
+    }
     // Labeled loop (techdesign-labeled-break-continue.md F1): `identifier :`
     // immediately before a loop keyword. `Colon` has no infix binding power
     // (parseExpr(0) stops at it), so `ident :` never begins an expression
@@ -1448,18 +1593,25 @@ StmtPtr Parser::parseRule(Access access) {
     advance();                                       // 'rule'
     r->name = cur().text;
     advance();                                       // name
-    // Two independent contextual markers on the rule header (Layer D, Phase 4):
-    //   `rewrites body of <bind>` (§2.1) — this rule REPLACES the named bind's body
+    // Two independent contextual markers on the rule header (Layer D, Phase 4;
+    // `generates` added by the bindgen metaprog scope design):
+    //   `rewrites body of <bind>` (§2.1) — this rule REPLACES the named bind's body,
+    //                                      splicing the original back in via `$body`
+    //   `generates body of <bind>`       — sibling: REPLACES the body and DISCARDS the
+    //                                      original; `$body` is unavailable (M36)
     //   `reentrant` (§4)                 — this rule may re-trigger on generated code
-    // Either order; a rule may carry both (exotic but legal).
+    // `rewrites` and `generates` are mutually exclusive; either may combine with
+    // `reentrant` in either order (exotic but legal).
     for (int i = 0; i < 2 && at(TokenKind::Identifier); ++i) {
-        if (cur().text == "rewrites" && !r->ruleRewrites) {
-            r->ruleRewrites = true;
-            advance();                               // 'rewrites'
+        if ((cur().text == "rewrites" || cur().text == "generates") &&
+            !r->ruleRewrites && !r->ruleGenerates) {
+            bool generates = cur().text == "generates";
+            if (generates) r->ruleGenerates = true; else r->ruleRewrites = true;
+            advance();                               // 'rewrites' | 'generates'
             if (at(TokenKind::Identifier) && cur().text == "body") advance();
-            else error("'body' after 'rewrites'");
+            else error(generates ? "'body' after 'generates'" : "'body' after 'rewrites'");
             if (at(TokenKind::Identifier) && cur().text == "of") advance();
-            else error("'of' after 'rewrites body'");
+            else error(generates ? "'of' after 'generates body'" : "'of' after 'rewrites body'");
             if (at(TokenKind::Identifier)) { r->rewritesTarget = cur().text; advance(); }
             else error("the bound name whose body is replaced");
         } else if (cur().text == "reentrant" && !r->ruleReentrant) {
@@ -1473,24 +1625,28 @@ StmtPtr Parser::parseRule(Access access) {
     if (at(TokenKind::KwMatch)) parseRuleMatch(*r->ruleMatch);
     else error("'match' clause");
 
+    bool bodyRewriteHeader = r->ruleRewrites || r->ruleGenerates;
     while (at(TokenKind::KwInject) ||
            (at(TokenKind::Identifier) && cur().text == "replace")) {
         RuleAction a;
-        parseRuleAction(a);
+        parseRuleAction(a, r->ruleGenerates);
         // M30 (§2.1): a rule is additive (`inject`) XOR a rewriter (`replace`),
-        // never both. `replace` demands a `rewrites` header; `inject` forbids one.
-        bool isReplace = a.anchor == AnchorKind::BodyReplace;
-        if (isReplace && !r->ruleRewrites)
-            sink_.error(a.span, "'replace' is only legal in a 'rewrites' rule "
-                        "(add 'rewrites body of <bind>' to the rule header)");
-        else if (!isReplace && r->ruleRewrites)
-            sink_.error(a.span, "a 'rewrites' rule uses 'replace', not 'inject' "
-                        "(a rule is additive or a rewriter, never both)");
+        // never both. `replace` demands a `rewrites`/`generates` header; `inject`
+        // forbids one.
+        bool isReplace = a.anchor == AnchorKind::BodyReplace ||
+                          a.anchor == AnchorKind::BodyGenerate;
+        if (isReplace && !bodyRewriteHeader)
+            sink_.error(a.span, "'replace' is only legal in a 'rewrites' or "
+                        "'generates' rule (add 'rewrites body of <bind>' or "
+                        "'generates body of <bind>' to the rule header)");
+        else if (!isReplace && bodyRewriteHeader)
+            sink_.error(a.span, "a 'rewrites'/'generates' rule uses 'replace', not "
+                        "'inject' (a rule is additive or a rewriter, never both)");
         r->ruleActions.push_back(std::move(a));
     }
     if (r->ruleActions.empty())
-        error(r->ruleRewrites ? "at least one 'replace' clause"
-                              : "at least one 'inject' clause");
+        error(bodyRewriteHeader ? "at least one 'replace' clause"
+                                : "at least one 'inject' clause");
 
     expect(TokenKind::RBrace, "'}'");
     return r;
@@ -1602,8 +1758,9 @@ void Parser::parseRuleMatch(RuleMatch& out) {
     }
 }
 
-// inject `template` at <anchor>   |   replace `template`   (Layer D, Phase 4 §2.1)
-void Parser::parseRuleAction(RuleAction& out) {
+// inject `template` at <anchor>   |   replace `template`   (Layer D, Phase 4 §2.1;
+// `generates` sibling added by the bindgen metaprog scope design)
+void Parser::parseRuleAction(RuleAction& out, bool generates) {
     out.span = cur().span;
     bool isReplace = at(TokenKind::Identifier) && cur().text == "replace";
     advance();                                       // 'inject' | 'replace'
@@ -1617,10 +1774,12 @@ void Parser::parseRuleAction(RuleAction& out) {
     advance();
 
     // `replace` has no `at <anchor>` — the target is the rule's `rewrites body of
-    // <bind>`. Its template is a statement fragment (`$body` splices the original
-    // body, §2.2). Set the anchor and parse; the header records the target bind.
+    // <bind>` / `generates body of <bind>`. Its template is a statement fragment
+    // (`$body` splices the original body for `rewrites`; unavailable for
+    // `generates`, M36). Set the anchor and parse; the header records the target
+    // bind.
     if (isReplace) {
-        out.anchor = AnchorKind::BodyReplace;
+        out.anchor = generates ? AnchorKind::BodyGenerate : AnchorKind::BodyReplace;
         out.tmplStmts = parseStmtsFragment(out.quasiSpan);
         return;
     }
@@ -1702,9 +1861,7 @@ std::vector<StmtPtr> Parser::parseStmtsFragment(SourceSpan quasi) {
     Parser sub(std::move(toks), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-                        ? sub.parseForSpliceStmt(SpliceBody::Stmt)
-                        : sub.parseStatement();
+        StmtPtr s = sub.parseFragmentStmt(SpliceBody::Stmt);
         if (s && s->kind != StmtKind::Empty) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("statement in template"); break; }
     }
@@ -1716,9 +1873,7 @@ StmtPtr Parser::parseMemberFragment(SourceSpan quasi) {
     Lexer lex(file_, sink_, /*allowHoles=*/true);
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     if (sub.atEnd()) { sub.error("a member in template"); return nullptr; }
-    if (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-        return sub.parseForSpliceStmt(SpliceBody::Member);   // `$for m ... : <member>`
-    return sub.parseClassMember(Access::Public);
+    return sub.parseFragmentStmt(SpliceBody::Member);   // member, `$for`, or `$if`
 }
 
 ExprPtr Parser::parseExprFragment(SourceSpan quasi) {
@@ -1873,9 +2028,7 @@ std::vector<StmtPtr> Parser::parseItemsFragment(SourceSpan quasi) {
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
     while (!sub.atEnd()) {
         size_t before = sub.pos_;
-        StmtPtr s = (sub.at(TokenKind::Identifier) && sub.cur().text == "$for")
-                        ? sub.parseForSpliceStmt(SpliceBody::Item)
-                        : sub.parseTopLevelItem();
+        StmtPtr s = sub.parseFragmentStmt(SpliceBody::Item);
         if (s) out.push_back(std::move(s));
         if (sub.pos_ == before) { sub.error("declaration in template"); break; }
     }
@@ -2005,14 +2158,16 @@ StmtPtr Parser::parseTopLevelItemInner() {
         peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::LBrace)
         return parseAttributeDecl(acc);
 
-    // `rule Name { ... }` / `rule Name rewrites … { ... }` / `rule Name reentrant …`
-    // — contextual keyword. Recognized by the triple: Identifier("rule") Identifier
-    // then '{' or a header marker ("rewrites" | "reentrant", Layer D Phase 4).
+    // `rule Name { ... }` / `rule Name rewrites … { ... }` / `rule Name generates …`
+    // / `rule Name reentrant …` — contextual keyword. Recognized by the triple:
+    // Identifier("rule") Identifier then '{' or a header marker ("rewrites" |
+    // "generates" | "reentrant", Layer D Phase 4 / bindgen metaprog scope).
     if (at(TokenKind::Identifier) && cur().text == "rule" &&
         peek(1).kind == TokenKind::Identifier &&
         (peek(2).kind == TokenKind::LBrace ||
          (peek(2).kind == TokenKind::Identifier &&
-          (peek(2).text == "rewrites" || peek(2).text == "reentrant"))))
+          (peek(2).text == "rewrites" || peek(2).text == "generates" ||
+           peek(2).text == "reentrant"))))
         return parseRule(acc);
 
     // `macro Name(params) => \`expr\`;` — contextual keyword (Phase 3 §7).

@@ -69,8 +69,9 @@ bool RuleEngine::run(Program& program) {
     // M22 (§7): static, independent of whether/where a macro is ever called —
     // fires even for a macro nobody uses yet.
     validateMacroDecls();
-    // M32/M35 (§2.3): static checks on `rewrites` rules, likewise fire-or-not
-    // independent — a malformed rewriter is an error even if it never matches.
+    // M32/M35/M36 (§2.3; M36 added by the bindgen metaprog scope design): static
+    // checks on `rewrites`/`generates` rules, likewise fire-or-not independent —
+    // a malformed rewriter/generator is an error even if it never matches.
     validateRewriteRules();
     comptimeScope_ = sema_.global;   // §8: root-level comptime is scope-complete
     // B. Comptime fold walk ONLY — vars/ifs/exprs. Macro-call expansion does
@@ -715,15 +716,19 @@ void RuleEngine::validateMacroDecls() {
     }
 }
 
-// Layer D (§2.3): static checks on `rewrites` rules at collection time, run
-// once per rule independent of whether it ever fires — M35 (the `rewrites body
-// of <bind>` target names a callable match bind) and M32 (`$body` is referenced
-// exactly once across the rule's replace templates: zero drops the original
-// body silently, more than once duplicates its side effects).
+// Layer D (§2.3): static checks on `rewrites`/`generates` rules at collection
+// time, run once per rule independent of whether it ever fires — M35 (the
+// target bind names a callable match bind), M32 (a `rewrites` rule's `$body`
+// is referenced exactly once across its replace templates: zero drops the
+// original body silently, more than once duplicates its side effects), and
+// M36 (a `generates` rule's replace templates never reference `$body` — there
+// is no original to splice; bindgen metaprog scope design).
 void RuleEngine::validateRewriteRules() {
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleRewrites || !r.node->ruleMatch) continue;
+        bool generates = r.node->ruleGenerates;
+        if ((!r.node->ruleRewrites && !generates) || !r.node->ruleMatch) continue;
         const RuleMatch& m = *r.node->ruleMatch;
+        const char* verb = generates ? "generates" : "rewrites";
 
         // M35: the target bind must name a callable match bind (subject or an
         // encloser of method/function kind). A field/class/struct bind has no
@@ -738,30 +743,39 @@ void RuleEngine::validateRewriteRules() {
             if (tgt == lv.bind) { found = true; callable = isCallableKind(lv.kindWord); }
         if (!found)
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
-                        "' rewrites body of '" + std::string(tgt) +
+                        "' " + verb + " body of '" + std::string(tgt) +
                         "', which is not a name bound by its match clause");
         else if (!callable)
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
-                        "' rewrites body of '" + std::string(tgt) +
+                        "' " + verb + " body of '" + std::string(tgt) +
                         "', which is not a callable (only a method/function has a "
                         "body to replace)");   // M35
 
-        // M32: exactly one `$body` across every replace template.
+        // M32 (`rewrites`): exactly one `$body` across every replace template.
+        // M36 (`generates`): `$body` must never appear — there is no original.
         int n = 0;
         for (const RuleAction& act : r.node->ruleActions) {
-            if (act.anchor != AnchorKind::BodyReplace) continue;
+            if (act.anchor != AnchorKind::BodyReplace && act.anchor != AnchorKind::BodyGenerate)
+                continue;
             for (const StmtPtr& s : act.tmplStmts) countHoleRefsStmt(s.get(), "$body", n);
         }
-        if (n == 0)
+        if (generates) {
+            if (n > 0)
+                sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
+                            "' is a 'generates' rule — the original body is "
+                            "discarded, so '$body' is unavailable; use 'rewrites' "
+                            "to keep it");   // M36
+        } else if (n == 0) {
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
                         "' never references '$body' — a 'replace' that drops the "
                         "original body is silent obliteration; splice '$body' to "
                         "keep it");   // M32
-        else if (n > 1)
+        } else if (n > 1) {
             sink_.error(r.node->span, "rule '" + std::string(r.node->name) +
                         "' references '$body' " + std::to_string(n) + " times — a "
                         "'rewrites' rule may splice the original body at most once "
                         "(splicing it twice duplicates its side effects)");   // M32
+        }
     }
 }
 
@@ -1653,12 +1667,12 @@ void RuleEngine::runRulePasses(bool reentrantOnly) {
     // Two passes over the offset-ordered rule list keep both halves
     // deterministic regardless of a rewriter's source position.
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleMatch || r.node->ruleRewrites) continue;
+        if (!r.node->ruleMatch || r.node->ruleRewrites || r.node->ruleGenerates) continue;
         if (reentrantOnly && !r.node->ruleReentrant) continue;
         matchAndExpandRule(r);
     }
     for (const OwnedRule& r : rules_) {
-        if (!r.node->ruleMatch || !r.node->ruleRewrites) continue;
+        if (!r.node->ruleMatch || !(r.node->ruleRewrites || r.node->ruleGenerates)) continue;
         if (reentrantOnly && !r.node->ruleReentrant) continue;
         matchAndExpandRule(r);
     }
@@ -1735,6 +1749,7 @@ void RuleEngine::expandMacrosInClone(std::vector<StmtPtr>& stmts) {
 void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                         const AttrUse* firedAttr) {
     curRuleNs_ = r.ns;   // §10: def-site qualification during this firing's clones
+    curRuleName_ = r.node->name;   // B2: for `$if` diagnostics (M40)
     for (const RuleAction& act : r.node->ruleActions) {
         // Hygiene (§7.1): alpha-rename any local this template declares, fresh
         // per firing, so it cannot collide with use-site names.
@@ -1832,25 +1847,31 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                            std::make_move_iterator(cloned.end()));
             markerInsertCount_[markerNode] += n;
 
-        } else if (act.anchor == AnchorKind::BodyReplace) {
-            // Layer D (§2.3): overwrite the `rewrites body of <bind>` target's
-            // body, splicing the original back in wherever `$body` appears.
+        } else if (act.anchor == AnchorKind::BodyReplace ||
+                   act.anchor == AnchorKind::BodyGenerate) {
+            // Layer D (§2.3) / bindgen metaprog scope: overwrite the `rewrites
+            // body of <bind>` / `generates body of <bind>` target's body. A
+            // `rewrites` action splices the original back in wherever `$body`
+            // appears; a `generates` action discards it outright (M36 already
+            // rejected any `$body` reference in this template at validate time).
+            bool isGenerate = act.anchor == AnchorKind::BodyGenerate;
             std::string_view tgt = r.node->rewritesTarget;
             Stmt* subj = nullptr;
             auto bit = b.find(tgt);
             if (bit != b.end()) subj = bit->second.declStmt;
             if (!subj || !subj->callable || !subj->memberBody) {
                 sink_.error(act.span, "rule '" + std::string(r.node->name) +
-                            "' rewrites body of '" + std::string(tgt) +
+                            "' " + (isGenerate ? "generates" : "rewrites") +
+                            " body of '" + std::string(tgt) +
                             "', but it has no body to replace");   // M35 (expansion)
                 continue;
             }
             std::string qualName = (r.ns == "<root>" ? std::string(r.node->name)
                                                      : r.ns + "::" + std::string(r.node->name));
-            // §3 confluence: only one replace may own a body (no order composes
-            // two independent whole-body replacements). The two rules are named
-            // in stable source-offset order (orderRules), so the report is
-            // reproducible: the earlier replacer owns the mark, the later trips it.
+            // §3 confluence: only one replace/generate may own a body (no order
+            // composes two independent whole-body rewrites). The two rules are
+            // named in stable source-offset order (orderRules), so the report is
+            // reproducible: the earlier owner owns the mark, the later trips it.
             auto prev = replacedBy_.find(subj);
             if (prev != replacedBy_.end()) {
                 sink_.error(act.span, "rule '" + prev->second + "' and rule '" +
@@ -1860,12 +1881,13 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
                 continue;
             }
             replacedBy_[subj] = qualName;
-            // Capture the original body under `$body` (normalized to a Block so
-            // the statement form has a vector), clone the template — which
-            // splices it — then overwrite. The clone reads replaceBodyOrig_
-            // before the overwrite frees the old body.
+            // `rewrites`: capture the original body under `$body` (normalized to
+            // a Block so the statement form has a vector), clone the template —
+            // which splices it — then overwrite. The clone reads replaceBodyOrig_
+            // before the overwrite frees the old body. `generates` leaves
+            // replaceBodyOrig_ null: there is nothing to splice, by design.
             normalizeMemberBody(subj);
-            replaceBodyOrig_ = subj->memberBody.get();
+            if (!isGenerate) replaceBodyOrig_ = subj->memberBody.get();
             std::vector<StmtPtr> cloned;
             cloneStmtListBody(act.tmplStmts, b, err, cloned);
             replaceBodyOrig_ = nullptr;
@@ -1997,9 +2019,47 @@ void RuleEngine::cloneArgList(const std::vector<ExprPtr>& args, Bindings& b,
 // that is a `{ }` block splices its statements flat (so several statements can
 // repeat together); any other body clones as one. Non-ForSplice statements
 // clone 1:1.
+// B2 (techdesign-splices-conditional §3.2): a `$if` condition is an ordinary
+// comptime predicate over the firing's bindings — the same env `where` and
+// item-level `comptime if` evaluate against (materializeBindings + evalComptimeAt).
+bool RuleEngine::evalForkCond(Expr* cond, Bindings& b, bool& taken, bool& err) {
+    std::unordered_map<std::string, Value> locals = materializeBindings(b);
+    std::string evErr; bool failed = false;
+    Value v = evalComptimeAt(cond, locals, evErr, failed);
+    if (failed) {
+        // Same wording as the where-clause failure (Rules.cpp §5), keyed to $if —
+        // a runaway/erroring predicate is caught by the existing step budget.
+        sink_.error(cond->span, "rule '" + curRuleName_ +
+                    "' $if-condition evaluation failed: " + evErr);
+        err = true; return false;
+    }
+    if (v.kind != VKind::Bool) {
+        sink_.error(cond->span, "rule '" + curRuleName_ +          // M40
+                    "' $if-condition must be bool (got '" + valueToString(v) + "')");
+        err = true; return false;
+    }
+    taken = v.b; return true;
+}
+
 void RuleEngine::cloneStmtInto(const Stmt* s, Bindings& b, bool& err,
                                std::vector<StmtPtr>& out) {
     if (!s) return;
+    if (s->kind == StmtKind::ForkSplice) {
+        // B2: evaluate the predicate, then splice ONLY the taken branch's
+        // fragment flat into `out` — cloning it through cloneStmtInto so its own
+        // holes, `$for`s, and nested `$if`s (`$else if` lands here as a
+        // ForkSplice elseBranch) all expand. The untaken branch is never cloned
+        // (template stays a template). A false `$if` with no `$else` emits nothing.
+        bool taken = false;
+        if (!evalForkCond(s->expr.get(), b, taken, err)) return;
+        const Stmt* branch = taken ? s->thenBranch.get() : s->elseBranch.get();
+        if (!branch) return;
+        if (branch->kind == StmtKind::Block)
+            for (const StmtPtr& bs : branch->body) cloneStmtInto(bs.get(), b, err, out);
+        else
+            cloneStmtInto(branch, b, err, out);
+        return;
+    }
     if (s->kind != StmtKind::ForSplice) {
         StmtPtr c = cloneStmt(s, b, err);
         if (c) out.push_back(std::move(c));
@@ -2030,9 +2090,31 @@ void RuleEngine::cloneStmtInto(const Stmt* s, Bindings& b, bool& err,
     }
 }
 
+// Clone one array-literal element into `out`, folding an expression-position
+// ForkSplice (`$if`) to its taken leaf (B2). Following nested ForkSplice in `c`
+// resolves the whole `$else if` chain; a false tail with no `$else` contributes
+// no element. A plain element clones 1:1. Shared by cloneArrayElements' top
+// level and its `$for` per-item body, so `$for p : $if (…) {…} $else {…}` folds.
+void RuleEngine::cloneArrayElementInto(const Expr* el, Bindings& b, bool& err,
+                                       std::vector<ExprPtr>& out) {
+    const Expr* cur = el;
+    while (cur && cur->kind == ExprKind::ForkSplice) {
+        bool taken = false;
+        if (!evalForkCond(cur->a.get(), b, taken, err)) return;
+        cur = taken ? cur->b.get() : cur->c.get();
+    }
+    if (!cur) return;
+    ExprPtr cloned = cloneExpr(cur, b, err);
+    if (cloned) out.push_back(std::move(cloned));
+}
+
 void RuleEngine::cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings& b,
                                     bool& err, std::vector<ExprPtr>& out) {
     for (const ExprPtr& el : elems) {
+        if (el->kind == ExprKind::ForkSplice) {
+            cloneArrayElementInto(el.get(), b, err, out);
+            continue;
+        }
         if (el->kind != ExprKind::ForSplice) {
             out.push_back(cloneExpr(el.get(), b, err));
             continue;
@@ -2060,8 +2142,7 @@ void RuleEngine::cloneArrayElements(const std::vector<ExprPtr>& elems, Bindings&
             Bindings inner = b;             // extend, not mutate — nested $for sees both
             Binding ib; ib.hasVal = true; ib.val = item;
             inner[el->text] = ib;
-            ExprPtr cloned = cloneExpr(el->b.get(), inner, err);
-            if (cloned) out.push_back(std::move(cloned));
+            cloneArrayElementInto(el->b.get(), inner, err, out);   // element may be a `$if`
         }
     }
 }

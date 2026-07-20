@@ -1,0 +1,16 @@
+// B2 (techdesign-splices-conditional §5) M40: a `$if` condition that is not a
+// comptime bool is a hard rule-stage error naming the rule — mirroring the
+// where-clause bool check. Here `C.name` is a string, not a bool.
+namespace K {
+    attribute Row { }
+    rule r {
+        match @Row(x) on class C
+        inject `int tag() { $if (C.name) { return 1; } return 0; }` at member of C
+    }
+}
+uses K;
+
+@Row
+class P { }
+
+console.writeln(P().tag());

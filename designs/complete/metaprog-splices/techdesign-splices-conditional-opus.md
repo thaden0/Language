@@ -1,5 +1,18 @@
 # Tech Design 02 — Conditional Splice: `$if (pred) { … } $else { … }` (B2)
 
+**Status: IMPLEMENTED** (agent2). `StmtKind::ForkSplice` / `ExprKind::ForkSplice`
+(`src/Ast.hpp`), fragment-parser productions incl. the `$else if` desugar and the
+reserved-head recognition this file's dependency-01 was to provide (introduced
+here since 01 had not yet landed — `src/Parser.cpp`), the expansion-time fold in
+`cloneStmtInto` / `cloneArrayElements` reusing `materializeBindings` +
+`evalComptimeAt` (`src/Rules.cpp`), and the `--ast`/`--expand` printers
+(`src/AstPrinter.cpp`). Diagnostics M40 (non-bool condition) and M41 (`$else`
+without `$if` / branch kind mismatch — the latter enforced structurally at parse
+time) ship. Corpus: `tests/corpus/meta/rule_if_{splice,splice_twin,expr,expr_twin,
+chain}.ext` (green, byte-identical twins, `--run`/`--ir`/`--expand` roundtrip) and
+`tests/negative/rule_if_{badcond,dangling_else,kindmix}.ext` (red). `docs/reference.md`
+documents `$if`/`$else`/`$else if`.
+
 **Part of** `designs/metaprog-splices/` (see `-overview-opus.md`). **Complexity:** opus
 (new expansion-time control-flow primitive in the clone pass). **Grounding commit:**
 `cc071c3`, spiked live. **Depends on** file 01 only for the shared reserved-hole-head

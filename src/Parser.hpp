@@ -75,6 +75,22 @@ private:
     // fragment (LA-4 item J). `body` selects how the per-iteration body parses.
     enum class SpliceBody { Stmt, Item, Member };
     StmtPtr parseForSpliceStmt(SpliceBody body);
+    // One element of a quasiquote fragment: dispatches a reserved hole-head
+    // (`$for` -> ForSplice, `$if` -> ForkSplice) or the ordinary statement/item/
+    // member parser for `body`. `$else` here (no preceding `$if`) is M41.
+    StmtPtr parseFragmentStmt(SpliceBody body);
+    // Conditional splice (B2, techdesign-splices-conditional): `$if (cond) <frag>
+    // ( $else if (cond) <frag> )* ( $else <frag> )?`. `parseForkSpliceStmt`
+    // consumes the leading `$if`; `parseForkTail` parses `(cond) <frag> [else]`
+    // (also entered for each desugared `$else if`). A `<frag>` is a brace group
+    // of the same fragment kind as `body`, wrapped in a Block by parseForkBranch.
+    StmtPtr parseForkSpliceStmt(SpliceBody body);
+    StmtPtr parseForkTail(SpliceBody body, SourceSpan sp);
+    StmtPtr parseForkBranch(SpliceBody body);
+    // Expression-position `$if (cond) { e } $else { e }` (array element). The
+    // leading `$if` is already consumed by the caller. a=cond, b=then, c=else.
+    ExprPtr parseForkSpliceExpr(SourceSpan sp);
+    ExprPtr parseForkBranchExpr();
 
     // --- statements ---
     StmtPtr parseStatement();                  // also the "body is one statement" routine
@@ -107,7 +123,7 @@ private:
     // --- rules (§16.5 Layer B) ---
     StmtPtr parseRule(Access access);              // `rule Name { match ... inject ... }`
     void parseRuleMatch(RuleMatch& out);           // the match clause
-    void parseRuleAction(RuleAction& out);         // one inject clause + anchor
+    void parseRuleAction(RuleAction& out, bool generates); // one inject/replace clause + anchor
     // --- expression macros (Phase 3 §7) ---
     StmtPtr parseMacroDecl(Access access);         // `macro Name(params) => \`expr\`;`
     // Fragment parsers: re-lex a quasiquote's payload (with holes) into AST.

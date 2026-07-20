@@ -277,6 +277,26 @@ add_test(NAME corpus_target_uses_cpp
 add_test(NAME corpus_meta_expand_roundtrip
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/meta")
+# B2 conditional splice (designs/complete/metaprog-splices/
+# techdesign-splices-conditional-opus.md §5/§8): the three `$if`/`$else` reject
+# rows — each a hard compile error carrying its named diagnostic. The green
+# fixtures (rule_if_splice{,_twin}, rule_if_expr{,_twin}, rule_if_chain) ride the
+# corpus_meta_* lanes above.
+add_test(NAME rule_if_reject_badcond            # M40: non-bool condition
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_badcond.ext"
+                 "$if-condition must be bool")
+add_test(NAME rule_if_reject_dangling_else      # M41: $else without a $if
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_dangling_else.ext"
+                 "$else without a preceding $if")
+add_test(NAME rule_if_reject_kindmix            # M41: statement in an expr-position branch
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_kindmix.ext"
+                 "expected expression")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir

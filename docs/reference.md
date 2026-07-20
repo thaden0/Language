@@ -2217,6 +2217,27 @@ every rule that can touch it.
   splices, and expression macros (`macro name(e) => \`…\`;` / `name!(arg)`),
   all ship. **Body-replacing rules (Layer D, `rewrites` / `replace` / `$body`)
   also ship** — see below.
+- **`$if` / `$else` / `$else if` — the expansion-time template conditional.**
+  Inside any template `$if (<comptime-pred>) { <frag> } $else if (<pred>) {
+  <frag> } $else { <frag> }` selects **one branch at expansion time**, per rule
+  firing: the predicate is an ordinary comptime expression evaluated against the
+  firing's bindings (the same environment `where` and `comptime if` use — e.g.
+  `f.hasAttr("Param")`, `f.attr("Param")?.argStr(0) == "path"`, `C.name == "P"`),
+  and only the **taken** branch's fragment is spliced in — the untaken branch is
+  never emitted (the template stays a template; `--expand` shows only the taken
+  branch). A `{ <frag> }` is a brace group of the **same fragment kind** as its
+  position (statements in a body/ctor template, members in `member of`, items in
+  `namespace N`, or a single expression in array-element position, e.g.
+  `[ … $if (p) { a } $else { b } … ]`); the `$else if` chain is sugar for nested
+  `$if`. It composes with `$for` and sibling splices — one binding rule can emit
+  per-source variants (`$for p … : $if (path) {…} $else if (query) {…} $else
+  {…}`) instead of one rule per combination. This is the template-time analogue
+  of `comptime if` (below); the `$` marks "fold at expansion," so a bare
+  `comptime if` inside a template still means a runtime `if` in the *generated*
+  code. A `$if` whose condition is not a comptime `bool` is a rule-stage error
+  (naming the rule, mirroring the `where`-clause bool check); a `$else` with no
+  preceding `$if`, or a branch whose contents don't fit its fragment kind, is a
+  parse error.
 - **Additive + hygienic (by default):** ordinary rules only add code (no silent
   rewrites); the loud, explicitly-marked exception is a `rewrites` rule (below).
   A local a template declares is alpha-renamed to a fresh symbol, so injected
@@ -2234,6 +2255,8 @@ comptime int TABLE = nextPrime(1000);      // var: init folds to a literal
 comptime Array<int> EVENS = [1,2,3,4].where((x) => x % 2 == 0);
 int y = 1 + comptime sumTo(10);            // expression form (folds rightward)
 comptime if (TABLE > 100) { ... } else { ... }   // untaken branch not compiled
+// (inside a rule TEMPLATE, `$if (...) { ... } $else { ... }` is the expansion-
+//  time analogue — selects a template fragment per firing; see Inject above)
 comptime console.writeln("[build] ...");   // compile-time log (real console)
 ```
 - Evaluation runs on the tree-walk oracle, **hermetic**: the `std::sys*` floor
@@ -2343,6 +2366,52 @@ is **additive (`inject`) XOR a rewriter (`replace`), never both** (M30).
   rule-generated code, re-run to a fixpoint (or M34 if it doesn't converge in
   the round budget, default 8, `--reentrant-budget` overrides). Only `reentrant`
   rules re-trigger — the safe majority still sees the tree exactly once.
+
+### Body-generating rules (Layer D) — `generates` / `replace` / M36
+```
+namespace Bindgen {
+    attribute Extern { string op; }
+    rule bindStr generates body of m {
+        match @Extern(e) on method m
+        replace `return Host::str($e.op, $_args);`
+    }
+}
+class Widget {
+    @Extern("getAttribute")
+    string attr(string name) => "";     // placeholder; discarded, never runs
+}
+```
+The sibling of `rewrites`/`replace`/`$body`: `generates body of <bind>` overwrites
+the target's body wholesale and **discards** the original outright, for a rule
+whose whole point is that there is no meaningful original to compose with — a
+bindgen stub, an FFI shim, a codec, any "declare the signature, machine-fill the
+body" generator. Signature and generation data (an `@Extern`-shaped attribute,
+say) live on the same hand-written declaration; only the body is generated, so
+this never collides with M33's declare-vs-inject check (nothing is injected).
+
+- **`$body` is unavailable** in a `generates` template — referencing it is
+  **M36** ("the original body is discarded, so `$body` is unavailable; use
+  `rewrites` to keep it"). This is the sanctioned, opt-in counterpart to M32's
+  "a `replace` that drops the body is silent obliteration": `generates` makes
+  the drop explicit at the rule header instead of forbidding it.
+- **The target still needs a body to overwrite** — `generates` cannot declare a
+  bodyless method; give it a type-valid placeholder (`=> this`, `=> ""`, `{ }`,
+  …). The placeholder never runs; it exists only so the declaration parses and
+  (where the file is checked) type-checks before the rule stage replaces it.
+- **`$_args`** (§ Rules, `$_params`/`$_args`) forwards the matched method's own
+  parameters verbatim; overload resolution over a hand-written helper family can
+  then place each argument in whatever downstream slot its type/position implies
+  — a `generates` template stays branch-free even when different call shapes
+  need different marshaling, because the type system, not template `$for`/`$if`,
+  does the dispatching.
+- Everything else about `rewrites` — M35 (target must be a callable match bind),
+  M33 (two whole-body rewrites, `rewrites` or `generates`, on one body do not
+  compose), `reentrant`, pass-2 ordering (rewriters/generators run after all
+  additive `inject`s) — applies identically.
+- **Caveat:** rules and attributes declared inside the compiler's own prelude
+  (`prelude/*.lev`) never fire — the rule stage only ever walks the file(s)
+  being compiled, never the prelude's own tree. `generates`/`rewrites`/macros
+  work as documented in ordinary project files only. See known-bugs #98.
 
 Expression macros (Layer D-lite) also ship (see Rules, above).
 
