@@ -1,0 +1,56 @@
+
+namespace expr {
+
+    class Node { }
+
+    class Field : Node {
+        Array<string> path;
+        new Field(Array<string> p) { path = p; }
+    }
+
+    class Lit : Node {
+        string | int | float | bool | None v;
+        new Lit(string | int | float | bool | None value) { v = value; }
+    }
+
+    class Bind : Node {
+        int slot;
+        new Bind(int s) { slot = s; }
+    }
+
+    class Bin : Node {
+        string op;
+        Node l;
+        Node r;
+        new Bin(string o, Node left, Node right) { op = o; l = left; r = right; }
+    }
+
+    class Un : Node {
+        string op;
+        Node e;
+        new Un(string o, Node inner) { op = o; e = inner; }
+    }
+
+    class Call : Node {
+        string name;
+        Node recv;
+        Array<Node> args;
+        new Call(string n, Node receiver, Array<Node> a) { name = n; recv = receiver; args = a; }
+    }
+
+    class Assign : Node {
+        Field target;
+        Node value;
+        new Assign(Field t, Node val) { target = t; value = val; }
+    }
+
+    class Expr<F> {
+        F fn;
+        expr::Node tree;
+        Array<string | int | float | bool | None> binds;
+        int siteId;
+        new Expr(F f, expr::Node t, Array<string | int | float | bool | None> b, int s) {
+            fn = f; tree = t; binds = b; siteId = s;
+        }
+    }
+}

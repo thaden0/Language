@@ -1,0 +1,673 @@
+
+
+// An integer range produced by `a .. b` (inclusive). Iterable by `for..in`
+// (the counted-loop fast path, contract C5); IIterable for protocol uniformity.
+class Range : IIterable<int> {
+    int start = 0;
+    int end = 0;
+    new Range(int s, int e) { start = s; end = e; }
+    IIterator<int> iterator() => RangeIterator(this);
+}
+// The Range's protocol iterator (techdesign-07 §2.1). `for..in` over a range
+// still counts inline; this exists so a Range can stand where an IIterable is
+// wanted. Inclusive of `end`, matching the counted-loop fast path.
+class RangeIterator : IIterator<int> {
+    int cur = 0;
+    int last = 0;
+    new RangeIterator(Range r) { cur = r.start; last = r.end; }
+    bool hasNext() => cur <= last;
+    int next() { int v = cur; cur = cur + 1; return v; }
+}
+
+
+// --- Streams: THE system boundary (§13) -------------------------------------
+// The buffer is a QUEUE (single consumer; each element consumed once). The
+// rate-matching ring over raw memory is the later implementation of this same
+// class; the interface is the contract. subscribe() is a STANDING PULL: it
+// claims the consumer end (pull afterwards is an error); broadcast is a
+// Layer-2 reshaping (EventEmitter), never a substrate property.
+class StreamBuffer<T> {
+    Array items;
+    (T) => void handler;
+    bool hasHandler = false;
+    bool closed = false;                       // SU-1 §4.1: consumer-closed cutoff
+    bool claimed = false;                      // D-B/DM-3: iterator() exclusivity (parallels hasHandler)
+    Array<Promise<bool>> waiters;               // D-B/DM-3: parked hasNext() callers
+
+    new StreamBuffer() { }
+
+    int count() => items.length();
+    bool isEmpty() => items.isEmpty();
+
+    void push(T v) {
+        if (closed) return;                    // SU-1: silent drop — strict fanout cutoff (R5)
+        if (hasHandler) {
+            var cb = handler;
+            cb(v);
+            return;
+        }
+        items = items.add(v);
+        wake(true);                            // D-B/DM-3: a parked hasNext() can now proceed
+    }
+    // D-B/DM-3: raw dequeue, bypassing the iterator-claim guard — StreamIterator
+    // IS the claim holder, so it must be able to drain through it. ITEMS WIN
+    // OVER CLOSED: a producer's natural "push the last item, then close()" must
+    // still deliver that item (the closed flag can already be true by the time
+    // a parked hasNext() resumes and calls next() — resolve() does not resume
+    // its awaiter synchronously, so a same-tick push-then-close can race ahead
+    // of the resume). This deliberately differs from pull() below: see there
+    // for why the two must NOT share one ordering.
+    T pullRaw() {
+        if (!isEmpty()) {
+            T v = items.first();
+            items = items.skip(1);
+            return v;
+        }
+        if (closed) throw RuntimeException("stream is closed");
+        throw RuntimeException("stream is empty");
+    }
+    // UNCHANGED from SU-1 (closed wins unconditionally, even over leftover
+    // buffered items) — pinned by tests/corpus/floor/unsub_inmem.lev's
+    // "pull:stream is closed" with 2 un-pulled items still sitting in the
+    // buffer. That is a CONSUMER-close contract (the closer said done, drop
+    // everything); pullRaw()/pullOrNone() below are the producer-EOF-shaped
+    // siblings this design adds beside it, per techdesign-stream-unsubscribe.md
+    // §8's hand-off ("introduce pullOrNone beside the throwing pull").
+    T pull() {
+        if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
+        if (closed) throw RuntimeException("stream is closed");
+        if (isEmpty()) throw RuntimeException("stream is empty");
+        T v = items.first();
+        items = items.skip(1);
+        return v;
+    }
+    // D-B/DM-3 (§2.3 step 1): the honest non-blocking pull. None collapses
+    // "nothing buffered yet" and "closed and drained" into one outcome — a
+    // poller doesn't need the strict trichotomy the blocking iterator below
+    // does (that one gets it from waitForData's true/false, not from a value).
+    // Items win over closed, like pullRaw() (the producer-EOF drain rule).
+    T? pullOrNone() {
+        if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
+        if (!isEmpty()) {
+            T v = items.first();
+            items = items.skip(1);
+            return v;
+        }
+        return None;
+    }
+    void setHandler((T) => void cb) {
+        if (closed) throw RuntimeException("stream is closed");
+        if (hasHandler) throw RuntimeException("consumer end is already claimed");
+        if (claimed) throw RuntimeException("consumer end is claimed by an iterator");
+        handler = cb;
+        hasHandler = true;
+        while (!items.isEmpty()) {
+            T v = items.first();
+            items = items.skip(1);
+            cb(v);
+        }
+    }
+    // D-B/DM-3: claims the consumer end for iteration — the same exclusivity
+    // rule subscribe() enforces for callbacks, on a second surface (§13: a
+    // stream has ONE consumer).
+    void claimIterator() {
+        if (hasHandler) throw RuntimeException("consumer end is claimed by a subscriber");
+        if (claimed) throw RuntimeException("consumer end is already claimed");
+        claimed = true;
+    }
+    // D-B/DM-3 (§2.3 step 2): the blocking-pull wait, built entirely on the
+    // existing Promise/await suspension surface — no new native, no new IR op.
+    // Resolves true the instant data is available (fast path: an
+    // already-ready-shaped return needs no park), false once the stream is
+    // closed with nothing left. Items win over closed (matches pullRaw()), so
+    // hasNext()/next() always agree with each other on what "left" means.
+    Promise<bool> waitForData() {
+        Promise<bool> p = Promise();
+        if (!isEmpty()) { p.resolve(true); return p; }
+        if (closed) { p.resolve(false); return p; }
+        waiters = waiters.add(p);
+        return p;
+    }
+    void wake(bool v) {
+        if (waiters.length() == 0) return;
+        Array<Promise<bool>> w = waiters;
+        waiters = waiters.skip(waiters.length());
+        for (Promise<bool> p in w) p.resolve(v);
+    }
+    void close() {                             // SU-1: idempotent, never throws
+        closed = true;
+        hasHandler = false;                    // detach any claimed consumer
+        wake(false);                           // D-B/DM-3: wake parked hasNext() with "no more data"
+    }
+}
+
+// Typed views: capability is which operators the type exposes (structural).
+// SU-1: InStream is IDisposable — an optional producer-attached teardown
+// closure rides alongside the buffer (the TcpStream onClose/hasCloseCb
+// pattern), so `using` works uniformly on every stream (real teardown only
+// where a producer attached one; a plain in-memory stream just closes its
+// buffer). SU-1: : IDisposable so `using InStream<int> w = signal::on(sig);`
+// releases the subscription (and, on last-out, its fd/watch) on scope exit.
+// D-B/DM-3 (techdesign-http-and-streams-maturity.md §2.3 step 3): also
+// IIterable<T>, so `for (T x in stream)` works directly. Because Track 07's
+// dispatch is static-by-type through contract C5 (fast paths, then protocol)
+// and the protocol path lowers to plain CallDyn, this flip costs zero
+// checker/Eval/Lower/backend work — it is an ordinary prelude interface add.
+class InStream<T> : IDisposable, IIterable<T> {
+    StreamBuffer<T> buf;
+    () => void onDispose;
+    bool hasDispose = false;
+
+    new InStream(StreamBuffer<T> b) { buf = b; }
+
+    T pull() => buf.pull();
+    T? pullOrNone() => buf.pullOrNone();       // D-B/DM-3: honest non-blocking pull
+    bool hasData() => !buf.isEmpty();
+    void subscribe((T) => void cb) buf.setHandler(cb);
+
+    // D-B/DM-3: claims the consumer end like subscribe() does, then hands off
+    // to StreamIterator, which drives the buffer directly so it can bypass the
+    // very claim it just took (buf.pullRaw()) while external pull()/subscribe()
+    // calls made afterward still see the exclusivity error.
+    IIterator<T> iterator() {
+        buf.claimIterator();
+        return StreamIterator(buf);
+    }
+
+    // The bridge into the lazy pipeline (mirrors Array.asSeq(), techdesign-07
+    // §3): `for..in` already works via IIterable above; this additionally
+    // unlocks `.map()/.take()/.where()/...` over a live stream.
+    Seq<T> asSeq() => StreamSeq(this);
+
+    void close() {
+        if (hasDispose) {
+            hasDispose = false;                // flip BEFORE running — reentrancy/double-close safe
+            var d = onDispose;
+            d();
+        }
+        buf.close();
+    }
+}
+// D-B/DM-3: the stream's protocol iterator. Holds the StreamBuffer directly
+// (not the InStream) so next() can drain via pullRaw(), bypassing the very
+// claim this iterator itself holds. hasNext() parks on the waiter-promise
+// wait — the same suspension surface `await` uses, so a live producer's next
+// push wakes it, and close() (consumer- or producer-initiated — both route
+// through the same StreamBuffer.close()) wakes it with "no more data" (the
+// "Timer-fed for..in delivers all ticks then exits at close" contract).
+class StreamIterator<T> : IIterator<T> {
+    StreamBuffer<T> buf;
+    new StreamIterator(StreamBuffer<T> b) { buf = b; }
+    bool hasNext() {
+        Promise<bool> p = buf.waitForData();
+        bool got = await p;
+        return got;
+    }
+    T next() => buf.pullRaw();
+}
+// D-B/DM-3: lets a stream join the same lazy `.map()/.take()/.where()`
+// pipeline arrays get via asSeq() — a stream is exactly as valid an
+// IIterable source. Track 07 §5#4's "terminals require finite sources"
+// applies verbatim here: an unclosed stream is an infinite source, `take(n)`
+// is the caller's bound (no runtime guard, same stance as `while (true)`).
+class StreamSeq<T> : Seq<T> {
+    InStream<T> source;
+    new StreamSeq(InStream<T> src) { source = src; }
+    IIterator<T> iterator() => source.iterator();
+}
+class OutStream<T> {
+    StreamBuffer<T> buf;
+    new OutStream(StreamBuffer<T> b) { buf = b; }
+    OutStream<T> (<<)(T v) {
+        buf.push(v);
+        return this;
+    }
+}
+// The diamond: both sides' `buf` collapse to ONE slot (same name + type, not
+// distinct) — a bidirectional stream has both ends on the same conduit (§13).
+class IOStream<T> : InStream<T>, OutStream<T> {
+    new IOStream(StreamBuffer<T> b) {
+        InStream::InStream(b);
+        OutStream::OutStream(b);
+    }
+}
+
+// The console: stdout as a real object (§13 — nothing crosses the process
+// boundary except through a stream surface). `write`/`writeln` stringify
+// their argument and emit it — native intrinsics (the engines' stringifier)
+// until varargs exist; the generic T binds per call, so any value goes
+// through one declared surface. (<<) is the ordinary transfer operator, so
+// `console << s` chains like any out-stream. Declared here so `console`
+// resolves, type-checks, and aliases like any other global — the name is no
+// longer a compiler special case.
+class Console {
+    void write<T>(T v);        // native: stringify + write to stdout
+    void writeln<T>(T v);      // native: stringify + write + newline
+    void writeln();            // native: bare newline
+    Console (<<)(string s) {
+        std::sysWrite(1, s);
+        return this;
+    }
+}
+const Console console = Console();
+
+// §16.5 Phase 3 §3: the reflection value surface `where` clauses read. Kept
+// deliberately minimal (every exposed field is a forever-API) — types are
+// canonical strings, not a structured Type; attrs are names only.
+namespace meta {
+    Ast parseExpr(string source) {
+        throw RuntimeException("meta::parseExpr() is compile-time-only");
+    }
+    Ast parseStmts(string source) {
+        throw RuntimeException("meta::parseStmts() is compile-time-only");
+    }
+    class Param  { string name; string type; }
+    // Attribute-value reflection (LA-4 item A, P4-I): a matched attribute already
+    // binds as an instance of its own class (`match @Column(c) ... $c.name`); this
+    // gives the SAME argument values to `$for`-iteration, where only names were
+    // visible before. `args` is positional (attribute-field declaration order,
+    // the same order `evalAttrArgs` fills); each slot carries every primitive
+    // form so the typed accessors need no per-arg type tag. Attribute fields are
+    // int/float/bool/string only (validateAttributeDecl), so four slots suffice.
+    class AttrArg { string s; int i; bool b; float f; bool present; }
+    class Attr {
+        string name;                               // the attribute's name, e.g. "Column"
+        Array<meta::AttrArg> args;                  // positional argument values
+        int    argCount()   => args.length();
+        // A defaulted (not explicitly written) argument reads as None, so
+        // `attr("Column")?.argStr(0) ?? field.name` falls back cleanly.
+        string? argStr(int i)   => args.at(i).present ? args.at(i).s : None;
+        int?    argInt(int i)   => args.at(i).present ? args.at(i).i : None;
+        bool?   argBool(int i)  => args.at(i).present ? args.at(i).b : None;
+        float?  argFloat(int i) => args.at(i).present ? args.at(i).f : None;
+    }
+    class Field  {
+        string name; string type;
+        Array<string> attrs;                       // resolved attribute names
+        Array<meta::Attr> attributes;              // names + reified argument values
+        bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
+    }
+    class Method {
+        string name; string returnType;
+        Array<meta::Param> params;
+        Array<string> attrs;
+        Array<meta::Attr> attributes;              // names + reified argument values
+        bool hasAttr(string n) => attrs.contains(n);
+        meta::Attr? attr(string n) => attributes.find((a) => a.name == n);
+        int arity() => params.length();
+    }
+    class Class {
+        string name;
+        Array<string> bases;                       // canonical base spellings
+        Array<meta::Field> fields;
+        Array<meta::Method> methods;
+        bool hasBase(string n) => bases.contains(n);
+    }
+}
+
+// Track 06: `std::math` per the design (§1.3) hits a real qualified-static-
+// path resolution gap on nested namespaces — `std::math::pi` silently
+// resolves wrong on the oracle and hard-errors ("IR: not yet lowerable: name
+// 'std'") on --ir/--emit-cpp (probed against this tree; bug.md, filed
+// separately — bug.md #1/#2's nested-namespace-import fix does not cover
+// this qualified-*path* case). The design's own problem #3 pre-authorizes
+// exactly this fallback: a TOP-LEVEL `namespace math` (not nested in `std`),
+// which the resolver already handles like any other namespace — verified
+// working on all five engines, including the int/float `min`/`max` overload
+// set (problem #5) and `uses math;` unqualified access.
+namespace math {
+    const float pi = 3.141592653589793;
+    const float e  = 2.718281828459045;
+    // Native free functions (RuntimeNatives.cpp / CGen); deferred with a
+    // clean diagnostic on the ELF/LLVM native backends (the zero-dep /
+    // best-effort boundary — polynomial emission is a later project).
+    float log(float x);
+    float log2(float x);
+    float exp(float x);
+    float sin(float x);
+    float cos(float x);
+    float tan(float x);
+    float atan2(float y, float x);
+    // struct-equality design §8: the `float::fromBits(int)` factory. No
+    // `static` keyword exists in the language (Track 04 M3 problem #6), so —
+    // like std::charFromCode / std::byteToString — the static-on-primitive is
+    // homed as a free function; the checker routes `float::fromBits(x)` here
+    // (mirrors Enum::fromCode). `math::floatFromBits` is the same native.
+    float floatFromBits(int bits);
+    int   min(int a, int b) => a < b ? a : b;
+    int   max(int a, int b) => a > b ? a : b;
+    float min(float a, float b) => a < b ? a : b;
+    float max(float a, float b) => a > b ? a : b;
+}
+
+// argv (argv.md): the program's command-line arguments. A TOP-LEVEL namespace,
+// exactly like `math` above and for the same reason — nested `std::env::...`
+// hits the qualified-path resolution gap, whereas a flat `namespace env` is
+// handled like any other and gives the identical `env::args()` spelling on all
+// engines. `args()` is a CALL, not a binding (argv.md §3): a fresh pure
+// Array<string> per call, native deferred to the call site so comptime
+// hermeticity falls out for free. args()[0] is the program name; args().skip(1)
+// is the real argument list. Length is always >= 1, never empty.
+namespace env {
+    Array<string> args() => std::sysArgs();
+    string name() {
+        Array<string> a = std::sysArgs();
+        return a.at(0);
+    }
+    // Read an environment variable (Track 08 F1). None = unset — distinct from
+    // set-but-empty, so a caller tells "PROXY not set" from "PROXY=''" apart.
+    // The native is deferred to the call site, so comptime hermeticity holds.
+    string? get(string key) => std::sysEnv(key);
+    // Process exit (designs/exit-codes.md §3.3). Exit is a process fact, so it
+    // joins argv under `env` rather than a new namespace. Functions, not
+    // bindings — the native is deferred to the call site, so comptime
+    // hermeticity holds (a `comptime env::exit(1)` hits the sys* deny). exit()
+    // terminates now (abandons pending loop work); setExitCode() records the
+    // code and lets execution finish (the loop drains, cleanups run).
+    void exit(int code)        { std::sysExit(code); }
+    void setExitCode(int code) { std::sysSetExitCode(code); }
+}
+
+// system-binds.md §4: capability interfaces + system implementations + root
+// binds — the DI-typed alternative to the ambient globals above (console,
+// env::*, File, TcpStream/TcpListener). Reopens `namespace std` (§12: a
+// namespace is declaration-based, not one textual block) so `use std::IEnv;`
+// (Channel 1, system-binds.md §5) can activate these binds by naming the
+// type; the implicit `uses std;` sees only the NAMES (the wall, §1) —
+// nothing is ambiently bound just by being visible.
+namespace std {
+    // What a consumer may learn from the process environment.
+    interface IEnv {
+        Array<string> args();
+        string? variable(string name);      // None = unset (distinct from set-but-empty)
+    }
+
+    // What a consumer may say to / hear from the terminal.
+    interface IConsole {
+        void write(string s);
+        void writeln(string s);
+        void writeln();
+    }
+
+    // What a consumer may know about time.
+    interface IClock {
+        int now();                          // epoch milliseconds (std::sysNow)
+    }
+
+    // What a consumer may do to the filesystem: acquire File objects + cheap queries.
+    interface IFileSystem {
+        File open(string path, OpenMode mode);   // throws FileException, same as File()
+        bool exists(string path);
+    }
+
+    // What a consumer may do to the network: acquire streams/listeners.
+    interface INet {
+        TcpStream? connect(string host, int port);   // None = connect failure
+        TcpListener listen(int port);                 // caller checks .ok(), same as today
+    }
+
+    // System impls are always shim classes, never the existing globals
+    // directly (`console` can't satisfy IConsole — its write/writeln are
+    // generic, §4.1). Each shim is a one-line delegation to the convenience
+    // surface, so there is exactly one behavior underneath both paths (§4.2).
+    class SystemEnv : IEnv {
+        Array<string> args() => env::args();
+        string? variable(string name) => env::get(name);     // env::get, NOT env::variable
+    }
+    class SystemConsole : IConsole {
+        void write(string s) { console.write(s); }
+        void writeln(string s) { console.writeln(s); }
+        void writeln() { console.writeln(); }
+    }
+    class SystemClock : IClock {
+        int now() => std::sysNow();
+    }
+    class SystemFileSystem : IFileSystem {
+        File open(string path, OpenMode mode) => File(path, mode);
+        bool exists(string path) => std::fileExists(path);
+    }
+    class SystemNet : INet {
+        TcpStream? connect(string host, int port) {
+            int fd = std::sysTcpConnect(host, port);
+            if (fd < 0) return None;
+            return TcpStream(fd);
+        }
+        TcpListener listen(int port) => TcpListener(port);
+    }
+
+    // Root binds (§4.3, revised post-M1): fresh-per-injection, not a shared
+    // `const` global instance. An eagerly-instantiated global forces emit-C++
+    // to mark ALL of its class's methods reachable unconditionally (the
+    // `[[leviathan-prelude-backend-gotchas]]` eager-global gotcha) — for
+    // these five that pulled in natives (sysEnv, sysTaskCancel via
+    // File/TcpStream's IDisposable-name over-marking) emit-C++ doesn't
+    // implement, breaking EVERY program's `--build`, not just ones using a
+    // capability. All five shims are stateless, so fresh-per-injection is
+    // behaviorally identical to sharing one instance; only the reachability
+    // shape differs. Inert on their own regardless (§3): the Checker never
+    // walks prelude bodies, so nothing registers these into any bind scope
+    // until Channel 1 (§5) indexes them — and even then only an explicit
+    // `use std::I...;` activates one; the implicit `uses std;` never does.
+    bind IEnv        => SystemEnv();
+    bind IConsole    => SystemConsole();
+    bind IClock      => SystemClock();
+    bind IFileSystem => SystemFileSystem();
+    bind INet        => SystemNet();
+}
+
+// Terminal control (designs/terminal-raw-mode.md §3.3). A TOP-LEVEL namespace,
+// like `env`/`math`, so `term::` resolves on every engine. Functions, not
+// bindings — I/O deferred to the call site (argv.md §3), so comptime hermeticity
+// holds. enableRaw()/restore() drive stdin (fd 0); the runtime GUARANTEES the
+// terminal is restored on any exit path even if `restore()` is never reached
+// (§3.4), so a TUI that crashes mid-draw never orphans the shell.
+namespace term {
+    bool enableRaw() => std::sysTermRaw(0) == 0;    // true if it took (false: not a tty)
+    void restore()   { std::sysTermRestore(0); }
+    // isRaw() (design §3.3, promised to the winsize work): the raw-mode state
+    // query, backed by the sysTermIsRaw native rather than a namespace global
+    // (bug.md #1/#7). Its consumer is size()'s cursor-report fallback guard.
+    bool isRaw() => std::sysTermIsRaw(0);
+
+    // Terminal size (designs/techdesign-terminal-floor.md §2). WinSize is
+    // rows/cols; a Sonar Size is w=cols/h=rows — the axis mapping is the
+    // consumer's job (§2), so the floor stays honest.
+    class WinSize {
+        int rows;
+        int cols;
+        new WinSize() { rows = 24; cols = 80; }        // bare decl -> the safe default
+        new WinSize(int r, int c) { rows = r; cols = c; }
+    }
+    // size(): ask the kernel (sysWinSize over stdout, fd 1); on failure fall
+    // back — if raw mode is active — to the ANSI cursor-report probe (move the
+    // cursor far, ask where it landed), else the 24x80 default. The probe is
+    // guarded on raw mode because cooked mode can't read the \x1b[6n reply
+    // unbuffered; a garbage reply parses to failure -> default, never a throw.
+    // Deliberately int-sentinel throughout (no T?/narrowing): prelude code that
+    // leans on union flow-narrowing is misread by LLVM (leviathan-prelude-no-
+    // narrowing), so failure is a -1/0 sentinel, never a None.
+    WinSize size() {
+        int r = std::sysWinSize(1, 0);
+        int c = std::sysWinSize(1, 1);
+        if (r > 0 && c > 0) return term::WinSize(r, c);
+        if (term::isRaw()) {
+            std::sysWrite(1, "\x1b[999C\x1b[999B\x1b[6n");
+            string resp = term::readCursorReport();
+            int lb   = resp.indexOf("[");
+            int semi = resp.indexOf(";");
+            int rr   = resp.indexOf("R");
+            if (lb >= 0 && semi > lb && rr > semi) {
+                int pr = term::parseNum(resp, lb + 1, semi);
+                int pc = term::parseNum(resp, semi + 1, rr);
+                if (pr > 0 && pc > 0) return term::WinSize(pr, pc);
+            }
+        }
+        return term::WinSize(24, 80);
+    }
+    // Read stdin (fd 0) until the report terminator 'R' arrives or a read yields
+    // nothing. Raw mode's VMIN=1 blocks for >=1 byte, so this returns as soon as
+    // the terminal answers; the 64-iteration cap bounds a misbehaving terminal.
+    string readCursorReport() {
+        string acc = "";
+        int guard = 0;
+        while (guard < 64) {
+            string chunk = std::sysRead(0, 16);
+            if (chunk.isEmpty()) return acc;
+            acc = acc + chunk;
+            if (acc.indexOf("R") >= 0) return acc;
+            guard = guard + 1;
+        }
+        return acc;
+    }
+    // Decimal parse of resp[start, end) as a pure int sentinel: -1 if empty or
+    // any non-digit byte (avoids string.toInt()'s int? and any narrowing).
+    int parseNum(string resp, int start, int end) {
+        if (end <= start) return 0 - 1;
+        int v = 0;
+        int i = start;
+        while (i < end) {
+            int b = resp.byteAt(i);
+            if (b < 48 || b > 57) return 0 - 1;
+            v = v * 10 + (b - 48);
+            i = i + 1;
+        }
+        return v;
+    }
+}
+
+// Signals as streams (designs/techdesign-terminal-floor.md §3). Ruling
+// (signals.md, normative): language code NEVER runs in signal context — a
+// signal is a readable system stream. A TOP-LEVEL namespace like term/env so
+// `signal::` resolves on every engine. The consts are the POSIX numbers
+// (Linux). SIGKILL/SIGSTOP are deliberately absent (the floor rejects them).
+namespace signal {
+    const int HUP   = 1;
+    const int INT   = 2;
+    const int QUIT  = 3;
+    const int USR1  = 10;
+    const int TERM  = 15;
+    const int WINCH = 28;
+
+    // Registry state as a PLAIN data holder (no native-using methods), so the
+    // eager global below compiles cheaply on EVERY backend — including emit-C++,
+    // where the signal STREAM itself is loop-bound and unavailable (§3 lane
+    // matrix, same boundary as timers/sockets). The native work lives in the
+    // free functions, which are demand-compiled: a program that never calls
+    // signal::on never drags sysSignalOpen/sysWatch into the emit-C++ output (a
+    // methods-on-a-global-instance shape would force it on every program).
+    // Parallel arrays keyed by DISTINCT signal number: subs[i] is the fanout
+    // list for sigs[i], fds[i] its open fd. One fd per signal number is required
+    // for correct multi-subscriber fanout (two signalfds for one signal would
+    // race for the single pending delivery). v1 leaks the subscription until
+    // program end (open question #1) — Sonar holds one WINCH sub for its App's
+    // lifetime, so that is acceptable. The interpreter closes the fds and
+    // unblocks at program end (M4); a compiled process's exit does the same.
+    class SignalState {
+        Array<int> sigs = [];
+        Array<int> fds  = [];
+        Array<int> watchIds = [];                  // SU-1 R3: sysWatch ids, enables sysUnwatch
+        Array<Array<StreamBuffer<int>>> subs = [];
+        Array<Array<int>> subIds = [];              // SU-1 R3: parallel per-sub int ids (R2)
+        int nextId = 0;                             // SU-1: monotonic subscription id source
+    }
+    // Qualified construction: bare same-namespace construction (M2) is deferred
+    // (leviathan-bug32-namespace-ctor-landed), so name the namespace explicitly.
+    const SignalState st = signal::SignalState();
+
+    int findSig(int sig) {
+        int i = 0;
+        while (i < signal::st.sigs.length()) { if (signal::st.sigs.at(i) == sig) return i; i = i + 1; }
+        return 0 - 1;
+    }
+    int findFd(int fd) {
+        int i = 0;
+        while (i < signal::st.fds.length()) { if (signal::st.fds.at(i) == fd) return i; i = i + 1; }
+        return 0 - 1;
+    }
+
+    // The loop calls this when a signalfd is read-ready. Drain EVERY queued
+    // delivery (SIGWINCH coalescing: a resize storm collapses to >=1 tick — the
+    // read drains all pending) and broadcast each signo to that signal's
+    // subscribers (§13: broadcast is a Layer-2 reshaping, never a substrate
+    // property; a slow listener is visibly its own problem). One fd carries one
+    // signal number, so signo == the subscribed signal.
+    // SU-1 R4: idx is re-resolved at the TOP OF EVERY drain iteration (not
+    // cached once) — a mid-drain last-close tears the registry row down, and
+    // the next iteration must see that rather than index a stale row.
+    void deliver(int fd) {
+        int signo = std::sysSignalNext(fd);
+        while (signo >= 0) {
+            int idx = signal::findFd(fd);
+            if (idx < 0) return;               // registry row torn down mid-drain: stop
+            Array<StreamBuffer<int>> list = signal::st.subs.at(idx);   // pure-value snapshot
+            int i = 0;
+            while (i < list.length()) {
+                OutStream<int> w = OutStream(list.at(i));
+                w << signo;                    // push: closed buffers silently drop (R5)
+                i = i + 1;
+            }
+            signo = std::sysSignalNext(fd);
+        }
+    }
+
+    // The one public entry: subscribe to a signal, get a readable int stream of
+    // its deliveries. No pre-subscription buffering — a signal delivered before
+    // any subscriber is dropped (pinned by test). With ISIG cleared in raw mode,
+    // signal::on(INT) fires only from an external `kill`, never ^C. SU-1: the
+    // returned InStream carries an IDisposable teardown to `signal::off`, so
+    // `using InStream<int> w = signal::on(sig);` releases the subscription (and,
+    // on last-out, the fd/watch) deterministically.
+    InStream<int> on(int sig) {
+        StreamBuffer<int> b = StreamBuffer();
+        int myId = signal::st.nextId;
+        signal::st.nextId = signal::st.nextId + 1;
+        int idx = signal::findSig(sig);
+        if (idx < 0) {
+            // First subscriber for this signal: open the fd + arm the watch.
+            int fd = std::sysSignalOpen([sig]);
+            if (fd < 0) throw RuntimeException("signal: cannot watch signal " + sig.toString());
+            int wid = std::sysWatch(fd, (ready) => signal::deliver(fd));
+            signal::st.sigs     = signal::st.sigs.add(sig);
+            signal::st.fds      = signal::st.fds.add(fd);
+            signal::st.watchIds = signal::st.watchIds.add(wid);
+            signal::st.subs     = signal::st.subs.add([b]);
+            signal::st.subIds   = signal::st.subIds.add([myId]);
+        } else {
+            signal::st.subs   = signal::st.subs.with(idx, signal::st.subs.at(idx).add(b));
+            signal::st.subIds = signal::st.subIds.with(idx, signal::st.subIds.at(idx).add(myId));
+        }
+        InStream<int> s = InStream(b);
+        s.onDispose = () => signal::off(sig, myId);
+        s.hasDispose = true;
+        return s;
+    }
+
+    // SU-1 R6/R7: unsubscribe. A free function (never a method on the `st`
+    // eager global — that would drag the signal natives into every emit-C++
+    // compile, techdesign-terminal-floor.md's regression). Idempotent: a
+    // signal already fully torn down, or a subId already removed, is a
+    // silent no-op — never a double sysSignalClose. No await/park point
+    // anywhere in this function, so there is no reentry window between
+    // fanout removal and last-out teardown.
+    void off(int sig, int subId) {
+        int idx = signal::findSig(sig);
+        if (idx < 0) return;                   // signal already fully torn down: idempotent no-op
+        Array<int> ids = signal::st.subIds.at(idx);
+        int k = ids.indexOf(subId);
+        if (k < 0) return;                     // this sub already removed: idempotent no-op
+        signal::st.subs   = signal::st.subs.with(idx, signal::st.subs.at(idx).removeAt(k));
+        signal::st.subIds = signal::st.subIds.with(idx, ids.removeAt(k));
+        if (signal::st.subs.at(idx).length() == 0) {          // LAST subscriber: reclaim the source
+            std::sysUnwatch(signal::st.watchIds.at(idx));     // 1. stop loop dispatch first
+            std::sysSignalClose(signal::st.fds.at(idx));      // 2. unblock -> default disposition
+            signal::st.sigs     = signal::st.sigs.removeAt(idx);   // 3. drop the row (all 5 arrays)
+            signal::st.fds      = signal::st.fds.removeAt(idx);
+            signal::st.watchIds = signal::st.watchIds.removeAt(idx);
+            signal::st.subs     = signal::st.subs.removeAt(idx);
+            signal::st.subIds   = signal::st.subIds.removeAt(idx);
+        }
+    }
+}
