@@ -1,0 +1,2 @@
+fn f() { return another needle_token here; }
+// NEEDLE_TOKEN upper

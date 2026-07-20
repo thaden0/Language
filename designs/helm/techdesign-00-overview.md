@@ -802,6 +802,100 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   - **Next gate G-H5** = H12 settings/keymap/theme + workspace search, and the self-host milestone
     (edit Helm's own source in Helm). The `HelmShell` body is the EditorView mount point; the
     `CommandRegistry`/`MenuModel`/palette surface is ready for the settings + search commands.
+- 2026-07-19 — **H12 and H10 landed** (settings/keymap/theme + workspace search; the embedded
+  terminal), both headless/model-complete and golden-tested — matching the H01/H04/H05 precedent
+  that every track builds and proves itself standalone *before* any live-shell mount. Neither
+  **G-H5** nor **G-H6** closes yet: the self-host milestone (G-H5) and the terminal panel's live
+  mount (G-H6) both need `HelmShell.body_`/the panel-tab strip wired to real widgets, which is
+  still nobody's landed gate — `EditorView`/`TreeView` aren't mounted live either, so this doesn't
+  regress anything, it just doesn't yet close the gate. 9 new `.lev` files under
+  `examples/helm/src/{config,search,terminal}/` and 3 new golden tests (`tests/{config,search,
+  terminal}`); **16 Helm tests total, all green on oracle + IR** (byte-identical). No
+  `src/**`/`runtime/**` touched; no compiler bugs hit.
+  - **H12 — settings (`src/config/`).** `configtoml.lev` generalizes Sonar's own `toml.lev`
+    (`parseThemeToml` is hardwired to a fixed fg/bg/attrs shape) into a `[section]`/`key = "value"`
+    -> `ConfigDoc` parser or arbitrary sections/keys, same house style (line-oriented, `#`
+    comments, throws `SonarException` with a `source:line:col:` prefix on anything unsupported) —
+    `writeConfigToml` is its exact inverse (a save round-trips byte-for-byte through a reparse).
+    `settings.lev`'s `Settings` holds a theme name + parallel keymap-override columns (footgun
+    #4/#5), with `FromDoc`/`toDoc` conversion, `applyKeymap`/`captureKeymap` against a
+    `CommandRegistry`, and `configstore.lev`'s `loadSettings`/`saveSettings` read/write a
+    workspace-root `helm.toml` (missing file -> defaults, the Workspace `isStale` precedent).
+    Wired into `HelmShell`: `settings.save`/`settings.reload`/four `view.theme.*` commands (File/
+    View menus), plus `helm.search` (Edit menu) fronting the new `runSearch`/`searchResults()`
+    methods. `applyTheme` calls `Styleable.installTheme` on the four chrome bars — but only from an
+    explicit command, never at construction, so a workspace with no `helm.toml` still renders the
+    `tests/shell` golden byte-identically (confirmed: only the command-surface/menu listing sections
+    of that golden changed, not the rendered chrome).
+    - **Keymap-reload scope (design-vs-reality, the H-C4/H-C2/H-C3 precedent).** A `helm.toml`
+      present at startup works correctly (`Settings.applyKeymap` runs before `CommandRegistry.
+      bindInto` installs accelerators into the app `Keymap`). A keymap change made while Helm is
+      running does NOT take live effect — Sonar's `Keymap.bind` throws on a re-bound chord (anchor
+      C9), and this package doesn't add unbind/rebind token plumbing for a v1 nicety; `settings.
+      reload` re-applies the theme live but documents the keymap limit in `Settings`' own class
+      comment. Decided with the task's owner before implementation, not discovered mid-build.
+  - **H12 — workspace search (`src/search/`).** `WorkspaceSearch` runs entirely in-process over the
+    language's own `Regex` engine (`docs/reference.md` §6.4.6: `Regex`/`regex::escape`) rather than
+    shelling out to an external `grep` — the one H12 capability that does NOT gate on H09/`Proc`,
+    since `Regex` has no interpreter-only floor dependency the way `Proc` does (G-LANG-2). Walks the
+    tree with the same `std::sysListDir`/`std::isDir` natives `FileTree` (H05) already uses; a
+    `.git`/`build`/`node_modules`/`.trident` skip-list; capped at 500 results with a `truncated()`
+    flag (the §K1 precedent — no silent under-report). `SearchMatch` is a `class` row (footgun #5);
+    `SearchResultsModel : ITableSource` mirrors `ProblemsModel`'s shape, `resultAt(row)` the same
+    not-yet-wired click-to-jump seam `diagnosticAt` already is.
+    - **Test-fixture note (unrelated to the language, worth recording anyway):** a fixture directory
+      literally named `.git` cannot be committed at all — git refuses to track anything under a
+      `.git`-named path as a repository-boundary special case, not a `.gitignore` rule — so the
+      `.git`-skip golden case is built and torn down at run time (the `filetree_test.lev` scratch-dir
+      precedent) instead of living under `tests/search/fixtures/`. A `build`-named fixture dir hit
+      the repo's own `**/build/` gitignore pattern for the same reason and was renamed to
+      `node_modules` (also in the default skip-list).
+  - **H10 — the embedded terminal (`src/terminal/`).** The PTY floor is real and landed on oracle +
+    IR (`designs/pty/techdesign-00/01-overview`, `Pty`/`sysPtySpawn`/`sysPtyResize` in
+    `src/Resolver.cpp`/`src/RuntimeNatives.cpp`) — not yet lowered on LLVM (G-LANG-2's terminal
+    half), but that is not a new constraint: H09/H11 already accepted the identical `Process`
+    limitation, so Helm's golden lane staying oracle+IR here is the status quo, not a regression.
+    `vtparser.lev`'s `VtParser` is, as designed (§8), the literal inverse of `ansi_renderer.lev`:
+    where `AnsiRenderer` diffs a `Surface` and emits escape sequences, `VtParser` consumes a byte
+    stream and mutates a `Surface` (the same C6 cell format, `cursor.lev`'s `sgrFgNum`/`sgrBgNum`
+    inverted for SGR). Bounded scope, as scoped: cursor motion (CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP),
+    erase (ED/EL), 16-color SGR + bold/underline/reverse, scroll (autowrap + LF-at-bottom + SU/SD,
+    row-by-row `Block.blit` so no call ever touches an overlapping range), and the alt screen
+    (`?1049`/`?47`/`?1047`, with a saved-cursor pair) — DECSTBM regions, cursor save/restore outside
+    the alt pair, and single-char ESC ops other than RIS/charset-designator-consumption are an
+    honest v1 gap, matching Sonar's own non-goals. `ptybridge.lev`'s `PtyBridge`/`PtyEventQueue`/
+    `PtyStreamer` are `proc.lev`'s `Proc`/`ProcEventQueue`/`ProcStreamer` applied to `Pty` verbatim —
+    same H-C4 reasoning (`Pty` is fd-/loop-bound, cannot cross `spawn`, so `onData`/`exitCode()`
+    enqueue onto a UI-drained queue, no worker task, H-R1 holds trivially) — with a `Deterministic`
+    labeled ctor mirroring `Pty::Deterministic` for byte-exact goldens. `terminalview.lev`'s
+    `TerminalView : Focusable, Bordered, Styleable` follows `EditorView`'s H-C2 amendment exactly
+    (not a `Container` — it paints cells, not child components) and additionally skips `Scrollable`:
+    v1 has no scrollback (the pty's live screen is the only buffer, the same "big files open
+    read-only" §4.1 honest-limit precedent); it redeclares `paintChrome` verbatim (bug #59 / the
+    `EditorView`/`TreeView` copies) and overrides `contentDesired`/`paintContent`/`cursorPos`, the
+    latter two backed by a row-by-row cross-`Block` blit of the vt screen onto the outer `Surface`
+    (the same cross-`Block` blit `AnsiRenderer.presentDiff` already does between a `Surface`'s cells
+    and its own `prev_` shadow). `encodeKey` is the reverse of Sonar's own `input.lev` CSI decode
+    (`KeyEvent` -> the bytes a real terminal would have sent).
+    - **`tests/terminal`** covers `VtParser` directly (plain text, autowrap, CR-overwrite, SGR,
+      CUP/CUD, EL/ED, scroll, alt-screen-preserves-primary) via `TestRenderer` on `vt.screen()`
+      (the same snapshot doctrine `EditorView`'s own golden uses), `TerminalView` headless paint
+      (`feed()`, no `Pty` at all) via `TestRenderer` on the painted `Surface`, and a live integration
+      through `Pty::Deterministic` (`/bin/echo`, and `/bin/cat` + the frozen VEOF protocol) staggered
+      on `std::after` timers — `proc_test.lev`'s own pattern, section headers printed at fire time
+      inside each callback rather than at registration time, so the transcript stays ordered.
+    - **Live-shell scope (recorded, not a gap):** `TerminalView` is not mounted into `HelmShell`'s
+      panel-tab strip — the doc's own G-H4 log entry already notes the Problems/Output/Test panels
+      aren't mounted live either (`body_`/the panel dock are still the blank chrome from G-H4). H10
+      therefore ships the same way H04's `EditorView` did: a fully built, fully golden-tested
+      component, live-mounting deferred as an explicit H01 rider rather than bundled into this gate.
+  - **Next gates.** **G-H5** needs `HelmShell` to actually mount a live `EditorView`/`TreeView` into
+    `body_` and wire the search pane's query input (`helm.search`'s handler is still `() => {}`,
+    a rider, same as `helm.palette`/`helm.save`) — the self-host milestone can't close until an
+    editor exists to edit Helm's own source *in*. **G-H6** needs the same live-mount treatment for
+    `TerminalView` into the panel-tab strip's Terminal tab. **G-LANG-1** (machine-readable compiler
+    diagnostics) remains untouched. **H13** (the full test harness + docs + `helm 0.1.0` tag) is
+    still last, per the landing order in §5.
 
 - **2026-07-19 — H10's Windows story now exists: G-PTY3 landed the ConPTY floor**
   (`designs/complete/techdesign-03-pty-windows-conpty.md`). Windows 10 1809 / Server 2019+

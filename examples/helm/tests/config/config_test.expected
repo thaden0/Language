@@ -1,0 +1,38 @@
+== parse ==
+theme.name: dark
+keymap keys: helm.build, helm.search
+keymap helm.build: ^B
+missing key: <none>
+== write round-trip ==
+[theme]
+name = "dark"
+
+[keymap]
+helm.build = "^B"
+helm.search = "^S-F"
+
+roundtrip theme.name: dark
+roundtrip keymap.helm.search: ^S-F
+== parse errors ==
+  threw: bad.toml:1:1: expected ']' to close table header
+  threw: bad.toml:1:1: key/value pair before any [table] header
+  threw: bad.toml:2:1: expected '=' in key/value pair
+  threw: bad.toml:2:8: unterminated string value
+== Settings from doc ==
+theme: dark
+keymapIds: helm.build, helm.search
+override helm.build: ^B
+override helm.missing: <none>
+== applyKeymap / captureKeymap ==
+helm.build key after apply: ^B
+helm.other key after apply: ^O
+captured ids: helm.build, helm.other
+captured helm.build: ^B
+== default Settings (empty doc) ==
+default theme: default
+default keymapCount: 0
+== load/save against a scratch workspace ==
+fresh dir load theme: default
+reloaded theme: highContrast
+reloaded keymapIds: helm.quit, helm.save
+reloaded helm.quit: ^Q

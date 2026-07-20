@@ -264,7 +264,7 @@ compile, `sysSpawn`/`sysPidfdOpen` still reject with the frozen message.
   - Lifting the class-level lane means narrowing the tasks reject (the wasm two-tier
     reachability gate is the obvious shape) — **LA-30's ruling to make, not this design's.**
     Not attempted here; §7's ABI note scopes S3 to gating surgery on the four process rows.
-  - **Filed, not just noted:** `known_bugs_2.md` **#96 [P1]** (the defect — the reject's
+  - **Filed, not just noted:** `known_bugs_2.md` **#97 [P1]** (the defect — the reject's
     blast radius reaches three classes that are not task features) and
     `designs/requests/request-windows-task-gate.md` (the feature request — minimum: the
     two-tier narrowing; maximum: the win32 fiber leg, LA-30 G5). The request carries one

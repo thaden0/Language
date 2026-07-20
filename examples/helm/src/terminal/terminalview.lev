@@ -1,0 +1,200 @@
+// H10 — `TerminalView`, the embedded-terminal Sonar component (§8). Owns a
+// `VtParser` (a cell grid it paints from) and, once a shell is spawned, a
+// `PtyBridge` (§9's stored-handler discipline: bug #53 explicit `this.`
+// receivers throughout).
+//
+// Mixin header (the H-C2/EditorView precedent, §4.3's amendment): NOT a
+// Container — a terminal paints cells, it has no child components, so being a
+// Container would only re-expose the still-open multi-mixin children-loop
+// paint bug for zero benefit. It also carries no scrollback in v1 (an honest
+// limit, §4.1's "big files open read-only" precedent — the pty's own screen
+// is the only buffer), so it skips `Scrollable` too: `Focusable, Bordered,
+// Styleable`, redeclaring `paintChrome` (the Bordered-mixin-drop bug family;
+// EditorView's own copy is the template) plus its overrides
+// (`contentDesired`, `paintContent`, `cursorPos`).
+
+uses Sonar;
+
+namespace Helm {
+
+    class TerminalView : Focusable, Bordered, Styleable {
+        VtParser     vt_;
+        PtyBridge?   bridge_ = None;
+        Array<PtyStreamer> live_ = [];
+        bool         enabled = true;
+
+        new TerminalView(int rows, int cols) {
+            vt_ = VtParser(rows, cols);
+            setTabStop(true);
+            this.onKey((e) => this.handleKey(e));
+        }
+
+        VtParser vt() => vt_;
+        bool     running() => bridge_ != None && bridge_.running();
+
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        // ---- sizing -----------------------------------------------------------
+        // Keeps the vt screen (and, if live, the pty winsize) matched to the
+        // painted content rect. No reflow/scrollback preservation on resize
+        // (v1 honest limit, §4.1 precedent).
+        void ensureSized(int w, int h) {
+            if (vt_.cols() == w && vt_.rows() == h) return;
+            vt_.resize(h, w);
+            if (bridge_ != None) { PtyBridge b = bridge_; b.resize(h, w); }
+        }
+
+        // ---- spawning -----------------------------------------------------------
+        void spawnShell(string path, Array<string> args) {
+            this.spawnWith(PtyBridge(path, args, this.viewRows(), this.viewCols()));
+        }
+        // The frozen deterministic termios profile — goldens (designs/pty/ D-P3).
+        void spawnShellDeterministic(string path, Array<string> args) {
+            this.spawnWith(PtyBridge::Deterministic(path, args, this.viewRows(), this.viewCols()));
+        }
+        int viewRows() {
+            Rect content = box.inset(this.chrome());
+            return content.h() > 0 ? content.h() : vt_.rows();
+        }
+        int viewCols() {
+            Rect content = box.inset(this.chrome());
+            return content.w() > 0 ? content.w() : vt_.cols();
+        }
+        void spawnWith(PtyBridge b) {
+            this.ensureSized(this.viewCols(), this.viewRows());
+            bridge_ = b;
+            // Explicit `this.` receiver in the stored lambda (bug #53).
+            PtyStreamer st = PtyStreamer(b, (e) => this.onPtyEvent(e));
+            live_ = live_.add(st);
+            st.run(20);
+        }
+        void stop() {
+            if (bridge_ != None) { PtyBridge b = bridge_; b.kill(); }
+        }
+        void onPtyEvent(PtyEvent e) {
+            if (e.isData()) { vt_.feed(e.data); }
+            else { bridge_ = None; }
+            invalidate();
+        }
+
+        // Headless feed (no Pty at all) — the pure VT-rendering test seam.
+        void feed(string chunk) { vt_.feed(chunk); invalidate(); }
+
+        // ---- input --------------------------------------------------------------
+        void handleKey(KeyEvent e) {
+            // If-block narrowing only — an early-return guard doesn't persist
+            // the narrowing past it (a known footgun, H02's §14 log).
+            if (!enabled) return;
+            if (bridge_ != None) {
+                PtyBridge b = bridge_;
+                string bytes = this.encodeKey(e);
+                if (bytes.isEmpty()) return;
+                b.write(bytes);
+                e.handled = true;
+            }
+        }
+
+        // Reverse of Sonar's own input.lev CSI decode: KeyEvent -> the bytes a
+        // real terminal would have sent for that keystroke.
+        string encodeKey(KeyEvent e) {
+            if (e.code == KeyCode::Char && (e.mods == 0 || e.mods == Mod::Shift)) return e.ch.toString();
+            if (e.code == KeyCode::Char && e.mods == Mod::Ctrl) {
+                int up = e.ch.toUpper().code();
+                if (up >= 0x40 && up <= 0x5f) return std::charFromCode(up - 0x40).toString();
+                return "";
+            }
+            if (e.code == KeyCode::Enter)     return "\r";
+            if (e.code == KeyCode::Backspace) return "\x7f";
+            if (e.code == KeyCode::Tab)       return "\t";
+            if (e.code == KeyCode::Escape)    return "\x1b";
+            if (e.code == KeyCode::Up)        return "\x1b[A";
+            if (e.code == KeyCode::Down)      return "\x1b[B";
+            if (e.code == KeyCode::Right)     return "\x1b[C";
+            if (e.code == KeyCode::Left)      return "\x1b[D";
+            if (e.code == KeyCode::Home)      return "\x1b[H";
+            if (e.code == KeyCode::End)       return "\x1b[F";
+            if (e.code == KeyCode::Delete)    return "\x1b[3~";
+            if (e.code == KeyCode::PageUp)    return "\x1b[5~";
+            if (e.code == KeyCode::PageDown)  return "\x1b[6~";
+            return "";
+        }
+
+        // ---- caret ----------------------------------------------------------
+        Point? cursorPos() {
+            if (!focused || !visible()) return None;
+            if (!vt_.cursorVisible()) return None;
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return None;
+            int row = vt_.cursorRow();
+            int col = vt_.cursorCol();
+            if (row < 0 || row >= content.h() || col < 0 || col >= content.w()) return None;
+            return Point((content.x() - box.x()) + col, (content.y() - box.y()) + row);
+        }
+
+        // ---- layout / paint ---------------------------------------------------
+        Size contentDesired(Size avail) => avail;
+
+        // Row-by-row cross-Surface blit of the vt screen onto the view's
+        // content rect — the AnsiRenderer precedent (its diff/present already
+        // does cross-Block blits between a Surface's cells and its own `prev_`
+        // shadow), just aimed at a live outer Surface instead of a shadow copy.
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            this.ensureSized(content.w(), content.h());
+            Surface vs = vt_.screen();
+            int rowBytes = content.w() * 8;
+            for (int y in 0..content.h() - 1) {
+                int destOff = s.cellOffset(content.x(), content.y() + y);
+                int srcOff  = vs.cellOffset(0, y);
+                s.cells().blit(destOff, vs.cells(), srcOff, rowBytes);
+            }
+        }
+
+        // Redeclared verbatim (bug #59 / the EditorView precedent): decode
+        // borderGlyphs() via .chars() and index by character, never by byte
+        // offset. Matches EditorView/TreeView/ListView's own copies.
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+    }
+
+}

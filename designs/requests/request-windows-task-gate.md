@@ -3,7 +3,7 @@
 **From:** the pty floor's Windows lane (`designs/complete/techdesign-03-pty-windows-conpty.md`,
 S3 / gate G-PTY3), on behalf of Helm H10 (the integrated terminal, gate G-H6).
 **Date:** 2026-07-19.
-**Standing bug:** `known_bugs_2.md` **#96 [P1]** — same facts, defect side.
+**Standing bug:** `known_bugs_2.md` **#97 [P1]** — same facts, defect side.
 **Owner ruling needed:** which of the two contributors in §3 to narrow. Both are outside the
 pty floor's scope (§7 of the pty doc scopes S3 to gating surgery on four process rows), which
 is why this is a request rather than a fix.
@@ -47,7 +47,7 @@ Consequences already paid, in-tree, so the cost is concrete rather than hypothet
   hand-roll the entire `Pty` class (and its stream plumbing, since `TcpStream` is equally
   blocked) to host a terminal on Windows — re-implementing the prelude inside the IDE.
 - Every future track wanting a socket, a subprocess, or a terminal on Windows re-discovers
-  this and re-applies the same workaround. That is exactly `known_bugs_2.md` #96's P1.2
+  this and re-applies the same workaround. That is exactly `known_bugs_2.md` #97's P1.2
   justification.
 
 ## 3. The two contributors (narrowing **either** is sufficient)
@@ -83,7 +83,7 @@ also shrink Windows binaries and improve every diagnostic in the family.
   three classes above, and this request's minimum is not met.
 - The diagnostic for a genuine task use still names the user's construct, not a native the
   program never mentioned.
-- Regression coverage: the four classes compile for the Windows triple (an assertion beside
+- Regression coverage: the three classes compile for the Windows triple (an assertion beside
   the existing `tests/run_sysnatives.sh` §12 win-gate block), and a program that really uses
   `spawn`/`Channel`/`TaskGroup` still rejects with the frozen message.
 - No behavior change on any POSIX lane, and no change to the LA-30 ruling.

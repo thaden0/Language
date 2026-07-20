@@ -34,6 +34,11 @@ namespace Helm {
         StatusModel     status_   = StatusModel();
         BuildDriver?    driver_   = None;
 
+        // H12 — settings (theme + keymap overrides) and workspace search.
+        Settings           settings_      = Settings();
+        WorkspaceSearch?   search_        = None;
+        SearchResultsModel searchResults_ = SearchResultsModel();
+
         // Chrome components (real Sonar widgets, added to the app tree).
         ContentBar menuBar_   = ContentBar();
         ContentBox body_      = ContentBox();
@@ -52,9 +57,15 @@ namespace Helm {
             levExe_     = levExe;
             testsDir_   = joinPath(wsRoot, "tests");
             driver_     = BuildDriver(panels_, status_);
+            settings_   = loadSettings(wsRoot_);
             status_.setMode("EDIT");
             this.wireCommands();
             this.wireMenu();
+            // H12: apply any config-file keymap overrides to the registry's
+            // key column BEFORE they're installed into the live app Keymap —
+            // see Settings' class comment for why this must happen here and
+            // not on a later "reload".
+            settings_.applyKeymap(commands_);
             this.build();
             commands_.bindInto(app_.keymap());
         }
@@ -74,6 +85,8 @@ namespace Helm {
         MenuModel       menu()     => menu_;
         PanelHost       panels()   => panels_;
         StatusModel     status()   => status_;
+        Settings           settings()      => settings_;
+        SearchResultsModel searchResults() => searchResults_;
 
         // ---- command handlers (explicit `this.` receivers — bug #53) --------
         void doBuild()     { this.driver().build(this.tridentExe_, this.wsRoot_); }
@@ -84,6 +97,53 @@ namespace Helm {
         void chooseEngine(int e) { this.driver().setEngine(e); }
         void togglePanel() { this.panels_.toggle(); }
         void quit()        { this.app_.quit(); }
+
+        // ---- H12: settings + theme ------------------------------------------
+        Theme themeByName(string name) {
+            if (name == ThemeDark) return Theme::Dark();
+            if (name == ThemeLight) return Theme::Light();
+            if (name == ThemeHighContrast) return Theme::HighContrast();
+            return Theme::Default();
+        }
+        // Installs the theme on the chrome bars (Styleable.installTheme). Only
+        // fires on an explicit command — never automatically at construction —
+        // so a fresh workspace with no `helm.toml` renders byte-identically to
+        // today's un-themed chrome (the tests/shell golden depends on this).
+        void applyTheme(string name) {
+            this.settings_.setTheme(name);
+            Theme t = this.themeByName(name);
+            menuBar_.installTheme(t);
+            body_.installTheme(t);
+            panelBar_.installTheme(t);
+            statusBar_.installTheme(t);
+        }
+        void doSaveSettings() {
+            this.settings_.captureKeymap(commands_);
+            saveSettings(this.wsRoot_, this.settings_);
+        }
+        // Reloads theme + the stored keymap-override text live; an actual
+        // keybinding change needs a restart (Settings' class comment).
+        void doReloadSettings() {
+            settings_ = loadSettings(this.wsRoot_);
+            this.applyTheme(settings_.theme());
+        }
+
+        // ---- H12: workspace search -------------------------------------------
+        WorkspaceSearch searchEngine() {
+            WorkspaceSearch? s = search_;
+            if (s != None) return s;
+            WorkspaceSearch made = WorkspaceSearch(this.wsRoot_);
+            search_ = made;
+            return made;
+        }
+        // Runs a search and populates the Search panel model; returns the raw
+        // matches too, so a test (or a future live query input) can use either.
+        Array<SearchMatch> runSearch(string query, bool useRegex, bool caseSensitive) {
+            WorkspaceSearch se = this.searchEngine();
+            Array<SearchMatch> matches = se.search(query, useRegex, caseSensitive);
+            this.searchResults_.setResults(query, matches, se.truncated());
+            return matches;
+        }
 
         // ---- command surface — the single source of truth (§0.3) ------------
         void wireCommands() {
@@ -110,6 +170,18 @@ namespace Helm {
             c.setKey("helm.save", "^S");
             c.register("helm.quit",    "Quit",                  "File", () => this.quit());
             c.setKey("helm.quit", "^Q");
+
+            // ---- H12: settings + theme + search ------------------------------
+            c.register("settings.save",   "Save Settings",    "File", () => this.doSaveSettings());
+            c.register("settings.reload", "Reload Settings",  "File", () => this.doReloadSettings());
+            c.register("view.theme.default",      "Theme: Default",       "View", () => this.applyTheme(ThemeDefault));
+            c.register("view.theme.dark",         "Theme: Dark",          "View", () => this.applyTheme(ThemeDark));
+            c.register("view.theme.light",        "Theme: Light",         "View", () => this.applyTheme(ThemeLight));
+            c.register("view.theme.highContrast", "Theme: High Contrast", "View", () => this.applyTheme(ThemeHighContrast));
+            // The query input is a live-shell rider (no widget mounted yet, same
+            // as helm.palette/helm.save above); runSearch(...) is the direct,
+            // already-testable entry point.
+            c.register("helm.search", "Find in Files…", "Edit", () => {});
         }
 
         // ---- menu bar (File / Edit / View / Run / Help — §3) ----------------
@@ -123,10 +195,18 @@ namespace Helm {
             m.category("Help");
 
             m.item("File", "helm.save");
+            m.item("File", "settings.save");
+            m.item("File", "settings.reload");
             m.item("File", "helm.quit");
+
+            m.item("Edit", "helm.search");
 
             m.item("View", "helm.togglePanel");
             m.item("View", "helm.palette");
+            m.item("View", "view.theme.default");
+            m.item("View", "view.theme.dark");
+            m.item("View", "view.theme.light");
+            m.item("View", "view.theme.highContrast");
 
             m.item("Run", "helm.build");
             m.item("Run", "helm.run");
