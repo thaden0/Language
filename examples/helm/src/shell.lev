@@ -55,6 +55,10 @@ namespace Helm {
         FileTree    fileTree_     = FileTree(".");                 // real root set in mountWorkspace
         EditorView  activeEditor_ = EditorView(TextBuffer::Empty()); // real buffer set in mountWorkspace
         int         focusIdx_     = 0;   // 0=editor, 1=tree, 2=panels (F6 cycles)
+        // Open editor tabs, parallel to editorTabs_'s children, so tab-switch
+        // commands can re-focus the right EditorView by index.
+        Array<EditorView> editors_ = [];
+        int         editorIdx_    = 0;   // active editor tab
 
         // Resolved tool paths + workspace (a live command spawns these).
         string wsRoot_     = ".";
@@ -177,6 +181,10 @@ namespace Helm {
             c.setKey("helm.focusNext", "F6");
             c.register("helm.focusPrev", "Focus Previous Pane", "View", () => this.cycleFocusBack());
             c.setKey("helm.focusPrev", "S-F6");
+            c.register("helm.nextTab", "Next Editor Tab",       "View", () => this.nextTab());
+            c.setKey("helm.nextTab", "C-PageDown");
+            c.register("helm.prevTab", "Previous Editor Tab",   "View", () => this.prevTab());
+            c.setKey("helm.prevTab", "C-PageUp");
             // Palette overlay + editor save are live-shell riders (H01/H04); the
             // commands exist now so the accelerator + menu surface is complete.
             c.register("helm.palette", "Command Palette…",      "View", () => {});
@@ -268,6 +276,7 @@ namespace Helm {
 
             EditorView ed = EditorView(TextBuffer::FromString(this.welcomeText()));
             activeEditor_ = ed;
+            editors_ = editors_.add(ed);
             editorTabs_.add("welcome", ed);
 
             ListView  outv  = ListView();  outv.setSource(panels_.output);
@@ -310,11 +319,37 @@ namespace Helm {
         void openNode(TreeNodeId nid) {
             string p = fileTree_.pathOf(nid);
             if (std::isDir(p)) { return; }
+            // If the file is already open, just switch to its tab.
+            int existing = this.tabForPath(p);
+            if (existing >= 0) { this.showTab(existing); return; }
             EditorView ed = EditorView(TextBuffer::FromFile(p));
-            activeEditor_ = ed;
+            editors_ = editors_.add(ed);
             editorTabs_.add(this.baseName(p), ed);
-            app_.focus(ed);
+            this.showTab(editors_.length() - 1);   // open AND switch to it
         }
+
+        int tabForPath(string p) {
+            int i = 0;
+            for (EditorView e in editors_) {
+                if (e.buffer().path() == p) { return i; }
+                i = i + 1;
+            }
+            return 0 - 1;
+        }
+
+        // Make tab `idx` the visible AND focused editor.
+        void showTab(int idx) {
+            int n = editors_.length();
+            if (n == 0) { return; }
+            int c = idx < 0 ? 0 : (idx >= n ? n - 1 : idx);
+            editorIdx_ = c;
+            editorTabs_.select(c);
+            activeEditor_ = editors_[c];
+            focusIdx_ = 0;
+            app_.focus(activeEditor_);
+        }
+        void nextTab() { this.showTab(editorIdx_ + 1); }
+        void prevTab() { this.showTab(editorIdx_ - 1); }
 
         // ^S — save the active editor's buffer (a path-less welcome buffer is a
         // no-op; only file-backed buffers write).
@@ -332,8 +367,9 @@ namespace Helm {
             return "Helm — a terminal IDE for Leviathan\n" +
                    "\n" +
                    "  Type here to edit.  Tab indents.  Arrows move the cursor.\n" +
-                   "  F6 / Shift-F6   switch focus: editor / tree / panels\n" +
-                   "  Enter (in tree)  open the selected file in a new tab\n" +
+                   "  F6 / Shift-F6      switch focus: editor / tree / panels\n" +
+                   "  Enter (in tree)     open the selected file (switches to it)\n" +
+                   "  Ctrl-PgDn / PgUp    switch between open editor tabs\n" +
                    "\n" +
                    "  ^S save   ^B build   F5 run   ^; test   ^C or ^Q quit\n" +
                    "\n" +

@@ -10,6 +10,8 @@
   View / helm.togglePanel [^`]  — Toggle Panel
   View / helm.focusNext [F6]  — Focus Next Pane
   View / helm.focusPrev [S-F6]  — Focus Previous Pane
+  View / helm.nextTab [C-PageDown]  — Next Editor Tab
+  View / helm.prevTab [C-PageUp]  — Previous Editor Tab
   View / helm.palette [^P]  — Command Palette…
   File / helm.save [^S]  — Save
   File / helm.quit [^Q]  — Quit
