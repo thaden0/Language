@@ -11,6 +11,10 @@
 static void lwrCollectStmtNames(const Stmt* s, std::unordered_set<std::string_view>& names);
 static void lwrCollectExprNames(const Expr* e, std::unordered_set<std::string_view>& names) {
     if (!e) return;
+    // #102: a bare `this` keyword is ExprKind::This, not a Name — record it under
+    // the sentinel "this" so the capture logic can tell a lambda that references
+    // the receiver directly (e.g. `return this;`) from one that never touches it.
+    if (e->kind == ExprKind::This) names.insert("this");
     if (e->kind == ExprKind::Name || e->kind == ExprKind::Member)
         if (!e->text.empty()) names.insert(e->text);
     lwrCollectExprNames(e->a.get(), names);
@@ -1869,17 +1873,34 @@ int Lowerer::lowerLambda(Expr* e) {
     // member access never spells it). Matches the oracle's own free-var capture.
     std::unordered_set<std::string_view> lamFree;
     lwrCollectExprNames(e, lamFree);
+    // #102 (capture-narrowing ruling): snapshot the receiver ONLY when the
+    // lambda's body actually references `this` (bare) or a class member — a
+    // field, method, or accessor, all of which lower through thisReg(). Capturing
+    // `this` unconditionally for every member-born lambda formed a genuine
+    // refcount cycle (object -> field -> closure -> this=object) the moment such a
+    // closure was stored back into a field of the same object; Leviathan is pure
+    // ARC with no cycle collector, so that leaked on EVERY engine. classHasMember
+    // already recognises fields, methods, AND this class's accessors (the exact
+    // predicate the member body-lowering below uses to route a bare name through
+    // thisReg()), so gating on it can only ever REDUCE capture relative to the old
+    // always-capture rule — never under-capture, since every thisReg() consumer in
+    // the body is a name this set contains (bare `this` is the "this" sentinel).
+    bool needThis = lamFree.count("this") != 0;
+    if (!needThis && curClass_)
+        for (std::string_view nm : lamFree)
+            if (classHasMember(curClass_, nm)) { needThis = true; break; }
     std::vector<std::pair<std::string_view, int>> captures;
     for (const auto& scope : scopes_)
         for (const auto& [name, reg] : scope)
-            if (name == "this" || lamFree.count(name)) captures.push_back({name, reg});
+            if (name == "this" ? needThis : lamFree.count(name) != 0)
+                captures.push_back({name, reg});
     // The receiver is not a named local: a lambda born inside a member snapshots
     // it under the keyword name too, so its body can lower `this`, bare member
     // reads/writes, and self-method calls against the captured object. (Inside
     // a nested lambda the outer pre-load already put "this" in scopes_, so the
-    // loop above re-captured it — don't add it twice.)
+    // loop above re-captured it — don't add it twice.) Only when the body needs it.
     int enclosingThis = thisReg();
-    if (enclosingThis >= 0 && !findLocal("this"))
+    if (needThis && enclosingThis >= 0 && !findLocal("this"))
         captures.push_back({"this", enclosingThis});
 
     // lower the body in a fresh context

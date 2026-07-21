@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | — |
 | P1       | — |
-| P2       | #102 |
+| P2       | — |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -98,123 +98,62 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
-## #102 [P2] — closure-typed FIELD reassignment "leak" is a refcount CYCLE from unconditional `this`-capture, not a missing field-store release
+#102 fixed 2026-07-21 (method-nested lambda over-captured `this`, forming an
+uncollectable refcount cycle when the closure was stored into a field of the same
+object). Ruling + fix, not just a diagnosis.
 
-**Renumbered from #99** (2026-07-20, agent2↔origin/master merge audit): filed as
-#99 on the agent2 line, but origin/master had already assigned #99 to the
-`Array<Struct>`-loop corruption P0 below (canonical, cross-referenced from
-`designs/complete/techdesign-08-auth-security.md` and `known_bugs_2.md`), so this
-closure-field-leak entry takes the next free number. #100/#101 are already in
-`known_bugs_2.md`.
+Root cause: a lambda literal written inside a method captured `this`
+UNCONDITIONALLY, even when its body referenced neither `this` nor any member.
+Reassigning such a no-op closure into a field of the same object formed a genuine
+cycle `object -> field -> closure -> this=object`; Leviathan is pure ARC with no
+cycle collector, so both nodes leaked every iteration on every engine.
 
-**RE-DIAGNOSED 2026-07-21** (implementation agent assigned to fix the
-originally-filed root cause below): the original theory — "LLVM's closure-field
-store forgets to release the prior value" — does **not** hold on current HEAD and
-was never engine-specific. Re-investigated rather than fixed; see full findings
-before acting on this entry.
+Ruling (capture-narrowing, three investigation questions):
+1. SAFE. Capture `this` only when the lambda body actually references `this`
+   (bare) or a class member. The gate uses the SAME predicate the member
+   body-lowering already uses to route a bare name through the receiver
+   (`classHasMember`, which covers fields AND methods since both are flattened
+   shape slots, plus this class's accessors), so it can only ever REDUCE capture
+   relative to the old always-capture rule — never under-capture. Verified the
+   subtle cases the naive "fields only" sketch would have missed: bare `this`
+   (an `ExprKind::This`, not a `Name` — now recorded as the sentinel name
+   "this"), self-METHOD calls (methods ARE shape slots, so already covered), and
+   set-accessor writes (covered by the accessor arm). The metaprogramming rule
+   engine runs BEFORE the checker and lowering (`src/main.cpp`), so capture
+   analysis always sees fully-expanded bodies — no ordering hazard. The
+   capture set also feeds the spawn/cross-thread reject (`lvThreadCopy` walks
+   `thisObj` unconditionally when set), so narrowing only REMOVES false
+   rejections of member-born lambdas that never touch the receiver — never a new
+   safety hole, since a body that doesn't reference this/members genuinely does
+   not need the object across the boundary.
+2. Do NOT touch `src/X64Gen.cpp` (frozen, no-touch). It turned out this was moot
+   for the CYCLE: X64Gen consumes Lower's `MakeClosure`/`CaptureVar` IR ops
+   (`src/X64Gen.cpp:3752-3766`), it does NOT recompute captures — so narrowing
+   Lower's capture list flows through to ELF automatically. The bug entry's claim
+   that the over-capture was "replicated in X64Gen" was imprecise. ELF's residual
+   ~32 B/iter growth on the repro is a SEPARATE, pre-existing frozen-backend
+   escaping-tier gap (a closure held in an object field is not reclaimed when the
+   object drops — reproduced with a closure BORN IN A FREE FUNCTION that never
+   captured `this`, before or after this fix), out of scope and unchanged.
+3. No intentional rationale for always-capture — an oversight, not a deliberate
+   choice (the surrounding code already computed the referenced-name set; `this`
+   was just force-included).
 
-**What's actually true, evidence-backed:**
-- The closure-typed field store path in `src/LlvmGen.cpp` (`Op::RawSet` fixed-slot
-  path and `Op::SetMember`/`lvrt_setm`) DOES stash-old/release-old/retain-new
-  correctly — confirmed by reading the emitted IR for `detach()` (the release call
-  is present) and by a control repro (`oldrelease.ext`: reassign `cb` to a closure
-  with NO `this`-capture, while the OLD `cb` closure captures a heap `Payload`) —
-  flat on LLVM at N=100/800 (640 B, root set 13 constant). Reassignment release
-  works; adding a second release at this site would double-free.
-- The real defect: **a lambda literal written inside a method unconditionally
-  captures `this`**, even when its body references neither `this` nor any member
-  (`src/Lower.cpp:1881-1883` appends `{"this", enclosingThis}` to the capture set
-  for any member-born lambda regardless of whether `this`/a member is in the
-  referenced-free-variable set the surrounding code already computes). When that
-  lambda is stored back into a field of the SAME object — exactly this entry's
-  `detach() { cb = (x) => { }; }` shape — it forms a genuine reference cycle
-  `h → h.cb → closure → this=h`. Leviathan is pure refcounting with **no cycle
-  collector**, so both nodes leak by design-of-the-defect, not by a missing
-  release.
-- **Not LLVM-specific.** `--mem-verify`'s root-set count (`src/MemVerify.cpp:14`)
-  is itself refcount-based (`!weak_ptr.expired()` over the oracle's `shared_ptr`
-  graph), so a cycle survives there too. Re-measured on this entry's own repro on
-  a fresh build: LLVM live-at-exit `13440 → 103040 B` **and** oracle root set
-  `213 → 1613`, both growing ~2 objects/iter — the "oracle root set constant at
-  x1" claim in the original filing does not reproduce; the churn harness itself
-  now rejects this repro ("root set itself changed with N … fix the corpus
-  program"). There is no clean engine differential to floor as a regression test
-  the way #90/#95/#99/#94/#96 were.
+Fix (two independent capture implementations, both narrowed identically; frozen
+X64Gen untouched):
+- `src/Lower.cpp` — `lwrCollectExprNames` now records bare `this`; `lowerLambda`
+  gates both `this`-capture sites (the scopes_ loop and the enclosing-receiver
+  add) on `needThis`. Fixes the IR interpreter AND LLVM (both consume this IR).
+- `src/Eval.cpp` — the tree-walk oracle snapshots `cl->thisObj` only when
+  `lambdaCapturesThis(e, thisClass_)` (new `Evaluator` helper mirroring the IR
+  predicate); `cl->thisClass` stays (a type pointer, no refcount).
 
-**Why this is not a straightforward backend fix:** the over-capture is in
-shared front-end lowering (`src/Lower.cpp`), replicated in the tree-walk oracle's
-own capture logic AND in the **frozen `src/X64Gen.cpp`** (no-touch backend) —
-narrowing capture only for LLVM would desync the three engines and break
-differential corpus lanes. The capture list also feeds the spawn/cross-thread
-reject checks, so it has reach beyond ARC. This is a **language-semantics
-design decision** (should a method-nested lambda capture `this` only when its
-body actually references `this`/a member, narrowing the current
-always-capture rule?), not a per-backend bug fix — hence capped at P2 per the
-priority system's override 2 (semantics ruling required) rather than resolved
-inline by an implementation agent.
-
-**Priority justification (revised):** P2.1 — the observable behavior itself
-(should this closure be part of a live cycle at all?) is undecided pending a
-capture-semantics ruling; capped per override 2. (The original P2.2 resource-only
-framing no longer applies — this isn't one-engine-wrong, it's cross-engine
-correct-per-current-semantics-but-those-semantics-are-suspect.)
-
-**Concrete candidate fix, NOT yet ruled on:** in `src/Lower.cpp` around line
-1881, capture `this` only if `lamFree.count("this")` OR some name in `lamFree`
-satisfies `classHasMember(curClass_, name)` — bare member reads/writes/self-calls
-are already collected as names by `lwrCollectExprNames`, so this only requires
-consulting a set already computed. This can only ever REDUCE capture (never
-under-capture relative to today), but must be applied consistently to the
-oracle's own capture logic and reconciled with the frozen `X64Gen.cpp` backend
-(or explicitly ruled out-of-scope for ELF as a frozen/reference-only engine) —
-a design call, not this entry's implementation agent's to make unilaterally.
-
-**Minimal repro** (`@N@` swept by `fuzz/churn_leak.py`-style magnitudes) — kept
-for reference; note the harness now flags it as an invalid churn-leak floor
-per the re-diagnosis above (root set itself grows with N):
-
-```
-class Payload { Array<int> data; int v = 0; }
-class Holder {
-    (int) => void cb; bool has = false;
-    void set((int) => void c) { cb = c; has = true; }
-    void detach() { cb = (x) => { }; has = false; }   // reassign: closure created here captures `this`=h unconditionally
-}
-void run(int n) {
-    int sink = 0;
-    for (int i in 1..n) {
-        Holder h = Holder(); Payload p = Payload(); p.v = i; p.data = p.data.add(i);
-        h.set((k) => { sink = p.v; });   // closure captures p
-        h.detach();                       // creates h -> h.cb -> closure -> this=h cycle; both leak, no collector, on EVERY engine
-        sink = sink + p.v;
-    }
-    console.writeln(sink);
-}
-run(@N@);
-```
-
-**Workaround (debt sites, unchanged, still required):** make the field an
-OPTIONAL closure and clear it to `None` instead of reassigning to a no-op
-closure — `None` is a plain object-field store (no lambda literal created, no
-spurious `this`-capture, no cycle). Applied throughout the LA-HTTP-STREAM
-prelude teardown: `TcpStream.onChunk`/`onClosed` and `ChunkedSink.onDone`/
-`userClose` are `(... => ...)?` cleared to `None` in `close()`/`detach()`
-(`prelude/std.lev:719-720`, `:1328-1329`). **Confirmed 2026-07-21 still
-required and NOT revertable** — reverting to a no-op-closure reassignment
-reintroduces the exact `this`-capture cycle. The separately-flagged residual
-per-connection cycle in the landed base HTTP loopback path (`HttpClient`/
-`HttpResponseReader` reader teardown) is the SAME class of defect (a refcount
-cycle, no collector) but through genuine mutual references, not the spurious-
-capture path — orthogonal to this entry; narrowing `this`-capture would not
-retire it. A full net-stack cycle audit remains the real fix for that one and
-is out of scope here.
-
-**Next step:** route the capture-semantics question to a design agent/owner
-ruling (oracle + `Lower.cpp` + frozen `X64Gen.cpp` consistency, and the
-spawn/cross-thread reject checks' reliance on the capture list), then dispatch
-implementation once ruled.
-
----
+Verified: oracle `--mem-verify` root set flat (13 at N=100 and N=800; was
+213 -> 1613); IR-interp mem-verify flat; LLVM churn live-at-exit flat (640 B at
+both N). Regression floor `tests/corpus/churn/method_lambda_this_cycle.ext`
+(XFAIL-ELF for the orthogonal frozen-backend closure-field gap; a real PASS on
+the LLVM lane). Full closure/lambda/spawn/task/thread/meta/composition corpora
+green across treewalk/ir/llvm.
 
 #95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
 regression and not runtime-stale: a latent value-struct ARC over-release exposed
