@@ -158,6 +158,7 @@ private:
     std::unordered_map<const Symbol*, std::unordered_map<std::string, const Stmt*>>
         namespaceBinds_;
     bool namespaceBindsBuilt_ = false;
+    // defined in Checker.cpp
     void buildNamespaceBindIndex(const Program* prelude, const Program& program);
     void indexNamespaceBinds(const std::vector<StmtPtr>& items, Scope* scope);
 
@@ -185,8 +186,10 @@ private:
     int activeSpecializationDepth_ = 0;
     std::unordered_set<const Expr*> diagnosedGenericStatic_;
 
+    // defined in CheckerGenerics.cpp
     void markSpecializationSites(Program& program);
     void materializeSpecializations(Program& program);
+    // defined in CheckerOverload.cpp
     void recordSpecialization(const Stmt* fn,
                               const std::unordered_map<std::string_view, Type>& subst,
                               const Expr* call);
@@ -213,12 +216,14 @@ private:
     // symbol identity differ. Native-codegen concern only — the oracle is untouched
     // (it never reads Expr::valueClass, the sole routing channel). Memoized so all
     // eligible `Pair<int,int>` values resolve to ONE symbol (keyEquals identity, §5).
+    // defined in CheckerGenerics.cpp
     Symbol* specializeValueStruct(Symbol* generic, const std::vector<Type>& args);
     std::unordered_map<std::string, Symbol*> valueStructSpecs_;
 
-    // walking
+    // walking — defined in Checker.cpp except where noted
     void walk(std::vector<StmtPtr>& items, Scope* scope);
     void checkFunction(Stmt* fn, Scope* scope, Symbol* thisClass);
+    // defined in CheckerInfer.cpp
     bool writesThisField(Expr* lhs);
     std::string fieldNameOf(Expr* lhs);
     // const.md / techdesign-readonly §4.3: classify `e` (an assignment LHS,
@@ -229,10 +234,13 @@ private:
     // `readonly` field's window is the initializer OR the declaring class's
     // own constructor bodies (the window `const` fields used to have).
     BlockedWrite constBlockedWrite(Expr* e);
+    // defined in Checker.cpp
     // techdesign-readonly §4.2: is `e` a compile-time-constant expression
     // (the grammar a `const` field's initializer must satisfy)?
     bool isCompileTimeConstant(const Expr* e);
+    // defined in CheckerInfer.cpp
     bool typeMayBeValueStruct(const Type& t);
+    // defined in Checker.cpp
     void check(Stmt* s);
     // techdesign-labeled-break-continue.md F3: push/pop `s`'s label (a no-op
     // if unlabeled) around a loop's body check, at exactly the loopDepth_
@@ -246,7 +254,7 @@ private:
     // loop Stmt* on s->labelTarget on a hit.
     void bindLoopLabel(Stmt* s);
 
-    // typing
+    // typing — defined in CheckerInfer.cpp except where noted
     Type typeOf(const Expr* e);
     Type typeOfInner(const Expr* e);
     Type typeOfMember(const Expr* e);
@@ -259,6 +267,7 @@ private:
     // constant. Shared by the always-false `== float::NaN` diagnostic
     // (typeOfBinary) and the duplicate/unreachable NaN match-arm diagnostics.
     bool isFloatNaNConst(const Expr* e) const;
+    // defined in CheckerOverload.cpp
     Symbol* hygienicClass(const Expr* e) const;
     Symbol* visibleClass(std::string_view name) const;
     // bug.md #82: resolve a `::`-qualified base made ENTIRELY of namespace
@@ -280,13 +289,16 @@ private:
     // (§4.2 — every engine already runs an ordinary Lambda, P-5) and returns
     // its function type. Sets `isRef` to false when `e` isn't such a
     // reference at all — the caller falls back to its own member handling.
+    // defined in CheckerDispatch.cpp
     Type tryResolveMethodRef(Expr* e, const Type* expected, bool& isRef);
     // True if `e` is a callable reference whose name is OVERLOADED (2+
     // candidates) — deferred exactly like a Lambda call argument (§2.2/§6)
     // until the outer call's overload is chosen. Doesn't itself resolve or
     // rewrite `e` (not `const`: it calls `typeOf` on `e`'s base, which — like
     // every other typeOf call — records checker state such as narrowing).
+    // defined in Checker.cpp
     bool isDeferredMethodRefArg(const Expr* e);
+    // defined in CheckerDispatch.cpp
     // Pick among same-named candidates by the LA-25 unbound-reference shape:
     // one candidate needs no target; 2+ requires `expected` to equal exactly
     // one candidate's synthesized (recv?, params...) => ret signature.
@@ -315,6 +327,7 @@ private:
                           Symbol* ctorClass, const std::string& recvCanon);
 
     // ---- LA-31 expression reification (designs/expr-reification/techdesign-02-reifier.md) ----
+    // this whole group is defined in CheckerReify.cpp
     // The prelude's `expr::Expr<F>` class and its `expr` namespace, looked up
     // once (lazily). exprClass_ stays null if the prelude lacks them (never in
     // practice — Stage 1 landed the surface), which disables the whole hook.
@@ -349,7 +362,7 @@ private:
                       const std::unordered_map<std::string_view, Type>* subst = nullptr);
     // The recursive body walk (§3.3): returns the constructed `expr::` node
     // AST, or null on a reject (emits E2 at the offending span). ReifyCtx is
-    // defined in Checker.cpp.
+    // defined in CheckerReify.cpp.
     struct ReifyCtx;
     ExprPtr reifyNode(const Expr* e, ReifyCtx& ctx);
     // The receiver of a whitelisted `Array<T>.contains` — a captured Array
@@ -377,17 +390,21 @@ private:
     // back to declared types / unknown), returning the body's inferred return
     // type (expr body: its type; block body: the uniform Return type, else
     // unknown). This is the lambda-last leg of generic inference (Track 05 §1).
+    // defined in CheckerOverload.cpp
     Type checkLambdaBody(const Expr* lam, const std::vector<Type>& paramTypes);
 
     // An initializer/return expression, typed with a target type available so
     // generic construction can infer type args from the target (§9).
+    // defined in CheckerOverload.cpp
     Type typeInitExpr(const Expr* e, const TypeRef* expected);
     // Instantiate a (possibly generic) class from a chosen constructor + target.
     // Errors at `span` when a type argument has no inference source (§9).
+    // defined in CheckerOverload.cpp
     Type inferConstruction(Symbol* cls, const Stmt* ctor,
                            const std::vector<Type>& args, const Expr* call,
                            const TypeRef* expected, SourceSpan span);
 
+    // defined in CheckerOverload.cpp — pickOverload through callGenericSeed
     // Overload resolution: choose among same-named candidates by argument types
     // (arity + applicability + most-specific, first-declared breaking ties).
     // Returns {chosen, applicableCount}; chosen is null if none apply.
@@ -422,6 +439,7 @@ private:
     // Unified call binding: map positional/named args per candidate, fill each
     // omitted parameter from its default or lexical bind, choose by type score
     // then fewest fills, and normalize the call to a full positional list.
+    // defined in CheckerOverload.cpp
     const Stmt* pickInjecting(const std::vector<const Stmt*>& cands,
                               std::vector<Type>& argTypes, Expr* call, bool& ok,
                               bool& diagnosed,
@@ -432,8 +450,10 @@ private:
     // `binds` the Resolver already filled — dup-in-scope is reported there), then
     // validate that body's factory `bind`s reject value types (bug.md #23) and
     // activate its `use NS::T;` Channel-1 binds (§5.3) into the frame's overlay.
+    // defined in Checker.cpp
     void pushLexicalScope(Scope* scope, const std::vector<StmtPtr>& items);
     void popLexicalScope();
+    // defined in CheckerOverload.cpp
     const Stmt* lookupBind(const std::string& canonical);   // nearest-wins
 
     // RAII for a block's lexical lifecycle (block-scoped-use §3.2): swaps `scope_`
@@ -456,6 +476,7 @@ private:
         BlockScopeGuard& operator=(const BlockScopeGuard&) = delete;
     };
 
+    // defined in CheckerOverload.cpp — genericReturn, unify, substitute
     // Generic call inference/substitution (uniform for methods and functions).
     // When `call`/`lambdaWalked` are supplied, lambda arguments are checked
     // LAST (after value arguments bind type vars): each lambda's param types
@@ -477,7 +498,9 @@ private:
         Type thenType, elseType;
         bool hasThen = false, hasElse = false;
     };
+    // defined in CheckerOverload.cpp
     static std::string pathOf(const Expr* e);
+    // defined in CheckerFlow.cpp
     Type unionMinus(const Type& u, const std::string& removeCanonical) const;
     void analyzeCond(const Expr* cond, std::vector<Fact>& out, bool negated);
     void applyFacts(const std::vector<Fact>& facts, bool thenSide,
@@ -486,9 +509,10 @@ private:
     // OQ1: pop the top env_ frame, first dropping its names from constPending_
     // so a write-open const that reached end of scope (permitted, §2.2 step 5)
     // doesn't linger and mis-flag a later same-named binding.
+    // defined in CheckerOverload.cpp
     void exitEnvScope();
 
-    // helpers
+    // helpers — defined in Checker.cpp
     Type primType(const char* name) const;   // int/string/bool/float class type
     Type fromTypeRef(const TypeRef* t) const;
     bool assignable(const Type& from, const Type& to) const;
@@ -508,6 +532,7 @@ private:
     // method T resolves to). Built once, lazily, on first use.
     std::unordered_map<const Symbol*, std::unordered_set<std::string>> overriddenBelow_;
     bool overrideIndexBuilt_ = false;
+    // defined in CheckerDispatch.cpp — buildOverrideIndex through resolveDispatch
     void buildOverrideIndex();
     bool isOverriddenBelow(const Symbol* T, const Stmt* m) const;
     // §2: whether a call resolving to method `m` on receiver static type `T`

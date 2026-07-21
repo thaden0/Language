@@ -69,6 +69,12 @@ add_library(langfront
   src/CheckerDispatch.cpp
   src/CheckerGenerics.cpp
   src/CheckerReify.cpp
+  # refactor_1 session 03 (owner-approved addition, not pre-staged by session
+  # 01): the overload-resolution / generic-inference-support / bind-inject
+  # cluster shared across CheckerInfer/CheckerDispatch/CheckerGenerics call
+  # sites — table gap discovered during implementation, see
+  # designs/complete/refactor_1/techdesign-03-checker-split-sonnet.md.
+  src/CheckerOverload.cpp
   src/Eval.cpp
   src/Rules.cpp
   src/RulesExpand.cpp
