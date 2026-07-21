@@ -210,6 +210,21 @@ private:
     // Op::VFree reclaims it. Reg indices are per-function: cleared at each
     // function entry, saved/restored around nested lowering (lambdas, $init).
     std::set<int> freshStructRegs_;
+    // bug.md #96 (known_bugs_2): registers holding a BORROWED value-struct alias
+    // produced by `await` (Op::Await reads the promise's `value` field borrowed —
+    // lvrt_await's getfield, runtime/lv_runtime.c — and the dk==1 wrap's retain
+    // NO-OPS on a value class, so the register never gains a real count). The
+    // consuming CopyVal makes an independent copy, but the borrowed alias itself
+    // survives to frame exit; once the awaited Promise (and the value struct it
+    // owns) is freed in the same frame, releaseAllRegs (src/LlvmGen.cpp) releases
+    // the stale alias — reads the freed block's classId as garbage, the
+    // value-class skip in lv_is_counted fails, and the decrement lands on a
+    // freelist next-pointer word (heap corruption surfacing far from the site).
+    // Same family as #95 (method-receiver window) and #99 (loop-var early return):
+    // any lowering that leaves a borrowed value-struct alias live at a path that
+    // reaches releaseAllRegs must void that register first. A Return voids every
+    // recorded await alias before the frame exit. Reg indices are per-function.
+    std::set<int> borrowedAwaitStructs_;
     void noteFreshStructResult(const Expr* e, int reg);
     void maybeVFree(int reg);
     void emitArgCopies(const std::vector<int>& argRegs, const std::vector<ExprPtr>& args);

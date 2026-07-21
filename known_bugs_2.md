@@ -18,7 +18,7 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #96 |
+| P0       | — |
 | P1       | #97, #98, #101 |
 | P2       | — |
 | P3       | — |
@@ -28,147 +28,6 @@ separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two 
 Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
 green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
-
----
-
-## #96 [P0] — a real terminal answering `term::size()`'s CPR fallback segfaults a compiled-LLVM app
-
-**Found:** 2026-07-19, first-ever live (`App.run()`) exercise of `examples/helm`
-compiled with `trident build --out` (H10/H12 landed; this is the first Sonar-based
-app in the repo to be run interactively as a native binary in a real terminal —
-every prior golden test drives the event loop headlessly via `TestRenderer`/
-`pumpOnce`, never a live pty). Not Helm- or Sonar-library-specific: the crash is
-inside the language runtime's own `term::size()` cursor-position-report (CPR)
-fallback (`runtime/lv_loop.c` / `runtime/lv_plat.h`, prelude decl in
-`src/Resolver.cpp`), so any compiled app on any actively-maintained engine that
-reaches this path in a real terminal is exposed.
-**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
-primary backend) segfaults for ordinary, checker-accepted code; the fault
-manifests several closure-call frames downstream of the triggering input (the
-CPR response bytes), the classic "surfaces away from the causing site" shape.
-
-**Repro** (needs a real pty — a plain pipe/redirect never reaches the crash,
-see Verification below):
-
-```
-cd examples/helm
-build/trident build . --out /tmp/helm-bin
-python3 - <<'PYEOF'
-import pty, os, time, select, signal
-pid, fd = pty.fork()
-if pid == 0:
-    os.environ["HELM_RUN"] = "1"
-    os.execvp("/tmp/helm-bin", ["/tmp/helm-bin", "."])
-else:
-    out = b""; responded = False
-    for _ in range(20):
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if fd in r:
-            chunk = os.read(fd, 65536)
-            if not chunk: break
-            out += chunk
-            if not responded and b"\x1b[6n" in out:
-                os.write(fd, b"\x1b[24;80R")   # a real terminal's CPR answer
-                responded = True
-    os.kill(pid, signal.SIGKILL)
-    _, status = os.waitpid(pid, 0)
-    print("signaled:", os.WIFSIGNALED(status), os.WTERMSIG(status) if os.WIFSIGNALED(status) else None)
-PYEOF
-# -> signaled: True 11   (SIGSEGV)
-```
-
-Also reproduces directly from an interactive shell: `HELM_RUN=1 /tmp/helm-bin .`
-run from a real terminal segfaults immediately after startup
-("Helm 0.1.0-dev …" then "Segmentation fault (core dumped)").
-
-**Expected:** the app prints its startup line, enters raw mode, queries the
-terminal size via `\x1b[999C\x1b[999B\x1b[6n` (move-to-bottom-right + CPR) when
-`TIOCGWINSZ` isn't trusted, receives the `\x1b[<row>;<col>R` reply, and proceeds
-into the frame loop.
-**Actual:** SIGSEGV shortly after the CPR reply is read, inside the input
-callback chain (`lv_task_trampoline` → `lv_run_closure_thunk` → four opaque
-LLVM-generated frames with no symbol names in this build). Backtrace has no
-line-level info — this build isn't compiled with debug symbols, and the
-generated function names (`f1287`, `f2198`, …) don't map back to `.lev` source
-without a symbol table, so the root cause is unisolated beyond "somewhere in
-the CPR-response parse/dispatch path."
-
-**2026-07-20 update — does NOT currently reproduce; treat as LATENT, not fixed.**
-`examples/helm` rebuilt at `b397656` (which includes #95's fix, `ffa9e6e`) and
-driven through a 24-case pty matrix — the repro script above verbatim, plus
-split/delayed/oversized/garbage/absent CPR replies, focus and bracketed-paste
-bytes around the reply, keystrokes, and SIGWINCH storms that re-enter
-`onWinch()` → `r.size()` — completes and renders correctly every run, with the
-CPR fallback firing 3-4× per run and parsing. Identical results before and after
-the #95 merge, so `ffa9e6e` is not what changed it.
-
-**Kept open at P0 anyway**, because non-reproduction is weak evidence for this
-defect class: see the root-cause pointer below. Whoever lands #99's fix should
-re-run the matrix — that is the cheap check that decides whether this entry
-dies or was merely masked.
-
-**Root-cause pointer (revised 2026-07-20, supersedes "somewhere in the
-CPR-response parse/dispatch path"):** most likely a member of the LLVM
-**borrowed value-struct alias** family, not anything CPR-specific. The unifying
-statement (Agent2, #99 phase 1): *any lowering that leaves a borrowed
-value-struct alias in a register must void that register before control can
-reach `releaseAllRegs`* — currently violated on (a) loop early-return edges and
-(b) the `Await`→`CopyVal` sequence. #95 (`ffa9e6e`) was the value-struct method
-receiver instance of the same statement; #99 (`known_bugs_1.md`) is the open one.
-The shapes line up: `Sonar::Size` is a value struct (`sonar/src/geometry.lev:23`),
-`App.onWinch()` → `r.size()` runs inside the await-driven callback chain, and
-this entry's own backtrace (`lv_task_trampoline` → `lv_run_closure_thunk` → opaque
-frames, faulting away from the causing site) is the crash-later signature all
-three share. Mechanism, if so (#95's, proven): `releaseAllRegs()`
-(`src/LlvmGen.cpp`, run at every `Op::Ret`/`RetVoid`/unwind) releases the stale
-alias; the release reads the freed block's classId as garbage, `lv_is_counted`'s
-value-class skip fails, and the decrement lands on a **freelist next-pointer
-word**, surfacing later inside `lv_alloc_heap`. Note `ffa9e6e` (#95's fix) does
-NOT close #99 — the auth corpus still crashes with it in place — so the matrix
-above being unchanged across that merge is expected and settles nothing.
-
-**Decisive check, NOT yet run:** if this entry is that family, the corruption is
-still occurring on every Helm run and merely landing somewhere harmless — so a
-freelist-integrity trap (`bug99.md`'s step 1: walk every `g_freelist[c]` at the
-top of `lv_alloc_heap`/`lv_free_raw`, trap on the first node that is out-of-region
-or not 16-byte-aligned), or an `LANG_RT_SANITIZE` lvrt linked into the Helm
-binary, would fire on runs the matrix above scored "alive". That turns this
-entry's status from "cannot reproduce" into a real yes/no. Corruption of this
-shape appears and disappears as unrelated code
-shifts heap layout — `a302c23` ("Convert Pair to a value struct") landed between
-this entry being filed and the matrix above being run, and does exactly that —
-which is why "it stopped crashing" must not be read as "it was fixed."
-
-**Verification gap CLOSED (was gap 1):** "oracle/IR produced zero observable
-output at all" was NOT stdio buffering masking a crash — it was a DEADLOCK, and
-the buffering was its cause. `sysWrite(1, …)` on the interpreters appends to the
-engine's capture buffer (`Evaluator::out_`, printed once the program ends)
-instead of the descriptor, so `term::size()`'s probe bytes never reached the tty,
-nothing answered, and `readCursorReport()`'s `sysRead(0, 16)` blocked forever
-under raw mode's `VMIN=1`. LLVM writes fd 1 directly and was unaffected — the
-engines diverged because one of them captures. Fixed 2026-07-20: raw mode now
-unbuffers the capture (`interpEmitStdout()`, `src/RuntimeNatives.cpp`, declared
-in `src/RuntimeValue.hpp`), routed through by `sysWrite`,
-`Evaluator::emitConsole`, and `IrInterp`'s `Op::Print`/`PrintNl` so a raw-mode
-program's console and `sysWrite` output keep their relative order. Non-tty runs
-never enter raw mode, so every `.expected` golden is untouched.
-
-**Regression floor (new, 2026-07-20):** `tests/corpus/floor/winsize_cpr.lev` +
-the `cpr` mode of `tests/floor_pty.py`, wired into `run_terminal_floor.sh` on
-oracle/IR/LLVM. The CPR probe had NO automated coverage at all before this —
-every other winsize lane either has a real `TIOCGWINSZ` answer (no fallback) or
-no tty (fallback guarded off by `isRaw()`), which is why it was hand-run only
-and why this bug went unseen for a full release of the floor.
-
-**Remaining gap:** (2) still open — no workaround, if it returns.
-
-**Separate finding, NOT filed as its own entry pending a ruling:** a CPR reply of
-≥999 rows (`\x1b[999;999R` and up) kills a compiled Sonar app with
-`lvrt: heap exhausted`, exit 1 — loud, not corruption. Reproduces identically on
-every tree tested. Left alone deliberately: the probe is `\x1b[999C\x1b[999B`, so
-a well-behaved terminal can never answer larger than 999, and clamping inside
-`term::size()` would mean reporting a size the terminal did not give. Owner ruling
-wanted on whether the floor should clamp, the heap should grow, or neither.
 
 ---
 
@@ -546,3 +405,58 @@ workaround, alongside an unrelated same-name+arity method) — verified red→gr
 on the LLVM lane (blank/0 before, 42/12/100 after) and green on treewalk/ir/cpp.
 The `packages/atlantis/src/orm/db.lev` "field-closure dot-call" copy-to-local
 workarounds are now unnecessary but left in place (harmless).
+
+#96 fixed 2026-07-20: the third and final instance of the borrowed
+value-struct-alias family (siblings #95 and #99, both in `src/Lower.cpp`). The
+original filed symptom was a SIGSEGV when a real terminal answered
+`term::size()`'s CPR fallback in a compiled-LLVM `examples/helm` — a
+"surfaces-away-from-the-causing-site" P0.3 heap corruption that went latent as
+unrelated commits shifted heap layout, which is why the pty-matrix repro stopped
+firing. The live, reliably-reproducing manifestation was the Atlantis auth corpus
+(`packages/atlantis/tests/corpus/auth`): the LLVM native binary core-dumped
+partway through the session-strategy tests, inside `lv_alloc_heap`
+(`g_freelist[c] = *(void**)p`, reading a corrupted freelist next-pointer). A
+freelist-integrity trap in `lvrt_release` proved the FIRST stale release was not
+in `SessionStrategy.issue` at all (where it surfaced) but eight test-functions
+earlier, in `testPbkdf2`'s `VerifyResult okRes = await verifyPassword(...)` — the
+`Await`→`CopyVal` shape the entry's own root-cause pointer had named.
+
+Root cause: `Op::Await` reads the promise's `value` field BORROWED
+(`lvrt_await`'s `getfield`, `runtime/lv_runtime.c`), and the dk==1 wrap's retain
+NO-OPS on a value class (`lv_is_counted` skips value structs) — so a value-struct
+await result register (`VerifyResult`, a `struct` boxed by its `string?` field per
+#66) holds a bare borrowed alias of the promise's stored struct, never gaining a
+real count. The consuming `CopyVal` makes an independent copy into the local, but
+the borrowed alias survives to frame exit; once the awaited Promise (and the
+struct it owns) is freed in the same frame, `releaseAllRegs` (`src/LlvmGen.cpp`)
+releases the stale alias — reads the freed block's classId (garbage), the
+value-class skip fails, and the "release" decrements a freed block's freelist
+next-pointer word. Corruption surfaces at the next allocation that pulls that
+node. Exactly the unifying statement from the #99 phase-1 analysis: *any lowering
+that leaves a borrowed value-struct alias in a register must void that register
+before control can reach `releaseAllRegs`* — #95 was the method-receiver window,
+#99 the for-in loop-var early return, #96 the `await` suspend/resume boundary.
+
+Fix (`src/Lower.cpp` + `src/Lower.hpp`): a value-struct `await` result register
+(`e->definiteValueStruct`) is recorded in `borrowedAwaitStructs_` (per-function,
+saved/restored around nested lambda/$init lowering exactly like
+`freshStructRegs_`), and every frame-exit path voids it (`Op::LoadConst … vvoid()`)
+before the `Ret`/`RetVoid` reaches `releaseAllRegs` — folded into the same
+`clearBorrowedElems` lambda #99 added at `StmtKind::Return` (covering the plain,
+value-struct, void, and using-cleanup-chain return paths), plus the two fall-off
+`RetVoid` sites (`lowerFunction` end, lambda-block end). Reference-typed await
+results carry a real +1 and are deliberately NOT voided (still correctly released
+at exit). Engine-neutral: a dead store on oracle/IR, which never crashed.
+
+Regression floor:
+`tests/corpus/composition/aggregates/green/await_value_struct_alias.lev` — five
+`await`-into-value-struct-local sites (the testPbkdf2 shape) followed by a
+same-size-class churn loop that pulls the corrupted freelist node; verified
+red→green (SIGSEGV in `lv_alloc_heap` on LLVM before the fix, `churn acc=250`
+after) on oracle+IR+cpp+llvm. Verified: the full Atlantis auth corpus now passes
+oracle+IR+LLVM (was the only failing lane); routing (#95's pin) and the
+composition/#99 floors remain green. The original CPR/helm segfault is thereby
+explained and closed — it was this same corruption planted on every Helm run and
+merely landing somewhere harmless once heap layout shifted; with the borrowed
+`await` (and #95/#99) aliases voided, no stale value-struct alias reaches
+`releaseAllRegs` on any of the three violating shapes.

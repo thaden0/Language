@@ -249,6 +249,8 @@ int Lowerer::synthesizeInit(Symbol* cls) {
     auto savedScopes = std::move(scopes_);
     auto savedFresh = std::move(freshStructRegs_);   // §15: reg marks are per-function
     freshStructRegs_.clear();
+    auto savedAwait = std::move(borrowedAwaitStructs_);   // bug96: per-function too
+    borrowedAwaitStructs_.clear();
     cur_ = idx; curClass_ = cls;
     scopes_.clear(); scopes_.emplace_back();
     newReg();   // r0 = this
@@ -316,6 +318,7 @@ int Lowerer::synthesizeInit(Symbol* cls) {
 
     cur_ = savedCur; curClass_ = savedClass; scopes_ = std::move(savedScopes);
     freshStructRegs_ = std::move(savedFresh);
+    borrowedAwaitStructs_ = std::move(savedAwait);   // bug96
     return idx;
 }
 
@@ -345,12 +348,16 @@ void Lowerer::lowerPending(const Pending& p) {
     scopes_.clear();
     scopes_.emplace_back();
     freshStructRegs_.clear();                            // §15: per-function reg marks
+    borrowedAwaitStructs_.clear();                       // bug96: per-function reg marks
     loops_.clear();                                      // techdesign-02 F1: fresh function
     usings_.clear();                                     // techdesign-02 F3: fresh function
     chainRetReg_ = -1; chainRetIsVoid_ = false;
     if (p.cls) newReg();                                 // r0 = this
     for (const Param& prm : p.decl->params) scopes_.back()[prm.name] = newReg();
     lowerStmt(p.decl->memberBody.get());
+    // bug.md #96: a void body that fell off the end still reaches releaseAllRegs —
+    // void any borrowed value-struct await alias first (see the header note).
+    for (int r : borrowedAwaitStructs_) emit(Op::LoadConst, r, addConst(vvoid()));
     emit(Op::RetVoid);
 }
 
@@ -448,6 +455,7 @@ bool Lowerer::lower(Program& program, Program& prelude, IrModule& out) {
         curClass_ = nullptr; curAccessor_.clear(); curIsCtor_ = false;
         scopes_.clear(); scopes_.emplace_back();
         freshStructRegs_.clear();
+        borrowedAwaitStructs_.clear();   // bug96
         // Phase A (known_bugs #75/#76/#79/#80): auto-construct every USER global
         // up front — before the namespace-scoped initializers below and before
         // @main — so an initializer or top-level statement always sees a real
@@ -519,6 +527,7 @@ bool Lowerer::lower(Program& program, Program& prelude, IrModule& out) {
     curClass_ = nullptr; curAccessor_.clear(); curIsCtor_ = false;
     scopes_.clear(); scopes_.emplace_back();
     freshStructRegs_.clear();
+    borrowedAwaitStructs_.clear();   // bug96
     for (StmtPtr& item : program.items) {
         switch (item->kind) {
             case StmtKind::Member:
@@ -779,6 +788,13 @@ void Lowerer::lowerStmt(Stmt* s) {
                 for (LoopCtx& lc : loops_)
                     if (lc.borrowedElem >= 0)
                         emit(Op::LoadConst, lc.borrowedElem, addConst(vvoid()));
+                // bug.md #96: same discipline for a value-struct `await` result —
+                // a BORROWED alias of the promise's stored value that must not be
+                // released at frame exit. Voided AFTER the return value is
+                // computed (so `return await f()` copies it first), BEFORE the
+                // frame exit reaches releaseAllRegs.
+                for (int r : borrowedAwaitStructs_)
+                    emit(Op::LoadConst, r, addConst(vvoid()));
             };
             if (usings_.empty()) {
                 // byte-identical to pre-F3 lowering when no using is active.
@@ -1874,6 +1890,8 @@ int Lowerer::lowerLambda(Expr* e) {
     auto savedScopes = std::move(scopes_);
     auto savedFresh = std::move(freshStructRegs_);   // §15: reg marks are per-function
     freshStructRegs_.clear();
+    auto savedAwait = std::move(borrowedAwaitStructs_);   // bug96
+    borrowedAwaitStructs_.clear();
     // techdesign-02 F1/F4: a lambda body is its own loop nesting — a bare
     // break/continue in the body must never resolve against the ENCLOSING
     // function's loop stack (the checker already rejects it statically; this
@@ -1908,6 +1926,8 @@ int Lowerer::lowerLambda(Expr* e) {
     }
     if (e->block) {                               // statement-block body
         lowerStmt(e->block.get());
+        // bug.md #96: fall-off void return still reaches releaseAllRegs.
+        for (int r : borrowedAwaitStructs_) emit(Op::LoadConst, r, addConst(vvoid()));
         emit(Op::RetVoid);                         // fall-off returns void
     } else {
         int result = lowerExpr(e->a.get());       // expression body
@@ -1918,6 +1938,7 @@ int Lowerer::lowerLambda(Expr* e) {
     curIsCtor_ = savedCtor; curIsLambda_ = savedLam;
     scopes_ = std::move(savedScopes);
     freshStructRegs_ = std::move(savedFresh);
+    borrowedAwaitStructs_ = std::move(savedAwait);   // bug96
     loops_ = std::move(savedLoops);
     usings_ = std::move(savedUsings);
     chainRetReg_ = savedChainRetReg; chainRetIsVoid_ = savedChainRetIsVoid;
@@ -2144,6 +2165,14 @@ int Lowerer::lowerExpr(Expr* e) {
             int p = lowerExpr(e->a.get());
             int r = newReg();
             emit(Op::Await, r, p);
+            // bug.md #96 (known_bugs_2): a value-struct await result is a BORROWED
+            // alias of the promise's stored value (lvrt_await's getfield borrows,
+            // and the dk==1 wrap's retain no-ops on value classes). The consuming
+            // CopyVal copies it, but this register survives to frame exit as a
+            // stale alias once the promise is freed — record it so a Return voids
+            // it before releaseAllRegs. Reference-typed await results carry a real
+            // +1 and must NOT be voided (they are correctly released at exit).
+            if (e->definiteValueStruct) borrowedAwaitStructs_.insert(r);
             return r;
         }
         case ExprKind::Is:
