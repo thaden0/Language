@@ -21,7 +21,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | P0       | — |
 | P1       | — |
 | P2       | — |
-| P3       | — |
+| P3       | #103 |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
 separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two files).
@@ -330,3 +330,79 @@ two buffers); the reentrant fixpoint and `namespace N` anchor injection still
 operate over the user tree only; and cross-buffer splice sites (`@PreludeAttr()` in
 user code targeting a prelude-declared attribute) are not yet indexed — all
 out-of-scope for the repro and filable if a consumer needs them.
+
+---
+
+#103 [P3] OPEN 2026-07-21: emit-C++ (`--build`) defers `Process`/`Pty` with the
+WRONG diagnostic — a generic construct-coverage error instead of the design-mandated
+sys-native-named one. The deferral itself is correct (fail-loud, no miscompile); only
+the message is degraded, but it keeps the `sys_natives` ctest lane red.
+
+Priority justification (marker P3.4 — cosmetic/diagnostic-only, no value or
+control-flow difference): the construct is still correctly REJECTED on emit-C++
+(nonzero exit, no object file, no miscompile) and every OTHER engine is correct —
+LLVM covers the spawn/pty floors and prints `0`; the oracle (`--run`) and IR (`--ir`)
+run the three-lane pty/spawn goldens (all verified green in the same script). The
+only defect is the diagnostic TEXT. Explicitly NOT P2.3: the emit-C++ fail-loud is
+the *intended* Track 08 system-layer deferral (the feature is deliberately unsupported
+on this engine — `tests/run_sysnatives.sh` §10/§11 comments call it "its deliberate
+system-layer deferral"), not a feature-parity regression. Explicitly NOT P2.4: the
+construct DOES error — no diagnostic is missing, the intended one is merely masked by a
+less-specific one.
+
+Minimal repro (the two failing assertions, `tests/run_sysnatives.sh` §10 "clean spawn
+deferral" and §11 "clean pty deferral"):
+
+    bin=build/leviathan
+    printf 'Process p = Process("/bin/echo", ["x"]);\np.exitCode().then((c) => console.writeln(c.toString()));\n' > /tmp/sp.lev
+    printf 'Pty p = Pty::Deterministic("/bin/echo", ["x"], 24, 80);\np.exitCode().then((c) => console.writeln(c.toString()));\n' > /tmp/pty.lev
+    "$bin" --build /tmp/sp_out  /tmp/sp.lev    # asserted: rc!=0 AND stderr =~ native.*'sys
+    "$bin" --build /tmp/pty_out /tmp/pty.lev   # asserted: rc!=0 AND stderr =~ native.*'sys
+
+Expected (the §6.4 emit-C++ deferral contract — "a clean coverage error naming a sys
+native, never a miscompile"): nonzero exit whose stderr names the uncovered system
+native, e.g. `native backend: native 'sysSpawn'` (spawn) / `native backend: native
+'sysPtySpawn'` (pty) — this is what the `grep -q "native.*'sys"` assertions look for.
+
+Actual: rc=1 with the GENERIC message, no sys native named, pointing at line 1 (the
+`Process`/`Pty` decl):
+
+    error: native backend does not yet cover this construct (objects/collections/closures/exceptions)
+
+Root cause (diagnostic precedence / coverage ordering in `src/CGen.cpp`, engine-local
+to emit-C++): CGen has NO `case Op::Await` in `genFunction`'s instruction `switch`, so
+`Op::Await` falls through to the generic `default:` (`src/CGen.cpp:1117`, the
+"does not yet cover this construct (objects/collections/closures/exceptions)" arm). The
+emit-C++ reachability walk over-approximates by-name method reachability (the SAME
+over-marking #97 documents: `TcpStream`'s `close()`/`send()` drag in the
+task/channel/mutex machinery), which pulls an `await`-containing in-language prelude
+function into the emitted set even though the user program never awaits. `generate()`
+emits reachable functions in ascending index order (`src/CGen.cpp:1377-1378`), and that
+await-bearing function has a LOWER index than the `Process`/`Pty` constructor that calls
+`std::sysSpawn`/`std::sysPtySpawn`. When the await function is emitted its `Op::Await`
+hits `default:` and sets the persistent member `ok_=false`; `ok_` is never reset between
+functions and each later `genFunction` breaks its instruction loop after the first
+instruction once `ok_` is false, so the later constructor never reaches its
+`sysSpawn`/`sysPtySpawn` `CallNativeFn`, whose `else` arm (`src/CGen.cpp:1095`,
+`native backend: native '<name>'`) would have produced the design-mandated message. Net:
+the generic await-coverage error masks the sys-native deferral diagnostic. (Confirmed by
+instrumenting both arms: the emitted error is `op=Op::Await` in the reachable prelude
+function, never the sysSpawn `CallNativeFn`.)
+
+NOT a 2026-07-21 regression (the #97 report's guess that the #98 prelude rule-stage
+commit caused it is incorrect): the identical generic message reproduces on a clean
+build at merge-base commit `9981572` (2026-07-20 21:00, before every 2026-07-21 bug fix
+incl. #98). The spawn assertion (authored 2026-07-16, `f555250`) and pty assertion
+(2026-07-19, `16d1b62`) appear to have been red since they landed — the await drag-in
+predates both.
+
+Fix shape is a DESIGN call (why filed open, not fixed): the choices are (a) CGen detects
+and reports the uncovered sys-native coverage gap in preference to the generic
+construct-coverage `default:` (a diagnostic-precedence / coverage-ordering change — the
+"separate CGen coverage-ordering matter" the #97 writeup flagged), (b) add an
+`Op::Await` case emitting an honest "async/await not covered on emit-C++" message and
+relax the two assertions to accept it, or (c) relax the assertions to accept any clean
+nonzero coverage error. Which is correct hinges on whether the §6.4 emit-C++ deferral
+contract REQUIRES naming a sys native — a semantics/contract decision, not made here.
+Cost of leaving open: the `sys_natives` ctest lane stays red on these two lines even
+though every functional assertion in the script passes.
