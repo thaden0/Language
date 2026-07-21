@@ -100,11 +100,14 @@ bool RuleEngine::run(Program& program) {
     macroExpansionEnabled_ = false;
     // E. Attribute resolution (Layer A), scoped by the same recomputed map.
     walkAttrs(program.items);
+    // E2. Build the splice-site index + validate sites (M43). Always — a malformed
+    // `@Name();` site must be rejected even in a rule-free program (named-anchor
+    // design §2.1); `expand`'s `at splice` arm reads the index built here.
+    indexSpliceSites(program.items);
     // F. Index every matchable declaration, then match + expand rules (Layer B).
     if (!rules_.empty()) {
         std::vector<Ancestor> chain;
         indexDecls(program.items, chain, "<root>");
-        indexSpliceSites();
         orderRules();
         runRules();
         // §4: re-run reentrant rules to a fixpoint (no-op unless a reentrant
@@ -1362,22 +1365,34 @@ void RuleEngine::collectSpliceSites(std::vector<StmtPtr>& vec) {
     }
 }
 
-// (Re)build the program-global splice-site index from the already-indexed decls
-// (one extra pass over already-visited callable bodies — design §2.3). Then M43:
-// every site must name a declared `attribute`, so a mistyped `@Bindz()` with no
-// such attribute anywhere is a loud error, not a silent no-op marker.
-void RuleEngine::indexSpliceSites() {
-    spliceSites_.clear();
-    for (const DeclInfo& di : decls_) {
-        Stmt* d = di.decl;
-        if (d->callable && d->memberBody && d->memberBody->kind == StmtKind::Block)
-            collectSpliceSites(d->memberBody->body);
+// Walk the program tree (namespaces/classes into their bodies, callable members
+// into their statement bodies), recording every `@Name();` site and, alongside,
+// the simple name of every declared `attribute`. Tree-based, not decls_-based, so
+// it runs even when no rule exists.
+void RuleEngine::gatherSpliceSites(std::vector<StmtPtr>& items,
+                                   std::set<std::string_view>& attrNames) {
+    for (StmtPtr& item : items) {
+        if (!item) continue;
+        Stmt* s = item.get();
+        if (s->kind == StmtKind::Class && s->isAttribute) attrNames.insert(s->name);
+        if (s->kind == StmtKind::Namespace || s->kind == StmtKind::Class)
+            gatherSpliceSites(s->body, attrNames);
+        else if (s->kind == StmtKind::Member && s->callable && s->memberBody &&
+                 s->memberBody->kind == StmtKind::Block)
+            collectSpliceSites(s->memberBody->body);
     }
+}
+
+// (Re)build the program-global splice-site index (design §2.3), then M43: every
+// site must name a declared `attribute`, so a mistyped `@Bindz()` with no such
+// attribute anywhere is a loud error — regardless of whether any rule exists (the
+// typo net is a property of the site, not of a targeting rule).
+void RuleEngine::indexSpliceSites(std::vector<StmtPtr>& items) {
+    spliceSites_.clear();
+    std::set<std::string_view> attrNames;
+    gatherSpliceSites(items, attrNames);
     for (auto& [name, sites] : spliceSites_) {
-        bool isAttr = false;
-        for (const DeclInfo& di : decls_)
-            if (di.kindWord == "attribute" && di.decl->name == name) { isAttr = true; break; }
-        if (isAttr) continue;
+        if (attrNames.count(name)) continue;
         for (const SpliceSiteRef& site : sites)
             sink_.error(site.node->span, "'@" + std::string(name) +
                         "()' is not a declared attribute — a splice site must name "
@@ -1776,7 +1791,7 @@ void RuleEngine::runReentrantFixpoint(Program& program) {
         decls_.clear();                          // re-index the expanded tree
         std::vector<Ancestor> chain;
         indexDecls(program.items, chain, "<root>");
-        indexSpliceSites();                      // rebuild the splice-site index too
+        indexSpliceSites(program.items);         // rebuild the splice-site index too
         runRulePasses(/*reentrantOnly=*/true);   // only reentrant rules re-trigger
         if (firedPairs_.size() == firedBefore) return;   // fixpoint: nothing new fired
     }

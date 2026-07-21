@@ -324,6 +324,11 @@ add_test(NAME rule_splice_reject_notattr         # M43: `@X()` site where X is n
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr.ext"
                  "is not a declared attribute")
+add_test(NAME rule_splice_reject_notattr_norule  # M43 fires even with NO rules present
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr_norule.ext"
+                 "is not a declared attribute")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir

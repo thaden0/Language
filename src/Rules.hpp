@@ -409,6 +409,11 @@ private:
         Stmt* node;                  // the `@Name();` Empty marker node
     };
     std::map<std::string_view, std::vector<SpliceSiteRef>> spliceSites_;
-    void indexSpliceSites();                     // (re)build spliceSites_ from decls_
+    // (Re)build spliceSites_ by walking the program tree directly (NOT decls_, so
+    // it runs even for a rule-free program — M43 is a property of the site, not of
+    // any rule). Also emits M43 for a site whose name is not a declared attribute.
+    void indexSpliceSites(std::vector<StmtPtr>& items);
+    void gatherSpliceSites(std::vector<StmtPtr>& items,
+                           std::set<std::string_view>& attrNames);
     void collectSpliceSites(std::vector<StmtPtr>& vec);   // recursive site gather
 };

@@ -8,11 +8,12 @@ round) and the `expand` `SpliceSite` arm with M42 (zero / ≥2 sites) and M43 (n
 site) (`src/Rules.cpp`); the `@Name();` re-emit in `--expand`/debug (`src/AstPrinter.cpp`).
 Corpus: `rule_splice_routes{,_twin}`, `rule_splice_binds{,_twin}`, `rule_splice_multi`,
 `rule_splice_empty` (green, ride the `corpus_meta_*` + expand round-trip lanes);
-`rule_splice_{missing,dup,notattr}` (red, `tests/negative/`). `docs/reference.md` anchor list
-gained `splice Name [multi]` + a dedicated bullet. One realization note vs §5: M43 is checked
-at splice-index build time (the parser cannot resolve "is a declared attribute"), so it fires
-within the rules phase — a `@Undeclared();` site in a program with *no rules at all* is a
-silent no-op rather than M43.
+`rule_splice_{missing,dup,notattr,notattr_norule}` (red, `tests/negative/`). `docs/reference.md`
+anchor list gained `splice Name [multi]` + a dedicated bullet. One realization note vs §5: M43
+cannot be checked in the parser (it cannot resolve "is a declared attribute"), so it is emitted
+at splice-index build time — but that index build runs *unconditionally* (a tree walk, not gated
+on `decls_`/rules), so a malformed `@Undeclared();` site is rejected even in a program with no
+rules at all, exactly as §4 intends.
 
 **Part of** `designs/metaprog-splices/` (see `-overview-opus.md`). **Complexity:** opus
 (a new anchor kind + a program-global splice-site index; the largest single new mechanism in
