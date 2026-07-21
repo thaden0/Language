@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | #94, #96 |
 | P1       | #97, #98, #101 |
-| P2       | #102, #103 |
+| P2       | #102 |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -481,47 +481,6 @@ only per bug-reporting workflow.
 
 ---
 
-## #103 [P2] — `rule_subject_class_exact.expected` bakes an absolute worktree path, breaking `corpus_meta_*` in every other checkout
-
-**Found:** 2026-07-20, refactor_1 session 01 (build-scaffold validation) —
-`corpus_meta_treewalk`/`corpus_meta_ir` failed in a worktree not checked out at
-the exact path baked into the golden file.
-**Priority justification:** P2, test-infra portability — no compiler-correctness
-marker (P0.x/P1.x) applies: the compiler output is itself correct (the diagnostic
-legitimately echoes the source file's path). The defect is that the golden
-`.expected` file hardcodes one machine's absolute worktree path, so the raw
-`diff` in `tests/run_corpus.sh` (no path normalization) fails in any checkout
-whose absolute path differs — a harness/portability issue that reddens `ctest`
-everywhere except the one worktree that generated the golden.
-
-**Repro:**
-
-```
-ctest -R corpus_meta_treewalk
-```
-
-run from any worktree not literally checked out at `/home/len/code/Language-agent1`.
-
-**Expected:** diff-clean against the golden output regardless of checkout path.
-
-**Actual:** `diff` fails — the golden file's first diagnostic line hardcodes the
-generating worktree's absolute path:
-
-```
-/home/len/code/Language-agent1/tests/corpus/meta/rule_subject_class_exact.ext:20:1: warning: ...
-```
-
-`tests/run_corpus.sh` compares with a raw `diff` and does no `$PWD`/path
-normalization, so any other checkout path mismatches.
-
-**Root-cause pointer:** the golden `tests/corpus/meta/rule_subject_class_exact.expected`
-(line 1) carries an absolute source path instead of a repo-relative (or
-normalized) one; confirmed still present via
-`grep -rl "Language-agent1" tests/corpus/meta/`. Fix belongs in either the golden
-file (relative path) or `run_corpus.sh` (normalize absolute paths before diff);
-filing only per bug-reporting workflow.
-
----
 
 #92 fixed 2026-07-19 (found+fixed in-session, ORM Track 06): an ATTRIBUTE's
 class symbol shadowed a real same-named class for ordinary bare-name
