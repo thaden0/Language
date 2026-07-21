@@ -396,6 +396,12 @@ incl. #98). The spawn assertion (authored 2026-07-16, `f555250`) and pty asserti
 (2026-07-19, `16d1b62`) appear to have been red since they landed — the await drag-in
 predates both.
 
+Folded-in duplicate: a concurrent refactor_1 session independently filed the same
+defect the same day as `known_bugs_2.md`'s (now-removed) `#102`, with an UNCONFIRMED
+root cause — folded in here since this entry already carries the confirmed one (the
+`Op::Await`→`default:` + emission-order over-approximation above). Same repro
+(`tests/run_sysnatives.sh` steps 10/11).
+
 Fix shape is a DESIGN call (why filed open, not fixed): the choices are (a) CGen detects
 and reports the uncovered sys-native coverage gap in preference to the generic
 construct-coverage `default:` (a diagnostic-precedence / coverage-ordering change — the

@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | — |
 | P1       | — |
-| P2       | — |
+| P2       | #105 |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -31,6 +31,47 @@ Fixing #N means: fix, delete the entry here, promote red→green — one commit.
 
 ---
 
+## #105 [P2] — `rule_subject_class_exact.expected` bakes an absolute worktree path, breaking `corpus_meta_*` in every other checkout
+
+**Found:** 2026-07-20, refactor_1 session 01 (build-scaffold validation) —
+`corpus_meta_treewalk`/`corpus_meta_ir` failed in a worktree not checked out at
+the exact path baked into the golden file.
+**Priority justification:** P2, test-infra portability — no compiler-correctness
+marker (P0.x/P1.x) applies: the compiler output is itself correct (the diagnostic
+legitimately echoes the source file's path). The defect is that the golden
+`.expected` file hardcodes one machine's absolute worktree path, so the raw
+`diff` in `tests/run_corpus.sh` (no path normalization) fails in any checkout
+whose absolute path differs — a harness/portability issue that reddens `ctest`
+everywhere except the one worktree that generated the golden.
+
+**Repro:**
+
+```
+ctest -R corpus_meta_treewalk
+```
+
+run from any worktree not literally checked out at `/home/len/code/Language-agent1`.
+
+**Expected:** diff-clean against the golden output regardless of checkout path.
+
+**Actual:** `diff` fails — the golden file's first diagnostic line hardcodes the
+generating worktree's absolute path:
+
+```
+/home/len/code/Language-agent1/tests/corpus/meta/rule_subject_class_exact.ext:20:1: warning: ...
+```
+
+`tests/run_corpus.sh` compares with a raw `diff` and does no `$PWD`/path
+normalization, so any other checkout path mismatches.
+
+**Root-cause pointer:** the golden `tests/corpus/meta/rule_subject_class_exact.expected`
+(line 1) carries an absolute source path instead of a repo-relative (or
+normalized) one; confirmed still present via
+`grep -rl "Language-agent1" tests/corpus/meta/`. Fix belongs in either the golden
+file (relative path) or `run_corpus.sh` (normalize absolute paths before diff);
+filing only per bug-reporting workflow.
+
+---
 #92 fixed 2026-07-19 (found+fixed in-session, ORM Track 06): an ATTRIBUTE's
 class symbol shadowed a real same-named class for ordinary bare-name
 resolution — with `uses Atlantis::Orm; uses Atlantis::Data;`, a bare `Row`
@@ -427,3 +468,21 @@ should confirm the tool call is written with a real lambda literal (not spliced
 purely from string `$p.type` values). Design doc unchanged (the fix restores
 its §4.1 point 4 intent); left in `designs/complete/` as the entry already
 resides there.
+#104 fixed 2026-07-20 (found+fixed in-session, refactor_1 session 02 — the
+Eval.cpp/IrInterp.cpp divergence audit that drove the RuntimeCore extraction):
+the oracle (`Evaluator::combine`)'s hand-maintained operator-symbol map omitted
+`|` and `&`. In unchecked/prelude code (where `Expr::resolved` is null) the
+oracle reached the object-operator dispatch path, but its `opSymbol` table
+stopped at `<<`/`>>` and mapped `|`/`&` to `"?"` — so applying `|` or `&` to an
+object whose class defines that operator method looked up a nonexistent `"?"`
+method and raised the wrong error (`no operator '?' on 'X'`), while `IrInterp`'s
+`objectArith` dispatched the resolved `|`/`&` method correctly. Expected: both
+engines dispatch the resolved operator method, or raise `"no operator '|' on
+'X'"` if the class lacks it. Same root-cause family as bug.md #13 (hand-copied
+operator/method-name tables drifting between the two engines). Fixed
+structurally by the RuntimeCore unification (`043c0d5`): the new shared
+`rtOpSymbol` table in `src/RuntimeCore.cpp` includes `|` and `&` (matching
+IrInterp and the checker's authoritative table — the correct side), and both
+engines now consume that single table, so this class of drift cannot recur.
+Filed for the historical record per the refactor_1 doc's finding-disposition
+rule (b) — no further action needed.
