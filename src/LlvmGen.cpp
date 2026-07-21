@@ -2533,7 +2533,23 @@ struct Gen {
                             // `string.byteAt`/`toFloat`/`Array.concatAll` on
                             // this backend before Bug 19's `with`/`without`
                             // rows above).
-                            if (cands.empty() && !nativeMethodCovered(in.sname)) {
+                            // bug.md #94: reach the field-closure fallback on
+                            // ANY fallthrough where no native method covers the
+                            // name — NOT only when `cands` is empty. When some
+                            // in-language method of this name exists on OTHER
+                            // classes (`cands` non-empty), the candidate chain
+                            // above compares the receiver's effective classId
+                            // against each and, on no match, the insert point is
+                            // the last `next` block: the receiver is provably
+                            // none of those classes, so the name can still only
+                            // be a field-closure on THIS receiver (or a genuine
+                            // error the fallback raises). Gating on `cands.empty()`
+                            // dropped that fallthrough straight into the void tail
+                            // below — silently no-op'ing `h.validate()` whenever a
+                            // same-name, same-arity method happened to exist
+                            // anywhere else in the program (e.g. `Db.validate()`
+                            // shadowing the `() => Promise<void> validate` field).
+                            if (!nativeMethodCovered(in.sname)) {
                                 // bug.md #2: no in-language method or native
                                 // covers this name at this call site — the
                                 // checker doesn't distinguish "method call"
