@@ -264,6 +264,7 @@ private:
     bool declKindMatches(const Stmt* d, std::string_view kind) const;
     bool tryMatch(const OwnedRule& r, const DeclInfo& di, Bindings& out,
                   const AttrUse** firedAttr);
+    Symbol* matchAttrSymbol(const OwnedRule& r) const;  // #98 (2 of 2)
     Symbol* resolveTypeName(const TypeRef* t, const std::string& ns) const;
     bool implementsOrExtends(Symbol* cls, Symbol* iface) const;
     void expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,

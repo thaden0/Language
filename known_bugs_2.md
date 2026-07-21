@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #98, #101 |
+| P1       | #101 |
 | P2       | — |
 | P3       | — |
 
@@ -30,100 +30,6 @@ green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
 
 ---
-
-## #98 [P1] — a rule cannot match an attribute declared in a different namespace than the rule itself
-
-**Renumbered from #96** (2026-07-19, same day) to resolve a cross-branch bug-
-number collision on merge — origin/master independently filed a DIFFERENT #96
-(the `term::size()` CPR segfault above) and #97 (the Windows task-gate entry,
-now fixed — see the writeup at the bottom of this file) the same day. This
-entry's content is otherwise unchanged; any prior
-reference to "known_bugs_2.md #96" for the cross-namespace rule-matching
-finding now means #98.
-
-**Independently re-confirmed** 2026-07-20 by a second, concurrent agent working the same
-Atlantis Track 07 doc from a stale worktree copy (its own T7-P6 probe, minimal
-sibling-namespace repro, identical result); folded in here rather than kept as a
-duplicate entry — for THIS defect, one entry is correct. That session also isolated a
-separate, independently-reproducible LA-18 defect (the specialization-tuple collector
-can't infer a generic's type when the only evidence in the call is a lambda-literal
-argument's declared parameter type), which it filed as #99. That finding is NOT a
-duplicate of this entry — it reproduces with no rules or attributes involved at all and
-points at a different subsystem — and the original merge resolution's decision to fold
-it into this paragraph misfiled a distinct compiler bug. Restored as its own entry,
-**#101** below (renumbered from #99, which origin/master had already assigned).
-
-**Found:** 2026-07-19, Atlantis Track 07 M0 probe T7-P6
-(`packages/atlantis/tests/probes/mcp_p6_two_rules_stack.lev`), while
-validating the C1 2026-07-18 amendment's premise (rules/attributes live in
-the subsystem namespace that *consumes* them, e.g. Track 07's `schemaJson`
-rule in `Atlantis::OpenApi` matching `@Serializable`, declared in `Atlantis`).
-**Priority justification:** P1.2 — no single fix retires the risk; every
-future subsystem whose rule needs to match another subsystem's attribute
-(exactly the shape C1's own "multi-consumer" tiebreak anticipates as normal)
-must independently know to co-locate the rule in the attribute's namespace
-instead. Not P0: a workaround exists (same-namespace co-location) and no
-track is unconditionally blocked.
-
-**Repro (minimal, no nesting relationship — plain siblings):**
-
-```
-namespace SibA {
-    attribute Foo {}
-}
-namespace SibB {
-    rule ruleB {
-        match @Foo on struct S
-        inject `string __fromB() => "B";` at member of S
-    }
-}
-uses SibA;
-uses SibB;
-
-@Foo
-struct Thing { int x; }
-
-void main() {
-    Thing t = Thing();
-    console.writeln(t.__fromB());   // expected "B"
-}
-main();
-```
-
-**Expected:** `ruleB` matches `@Foo` (visible, imported via `uses SibA;`) and
-injects `__fromB` into `Thing`, printing `B`.
-**Actual:** a diagnostic (`warning: attribute '@Foo' matched no imported rule
-(missing 'uses SibB'?)`) fires even though `uses SibB;` IS present, `ruleB`
-never fires, and the call `t.__fromB()` fails at runtime: `Uncaught
-RuntimeException: cannot resolve call target '__fromB'`. Confirmed the same
-result whether the two namespaces are unrelated siblings (above), or one is
-nested one level inside the other in either direction (attribute in the
-outer namespace + rule in a nested inner namespace, matching Track 07's
-actual C1-amended layout) — the failure is not about nesting depth or
-direction, only about the rule and the attribute being declared in different
-namespace blocks at all. When both are declared in the SAME namespace block
-(regardless of how deeply that namespace is itself nested — e.g. Track 06's
-`Atlantis::Orm` rules matching `Atlantis::Orm`'s own attributes, bug #91's
-now-fixed regression floor), matching works correctly — confirmed by this
-same probe file's `ruleOuter`/`__fromOuter` case, which passes.
-
-**Root-cause pointer:** not investigated (framework agents don't debug
-compiler internals per the Atlantis overview §0.4(b)/(h)); likely the same
-family as #91 (rule/attribute namespace keying in `Rules.cpp`), but #91's fix
-(keying by full qualified path) evidently did not extend to cross-namespace
-*matching* — only to same-namespace rules/attributes nested arbitrarily deep.
-
-**Workaround (debt site):** co-locate a rule with the attribute it matches,
-in the attribute's OWN namespace, even when C1's placement guidance would
-otherwise put the rule in a different (more specific) subsystem namespace.
-Applied in `packages/atlantis/src/openapi/schema.lev` (Track 07): the
-`serializableSchema` rule matches `@Serializable`, declared in flat
-`Atlantis` by Track 03's (still-unmigrated) `src/json/serializable.lev` — so
-it is declared inside `namespace Atlantis { ... }` directly, not nested
-`Atlantis::OpenApi`, with a comment pointing here. Revisit when either this
-bug is fixed, or Track 03 completes its own C1 migration (at which point the
-rule should move to `Atlantis::Json` instead, once cross-namespace matching
-works or `@Serializable` lands there).
 
 ## #101 [P1] — LA-18 specialization can't determine a type tuple from a lambda-typed argument alone
 
@@ -468,3 +374,64 @@ pre-existing `emit-cpp` deferral assertions in the same script — Process/Pty
 under `--build` — were already red on the pre-fix binary, unrelated to this fix;
 a separate CGen coverage-ordering matter.) Unblocks Helm H10/G-H6 and
 sockets-on-Windows (Trident fetch, Atlantis) broadly.
+
+#98 fixed 2026-07-21: a rule declared in one namespace could not match an
+attribute declared in a DIFFERENT namespace, even with both namespaces
+imported (`uses SibA; uses SibB;` + `@Foo` from `SibA` + `ruleB` in `SibB`
+matching `@Foo`) — the rule silently never fired, a spurious `attribute '@Foo'
+matched no imported rule (missing 'uses SibB'?)` warning fired even though the
+`uses` WAS present, and the injected member failed at runtime (`cannot resolve
+call target '__fromB'`). Same-namespace matching (bug #91's now-fixed floor,
+nested arbitrarily deep) worked; only cross-namespace rule→attribute matching
+was broken, in either direction and at any nesting relationship.
+
+Root cause: `RuleEngine::tryMatch` (`src/Rules.cpp`) resolved the attribute a
+rule's `match @Foo` names by looking it up ONLY in the rule's own namespace
+scope (`namespaceScope(r.ns)`) and the global scope. #91's fix keyed rules by
+their full qualified namespace path, so a rule and attribute co-located in the
+same (arbitrarily deep) namespace resolved correctly — but when the attribute
+lived in a *different* namespace than the rule, that two-scope lookup returned
+null, so `want` was null and the `a.resolved == want` attribute-pattern test
+never matched any decl. It ignored the rule's own file imports entirely (and
+the match's `attrPath` qualifier segments), even though the rule author writes
+`@Foo` relying on that file's `uses` list — exactly how `resolveAttr` resolves
+a `@Foo` at a use site.
+
+Fix: new `RuleEngine::matchAttrSymbol` resolves the match attribute the same
+way `resolveAttr` resolves a use-site attribute, but keyed off the file that
+DECLARES the rule: a qualified `match @NS::Name` walks straight down from
+global; an unqualified `match @Foo` searches the namespaces visible to the
+rule's own file (its `uses` + opened namespaces + std), then falls back to the
+rule's namespace and global (covers prelude / co-located rules with no file
+slot). It prefers an actual `attribute` class (mirrors `resolveAttr`) so a
+same-named real class cannot shadow it. `tryMatch` now calls it in place of the
+two-scope lookup. The visibility invariant is UNCHANGED and un-weakened: the
+existing scope guard at the top of `tryMatch` — the rule's namespace must be in
+the DECL file's `effective` import set — still governs whether a rule is
+eligible at all, so an un-imported rule's namespace stays correctly ineffective
+(verified below); this fix only corrects WHICH attribute symbol `match @Foo`
+denotes once the rule is already eligible.
+
+Fix location: `src/Rules.cpp` (`matchAttrSymbol` added, `tryMatch` attribute-
+pattern block), `src/Rules.hpp` (declaration).
+
+Regression floor: `tests/corpus/meta/rule_cross_ns.ext` (new, green on treewalk
++ IR) — three cross-namespace shapes in one file: plain siblings, a rule nested
+inside the attribute's outer namespace, and a rule outside a nested namespace
+matching an attribute declared in it. Same-namespace matching floor preserved:
+`packages/atlantis/tests/probes/orm_p1_nested_ns_rules.lev` (#91) and the T7-P6
+probe `packages/atlantis/tests/probes/mcp_p6_two_rules_stack.lev` (whose
+`ruleInner`, in `ProbeP6::Inner`, matches `@SerialProbe` from the outer
+`ProbeP6` — a cross-namespace case that was silently failing and now prints
+`outer,inner`). Verified: the entry's exact sibling repro prints `B`; both
+nested variants and a qualified `match @SibA::Foo` cross-namespace case work; a
+two-physical-file negative (rule in `SibB` in a lib file, consumer file does
+`uses SibA` but NOT `uses SibB`) correctly keeps the rule inert and re-emits
+the missing-`uses` warning — the visibility guard is intact. Full suites green:
+`metatests`, `corpus_meta_treewalk`/`_ir`, `corpus_meta_expand_roundtrip`, the
+`rule_*` reject gates, `prelude_rules`, `corpus_project`, `corpus_treewalk`/
+`_ir`, `resolvertests`/`checkertests`/`evaltests`. The
+`packages/atlantis/src/openapi/schema.lev` `serializableSchema` workaround (rule
+forced into flat `Atlantis` instead of nested `Atlantis::OpenApi` to dodge this
+bug) is now safe to revert to its intended nested placement — left in place as
+optional cleanup for the Track 07 owner.

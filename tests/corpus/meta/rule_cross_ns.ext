@@ -1,0 +1,55 @@
+// known_bugs_2.md #98 (cross-namespace rule matching) regression floor: a rule
+// declared in one namespace must be able to match an attribute declared in a
+// DIFFERENT namespace, as long as both namespaces are imported. Before the fix
+// the rule silently never fired (the match resolved its @attr only in the
+// rule's own namespace + global) and the injected member failed at runtime.
+//
+// Three shapes, all cross-namespace:
+//   1. plain siblings           — rule in SibB matches @Foo from SibA
+//   2. rule nested inside outer — Inner::ruleI matches @Foo from the outer ns
+//   3. rule outside a nested ns — ruleO matches @Foo declared in Inner
+namespace SibA { attribute Foo {} }
+namespace SibB {
+    rule ruleB {
+        match @Foo on struct S
+        inject `string fromB() => "B";` at member of S
+    }
+}
+uses SibA;
+uses SibB;
+
+namespace Outer {
+    attribute Bar {}
+    namespace Inner {
+        rule ruleI {
+            match @Bar on struct S
+            inject `string fromI() => "I";` at member of S
+        }
+    }
+    namespace Deep {
+        attribute Baz {}
+    }
+    rule ruleO {
+        match @Baz on struct S
+        inject `string fromO() => "O";` at member of S
+    }
+}
+uses Outer;
+uses Outer::Inner;
+uses Outer::Deep;
+
+@Foo
+struct T1 { int x; }
+
+@Bar
+struct T2 { int x; }
+
+@Baz
+struct T3 { int x; }
+
+T1 a = T1();
+T2 b = T2();
+T3 c = T3();
+console.writeln(a.fromB());
+console.writeln(b.fromI());
+console.writeln(c.fromO());
