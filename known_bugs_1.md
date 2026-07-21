@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #93, #98 |
+| P1       | #98 |
 | P2       | #102 |
 | P3       | — |
 
@@ -165,39 +165,6 @@ loopback-churn and is not retired by this entry — a full net-stack cycle audit
 is the real fix and is out of scope for the streaming design.
 
 ---
-
-## #93 [P1] — punctuation-only string literals inside inject templates are corrupted
-
-**Found:** 2026-07-19, implementing ORM Track 06 (M1).
-**Priority justification:** P1.1 — the corrupted expression compiles and runs,
-silently producing a wrong value (no diagnostic); observed on the oracle, so
-every engine inherits it.
-
-**Repro:** a rule template containing a string literal that is only punctuation
-or starts with `@`:
-
-```
-rule r {
-    match @Table(t) on class C
-    inject `string ctx() => $t.name + "." + $f.name;` at member of C
-}
-```
-
-Under `--ast-after-rules` the injected body reads `(("users" + .) + "id")` —
-the `"."` literal degraded to a bare `.` token; likewise `"@Row " + $f.name`
-degraded to `(@Row  + "userId")`. The program still compiles and the concat
-yields a wrong string (the corrupted operand contributes garbage/empty), so
-any code building messages from template literals is silently wrong.
-
-**Root-cause pointer:** the quasiquote template clone path (`Rules.cpp`
-cloneExpr / template re-lex) appears to lose the string-literal kind for
-tokens that would re-lex as punctuation/attribute markers.
-
-**Workaround (debt sites):** move the literal into an ordinary helper function
-and call it from the template — the ORM does this with
-`Atlantis::Orm::ctx(table, col)` / `ctxRow(col)`
-(`packages/atlantis/src/orm/orm.lev`); templates never carry punctuation-only
-or `@`-leading string literals.
 
 ## #98 [P1] — metaprogramming rules/attributes declared in the prelude silently never fire
 
@@ -352,3 +319,40 @@ still-open instance of the same family (the `Await`→`CopyVal` borrowed-alias c
 named in `known_bugs_2.md` #96), documented by this bug's own entry as the broader
 systemic issue and NOT part of #99's minimal for-in/early-return shape (its
 accepted-red posture, same as #95's routing lane, is unchanged by this fix).
+
+#93 resolved 2026-07-20 as a MISDIAGNOSIS — there was no runtime corruption; the
+filing misread a debug-dump artifact. Claim: a punctuation-only (`"."`) or
+`@`-leading (`"@Row "`) string literal inside an `inject` quasiquote template lost
+its string-literal-ness during the template clone/re-lex and produced a wrong
+concatenation. Investigation: reproduced the filing's exact `--ast-after-rules`
+output (`(("users" + .) + "id")`, `(@Row  + …)`) on a freshly rebuilt binary AND on
+the binary at the exact filing commit (`9709700`, ORM Track 06) — but the RUNTIME
+output was correct in every case (`users.id`, `@Row id`, and a full sweep
+`"" "@" ";" "()" "::" "[" "]"`), on the oracle (`--run`), IR (`--ir`), and emit-C++
+(expand round-trip). The dump is not corruption: the `--ast-after-rules` printer
+(`AstPrinter.cpp` `exprStr`, `ExprKind::StringLit → sv(e->text)`) renders a
+StringLit's `text` BARE by design (pinned by `tests/test_parser.cpp:141`,
+`"plain" → Expr console.writeln(plain)`), and a SOURCE string literal is stored as
+an `isRawSegment` bare content slice (`Parser::parseInterpolatedString`,
+`"." → text "."` i.e. bare `.`), whereas a REIFIED `$hole.name` literal keeps its
+quotes (`RuleEngine::reify`, `"users"`). So the dump shows quoted holes next to
+bare source literals (`("users" + .)`) for a perfectly correct program — the `.` is
+a valid StringLit whose content is `.`. `cloneExpr` already carries the StringLit
+kind and the `isRawSegment`/`isQuasiPayload`/`isRawString` flags through cloning
+(present at the filing commit), so the re-lex path never lost fidelity. The
+source-faithful lens `--expand` (`printProgramSource` → `srcString`, which re-quotes
+raw segments) already prints `(("users" + ".") + "id")` and `("@Row " + "id")`
+correctly. No compiler code changed (no defect to fix; the bare-dump format is
+intended, tested behavior — re-quoting it is a design decision, not warranted).
+Regression floor: `tests/corpus/meta/rule_punct_literal.ext` (+`.expected`), pinning
+punctuation-only and `@`-leading source literals concatenated with reified holes
+inside `$for` inject templates — green on `corpus_meta_treewalk` (oracle),
+`corpus_meta_ir` (IR), and `corpus_meta_expand_roundtrip` (emit-C++ compile+run);
+would go red if a future clone/re-lex change ever actually dropped a StringLit kind.
+The ORM's `Atlantis::Orm::ctx(table, col)`/`ctxRow(col)` helpers
+(`packages/atlantis/src/orm/orm.lev:240-241`, called from the `ormFromRow`/
+`ormRowFromRow` templates) were adopted to dodge this non-bug; they are now
+removable — inline `$t.name + "." + $f.name` / `"@Row " + $f.name` templates
+produce identical correct output (verified against the exact nested
+`step(this.$f = fromDb(…, ctx($t.name, $f.name)))` shape). Left in place as
+optional cleanup, not required by this resolution.
