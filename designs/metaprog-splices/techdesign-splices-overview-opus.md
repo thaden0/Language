@@ -289,7 +289,10 @@ Independent-first, decision-load ascending:
    dependency on anything else; immediately removes the addendum's silent trap. Land first.
 2. **File 01 (A close + B1 + C), opus** — (A) is corpus-only (land immediately, in parallel
    with 04). B1 + C introduce the fragment-parser reserved-head scaffold (§3.3) and the
-   `cloneType`/name-synthesis + M37/M38/M39 collision machinery.
+   `cloneType`/name-synthesis + M37/M38/M39 collision machinery. **Not yet landed** — a
+   working reference attempt is preserved on branch `metaprog-splices-positions-attempt`
+   (delete it once file 01 is implemented for real); see that file's Status note for the
+   cross-namespace injected-class-type resolver gap it surfaced.
 3. **File 02 (B2), opus** — reuses file 01's reserved-head recognition for `$if`/`$else`.
    Land after 01 so it extends the scaffold rather than forking it.
 4. **File 03 (E), opus** — orthogonal to 01/02 (anchor side, not hole side); can proceed in

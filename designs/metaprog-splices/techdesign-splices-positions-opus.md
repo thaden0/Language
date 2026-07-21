@@ -4,6 +4,17 @@
 (metaprog engine — `cloneExpr`/`cloneType`/`cloneStmt` + fragment parser + collision
 semantics). **Grounding commit:** `cc071c3`, spiked live against `build/leviathan`.
 
+> **Status: NOT yet implemented on master.** A first, working implementation attempt is
+> preserved for reference on branch **`metaprog-splices-positions-attempt`** (it covers
+> A/B1/C, the M37–M39 diagnostics, and the §1.4 multi-member `member of` fix, with green
+> corpus twins). It also surfaced one pre-existing limitation to account for when
+> implementing for real: **cross-namespace *type* consumption of a namespace-scope
+> injected class fails in the resolver** (reproduces with a literal class name too — an
+> injected namespace's types are not registered before type resolution runs, though
+> cross-namespace *call* resolution works), so the §3.5 worked example must consume the
+> synthesized descriptor within its own namespace. **Delete the
+> `metaprog-splices-positions-attempt` branch once this design is implemented for real.**
+
 Covers three asks that all live in the **hole → clone → splice** pipeline (overview §1):
 - **(A) member-selector `this.$f`** — **already works**; this file closes it with a corpus
   twin and records the one adjacency the request missed.
