@@ -16,10 +16,13 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # literal with the language's own real lexer without linking the rest of the
 # compiler (Parser/Resolver/Checker/Eval/... stay langfront-only).
 add_library(levsyntax
-  src/Diagnostic.cpp
-  src/Token.cpp
-  src/Lexer.cpp)
-target_include_directories(levsyntax PUBLIC src)
+  src/core/Diagnostic.cpp
+  src/core/Token.cpp
+  src/frontend/Lexer.cpp)
+# src/core + src/frontend: levsyntax's own sources use directory-qualified
+# includes, but its consumers (tools/trident/*) include Diagnostic/Source/
+# Token/Lexer unqualified; PUBLIC propagation keeps them building unedited.
+target_include_directories(levsyntax PUBLIC src src/core src/frontend)
 # --- end levsyntax ---
 
 # --- shipped prelude (techdesign-prelude-ship-as-files-opus.md §3/§5) ---
@@ -54,42 +57,55 @@ add_custom_command(
 # --- front-end library (shared by driver + tests) ---
 add_library(langfront
   ${LV_PRELUDE_EMBEDDED}
-  src/Parser.cpp
-  src/ParserExpr.cpp
-  src/ParserMeta.cpp
-  src/AstPrinter.cpp
-  src/Project.cpp
+  src/frontend/Parser.cpp
+  src/frontend/ParserExpr.cpp
+  src/frontend/ParserMeta.cpp
+  src/meta/AstPrinter.cpp
+  src/driver/Project.cpp
   # --- Track A: compiler build-plan input (techdesign-toolchain.md §5.1) ---
-  src/BuildPlan.cpp
+  src/driver/BuildPlan.cpp
   # --- end Track A ---
-  src/Resolver.cpp
-  src/Checker.cpp
-  src/CheckerInfer.cpp
-  src/CheckerFlow.cpp
-  src/CheckerDispatch.cpp
-  src/CheckerGenerics.cpp
-  src/CheckerReify.cpp
+  src/sema/Resolver.cpp
+  src/sema/Checker.cpp
+  src/sema/CheckerInfer.cpp
+  src/sema/CheckerFlow.cpp
+  src/sema/CheckerDispatch.cpp
+  src/sema/CheckerGenerics.cpp
+  src/sema/CheckerReify.cpp
   # refactor_1 session 03 (owner-approved addition, not pre-staged by session
   # 01): the overload-resolution / generic-inference-support / bind-inject
   # cluster shared across CheckerInfer/CheckerDispatch/CheckerGenerics call
   # sites — table gap discovered during implementation, see
   # designs/complete/refactor_1/techdesign-03-checker-split-sonnet.md.
-  src/CheckerOverload.cpp
-  src/Eval.cpp
-  src/Rules.cpp
-  src/RulesExpand.cpp
-  src/RulesClone.cpp
-  src/RuntimeCore.cpp
-  src/RuntimeLoop.cpp
-  src/RuntimeNatives.cpp
-  src/Lower.cpp
-  src/IrInterp.cpp
-  src/Ownership.cpp
-  src/MemVerify.cpp
-  src/CGen.cpp
+  src/sema/CheckerOverload.cpp
+  src/runtime/Eval.cpp
+  src/meta/Rules.cpp
+  src/meta/RulesExpand.cpp
+  src/meta/RulesClone.cpp
+  src/runtime/RuntimeCore.cpp
+  src/runtime/RuntimeLoop.cpp
+  src/runtime/RuntimeNatives.cpp
+  src/ir/Lower.cpp
+  src/backend/IrInterp.cpp
+  src/ir/Ownership.cpp
+  src/ir/MemVerify.cpp
+  src/backend/CGen.cpp
   src/X64.cpp
   src/X64Gen.cpp)
-target_include_directories(langfront PUBLIC src)
+# Everything under src/ uses directory-qualified includes resolved via `src`;
+# the extra layer dirs are on the path solely for files that may not / need
+# not be edited and still include unqualified:
+#   - the FROZEN X64 files at src/ root (Diagnostic.hpp -> core, Ir.hpp /
+#     Ownership.hpp -> ir) — X64 sources may never be edited;
+#   - the generated build/generated/PreludeEmbedded.cpp (PreludeEmbedded.hpp
+#     -> driver);
+#   - tests/* (Lexer/Parser -> frontend, Checker/Resolver -> sema,
+#     AstPrinter/Rules -> meta, Eval/RuntimeLoop -> runtime, Project ->
+#     driver), which get these PUBLICly.
+# The `layering` ctest enforces the dependency map on the qualified includes
+# within the src/ layer directories themselves.
+target_include_directories(langfront PUBLIC src src/core src/frontend
+  src/sema src/meta src/ir src/runtime src/driver)
 target_link_libraries(langfront PUBLIC levsyntax)
 
 # --- optional LLVM backend ---
@@ -101,7 +117,7 @@ execute_process(COMMAND llvm-config-18 --cmakedir
 find_package(LLVM QUIET CONFIG HINTS "${LLVM_CMAKE_DIR_HINT}")
 if (LLVM_FOUND)
   message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} found — native backend enabled")
-  target_sources(langfront PRIVATE src/LlvmGen.cpp src/LlvmGenOps.cpp src/LlvmGenGlue.cpp)
+  target_sources(langfront PRIVATE src/backend/LlvmGen.cpp src/backend/LlvmGenOps.cpp src/backend/LlvmGenGlue.cpp)
   target_include_directories(langfront SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
   target_compile_definitions(langfront PUBLIC HAVE_LLVM)
   target_link_libraries(langfront PUBLIC LLVM)
@@ -121,7 +137,7 @@ endif()
 # --- end TLS (LA-2) ---
 
 # --- compiler driver ---
-add_executable(leviathan src/main.cpp)
+add_executable(leviathan src/driver/main.cpp)
 target_link_libraries(leviathan PRIVATE langfront)
 
 # --- Track B: trident package manager (techdesign-toolchain.md §5.2) ---
@@ -154,6 +170,10 @@ target_link_libraries(trident PRIVATE levsyntax)
 
 # --- tests ---
 enable_testing()
+
+# refactor_1 session 06: enforce the src/ layer dependency map (X64 exempt by
+# virtue of living at src/ root).
+add_test(NAME layering COMMAND bash ${CMAKE_SOURCE_DIR}/tools/check_layering.sh)
 
 add_executable(unittests tests/test_lexer.cpp)
 target_link_libraries(unittests PRIVATE langfront)
@@ -1802,7 +1822,7 @@ else()
 endif()
 
 # B-M5: Windows cross corpus lane under wine (doc-2 §7's two deferred driver
-# items — `-lws2_32`/.exe output in src/main.cpp, and this lane). Feature-
+# items — `-lws2_32`/.exe output in src/driver/main.cpp, and this lane). Feature-
 # detected on `wine` (to run the .exe) and the MinGW-w64 cross toolchain (to
 # build the per-triple runtime archive via runtime/build-triple.sh); absent
 # either, the lane is skipped so the suite stays green on hosts without a

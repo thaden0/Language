@@ -6,10 +6,18 @@
 > code for it. It does **not** cover the `.lev` prelude, the `trident` package
 > manager, or the language libraries; those live outside `src/`.
 >
-> `src/` is a **flat directory of 50 files** (~38,800 lines). There are no
-> subfolders — the layering below is logical, not on-disk. Function/line counts
-> are given per file; the function counts are approximate (they are derived by a
-> brace-and-signature scan and include methods and non-trivial local lambdas).
+> `src/` is organized into **eight layer directories** (~38,800 lines):
+> `core/` (Source/Diagnostic/Token/Ast/Symbols/LexicalStack), `frontend/`
+> (Lexer/Parser), `sema/` (Resolver/Checker), `meta/` (Rules/AstPrinter),
+> `ir/` (Ir/Lower/Ownership/MemVerify), `backend/` (IrInterp/LlvmGen/CGen/
+> NativeRuntime), `runtime/` (RuntimeValue/RuntimeCore/RuntimeNatives/
+> RuntimeLoop/Eval), and `driver/` (main/Project/BuildPlan/PreludeEmbedded).
+> The layering below is physical, enforced by `tools/check_layering.sh` (the
+> `layering` ctest) over directory-qualified includes. The frozen X64 files
+> (`X64.{hpp,cpp}`, `X64Gen.{hpp,cpp}`) stay at the `src/` root, untouched.
+> Function/line counts are given per file; the function counts are approximate
+> (they are derived by a brace-and-signature scan and include methods and
+> non-trivial local lambdas).
 
 ---
 
