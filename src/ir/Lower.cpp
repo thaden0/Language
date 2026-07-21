@@ -11,6 +11,10 @@
 static void lwrCollectStmtNames(const Stmt* s, std::unordered_set<std::string_view>& names);
 static void lwrCollectExprNames(const Expr* e, std::unordered_set<std::string_view>& names) {
     if (!e) return;
+    // #102: a bare `this` keyword is ExprKind::This, not a Name — record it under
+    // the sentinel "this" so the capture logic can tell a lambda that references
+    // the receiver directly (e.g. `return this;`) from one that never touches it.
+    if (e->kind == ExprKind::This) names.insert("this");
     if (e->kind == ExprKind::Name || e->kind == ExprKind::Member)
         if (!e->text.empty()) names.insert(e->text);
     lwrCollectExprNames(e->a.get(), names);
@@ -249,6 +253,8 @@ int Lowerer::synthesizeInit(Symbol* cls) {
     auto savedScopes = std::move(scopes_);
     auto savedFresh = std::move(freshStructRegs_);   // §15: reg marks are per-function
     freshStructRegs_.clear();
+    auto savedAwait = std::move(borrowedAwaitStructs_);   // bug96: per-function too
+    borrowedAwaitStructs_.clear();
     cur_ = idx; curClass_ = cls;
     scopes_.clear(); scopes_.emplace_back();
     newReg();   // r0 = this
@@ -316,6 +322,7 @@ int Lowerer::synthesizeInit(Symbol* cls) {
 
     cur_ = savedCur; curClass_ = savedClass; scopes_ = std::move(savedScopes);
     freshStructRegs_ = std::move(savedFresh);
+    borrowedAwaitStructs_ = std::move(savedAwait);   // bug96
     return idx;
 }
 
@@ -345,12 +352,16 @@ void Lowerer::lowerPending(const Pending& p) {
     scopes_.clear();
     scopes_.emplace_back();
     freshStructRegs_.clear();                            // §15: per-function reg marks
+    borrowedAwaitStructs_.clear();                       // bug96: per-function reg marks
     loops_.clear();                                      // techdesign-02 F1: fresh function
     usings_.clear();                                     // techdesign-02 F3: fresh function
     chainRetReg_ = -1; chainRetIsVoid_ = false;
     if (p.cls) newReg();                                 // r0 = this
     for (const Param& prm : p.decl->params) scopes_.back()[prm.name] = newReg();
     lowerStmt(p.decl->memberBody.get());
+    // bug.md #96: a void body that fell off the end still reaches releaseAllRegs —
+    // void any borrowed value-struct await alias first (see the header note).
+    for (int r : borrowedAwaitStructs_) emit(Op::LoadConst, r, addConst(vvoid()));
     emit(Op::RetVoid);
 }
 
@@ -448,6 +459,7 @@ bool Lowerer::lower(Program& program, Program& prelude, IrModule& out) {
         curClass_ = nullptr; curAccessor_.clear(); curIsCtor_ = false;
         scopes_.clear(); scopes_.emplace_back();
         freshStructRegs_.clear();
+        borrowedAwaitStructs_.clear();   // bug96
         // Phase A (known_bugs #75/#76/#79/#80): auto-construct every USER global
         // up front — before the namespace-scoped initializers below and before
         // @main — so an initializer or top-level statement always sees a real
@@ -519,6 +531,7 @@ bool Lowerer::lower(Program& program, Program& prelude, IrModule& out) {
     curClass_ = nullptr; curAccessor_.clear(); curIsCtor_ = false;
     scopes_.clear(); scopes_.emplace_back();
     freshStructRegs_.clear();
+    borrowedAwaitStructs_.clear();   // bug96
     for (StmtPtr& item : program.items) {
         switch (item->kind) {
             case StmtKind::Member:
@@ -764,7 +777,29 @@ void Lowerer::lowerStmt(Stmt* s) {
             maybeVFree(r);
             break;
         }
-        case StmtKind::Return:
+        case StmtKind::Return: {
+            // bug.md #99: an early `return` from inside a for-in over
+            // Array<Struct> jumps straight to Op::Ret/releaseAllRegs, bypassing
+            // the post-loop void that clears the borrowed value-struct loop-var
+            // alias (StmtKind::ForIn). Void every active loop's borrowedElem
+            // here — AFTER the return value is computed (so `return p.value`
+            // still reads the field first), BEFORE control reaches the frame
+            // exit — so releaseAllRegs never releases a value-struct alias whose
+            // backing array may already have been freed in this frame. Same
+            // family as #95/#66: never leave a borrowed value-struct alias live
+            // at a path that reaches releaseAllRegs.
+            auto clearBorrowedElems = [&] {
+                for (LoopCtx& lc : loops_)
+                    if (lc.borrowedElem >= 0)
+                        emit(Op::LoadConst, lc.borrowedElem, addConst(vvoid()));
+                // bug.md #96: same discipline for a value-struct `await` result —
+                // a BORROWED alias of the promise's stored value that must not be
+                // released at frame exit. Voided AFTER the return value is
+                // computed (so `return await f()` copies it first), BEFORE the
+                // frame exit reaches releaseAllRegs.
+                for (int r : borrowedAwaitStructs_)
+                    emit(Op::LoadConst, r, addConst(vvoid()));
+            };
             if (usings_.empty()) {
                 // byte-identical to pre-F3 lowering when no using is active.
                 if (s->expr) {
@@ -774,9 +809,10 @@ void Lowerer::lowerStmt(Stmt* s) {
                         emit(Op::CopyVal, rc, rv);
                         if (s->expr->definiteValueStruct) last().c = 1;
                         maybeVFree(rv);    // §15: chained struct call copied into the return
+                        clearBorrowedElems();
                         emit(Op::Ret, rc);
-                    } else emit(Op::Ret, rv);
-                } else emit(Op::RetVoid);
+                    } else { clearBorrowedElems(); emit(Op::Ret, rv); }
+                } else { clearBorrowedElems(); emit(Op::RetVoid); }
             } else {
                 // techdesign-02 F3: a using is active — compute the value as
                 // usual, funnel it into the per-function chain register, then
@@ -797,10 +833,14 @@ void Lowerer::lowerStmt(Stmt* s) {
                         emit(Op::Move, chainRetReg_, rc);
                     } else emit(Op::Move, chainRetReg_, rv);
                 }
+                // bug.md #99: same borrowed-elem void, before jumping into the
+                // using cleanup chain that eventually emits the real Ret.
+                clearBorrowedElems();
                 usings_.back().retJumps.push_back(emit(Op::Jump, 0));
                 usings_.back().needRet = true;
             }
             break;
+        }
         case StmtKind::Throw:
             emit(Op::Throw, lowerExpr(s->expr.get()));
             break;
@@ -976,6 +1016,13 @@ void Lowerer::lowerStmt(Stmt* s) {
                 if (colElem) emit(Op::VFree, elem);   // free the prior step's gather
                 emit(Op::IterAt, elem, iter, idx);
                 loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
+                // bug.md #99: record the borrowed value-struct loop-var register
+                // (same gate as the post-loop void below) so an early `return`
+                // from inside the body voids it before releaseAllRegs, exactly
+                // as the post-loop clear and `break` already do.
+                if (!colElem && s->type && s->type->resolvedSymbol &&
+                    s->type->resolvedSymbol->isValue)
+                    loops_.back().borrowedElem = elem;
                 lowerStmt(s->thenBranch.get());
                 int incPos = (int)F().code.size();
                 for (int j : loops_.back().continueJumps) F().code[j].a = incPos;
@@ -1826,17 +1873,34 @@ int Lowerer::lowerLambda(Expr* e) {
     // member access never spells it). Matches the oracle's own free-var capture.
     std::unordered_set<std::string_view> lamFree;
     lwrCollectExprNames(e, lamFree);
+    // #102 (capture-narrowing ruling): snapshot the receiver ONLY when the
+    // lambda's body actually references `this` (bare) or a class member — a
+    // field, method, or accessor, all of which lower through thisReg(). Capturing
+    // `this` unconditionally for every member-born lambda formed a genuine
+    // refcount cycle (object -> field -> closure -> this=object) the moment such a
+    // closure was stored back into a field of the same object; Leviathan is pure
+    // ARC with no cycle collector, so that leaked on EVERY engine. classHasMember
+    // already recognises fields, methods, AND this class's accessors (the exact
+    // predicate the member body-lowering below uses to route a bare name through
+    // thisReg()), so gating on it can only ever REDUCE capture relative to the old
+    // always-capture rule — never under-capture, since every thisReg() consumer in
+    // the body is a name this set contains (bare `this` is the "this" sentinel).
+    bool needThis = lamFree.count("this") != 0;
+    if (!needThis && curClass_)
+        for (std::string_view nm : lamFree)
+            if (classHasMember(curClass_, nm)) { needThis = true; break; }
     std::vector<std::pair<std::string_view, int>> captures;
     for (const auto& scope : scopes_)
         for (const auto& [name, reg] : scope)
-            if (name == "this" || lamFree.count(name)) captures.push_back({name, reg});
+            if (name == "this" ? needThis : lamFree.count(name) != 0)
+                captures.push_back({name, reg});
     // The receiver is not a named local: a lambda born inside a member snapshots
     // it under the keyword name too, so its body can lower `this`, bare member
     // reads/writes, and self-method calls against the captured object. (Inside
     // a nested lambda the outer pre-load already put "this" in scopes_, so the
-    // loop above re-captured it — don't add it twice.)
+    // loop above re-captured it — don't add it twice.) Only when the body needs it.
     int enclosingThis = thisReg();
-    if (enclosingThis >= 0 && !findLocal("this"))
+    if (needThis && enclosingThis >= 0 && !findLocal("this"))
         captures.push_back({"this", enclosingThis});
 
     // lower the body in a fresh context
@@ -1847,6 +1911,8 @@ int Lowerer::lowerLambda(Expr* e) {
     auto savedScopes = std::move(scopes_);
     auto savedFresh = std::move(freshStructRegs_);   // §15: reg marks are per-function
     freshStructRegs_.clear();
+    auto savedAwait = std::move(borrowedAwaitStructs_);   // bug96
+    borrowedAwaitStructs_.clear();
     // techdesign-02 F1/F4: a lambda body is its own loop nesting — a bare
     // break/continue in the body must never resolve against the ENCLOSING
     // function's loop stack (the checker already rejects it statically; this
@@ -1881,6 +1947,8 @@ int Lowerer::lowerLambda(Expr* e) {
     }
     if (e->block) {                               // statement-block body
         lowerStmt(e->block.get());
+        // bug.md #96: fall-off void return still reaches releaseAllRegs.
+        for (int r : borrowedAwaitStructs_) emit(Op::LoadConst, r, addConst(vvoid()));
         emit(Op::RetVoid);                         // fall-off returns void
     } else {
         int result = lowerExpr(e->a.get());       // expression body
@@ -1891,6 +1959,7 @@ int Lowerer::lowerLambda(Expr* e) {
     curIsCtor_ = savedCtor; curIsLambda_ = savedLam;
     scopes_ = std::move(savedScopes);
     freshStructRegs_ = std::move(savedFresh);
+    borrowedAwaitStructs_ = std::move(savedAwait);   // bug96
     loops_ = std::move(savedLoops);
     usings_ = std::move(savedUsings);
     chainRetReg_ = savedChainRetReg; chainRetIsVoid_ = savedChainRetIsVoid;
@@ -2117,6 +2186,14 @@ int Lowerer::lowerExpr(Expr* e) {
             int p = lowerExpr(e->a.get());
             int r = newReg();
             emit(Op::Await, r, p);
+            // bug.md #96 (known_bugs_2): a value-struct await result is a BORROWED
+            // alias of the promise's stored value (lvrt_await's getfield borrows,
+            // and the dk==1 wrap's retain no-ops on value classes). The consuming
+            // CopyVal copies it, but this register survives to frame exit as a
+            // stale alias once the promise is freed — record it so a Return voids
+            // it before releaseAllRegs. Reference-typed await results carry a real
+            // +1 and must NOT be voided (they are correctly released at exit).
+            if (e->definiteValueStruct) borrowedAwaitStructs_.insert(r);
             return r;
         }
         case ExprKind::Is:

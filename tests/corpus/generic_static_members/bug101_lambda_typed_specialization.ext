@@ -1,0 +1,22 @@
+// bug #101 regression floor: a `specializationRequired` generic (it calls a
+// static-shaped labeled ctor `A::Zero()` on the callable type parameter `A`)
+// whose ONLY evidence for `A` at the call site is a lambda-literal argument's
+// own DECLARED parameter type — `(Left a) => ...`. The lambda's value type is
+// deferred to unknown() during argument collection, so before the fix the
+// LA-18 specialization-set collector never saw a concrete `A` and failed with
+// `cannot determine a concrete type tuple`. Ordinary (non-`::`) generic
+// inference already consulted the lambda's declared param type; the collector
+// now does too (Resolver resolves lambda param types; genericReturn unifies the
+// function-parameter's declared param type against the lambda's). Two distinct
+// element types force two distinct specializations to be collected from lambdas.
+namespace Probe {
+    () => string wrap<A, R>(string tag, (A) => R fn) {
+        string eager = A::Zero().tag();
+        return () => tag + ":" + eager;
+    }
+}
+uses Probe;
+class Left  { new Zero() { } string tag() => "L"; }
+class Right { new Zero() { } string tag() => "R"; }
+console.writeln(Probe::wrap("left",  (Left a) => a)());
+console.writeln(Probe::wrap("right", (Right a) => a)());

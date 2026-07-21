@@ -286,6 +286,11 @@ private:
     bool ctorTarget(Expr* callee, Symbol*& cls, std::string& label);
     const Stmt* resolveFunction(Expr* callee);
     bool classHasMember(Symbol* cls, std::string_view name);
+    // #102: does a member-born lambda's body reference `this` or any member of
+    // `cls` (field/method/accessor)? Gates whether the closure snapshots the
+    // receiver, so a no-op lambda stored into a field of `this` no longer forms
+    // an uncollectable refcount cycle. Mirrors src/Lower.cpp's IR-side narrowing.
+    bool lambdaCapturesThis(const Expr* lam, Symbol* cls);
     const Stmt* findMethod(Symbol* cls, const std::string& name, int argc = -1);
     bool isMethodOf(Symbol* cls, const Stmt* decl);
     const Stmt* findAccessor(Symbol* cls, const std::string& name, bool wantGet);

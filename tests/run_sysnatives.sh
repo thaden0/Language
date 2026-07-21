@@ -413,12 +413,24 @@ else
   echo "FAIL emit-cpp (expected clean pty deferral, got rc=$pty_cpp_rc): $pty_cpp"; fail=1
 fi
 
-# --- 12. the Windows codegen gating split (designs/pty/ 03 §7, D-P10) -------
+# --- 12. the Windows codegen gating split (designs/pty/ 03 §7, D-P10;
+#         narrowed further by known_bugs_2.md #97) -----------------------------
 # S3 narrowed the process-floor Windows reject: sysReap/sysKill gained real
-# registry-backed win32 bodies (D-W3) and now LOWER on a Windows triple, while
-# sysSpawn/sysPidfdOpen keep the frozen reject (pipes-spawn on Windows is still
-# future work). sysPtySpawn/sysPtyResize have lowered everywhere since S2 —
-# their Windows story is a RUNTIME degrade (D-P8), never a compile error.
+# registry-backed win32 bodies (D-W3) and now LOWER on a Windows triple.
+# sysPtySpawn/sysPtyResize have lowered everywhere since S2 — their Windows
+# story is a RUNTIME degrade (D-P8), never a compile error.
+#
+# bug #97 then narrowed the remaining rejects to be REACHABILITY-gated, not
+# emission-gated (src/LlvmGen.cpp two-tier gate, mirroring the wasm gate):
+#   - sysPidfdOpen now LOWERS on Windows too — its win32 floor returns the
+#     frozen -1 sentinel (lv_plat_win32.c, D-W2) and the Pty prelude's
+#     poll-reap fallback handles it, so it was never a genuine compile error.
+#   - sysSpawn / sysTask* / sysThread* / sysChannel* keep a compile-time reject
+#     ONLY when USER-reachable (a genuine Process / spawn / Channel / TaskGroup
+#     in the program). When dragged into a socket/Pty build by the prelude's
+#     arity-blind over-marking (never reachable), they lower to an
+#     lvrt_unsupported trap so the build succeeds — which is what lets
+#     TcpListener/TcpStream/Pty compile for Windows with no task feature at all.
 # --native-obj stops after object emission, so this needs no MinGW toolchain.
 WIN_TRIPLE=x86_64-pc-windows-gnu
 win_reject() {   # win_reject <label> <program>
@@ -430,6 +442,15 @@ win_reject() {   # win_reject <label> <program>
     echo "FAIL win-gate $1 (expected the frozen Windows reject): $out"; fail=1
   fi
 }
+win_reject_msg() {   # win_reject_msg <label> <expect-substring> <program>
+  printf '%s\n' "$3" > "$work/wingate.lev"
+  out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1)
+  if [ $? -ne 0 ] && echo "$out" | grep -q "$2"; then
+    echo "ok   win-gate $1 (rejects: $2)"
+  else
+    echo "FAIL win-gate $1 (expected reject '$2'): $out"; fail=1
+  fi
+}
 win_lowers() {   # win_lowers <label> <program>
   printf '%s\n' "$2" > "$work/wingate.lev"
   if out=$("$bin" --native-obj "$work/wingate.o" --target "$WIN_TRIPLE" "$work/wingate.lev" 2>&1); then
@@ -438,12 +459,34 @@ win_lowers() {   # win_lowers <label> <program>
     echo "FAIL win-gate $1 (expected Windows lowering): $out"; fail=1
   fi
 }
-win_reject "sysSpawn"      'console.writeln(std::sysSpawn("/bin/true", []).length().toString());'
-win_reject "sysPidfdOpen"  'console.writeln(std::sysPidfdOpen(1).toString());'
+# genuine Process / spawn family: still rejected when USER-reachable (unchanged
+# LA-30 G5 ruling; the diagnostic must keep naming the frozen native).
+win_reject     "sysSpawn"      'console.writeln(std::sysSpawn("/bin/true", []).length().toString());'
+win_reject_msg "Process class" "process spawn: unsupported on Windows" \
+               'Process p = Process("/bin/echo", ["hi"]);'
+win_reject_msg "spawn feature" "threads: unsupported on Windows" \
+               'Worker<int> w = std::spawn(() => 5);
+int r = await w;'
+win_reject_msg "Channel feature" "threads: unsupported on Windows" \
+               'Channel<int> ch = Channel(4, 0);
+ch.send(1);'
+win_reject_msg "TaskGroup feature" "tasks: unsupported on Windows" \
+               'TaskGroup g = TaskGroup();'
+# sysPidfdOpen now LOWERS on Windows (bug #97): win32 sentinel floor, not a
+# compile error — the Pty prelude handles the -1.
+win_lowers "sysPidfdOpen"    'console.writeln(std::sysPidfdOpen(1).toString());'
 win_lowers "sysReap/sysKill" 'console.writeln(std::sysReap(999999).toString());
 console.writeln(std::sysKill(999999, 15).toString());'
 win_lowers "sysPty*"         'console.writeln(std::sysPtySpawn("C:\\x.exe", [], 24, 80, 0).length().toString());
 console.writeln(std::sysPtyResize(3, 30, 100).toString());'
+# bug #97: the three capability classes whose Windows floors exist (Winsock
+# since B-M5; ConPTY since G-PTY3) must COMPILE for a Windows triple with no
+# task feature in the program — the over-marking must no longer drag the task
+# natives' reject in on their behalf. Plus a plain non-task program, as a floor.
+win_lowers "bug#97 TcpListener" 'TcpListener l = TcpListener(9099);'
+win_lowers "bug#97 TcpStream"   'TcpStream s = TcpStream(5);'
+win_lowers "bug#97 Pty"         'Pty p = Pty("/bin/sh", [], 24, 80);'
+win_lowers "bug#97 plain"       'int x = 1 + 2; console.writeln(x.toString());'
 
 echo "sys-natives differential done"
 exit $fail

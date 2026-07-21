@@ -1,0 +1,47 @@
+// Regression floor for bug #94 [P0] — calling a function-typed FIELD via a
+// fused dot-call (`h.validate()`, where `validate` is a `() => ...` FIELD, not a
+// method) silently no-op'd on the LLVM native backend, exit 0, no diagnostic
+// (the P0.3 dropped-operation shape). Distilled from Atlantis ORM Track 06's
+// boot `Db.validate()`, whose RepoHandle carries a `() => Promise<void> validate`
+// field.
+//
+// The trigger is a NAME COLLISION, isolated here to its minimal form: some
+// OTHER reachable class (`Other`) has an in-language method with the SAME name
+// AND arity as the closure field (`compute(int)`). LlvmGen's by-name CallDyn
+// path builds a candidate chain over every in-language method of that name and
+// compares the receiver's effective classId against each; the receiver
+// (`Handle`) matches none, so the chain fell through — and the field-closure
+// fallback (read the field, if it holds a closure dispatch through it) was
+// gated on `cands.empty()`, so a non-empty candidate set skipped it entirely
+// and the call dropped into the void tail: silent no-op. Without `Other` the
+// candidate set is empty and the same call always worked, which is exactly why
+// the defect surfaced only in a large program (a same-name method existing
+// somewhere) and hid in every minimal repro that lacked one.
+//
+// Fixed in src/LlvmGen.cpp (Op::CallDyn by-name path): the field-closure
+// fallback now fires on ANY fallthrough where no native method covers the name,
+// not only when the candidate set is empty — a fallthrough already proves the
+// receiver is none of the candidate classes. Engine-neutral (oracle/IR/cpp were
+// already correct); pinned here so a future dispatch change can't silently
+// regress it. Non-async so it runs on all four corpus lanes.
+class Handle {
+    (int) => int compute;
+    new Handle((int) => int compute) { this.compute = compute; }
+}
+class Other {
+    int tag;
+    new Other() { this.tag = 0; }
+    int compute(int x) { return x * 100; }   // same name + arity as the field
+}
+void main() {
+    Other o = Other();                        // forces `compute` into the candidate set
+    Handle h = Handle((x) => x + 1);
+    // fused field-closure dot-call, with an argument, result consumed and
+    // nested inside a larger expression — all the shapes bug #94 dropped.
+    console.writeln(h.compute(41).toString());
+    console.writeln((h.compute(5) * 2).toString());
+    var f = h.compute;                        // the documented workaround still works
+    console.writeln(f(99).toString());
+    console.writeln("tag=" + o.tag.toString());
+}
+main();

@@ -1,0 +1,32 @@
+// XFAIL-ELF: frozen X64Gen does not reclaim a closure held in an object field
+// when the object is dropped (a pre-existing §15 escaping-tier gap, independent
+// of this fix — a closure BORN IN A FREE FUNCTION and stored into a field leaks
+// on ELF identically). The #102 fix this file guards is the this-capture CYCLE,
+// which is broken on every LIVE engine: the oracle root set and the IR-interp
+// mem-verify root set (both refcount-based) stay flat, and the LLVM lane holds
+// live-at-exit flat. ELF's residual is the orthogonal frozen-backend debt.
+//
+// #102 regression floor. A lambda literal written inside a METHOD used to
+// capture `this` unconditionally, even when its body referenced neither `this`
+// nor any member. Reassigning such a no-op closure into a field of the SAME
+// object formed a refcount cycle (h -> h.cb -> closure -> this=h); pure ARC has
+// no cycle collector, so both nodes leaked every iteration. The capture of `this`
+// is now narrowed to only when the body actually references `this`/a member, so
+// the no-op closure holds no back-reference and the whole Holder frees when the
+// loop turns. Only `sink` survives -> objects reachable at exit are CONSTANT in N.
+//
+// @N@ is a template hole substituted by fuzz/churn_leak.py.
+class Holder {
+    (int) => void cb; bool has = false;
+    void detach() { cb = (x) => { }; has = false; }   // no-op lambda: must NOT capture `this`
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Holder h = Holder();
+        h.detach();               // pre-#102-fix: creates h -> h.cb -> closure -> this=h cycle
+        sink = sink + i;
+    }                             // h + its closure are unreachable here; the ARC owes N frees
+    console.writeln(sink);
+}
+run(@N@);
