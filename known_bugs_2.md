@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | #94, #96 |
 | P1       | #97, #98, #101 |
-| P2       | #102 |
+| P2       | — |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -437,49 +437,6 @@ composition root, where the concrete DTO type is already spelled by the author. 
 
 ---
 
-## #102 [P2] — emit-C++ (CGen `--build`) spawn/pty coverage deferral no longer names the specific `sys::` native
-
-**Found:** 2026-07-20, refactor_1 session 01 (build-scaffold validation) — the
-`sys_natives` ctest case (`tests/run_sysnatives.sh` steps 10/11) went red while
-the underlying compiler behavior (correctly refusing to lower `Process`/`Pty` on
-the native C++ backend) was unchanged.
-**Priority justification:** P2.4-adjacent — the construct is correctly unsupported
-and still errors *loudly* (nonzero exit), so this is not a missing-diagnostic
-(true P2.4) nor a silent-wrong-value defect (P1.1) nor a crash (P0). What
-regressed is the diagnostic's *specificity*: CGen's documented "clean coverage
-deferral" is supposed to name the exact missing `sys::` native (e.g. `sysSpawn`),
-and a shipped test (`run_sysnatives.sh`) asserts that wording. The happy path is
-correct and no supported construct misbehaves; the only symptom is a
-diagnostic-quality regression surfacing as `sys_natives` FAILED in `ctest`.
-
-**Repro:**
-
-```
-Process p = Process("/bin/echo", ["x"]);
-p.exitCode().then((c) => console.writeln(c.toString()));
-```
-
-```
-./build/leviathan --build /tmp/out /tmp/sp.lev
-```
-
-(same shape for a `Pty::Deterministic(...)` variant — see `tests/run_sysnatives.sh`
-lines 344-414, which drive steps 10/11.)
-
-**Expected:** nonzero exit with a diagnostic matching `native.*'sys` — CGen's
-per-native coverage deferral naming the specific missing native (e.g. `sysSpawn`
-for `Process`, the pty native for `Pty`).
-
-**Actual:** nonzero exit, but the message is the generic catch-all:
-`error: native backend does not yet cover this construct (objects/collections/closures/exceptions)`.
-
-**Root-cause pointer (unconfirmed):** CGen appears to bail on the generic
-"objects/collections/closures" unsupported-construct check *before* control
-reaches the `sys`-native-specific coverage diagnostic for `Process`/`Pty`, so the
-specific-native branch never fires. Not yet narrowed to a source line; filing
-only per bug-reporting workflow.
-
----
 
 
 #92 fixed 2026-07-19 (found+fixed in-session, ORM Track 06): an ATTRIBUTE's
