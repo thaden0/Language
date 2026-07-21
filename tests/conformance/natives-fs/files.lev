@@ -1,0 +1,46 @@
+// Conformance: File I/O — OpenMode flags via the (|) operator method, File
+// wrapper, stream views, exceptions on failure. All paths are RELATIVE: the
+// conformance runner executes every program from a fresh private tmpdir, so
+// the writes below are tmpdir-confined and concurrency-safe.
+void run() {
+    File file = File("conf_files_test.txt", std::write);
+    file.writeln("alpha");
+    file.writeln("beta");
+    FileOutStream w = file.writer();
+    w << "gamma" << "\n";
+    file.close();
+    console.writeln(file.isOpen());
+
+    File back = File("conf_files_test.txt", std::read);
+    console.writeln(back.readln());
+    FileInStream r = back.reader();
+    console.writeln(r >> );                       // extract == readLine
+    string line = back.readln();
+    int total = 0;
+    while (line != "") {
+        total += line.length();
+        line = back.readln();
+    }
+    console.writeln("rest: " + total);
+    back.close();
+
+    // attributes: exists/size without opening; modified is a real timestamp
+    console.writeln(std::fileExists("conf_files_test.txt"));
+    console.writeln(std::fileExists("conf_files_never.txt"));
+    console.writeln(std::fileSize("conf_files_test.txt"));
+    File attrs = File("conf_files_test.txt", std::read);
+    console.writeln(attrs.exists());
+    console.writeln(attrs.size());
+    console.writeln(attrs.modified() > 0);
+    attrs.close();
+
+    // flags combine via the (|) OPERATOR (a method on OpenMode, not a union)
+    OpenMode rw = std::read | std::write;
+    console.writeln(rw.has(std::read));
+    console.writeln(rw.has(std::append));
+
+    // missing file -> catchable FileException
+    try { File nope = File("definitely_missing_dir/x.txt", std::read); }
+    catch (IFileException e) { console.writeln(e.message); }
+}
+run();

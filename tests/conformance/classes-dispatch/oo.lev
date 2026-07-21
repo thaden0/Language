@@ -1,0 +1,30 @@
+// OO core compiled to native: MI + distinct, label ctors, operators (incl.
+// derived !=), get/set accessor views, method dispatch.
+class A { distinct int v = 1; }
+class B { distinct int v = 2; }
+class C : A, B {
+    int sum() => this.A::v + this.B::v;
+}
+class Counter {
+    int n = 0;
+    new Seed(int start) { n = start; }
+    Counter (+)(int d) => Counter::Seed(n + d);
+    bool (==)(int v) => n == v;
+    int val() => n;
+}
+class Box {
+    int raw = 0;
+    get raw() => raw;
+    set raw(int x) raw = x * 2;
+}
+void run() {
+    console.writeln(C().sum());          // 3
+    Counter c = Counter::Seed(3);
+    console.writeln((c + 4).val());      // 7
+    console.writeln(c == 3);             // true
+    console.writeln(c != 3);             // false (derived)
+    Box b = Box();
+    b.raw = 10;
+    console.writeln(b.raw);              // 20
+}
+run();

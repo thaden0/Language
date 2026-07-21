@@ -1,0 +1,3 @@
+# Per-leg skips for the interp (`leviathan --run`) leg.
+# Format: <relative/prog.lev>  <one-line reason>   (reason REQUIRED)
+# The interp leg is the reference semantics: it is expected to stay empty.

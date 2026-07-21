@@ -1,0 +1,165 @@
+// techdesign-02 F1 (break/continue) + F2 (do-while). Covers: while/for/for-in/
+// do-while break+continue, nested loops (unlabeled break/continue targets the
+// innermost), break/continue inside an `if` inside a loop, inside a `try`
+// inside a loop, inside a `match` arm inside a loop (match is not a loop-
+// nesting boundary — break there targets the loop, not match's own end-
+// jumps), and a loop inside a `catch` block.
+
+void whileBreakContinue() {
+    int i = 0;
+    int sum = 0;
+    while (i < 10) {
+        i = i + 1;
+        if (i == 5) continue;
+        if (i == 8) break;
+        sum = sum + i;
+    }
+    console.writeln("while sum=" + sum);
+}
+
+void doWhileBreakContinue() {
+    int j = 0;
+    int psum = 0;
+    do {
+        j = j + 1;
+        if (j == 3) continue;
+        if (j == 6) break;
+        psum = psum + j;
+    } while (j < 10);
+    console.writeln("dowhile psum=" + psum);
+}
+
+void forBreakContinue() {
+    int fsum = 0;
+    for (int m = 0; m < 10; m = m + 1) {
+        if (m == 2) continue;
+        if (m == 7) break;
+        fsum = fsum + m;
+    }
+    console.writeln("for fsum=" + fsum);
+}
+
+void forInBreakContinue() {
+    int asum = 0;
+    for (int x in 1..10) {
+        if (x == 3) continue;
+        if (x == 6) break;
+        asum = asum + x;
+    }
+    console.writeln("forin asum=" + asum);
+}
+
+// Nested loops: unlabeled break/continue targets the INNERMOST loop only.
+void nestedLoops() {
+    int outerSum = 0;
+    for (int i in 1..3) {
+        int innerSum = 0;
+        for (int k in 1..5) {
+            if (k == 2) continue;
+            if (k == 4) break;
+            innerSum = innerSum + k;
+        }
+        outerSum = outerSum + innerSum;   // 1+3 = 4 per outer iter, x3 = 12
+    }
+    console.writeln("nested outerSum=" + outerSum);
+}
+
+// break/continue inside an `if` inside a loop.
+void ifInLoop() {
+    int sum = 0;
+    for (int i in 1..10) {
+        if (i % 2 == 0) {
+            if (i == 8) break;
+            continue;
+        }
+        sum = sum + i;
+    }
+    console.writeln("ifInLoop sum=" + sum);   // 1+3+5+7 = 16 (break at i==8, before i=9)
+}
+
+// break/continue inside a `try` inside a loop.
+void tryInLoop() {
+    int sum = 0;
+    for (int i in 1..5) {
+        try {
+            if (i == 3) throw RuntimeException("skip");
+            if (i == 5) break;
+            sum = sum + i;
+        } catch (IException e) {
+            continue;
+        }
+    }
+    console.writeln("tryInLoop sum=" + sum);   // 1+2+4 = 7 (3 throws->caught->continue; 5 breaks)
+}
+
+// break inside a `match` arm inside a loop: match is not a loop-nesting
+// boundary — break/continue there target the enclosing LOOP, not match's own
+// internal end-jumps (problem #3).
+void matchArmBreak() {
+    int sum = 0;
+    for (int i in 1..10) {
+        match (i) {
+            3 => { continue; }
+            7 => { break; }
+            else => { sum = sum + i; }
+        }
+    }
+    console.writeln("matchArmBreak sum=" + sum);   // 1+2+4+5+6 = 18 (3 skipped, 7 breaks)
+}
+
+// a loop inside a `catch` block.
+void loopInCatch() {
+    int sum = 0;
+    try {
+        throw RuntimeException("go");
+    } catch (IException e) {
+        for (int i in 1..5) {
+            if (i == 4) break;
+            sum = sum + i;
+        }
+    }
+    console.writeln("loopInCatch sum=" + sum);   // 1+2+3 = 6
+}
+
+// do-while nested inside a for loop, and vice versa.
+void nestedDoWhileFor() {
+    int total = 0;
+    for (int i in 1..3) {
+        int k = 0;
+        do {
+            k = k + 1;
+            if (k == 2) continue;
+            total = total + k;
+        } while (k < 3);
+    }
+    console.writeln("nestedDoWhileFor total=" + total);   // (1+3)*3 = 12
+
+}
+
+// a lambda containing its OWN loop + break: must compile and behave
+// independently of any enclosing loop (P4).
+void lambdaOwnLoop() {
+    var g = () => {
+        int t = 0;
+        int n = 0;
+        while (n < 5) {
+            n = n + 1;
+            if (n == 3) break;
+            t = t + n;
+        }
+        return t;
+    };
+    console.writeln("lambdaOwnLoop=" + g());   // 1+2 = 3
+}
+
+whileBreakContinue();
+doWhileBreakContinue();
+forBreakContinue();
+forInBreakContinue();
+nestedLoops();
+ifInLoop();
+tryInLoop();
+matchArmBreak();
+loopInCatch();
+nestedDoWhileFor();
+lambdaOwnLoop();

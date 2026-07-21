@@ -1,0 +1,37 @@
+// Track 07 M1 — the P1 probe graduated: a generic interface with a generic-
+// returning method, implemented by generic classes, dispatched through an
+// interface-typed variable, plus is/match narrowing TO the generic interface.
+interface Box<T> { T get(); bool has(); }
+class Full<T> : Box<T> {
+    T v;
+    new Full(T x) { v = x; }
+    T get() => v;
+    bool has() => true;
+}
+class Empty<T> : Box<T> {
+    new Empty() {}
+    T get() { throw RuntimeException("empty"); }
+    bool has() => false;
+}
+int probe(Box<int> b) {
+    if (!b.has()) return -1;
+    return b.get();
+}
+string kind(Box<int> | string v) {
+    if (v is Box<int>) return "box";
+    return "str";
+}
+void run() {
+    Box<int> a = Full(7);
+    Box<int> e = Empty();
+    console.writeln(probe(a));
+    console.writeln(probe(e));
+    console.writeln(kind(a));
+    console.writeln(kind("hi"));
+    Box<int> | string x = Full(99);
+    match (x) {
+        Box<int> => console.writeln("boxed"),
+        string   => console.writeln("string"),
+    }
+}
+run();

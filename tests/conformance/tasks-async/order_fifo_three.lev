@@ -1,0 +1,28 @@
+// LA-30 doc 5 §2 C1 (completion-ordered resumption), three-way — reshaped to
+// TaskGroup children (bug #35 reject route A). Three promises settle out of both
+// spawn order and park order; tasks resume strictly FIFO by completion (B @10ms,
+// C @20ms, A @30ms), never by which spawned first (A, B, C).
+//
+// The original used `std::spawn` bodies awaiting bare top-level Promises resolved
+// on the spawner's thread — the A-1 violation bug #35 now rejects loudly on every
+// engine (pin: spawn_global_promise_rejected.lev). The sanctioned multi-awaiter
+// shape is same-thread `TaskGroup` children; the main task `await done` pumps the
+// loop so all three children resume and complete before the group's `using`
+// close() (which would otherwise cancel a still-parked child). Resumption stays
+// completion-ordered: B2, C3, A1. Byte-identical on oracle/IR/LLVM.
+Promise<int> pA = Promise();
+Promise<int> pB = Promise();
+Promise<int> pC = Promise();
+Promise<int> done = Promise();
+void run() {
+    using TaskGroup g = TaskGroup();
+    std::sysTimerStart(30, 0, (n) => { pA.resolve(1); });
+    std::sysTimerStart(10, 0, (n) => { pB.resolve(2); });
+    std::sysTimerStart(20, 0, (n) => { pC.resolve(3); });
+    std::sysTimerStart(45, 0, (n) => { done.resolve(0); });
+    g.run(() => { console.writeln("A" + (await pA).toString()); });
+    g.run(() => { console.writeln("B" + (await pB).toString()); });
+    g.run(() => { console.writeln("C" + (await pC).toString()); });
+    int x = await done;                 // pump: let all three children finish, then close()
+}
+run();

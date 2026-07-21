@@ -1,0 +1,38 @@
+// Conformance: `using` cleanup ordering — LIFO within one block, per-block
+// grouping across nested blocks, and close() firing at each function's exit
+// (callee resources close before the caller's).
+class R : IDisposable {
+    string name;
+    new R(string n) { name = n; console.writeln("open " + name); }
+    void close() { console.writeln("close " + name); }
+}
+
+void inner() {
+    using R c = R("inner");
+    console.writeln("inner body");
+}
+
+void outer() {
+    using R a = R("outer");
+    inner();                              // inner closes before outer
+    console.writeln("outer body");
+}
+
+void run() {
+    outer();
+
+    // LIFO within a single block
+    using R x = R("x");
+    using R y = R("y");
+    using R z = R("z");
+    console.writeln("three live");
+
+    // a nested block's resource closes at the BLOCK exit, not the fn exit
+    {
+        using R b = R("block");
+        console.writeln("in block");
+    }
+    console.writeln("after block");
+}
+run();
+console.writeln("done");

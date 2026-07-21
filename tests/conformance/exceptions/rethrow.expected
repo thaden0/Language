@@ -1,0 +1,5 @@
+middle saw: inner failed code=42
+outer caught: inner failed
+still running
+iface caught: typed
+true

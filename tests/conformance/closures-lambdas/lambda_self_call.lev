@@ -1,0 +1,49 @@
+// bug.md #53 regression: a lambda that calls an instance method with a bare
+// (implicit-`this`) receiver, stored in a field and invoked from a different
+// call frame, must dispatch on the enclosing instance's `this` — not on the
+// closure value that occupies r0 in the lambda's own frame. Previously the IR
+// lowerer moved r0 (the closure) as the receiver, so the mutation silently
+// missed on --ir and segfaulted on emit-C++/LLVM.
+
+class FromCtor {
+    bool flag = false;
+    Array<() => void> handlers_ = [];
+    new FromCtor() {
+        handlers_ = handlers_.add(() => { setFlag(); });   // bare receiver
+    }
+    void setFlag() { flag = true; }
+    void fire() { for (() => void h in handlers_) h(); }
+}
+
+class FromMethod {
+    int n = 0;
+    Array<() => void> handlers_ = [];
+    void arm() { handlers_ = handlers_.add(() => { bump(); }); }  // bare receiver
+    void bump() { n = n + 1; }
+    void fire() { for (() => void h in handlers_) h(); }
+}
+
+class WithArgs {
+    int total = 0;
+    Array<() => void> handlers_ = [];
+    new WithArgs() {
+        handlers_ = handlers_.add(() => { addTwice(3); });   // bare call with an arg
+    }
+    void addTwice(int v) { total = total + v + v; }
+    void fire() { for (() => void h in handlers_) h(); }
+}
+
+void main() {
+    FromCtor c = FromCtor();
+    c.fire();
+    console.writeln(c.flag);          // true
+
+    FromMethod m = FromMethod();
+    m.arm(); m.fire(); m.fire();
+    console.writeln(m.n);             // 2
+
+    WithArgs w = WithArgs();
+    w.fire();
+    console.writeln(w.total);         // 6
+}
+main();

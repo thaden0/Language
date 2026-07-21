@@ -1,0 +1,27 @@
+// Track 03 M4 — zero-copy Block I/O overloads (arity-distinct from the string
+// sys forms; overload resolution by argument type selects the Block form).
+// Deterministic + hermetic: writes go to stdout (captured); the read comes
+// from /dev/zero (always present, always zero — no temp files).
+
+// (1) sysWrite Block form -> fd 1: whole buffer, then a sub-window [off,len).
+Block msg = Block::fromString("Hello, Block!");
+std::sysWrite(1, msg, 0, msg.length());      // "Hello, Block!"
+console.writeln("");
+std::sysWrite(1, msg, 7, 5);                  // window -> "Block"
+console.writeln("");
+
+// (2) sysRead Block form <- /dev/zero: fills the buffer, overwriting.
+int zfd = std::sysOpen("/dev/zero", 1);       // 1 = read
+Block buf = Block(8);
+buf.setByte(0, 255);                           // pre-poison; the read must clear it
+int n = std::sysRead(zfd, buf, 8);
+std::sysClose(zfd);
+console.writeln("read=" + n.toString() + " b0=" + buf.byteAt(0).toString());
+
+// (3) bounds are loud: a window past the end throws.
+Block small = Block(4);
+try {
+    std::sysWrite(1, small, 2, 5);
+} catch (IRuntimeException e) {
+    console.writeln("caught: out-of-bounds window");
+}
