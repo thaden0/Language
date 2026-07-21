@@ -1,0 +1,66 @@
+// Track 03 §2 — enum: value struct + members + code()/toString()/==/fromCode +
+// exhaustive match. Full-coverage (desugar-only): identical on run/ir/cpp/llvm.
+
+enum Method { GET, HEAD, POST }
+enum Status : int { OK = 200, NotFound = 404, Teapot = 418 }
+enum Gap : int { A, B = 10, C }          // auto-after-explicit: A=0, B=10, C=11
+
+// enum as a parameter + return type
+string verb(Method m) => m.toString();
+Method flip(Method m) => match (m) {
+    Method::GET => Method::POST;
+    Method::HEAD => Method::HEAD;
+    Method::POST => Method::GET;
+};
+
+void main() {
+    // member read + code() + toString()
+    Method m = Method::HEAD;
+    console.writeln(m.code());            // 1
+    console.writeln(m.toString());        // HEAD
+    console.writeln(verb(Method::POST));  // POST
+
+    // equality / inequality by carrier
+    console.writeln(m == Method::HEAD);   // true
+    console.writeln(m != Method::GET);    // true
+    console.writeln(Method::GET == Method::POST);  // false
+
+    // exhaustive match, no else needed
+    console.writeln(match (m) {
+        Method::GET => "g";
+        Method::HEAD => "h";
+        Method::POST => "p";
+    });                                   // h
+
+    // enum-returning function
+    console.writeln(flip(Method::GET).toString());   // POST
+
+    // explicit carriers
+    Status s = Status::Teapot;
+    console.writeln(s.code());            // 418
+    console.writeln(s.toString());        // Teapot
+
+    // auto-after-explicit carriers
+    console.writeln(Gap::A.code());       // 0
+    console.writeln(Gap::C.code());       // 11
+    console.writeln(Gap::C.toString());   // C
+
+    // default value = first-declared member
+    Method d;
+    console.writeln(d.toString());        // GET
+    Status ds;
+    console.writeln(ds.code());           // 200 (first member's carrier)
+
+    // fromCode: hit -> Some, miss -> None
+    Status? hit = Status::fromCode(404);
+    if (hit != None) { console.writeln("hit " + hit.toString()); }   // hit NotFound
+    Status? miss = Status::fromCode(999);
+    console.writeln(miss == None);        // true
+
+    // match with else
+    console.writeln(match (s) {
+        Status::OK => "ok";
+        else => "other";
+    });                                   // other
+}
+main();

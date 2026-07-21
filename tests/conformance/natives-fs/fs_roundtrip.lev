@@ -1,0 +1,41 @@
+// Conformance: filesystem natives round-trip — mkdir, write, rename, stat,
+// listDir, remove. All paths are RELATIVE: the conformance runner executes
+// every program from a fresh private tmpdir, so everything below is
+// tmpdir-confined and cleaned up by the runner.
+void run() {
+    // mkdir + isDir
+    console.writeln(std::sysMkdir("conf_dir"));           // 0 ok
+    console.writeln(std::isDir("conf_dir"));              // true
+    console.writeln(std::isDir("conf_missing"));          // false
+
+    // create a file inside it
+    File f = File("conf_dir/a.txt", std::write);
+    f.writeln("payload");
+    f.close();
+    console.writeln(std::fileExists("conf_dir/a.txt"));   // true
+
+    // listDir sees exactly the one entry
+    Array<string>? entries = std::sysListDir("conf_dir");
+    if (entries is Array<string>) {
+        console.writeln(entries.length());
+        console.writeln(entries.contains("a.txt"));
+    }
+
+    // rename, old gone, new present
+    console.writeln(std::sysRename("conf_dir/a.txt", "conf_dir/b.txt"));  // 0
+    console.writeln(std::fileExists("conf_dir/a.txt"));   // false
+    console.writeln(std::fileExists("conf_dir/b.txt"));   // true
+
+    // stat: size of "payload\n" is 8; isDir of a file is 0
+    console.writeln(std::fileSize("conf_dir/b.txt"));     // 8
+    console.writeln(std::sysStat("conf_dir/b.txt", 3));   // 0
+
+    // remove file then dir; removed paths stop existing
+    console.writeln(std::sysRemove("conf_dir/b.txt"));    // 0
+    console.writeln(std::sysRemove("conf_dir"));          // 0
+    console.writeln(std::isDir("conf_dir"));              // false
+
+    // removing a missing path fails loudly-but-locally (-1, no throw)
+    console.writeln(std::sysRemove("conf_missing"));      // -1
+}
+run();

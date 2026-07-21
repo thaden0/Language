@@ -1,0 +1,12 @@
+// bug.md #12: float division by zero must be IEEE (inf/nan) on every engine
+// — LLVM used to override it to 0.0. Kept out of the shared tests/corpus/
+// dir: the frozen ELF backend already gives real IEEE inf/nan too, but
+// renders 0.0/0.0 as "nan" where every other engine prints "-nan" (a
+// pre-existing, cosmetic sign-of-NaN formatting difference, not a semantics
+// one — unrelated to this fix and not worth a corpus divergence). Runs on
+// oracle/IR/emit-C++/LLVM.
+float a = 1.0;
+console.writeln(a / 0.0);
+console.writeln(0.0 / 0.0);
+console.writeln(-1.0 / 0.0);
+console.writeln(-0.0 / 0.0);

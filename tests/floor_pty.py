@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # Terminal-floor test driver (designs/techdesign-terminal-floor.md §7). Modes:
 #   winsize <rows> <cols> -- <cmd...>   run on a pty sized rows x cols; expect "RxC"
+#   cpr     <rows> <cols> -- <cmd...>   pty left at 0x0 so TIOCGWINSZ fails; answer
+#                                       the \x1b[6n probe like a real terminal and
+#                                       expect "RxC" back (known-bugs #96)
 #   winch                 -- <cmd...>   resize the pty 5x rapidly, then SIGUSR1;
 #                                       expect a coalesced final "winch=40x120"
 #   rawkill               -- <cmd...>   raw mode + external SIGTERM; assert the
@@ -60,6 +63,32 @@ def mode_winsize(rows, cols, cmd):
     want = f"{rows}x{cols}"
     ok = want in txt
     print(f"winsize want={want} got={txt.strip()!r} -> {'ok' if ok else 'FAIL'}")
+    return ok
+
+def mode_cpr(rows, cols, cmd):
+    # term::size()'s cursor-report fallback, answered like a real terminal
+    # (known-bugs #96). The pty keeps its default 0x0 winsize, so TIOCGWINSZ
+    # reports failure per the §2 ruling and — raw mode being on — size() drops
+    # to the ANSI probe. We answer \x1b[6n with <rows>;<col>R and expect those
+    # numbers back. A program that never emits the probe fails here too: that
+    # would mean the fallback silently stopped running.
+    def drv(m, pid, rd, s):
+        b = bytearray()
+        answered = False
+        dl = time.time() + 5
+        while time.time() < dl:
+            b += rd(0.1)
+            if not answered and b"\x1b[6n" in b:
+                os.write(m, f"\x1b[{rows};{cols}R".encode())
+                answered = True
+            if wait_done(pid): break
+        return b, answered
+    out, s, res = pty_run(cmd, driver=drv)
+    raw, answered = res if res else (b"", False)
+    txt = bytes(raw).decode(errors="replace")
+    want = f"{rows}x{cols}"
+    ok = answered and want in txt
+    print(f"cpr probed={answered} want={want} got={txt.strip()[-40:]!r} -> {'ok' if ok else 'FAIL'}")
     return ok
 
 def mode_winch(cmd):
@@ -158,6 +187,7 @@ def main():
     head, cmd = split(sys.argv[1:])
     mode = head[0]
     if mode == "winsize": ok = mode_winsize(int(head[1]), int(head[2]), cmd)
+    elif mode == "cpr":    ok = mode_cpr(int(head[1]), int(head[2]), cmd)
     elif mode == "winch":  ok = mode_winch(cmd)
     elif mode == "rawkill": ok = mode_rawkill(cmd)
     elif mode == "signal": ok = mode_signal(head[1], head[2], cmd)

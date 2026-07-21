@@ -1,0 +1,136 @@
+// techdesign-02 F3: `using` declarations (deterministic resource cleanup).
+// Covers every block-exit edge from the design's cleanup-group layout:
+// fallthrough, throw, return, break, continue, nested/two-usings-in-one-
+// block (reverse order), and the three close()-throws cases from problem #8
+// (fallthrough-throws, unwind-replaces, outer-still-closes-after-inner-fails).
+
+class Res : IDisposable {
+    string name;
+    new Res(string n) { name = n; }
+    void close() { console.writeln("close " + name); }
+}
+class BadRes : IDisposable {
+    string name;
+    new BadRes(string n) { name = n; }
+    void close() {
+        console.writeln("closing " + name);
+        throw RuntimeException("close-failed-" + name);
+    }
+}
+class GoodRes : IDisposable {
+    string name;
+    new GoodRes(string n) { name = n; }
+    void close() { console.writeln("closing " + name); }
+}
+
+void testFallthrough() {
+    using Res a = Res("a");
+    console.writeln("body");
+}
+
+void testNestedTwoInOneBlock() {
+    using Res a = Res("a");
+    using Res b = Res("b");
+    console.writeln("body");
+}
+
+void testThrow() {
+    try {
+        using Res a = Res("a");
+        using Res b = Res("b");
+        throw RuntimeException("boom");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+}
+
+void testBreak() {
+    while (true) {
+        using Res a = Res("a");
+        console.writeln("iter");
+        break;
+    }
+    console.writeln("after loop");
+}
+
+void testContinue() {
+    int i = 0;
+    while (i < 2) {
+        i = i + 1;
+        using Res a = Res("a");
+        console.writeln("iter " + i);
+        continue;
+    }
+    console.writeln("after loop");
+}
+
+int testReturn() {
+    using Res a = Res("a");
+    console.writeln("before return");
+    return 42;
+}
+
+// close() throws during normal fallthrough -> propagates as a new exception
+void testCloseThrowsFallthrough() {
+    try {
+        using BadRes a = BadRes("a");
+        console.writeln("body");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+}
+
+// close() throws WHILE already unwinding a different exception -> the new
+// exception REPLACES the in-flight one (no further ceremony)
+void testCloseThrowsDuringUnwind() {
+    try {
+        using BadRes a = BadRes("a");
+        throw RuntimeException("original");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);   // close-failed-a, not "original"
+    }
+}
+
+// the OUTER resource still closes even though the INNER resource's close()
+// itself threw
+void testOuterStillCloses() {
+    try {
+        using GoodRes outer = GoodRes("outer");
+        using BadRes inner = BadRes("inner");
+        console.writeln("body");
+    } catch (IException e) {
+        console.writeln("caught: " + e.message);
+    }
+}
+
+// the prelude's own File : IDisposable (Resolver.cpp) — real resource, real fd.
+void testFile() {
+    {
+        using File f = File("/tmp/lang_corpus_using_test.txt", std::write);
+        f.writeln("hello");
+        console.writeln("wrote");
+    }
+    File back = File("/tmp/lang_corpus_using_test.txt", std::read);
+    console.writeln("after block, read=" + back.readln());
+}
+
+console.writeln("--- fallthrough ---");
+testFallthrough();
+console.writeln("--- nested (two in one block) ---");
+testNestedTwoInOneBlock();
+console.writeln("--- throw ---");
+testThrow();
+console.writeln("--- break ---");
+testBreak();
+console.writeln("--- continue ---");
+testContinue();
+console.writeln("--- return ---");
+console.writeln("result=" + testReturn());
+console.writeln("--- close-throws-fallthrough ---");
+testCloseThrowsFallthrough();
+console.writeln("--- close-throws-during-unwind (replace rule) ---");
+testCloseThrowsDuringUnwind();
+console.writeln("--- outer-still-closes-after-inner-fails ---");
+testOuterStillCloses();
+console.writeln("--- file (prelude IDisposable) ---");
+testFile();

@@ -1,0 +1,11 @@
+// Sieve of Eratosthenes: sized arrays, indexers, compound assign, for-in ranges.
+void sieve(int limit) {
+    Array<bool> isComposite = Array(limit + 1, false);
+    for (int i in 2..limit) {
+        if (!isComposite[i]) {
+            for (int j = i * i; j <= limit; j += i) isComposite[j] = true;
+        }
+    }
+    for (int i in 2..limit) if (!isComposite[i]) console.writeln(i);
+}
+sieve(30);

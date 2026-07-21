@@ -1,0 +1,21 @@
+// try/catch/throw: catch by type, base, interface; propagation; runtime errors.
+int divide(int a, int b) {
+    if (b == 0) throw RuntimeException("division by zero");
+    return a / b;
+}
+void run() {
+    try { throw LogicException("bad input"); }
+    catch (IException e) { console.writeln("iface: " + e.message); }
+
+    try { int x = divide(1, 0); }
+    catch (ILogicException e) { console.writeln("wrong"); }
+    catch (IRuntimeException e) { console.writeln("caught: " + e.message); }
+
+    console.writeln(divide(10, 2));
+
+    Array a = [1, 2, 3];
+    try { int x = a[9]; }
+    catch (RuntimeException e) { console.writeln(e.message); }
+}
+run();
+throw LogicException("uncaught at top level");

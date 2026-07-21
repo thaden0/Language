@@ -1,0 +1,40 @@
+--- fallthrough ---
+body
+close a
+--- nested (two in one block) ---
+body
+close b
+close a
+--- throw ---
+close b
+close a
+caught: boom
+--- break ---
+iter
+close a
+after loop
+--- continue ---
+iter 1
+close a
+iter 2
+close a
+after loop
+--- return ---
+before return
+close a
+result=42
+--- close-throws-fallthrough ---
+body
+closing a
+caught: close-failed-a
+--- close-throws-during-unwind (replace rule) ---
+closing a
+caught: close-failed-a
+--- outer-still-closes-after-inner-fails ---
+body
+closing inner
+closing outer
+caught: close-failed-inner
+--- file (prelude IDisposable) ---
+wrote
+after block, read=hello

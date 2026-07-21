@@ -1,0 +1,19 @@
+// `member of C`: a rule injects a whole new member into a class. Here @Named
+// adds a describe() method that returns the class's declared label.
+namespace Meta {
+    attribute Named { string label; }
+    rule addDescribe {
+        match @Named(n) on class C
+        inject `string describe() => $n.label;` at member of C
+    }
+}
+uses Meta;
+
+@Named("widget")
+class Widget {
+    int size = 3;
+}
+
+Widget w = Widget();
+console.writeln(w.describe());
+console.writeln(w.size);

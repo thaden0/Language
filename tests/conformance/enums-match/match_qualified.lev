@@ -1,0 +1,49 @@
+// 005 §5.1 — qualified `match`-arm patterns (bug #85) + top-level bare `match`
+// (bug #84). A `::`-qualified arm head parses neutrally as a value pattern and is
+// reclassified by the resolver: a namespace-qualified TYPE becomes a type
+// pattern; an enum member / namespace const stays a value pattern.
+uses k1;
+
+namespace k1 {
+    class Base { new Base() {} }
+    class Sub : Base { new Sub() {} }
+    class Box<T> { T v; new Box(T x) { v = x; } }
+}
+
+namespace k2 {
+    const int LIMIT = 7;
+}
+
+enum Method { GET, POST }
+
+// Row 1 — D1 core: a namespace-qualified type arm dispatches on the runtime object.
+k1::Base b = k1::Sub();
+console.writeln(match (b) { k1::Sub => "r1:sub"; else => "r1:base"; });
+
+// Row 2 — R1 `<`-lookahead + qualified generic canonical; closed-union
+// exhaustiveness over a qualified generic, no `else`.
+k1::Box<int> | string x = k1::Box(7);
+console.writeln(match (x) { k1::Box<int> => "r2:box"; string => "r2:s"; });
+
+// Row 3 — R2 value-leaf: a namespace const stays a value pattern.
+console.writeln(match (7) { k2::LIMIT => "r3:const"; else => "r3:no"; });
+
+// Row 4 — class-rooted enum arms untouched; exhaustive without `else`.
+Method m = Method::GET;
+console.writeln(match (m) { Method::GET => "r4:g"; Method::POST => "r4:p"; });
+
+// Row 5 — bare-head route regression (parseType path, `uses k1`).
+Base b2 = Sub();
+console.writeln(match (b2) { Sub => "r5:bare"; else => "r5:no"; });
+
+// Row 6 — R3 union-with-qualified-head on the value route reclassifies.
+k1::Base? ob = None;
+console.writeln(match (ob) { k1::Sub | None => "r6:u1"; else => "r6:u2"; });
+
+// Row 7 — R6 / bug #84: a top-level bare `match` with no trailing `;`, followed
+// immediately by another statement.
+match (1) {
+    1 => console.writeln("r7:m1");
+    else => console.writeln("r7:mx");
+}
+console.writeln("r8:after");

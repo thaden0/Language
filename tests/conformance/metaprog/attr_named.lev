@@ -1,0 +1,28 @@
+namespace WebNamed {
+    interface IController { }
+    attribute Route { string method = "GET"; string path; }
+    rule registerRoutes {
+        match @Route(r) on method m in class C : IController
+        inject `router.record($r.method, $r.path)` at bottom of C.constructor
+    }
+}
+uses WebNamed;
+
+class NamedRouter {
+    string routes = "";
+    NamedRouter record(string method, string path) {
+        routes = routes + method + " " + path + "\n";
+        return this;
+    }
+}
+
+class NamedController : IController {
+    NamedRouter router;
+    new NamedController(NamedRouter shared) { router = shared; }
+    @Route(path: "/users") int list() => 1;
+    @Route(path: "/users", method: "POST") int create() => 2;
+}
+
+NamedRouter r = NamedRouter();
+NamedController c = NamedController(r);
+console.write(r.routes);
