@@ -1,4 +1,5 @@
 #include "Eval.hpp"
+#include "RuntimeCore.hpp"
 #include "RuntimeLoop.hpp"
 #include "lv_task.h"   // LA-30: stackful-task substrate (techdesign-03)
 #include <cassert>
@@ -12,18 +13,6 @@
 #include <unordered_set>
 
 namespace {
-
-const char* opSymbol(TokenKind k) {
-    switch (k) {
-        case TokenKind::Plus: return "+";   case TokenKind::Minus: return "-";
-        case TokenKind::Star: return "*";   case TokenKind::Slash: return "/";
-        case TokenKind::Percent: return "%"; case TokenKind::EqEq: return "==";
-        case TokenKind::BangEq: return "!="; case TokenKind::Lt: return "<";
-        case TokenKind::Gt: return ">";     case TokenKind::Le: return "<=";
-        case TokenKind::Ge: return ">=";    case TokenKind::LtLt: return "<<";
-        case TokenKind::GtGt: return ">>";  default: return "?";
-    }
-}
 
 bool isCompoundAssign(TokenKind k) {
     return k == TokenKind::PlusEq || k == TokenKind::MinusEq || k == TokenKind::StarEq ||
@@ -276,29 +265,9 @@ bool Evaluator::classHasMember(Symbol* cls, std::string_view name) {
 }
 
 const Stmt* Evaluator::findMethod(Symbol* cls, const std::string& name, int argc) {
-    if (!cls) return nullptr;
-    // bug.md #13: when the checker left an overloaded same-class call unresolved
-    // (it never walks prelude class bodies, so `Expr::resolved` is null for every
-    // bare self-call inside them), this by-name fallback must not pick the first
-    // name-match arity-blind — that silently ran the 1-arg `indexOf` for a 2-arg
-    // `indexOf(sub, from)` call and hung. When the caller passes the argument
-    // count, prefer the unique method whose parameter count matches. A tie
-    // (same arity, different param types) or no arity match keeps the legacy
-    // first-found choice rather than guess; a single non-overloaded method is
-    // unaffected either way.
-    const Stmt* first = nullptr;
-    const Stmt* arityHit = nullptr;
-    int arityHits = 0;
-    for (const Slot& s : cls->shape.slots) {
-        if (!s.isMethod || s.name != name) continue;
-        if (!first) first = s.decl;
-        if (argc >= 0 && s.decl && (int)s.decl->params.size() == argc) {
-            arityHit = s.decl;
-            ++arityHits;
-        }
-    }
-    if (arityHits == 1) return arityHit;
-    return first;
+    // bug.md #13 arity-aware disambiguation, now the shared rtFindMethod (the
+    // IR executor's findMethodByName is the same call) — see RuntimeCore.hpp.
+    return rtFindMethod(cls, name, argc);
 }
 
 // Is `decl` one of `cls`'s (flattened, inheritance-inclusive) method slots?
@@ -321,15 +290,7 @@ const Stmt* Evaluator::findAccessor(Symbol* cls, const std::string& name, bool w
 }
 
 std::string Evaluator::keyFor(Symbol* cls, const std::string& name, const std::string& source) {
-    if (cls)
-        for (const Slot& s : cls->shape.slots) {
-            if (s.isMethod || s.name != name) continue;
-            if (!source.empty() && (!s.source || s.source->name != source)) continue;
-            if (s.distinct && s.source) return std::string(s.source->name) + "::" + name;
-            return name;
-        }
-    if (!source.empty()) return source + "::" + name;
-    return name;
+    return rtKeyFor(cls, name, source);   // shared raw-key computation
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +945,9 @@ bool Evaluator::memberTarget(Expr* e, std::shared_ptr<Object>& obj,
 
 Value Evaluator::memberRead(std::shared_ptr<Object> obj, const std::string& name,
                             const std::string& source) {
+    // engine-specific: accessor resolution stays here — the oracle walks the AST
+    // and needs the rawField_ guard so a getter reading its own backing field
+    // does not recurse (the IR pre-lowers raw access to a distinct op).
     if (rawField_ != name)
         if (const Stmt* getter = findAccessor(obj->cls, name, /*wantGet*/ true)) {
             std::string saved = rawField_; rawField_ = name;
@@ -992,17 +956,12 @@ Value Evaluator::memberRead(std::shared_ptr<Object> obj, const std::string& name
             rawField_ = saved;
             return r;
         }
-    std::string key = keyFor(obj->cls, name, source);
-    for (const Slot& s : obj->cls->shape.slots)
-        if (!s.isMethod && s.isWeak &&
-            (key == s.name || (s.source && key == std::string(s.source->name) + "::" + std::string(s.name))))
-            return weakObjectRead(obj, key);
-    auto it = obj->fields.find(key);
-    return it != obj->fields.end() ? it->second : vvoid();
+    return rtRawFieldGet(obj, keyFor(obj->cls, name, source));
 }
 
 void Evaluator::memberWrite(std::shared_ptr<Object> obj, const std::string& name,
                             const std::string& source, const Value& v) {
+    // engine-specific: accessor resolution stays here (see memberRead).
     if (rawField_ != name)
         if (const Stmt* setter = findAccessor(obj->cls, name, /*wantGet*/ false)) {
             std::string saved = rawField_; rawField_ = name;
@@ -1011,13 +970,7 @@ void Evaluator::memberWrite(std::shared_ptr<Object> obj, const std::string& name
             rawField_ = saved;
             return;
         }
-    std::string key = keyFor(obj->cls, name, source);
-    for (const Slot& s : obj->cls->shape.slots)
-        if (!s.isMethod && s.isWeak &&
-            (key == s.name || (s.source && key == std::string(s.source->name) + "::" + std::string(s.name)))) {
-            weakObjectWrite(obj, key, v); return;
-        }
-    obj->fields[key] = v;
+    rtRawFieldSet(obj, keyFor(obj->cls, name, source), v);
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,26 +1096,18 @@ Value Evaluator::combine(TokenKind op, const Value& l, const Value& r,
         if (l.kind == VKind::None || r.kind == VKind::None)
             return arithPrim(op, l, r);
     if (l.kind == VKind::Object && l.obj->cls && l.obj->cls->name != "Range") {
-        const Stmt* m = resolved ? resolved : findMethod(l.obj->cls, opSymbol(op));
-        if (m) {
-            std::vector<Value> args{r};
-            return callFunction(m, args, l.obj, l.obj->cls);
-        }
-        if (op == TokenKind::BangEq)
-            if (const Stmt* eq = findMethod(l.obj->cls, "==")) {
-                std::vector<Value> args{r};
-                return vbool(!callFunction(eq, args, l.obj, l.obj->cls).b);
-            }
-        if ((op == TokenKind::EqEq || op == TokenKind::BangEq) && !l.obj->cls->isValue) {
-            // a class with no (==) compares by reference identity (design §5.2).
-            // A value struct instead gets a synthesized field-wise (==) at
-            // resolve time (designs/struct-equality/, §5.5) and never lands
-            // here from checked code; falling through makes any hole loud.
-            bool same = r.kind == VKind::Object && l.obj == r.obj;
-            return vbool(op == TokenKind::EqEq ? same : !same);
-        }
-        return throwRuntime(std::string("no operator '") + opSymbol(op) + "' on '" +
-                            std::string(l.obj->cls->name) + "'");
+        return rtObjectArith(
+            op, l.obj->cls, resolved, l, r,
+            // engine-specific: invoke the operator method (receiver + operand).
+            [&](const Stmt* m, const Value& lhs, const Value& rhs) {
+                std::vector<Value> args{rhs};
+                return callFunction(m, args, lhs.obj, lhs.obj->cls);
+            },
+            // engine-specific: raise this engine's runtime exception.
+            [&](const std::string& sym) {
+                return throwRuntime("no operator '" + sym + "' on '" +
+                                    std::string(l.obj->cls->name) + "'");
+            });
     }
     std::string err;
     Value v = arithPrim(op, l, r, &err);
@@ -2143,16 +2088,6 @@ std::string Evaluator::run(Program& program) {
 
 Evaluator* Evaluator::gTaskEval_ = nullptr;
 
-namespace {
-// One loop-dispatched job (callback + argument), heap-carried into its task.
-// The Values own their references until the thunk consumes them (or drops
-// them after a program termination) — shared_ptr RAII either way.
-struct EvalTaskJob {
-    Value callback;
-    Value argument;
-};
-}
-
 // S3/G7: move the volatile set out and leave the engine PRISTINE. A fresh task
 // starting while this one is parked begins from a clean context — deliberately
 // NOT the pump's behavior (nested dispatch leaked the awaiter's rawField_/
@@ -2200,26 +2135,14 @@ void Evaluator::restoreTaskState(TaskState&& s) {
 // the pump stopped all dispatch at the first throw, so later ones were
 // unreachable states; taskLoopStep and taskRunJob gate on the stash.
 void Evaluator::taskCaptureTermination() {
-    if (!throwing_) return;
-    if (!taskTermStashed_) {
-        taskTermStashed_ = true;
-        taskTermThrown_ = thrownValue_;
-        taskTermExiting_ = exiting_;
-    }
-    throwing_ = false;
-    exiting_ = false;
+    rtCaptureTermination(throwing_, exiting_, thrownValue_,
+                         taskTermStashed_, taskTermThrown_, taskTermExiting_);
 }
 
 // G15: bool immediates only — the exact reads the pump's ready-check made;
 // no Value copies of object-typed fields, so the poll path is ARC-silent.
 int Evaluator::taskPollPromise(const void* obj) {
-    auto* o = static_cast<const Object*>(obj);
-    int s = 0;
-    auto r = o->fields.find("ready");
-    if (r != o->fields.end() && r->second.b) s |= 1;
-    auto f = o->fields.find("failed");
-    if (f != o->fields.end() && f->second.b) s |= 2;
-    return s;
+    return rtPollPromise(obj);
 }
 
 // One loop batch; every user callback becomes a task (spawn order = FIFO runq
@@ -2228,15 +2151,8 @@ int Evaluator::taskPollPromise(const void* obj) {
 // `while (!throwing_ && loop.hasWork())` gate.
 int Evaluator::taskLoopStep() {
     Evaluator* ev = gTaskEval_;
-    if (!ev || ev->taskTermStashed_) return 0;
-    RuntimeLoop& loop = RuntimeLoop::instance();
-    if (!loop.hasWork()) return 0;
-    for (LoopCallback& job : loop.nextBatch()) {
-        if (job.callback.kind != VKind::Closure || !job.callback.closure) continue;
-        lv_task_spawn(&Evaluator::taskRunJob,
-                      new EvalTaskJob{job.callback, job.argument}, nullptr);
-    }
-    return 1;
+    if (!ev) return 0;
+    return rtTaskLoopStep(ev->taskTermStashed_, &Evaluator::taskRunJob);
 }
 
 int Evaluator::taskThrowProbe() {
@@ -2250,7 +2166,7 @@ void Evaluator::taskRunProgram(void* selfp, void* prog) {
 }
 
 void Evaluator::taskRunJob(void* ctxp, void*) {
-    std::unique_ptr<EvalTaskJob> job(static_cast<EvalTaskJob*>(ctxp));
+    std::unique_ptr<RtTaskJob> job(static_cast<RtTaskJob*>(ctxp));
     Evaluator* ev = gTaskEval_;
     if (!ev) return;
     // A prior task terminated the program (throw or env.exit): drop the job —
@@ -2265,7 +2181,7 @@ void Evaluator::taskRunJob(void* ctxp, void*) {
 // uncaught throw here is program-uncaught (C2's rule; the CancelledException
 // absorption for group children lives in the PRELUDE wrapper, TaskGroup.run).
 void Evaluator::taskRunGroupBody(void* ctxp, void*) {
-    std::unique_ptr<EvalTaskJob> job(static_cast<EvalTaskJob*>(ctxp));
+    std::unique_ptr<RtTaskJob> job(static_cast<RtTaskJob*>(ctxp));
     Evaluator* ev = gTaskEval_;
     if (!ev) return;
     if (ev->taskTermStashed_) return;   // program already terminated: drop
@@ -2291,7 +2207,7 @@ bool Evaluator::taskNative(const std::string& name, std::vector<Value>& args, Va
             return true;
         }
         uint64_t id = lv_task_spawn_registered(&Evaluator::taskRunGroupBody,
-                                               new EvalTaskJob{args[0], Value{}}, nullptr);
+                                               new RtTaskJob{args[0], Value{}}, nullptr);
         out = vint((long long)id);
         return true;
     }

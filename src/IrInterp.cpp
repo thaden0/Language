@@ -1,4 +1,5 @@
 #include "IrInterp.hpp"
+#include "RuntimeCore.hpp"
 #include "RuntimeLoop.hpp"
 #include "lv_task.h"   // LA-30: stackful-task substrate (techdesign-03)
 #include <cassert>
@@ -25,25 +26,9 @@ Symbol* IrInterp::classOfValue(const Value& v) const {
 }
 
 const Stmt* IrInterp::findMethodByName(Symbol* cls, const std::string& name, int argc) const {
-    if (!cls) return nullptr;
-    // bug.md #13: same arity-aware disambiguation the oracle's findMethod uses —
-    // a bare self-call inside an unchecked prelude body reaches here with a null
-    // decl, so an overloaded same-class method must be picked by argument count,
-    // not first-name-match. Unique arity match wins; ties or no match keep the
-    // legacy first-found choice.
-    const Stmt* first = nullptr;
-    const Stmt* arityHit = nullptr;
-    int arityHits = 0;
-    for (const Slot& s : cls->shape.slots) {
-        if (!s.isMethod || s.name != name) continue;
-        if (!first) first = s.decl;
-        if (argc >= 0 && s.decl && (int)s.decl->params.size() == argc) {
-            arityHit = s.decl;
-            ++arityHits;
-        }
-    }
-    if (arityHits == 1) return arityHit;
-    return first;
+    // bug.md #13 arity-aware disambiguation, now the shared rtFindMethod (the
+    // oracle's findMethod is the same call) — see RuntimeCore.hpp.
+    return rtFindMethod(cls, name, argc);
 }
 
 const Stmt* IrInterp::findAccessor(Symbol* cls, const std::string& name, bool wantGet) const {
@@ -65,7 +50,9 @@ bool IrInterp::isSubclassOrSelf(Symbol* a, Symbol* b) const {
     return false;
 }
 
-// "name" or "Source::name" -> the storage key, honoring distinct slots.
+// "name" or "Source::name" -> the storage key, honoring distinct slots. The
+// raw key computation is shared (rtKeyFor); this engine's key arrives already
+// spelled "Source::name", so it splits the qualifier out first.
 std::string IrInterp::keyFor(Symbol* cls, const std::string& nameOrQualified) const {
     std::string source, name = nameOrQualified;
     size_t p = nameOrQualified.find("::");
@@ -73,16 +60,7 @@ std::string IrInterp::keyFor(Symbol* cls, const std::string& nameOrQualified) co
         source = nameOrQualified.substr(0, p);
         name = nameOrQualified.substr(p + 2);
     }
-    if (cls)
-        for (const Slot& s : cls->shape.slots) {
-            if (s.isMethod || s.name != name) continue;
-            if (!source.empty() && (!s.source || std::string(s.source->name) != source))
-                continue;
-            if (s.distinct && s.source) return std::string(s.source->name) + "::" + name;
-            return name;
-        }
-    if (!source.empty()) return source + "::" + name;
-    return name;
+    return rtKeyFor(cls, name, source);
 }
 
 // LA-30 B2 (doc 06 §2): raise a NAMED prelude exception class — the same
@@ -621,15 +599,11 @@ Value IrInterp::getMember(const Value& base, const std::string& key) {
     std::string plainName = key;
     size_t p = key.find("::");
     if (p != std::string::npos) plainName = key.substr(p + 2);
+    // engine-specific: accessor resolution stays here (the IR carries no
+    // rawField_ re-entrancy guard — raw access is a distinct lowered op).
     if (const Stmt* getter = findAccessor(base.obj->cls, plainName, true))
         return callDecl(getter, base.obj->cls, {base});
-    std::string storageKey = keyFor(base.obj->cls, key);
-    for (const Slot& s : base.obj->cls->shape.slots)
-        if (!s.isMethod && s.isWeak &&
-            (storageKey == s.name || (s.source && storageKey == std::string(s.source->name) + "::" + std::string(s.name))))
-            return weakObjectRead(base.obj, storageKey);
-    auto f = base.obj->fields.find(storageKey);
-    return f != base.obj->fields.end() ? f->second : vvoid();
+    return rtRawFieldGet(base.obj, keyFor(base.obj->cls, key));
 }
 
 void IrInterp::setMember(const Value& base, const std::string& key, const Value& v) {
@@ -637,17 +611,12 @@ void IrInterp::setMember(const Value& base, const std::string& key, const Value&
     std::string plainName = key;
     size_t p = key.find("::");
     if (p != std::string::npos) plainName = key.substr(p + 2);
+    // engine-specific: accessor resolution stays here (see getMember).
     if (const Stmt* setter = findAccessor(base.obj->cls, plainName, false)) {
         callDecl(setter, base.obj->cls, {base, v});
         return;
     }
-    std::string storageKey = keyFor(base.obj->cls, key);
-    for (const Slot& s : base.obj->cls->shape.slots)
-        if (!s.isMethod && s.isWeak &&
-            (storageKey == s.name || (s.source && storageKey == std::string(s.source->name) + "::" + std::string(s.name)))) {
-            weakObjectWrite(base.obj, storageKey, v); return;
-        }
-    base.obj->fields[storageKey] = v;
+    rtRawFieldSet(base.obj, keyFor(base.obj->cls, key), v);
 }
 
 Value IrInterp::getIndex(const Value& base, const Value& idx) {
@@ -709,32 +678,17 @@ Value IrInterp::indexStore(const Value& base, const Value& idx, const Value& v) 
 
 Value IrInterp::objectArith(TokenKind op, const Inst& in, const Value& l, const Value& r) {
     Symbol* cls = l.obj->cls;
-    const char* sym =
-        op == TokenKind::Plus ? "+" : op == TokenKind::Minus ? "-" :
-        op == TokenKind::Star ? "*" : op == TokenKind::Slash ? "/" :
-        op == TokenKind::Percent ? "%" : op == TokenKind::EqEq ? "==" :
-        op == TokenKind::BangEq ? "!=" : op == TokenKind::Lt ? "<" :
-        op == TokenKind::Gt ? ">" : op == TokenKind::Le ? "<=" :
-        op == TokenKind::Ge ? ">=" :
-        op == TokenKind::LtLt ? "<<" : op == TokenKind::GtGt ? ">>" :
-        op == TokenKind::Pipe ? "|" : op == TokenKind::Amp ? "&" : "?";
-    const Stmt* m = in.decl ? in.decl : findMethodByName(cls, sym);
-    if (m) return callDecl(m, cls, {l, r});
-    if (op == TokenKind::BangEq)
-        if (const Stmt* eq = findMethodByName(cls, "==")) {
-            Value res = callDecl(eq, cls, {l, r});
-            return vbool(!res.b);
-        }
-    if ((op == TokenKind::EqEq || op == TokenKind::BangEq) && cls && !cls->isValue) {
-        // a class with no (==) is reference identity (design §5.2). A value
-        // struct gets a synthesized field-wise (==) at resolve time
-        // (designs/struct-equality/, §5.5), so it never reaches here from
-        // checked code — fall through and be loud if it ever does.
-        bool same = r.kind == VKind::Object && l.obj == r.obj;
-        return vbool(op == TokenKind::EqEq ? same : !same);
-    }
-    raise(std::string("no operator '") + sym + "' on '" + std::string(cls->name) + "'");
-    return vvoid();
+    return rtObjectArith(
+        op, cls, in.decl, l, r,
+        // engine-specific: invoke the operator method (receiver + operand).
+        [&](const Stmt* m, const Value& lhs, const Value& rhs) {
+            return callDecl(m, cls, {lhs, rhs});
+        },
+        // engine-specific: raise this engine's runtime exception.
+        [&](const std::string& sym) {
+            raise("no operator '" + sym + "' on '" + std::string(cls->name) + "'");
+            return vvoid();
+        });
 }
 
 Value IrInterp::iterLen(const Value& iter) {
@@ -835,48 +789,22 @@ std::string IrInterp::run() {
 
 IrInterp* IrInterp::gTaskInterp_ = nullptr;
 
-namespace {
-struct IrTaskJob {
-    Value callback;
-    Value argument;
-};
-}
-
 // G11: the throw flag never crosses a task boundary; first termination wins
-// (see Eval.cpp's twin for the rationale).
+// (see RuntimeCore rtCaptureTermination for the rationale).
 void IrInterp::taskCaptureTermination() {
-    if (!throwing_) return;
-    if (!taskTermStashed_) {
-        taskTermStashed_ = true;
-        taskTermThrown_ = thrown_;
-        taskTermExiting_ = exiting_;
-    }
-    throwing_ = false;
-    exiting_ = false;
+    rtCaptureTermination(throwing_, exiting_, thrown_,
+                         taskTermStashed_, taskTermThrown_, taskTermExiting_);
 }
 
 // G15: bool immediates only — the pump's ready-check reads, ARC-silent.
 int IrInterp::taskPollPromise(const void* obj) {
-    auto* o = static_cast<const Object*>(obj);
-    int s = 0;
-    auto r = o->fields.find("ready");
-    if (r != o->fields.end() && r->second.b) s |= 1;
-    auto f = o->fields.find("failed");
-    if (f != o->fields.end() && f->second.b) s |= 2;
-    return s;
+    return rtPollPromise(obj);
 }
 
 int IrInterp::taskLoopStep() {
     IrInterp* ir = gTaskInterp_;
-    if (!ir || ir->taskTermStashed_) return 0;   // pump drain's !throwing_ gate
-    RuntimeLoop& loop = RuntimeLoop::instance();
-    if (!loop.hasWork()) return 0;
-    for (LoopCallback& job : loop.nextBatch()) {
-        if (job.callback.kind != VKind::Closure || !job.callback.closure) continue;
-        lv_task_spawn(&IrInterp::taskRunJob,
-                      new IrTaskJob{job.callback, job.argument}, nullptr);
-    }
-    return 1;
+    if (!ir) return 0;
+    return rtTaskLoopStep(ir->taskTermStashed_, &IrInterp::taskRunJob);
 }
 
 int IrInterp::taskThrowProbe() {
@@ -893,7 +821,7 @@ void IrInterp::taskRunProgram(void* selfp, void*) {
 }
 
 void IrInterp::taskRunJob(void* ctxp, void*) {
-    std::unique_ptr<IrTaskJob> job(static_cast<IrTaskJob*>(ctxp));
+    std::unique_ptr<RtTaskJob> job(static_cast<RtTaskJob*>(ctxp));
     IrInterp* ir = gTaskInterp_;
     if (!ir) return;
     if (ir->taskTermStashed_) return;   // program already terminated: drop
@@ -905,7 +833,7 @@ void IrInterp::taskRunJob(void* ctxp, void*) {
 // closure is the callee's own arg0; no event argument). An uncaught throw is
 // program-uncaught (C2); the cancellation absorption lives in TaskGroup.run.
 void IrInterp::taskRunGroupBody(void* ctxp, void*) {
-    std::unique_ptr<IrTaskJob> job(static_cast<IrTaskJob*>(ctxp));
+    std::unique_ptr<RtTaskJob> job(static_cast<RtTaskJob*>(ctxp));
     IrInterp* ir = gTaskInterp_;
     if (!ir) return;
     if (ir->taskTermStashed_) return;   // program already terminated: drop
@@ -960,7 +888,7 @@ bool IrInterp::taskNative(const std::string& name, std::vector<Value>& args, Val
             return true;
         }
         uint64_t id = lv_task_spawn_registered(&IrInterp::taskRunGroupBody,
-                                               new IrTaskJob{args[0], Value{}}, nullptr);
+                                               new RtTaskJob{args[0], Value{}}, nullptr);
         out = vint((long long)id);
         return true;
     }
