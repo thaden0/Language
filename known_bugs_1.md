@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #98 |
+| P1       | — |
 | P2       | #102 |
 | P3       | — |
 
@@ -166,77 +166,6 @@ is the real fix and is out of scope for the streaming design.
 
 ---
 
-## #98 [P1] — metaprogramming rules/attributes declared in the prelude silently never fire
-
-**Found:** 2026-07-19, implementing `designs/techdesign-bindgen-metaprog-scope.md`
-(the DOM `@extern` bindgen's `generates body of` primitive) — running its own §13
-spike 1 ("does the rule stage run over wherever the Dom surface lives").
-**Priority justification:** P1.1 — ordinary, checker-accepted CALLER code (a plain
-`.lev` program invoking a prelude-declared, attribute-annotated symbol) silently
-gets the wrong value at exit 0, no diagnostic, because the annotating rule never
-fires. Compounded by P1.2: the workaround (keep any rule/attribute/macro-driven
-declaration OUT of the prelude; ship it as an ordinary project file instead) must
-be independently rediscovered by every future track that wants to author prelude
-surface with metaprogramming — this design walked straight into it, assuming the
-ship-as-files migration (#38b59ce) would resolve it, and it doesn't.
-
-**Repro** (prelude edit + a plain caller program):
-
-```
-$ cat >> prelude/wasm.lev <<'EOF'
-
-namespace WasmSpike {
-    attribute GenSpike { }
-    rule genSpikeRule generates body of m {
-        match @GenSpike on method m
-        replace `return 12345;`
-    }
-    @GenSpike
-    int __spikeProbe() => 0;
-}
-EOF
-$ printf 'console.writeln(WasmSpike::__spikeProbe());\n' > t.ext
-$ build/leviathan --target wasm32-unknown-unknown --ir t.ext
-0
-```
-
-Expected (attribute/rule co-location fires on every other checked file in the
-language — `tests/corpus/meta/rule_body_generate.ext` and the rest of the
-`generates`/`rewrites` corpus confirm this): `12345`, the rule-generated body.
-Actual: the placeholder `=> 0` body runs untouched — no error, no warning, exit 0.
-(Revert the `prelude/wasm.lev` edit after reproducing; it is not a real feature.)
-
-**Root-cause pointer:** `main.cpp` constructs exactly one `RuleEngine` and calls
-`engine->run(program)` exactly once (`src/main.cpp:539`, `:557`), always on the
-user's own parsed file tree. `Resolver::parsePrelude()` (`src/Resolver.cpp:153-183`)
-parses the prelude into a wholly separate `Program` (`preludeProgram_`) using a
-throwaway `DiagnosticSink dummy` ("the prelude is trusted; ignore its
-diagnostics") and hands it to the `RuleEngine` constructor's `prelude` parameter
-— which `RuleEngine` uses ONLY for `eval_.initGlobals(prelude)` (pure
-comptime-value seeding, `src/Rules.cpp:16-28`). Nothing in `RuleEngine` —
-`collectRules`, `indexDecls`, `runRules` — ever walks `preludeProgram_`'s items;
-grep confirms no reference to `prelude` anywhere past the constructor. This
-predates the ship-as-files migration (`38b59ce`, `6bf297a`) and is unaffected by
-it: ship-as-files changed where the prelude's TEXT is sourced from (`prelude/*.lev`
-files vs. embedded bytes), not whether its AST is ever handed to the rule engine
-— confirmed by reproducing the bug against post-migration `prelude/wasm.lev`
-(a real file) exactly as easily as the pre-migration embedded string.
-
-**Workaround (debt sites):** none inside the prelude — a rule/attribute/macro
-declared in any `prelude/*.lev` segment is dead code by construction. Ship the
-metaprogramming-authored surface as an ordinary project `.lev` file compiled
-alongside the consumer instead. This is exactly the fork
-`techdesign-bindgen-metaprog-scope.md`'s DOM adoption (§5/§6) hit: its
-"Recommended" placement (`dom.lev` as a prelude/stdlib segment) assumed landing
-ship-as-files would make prelude rule-stage participation "the demonstrated
-§4.3(e) case" — it doesn't, because §4.3(e) demonstrated rules firing on an
-ordinary checked project file, and the prelude is not on the checker's or the
-rule engine's path at all, file-backed or not. That design's DOM-surface rewrite
-is parked on this bug (or on a project-file placement instead of prelude) rather
-than worked around.
-
----
-
 #95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
 regression and not runtime-stale: a latent value-struct ARC over-release exposed
 by the 2026-07-19 base-qualified-call merge (Lower.cpp `lowerCall`). Root cause:
@@ -356,3 +285,59 @@ removable — inline `$t.name + "." + $f.name` / `"@Row " + $f.name` templates
 produce identical correct output (verified against the exact nested
 `step(this.$f = fromDb(…, ctx($t.name, $f.name)))` shape). Left in place as
 optional cleanup, not required by this resolution.
+
+#98 fixed 2026-07-21 (metaprogramming rules/attributes declared in the prelude
+silently never fired). Root cause: `main.cpp` built one `RuleEngine` and called
+`engine->run(program)` once, always on the USER's parsed tree; the prelude was
+parsed by `Resolver::parsePrelude()` into a separate `Program` (`preludeProgram_`)
+handed to the engine ONLY for `eval_.initGlobals` (comptime-value seeding).
+Nothing in the rule engine — `collectRules`/`indexDecls`/`walkAttrs`/`runRules` —
+ever walked the prelude's items, so a rule/attribute authored in a `prelude/*.lev`
+segment was dead code by construction (exit 0, no diagnostic, the annotated
+symbol ran its untouched placeholder body). Confirmed NOT a deliberate boundary:
+`designs/techdesign-bindgen-metaprog-scope.md` §6's fallback explicitly asked to
+"confirm-or-add rule-stage processing of the prelude segment", and its §13 spike
+1 was written precisely to discover this gap — an oversight, not a decision. Fix
+(`src/Rules.cpp`, `src/Rules.hpp`): the engine now stores the prelude program and,
+in `run()`, also (a) `collectRules` over it (prelude rules join `rules_`), (b)
+`walkAttrs` over it (prelude `@Attr` uses resolve), and (c) `indexDecls` over it
+(prelude decls become matchable), so prelude-declared rules match prelude AND user
+decls and user rules can match prelude-carried attributes. The prelude lives in a
+SEPARATE source buffer whose offsets collide with the user tree's, so it cannot
+share `fileOf`'s offset-keyed slots: its provenance is computed on its own
+(`computeFileImports` over one synthetic full-range file) and appended to
+`imports_` at a dedicated `preludeFileIdx_`; a `fileIdxOverride_` forces that slot
+onto `indexDecls`/`processAttrs` while the prelude is walked (co-location needs no
+`uses`, so a prelude rule + its subject in one segment resolve via `declaresInto`).
+Second half of the fix (the subtle one — `src/main.cpp`, `src/Resolver.{hpp,cpp}`):
+a rule that rewrites a PRELUDE decl mutates the pass-1 prelude tree, but pass 2's
+fresh `Resolver` re-parsed a PRISTINE prelude, dropping the injection before the
+backend saw it. Pass 2 now `adoptPrelude()`s the rule-processed pass-1 tree
+(re-resolving the mutation like hand-written code, and never re-parsing the
+detached `rule` statements back in) whenever the prelude carried meta; a meta-free
+prelude — the common case — keeps the old fresh-re-parse path byte-for-byte. The
+rule stage is also now gated on `program.hasMeta || preludeProgram.hasMeta`, so it
+runs for a caller with no meta of its own when the prelude supplies it. Prelude
+rule/attribute diagnostics ride the real user sink (no new suppression path,
+matching the existing choice for parse diagnostics); dangling-attribute warnings
+are still emitted over the user tree only, so the trusted prelude never nags the
+caller. Regression floor: `tests/run_prelude_rules.sh` (ctest `prelude_rules`,
+wired in `CMakeLists.txt` beside `prelude_select`) copies the real prelude, appends
+a self-contained `generates body of` spike to a segment, and asserts a plain
+no-meta caller sees the rewritten body (`12345`) on BOTH `--run` (oracle) and
+`--ir`, plus a control proving the spike is absent from the shipped prelude — the
+`prelude/*.lev` files are never edited. Verified: the entry's exact repro now
+prints `12345` on `--run` and `--ir`; `metatests` (124 checks), `corpus_meta_{
+treewalk,ir}` (55 files each), `corpus_meta_expand_roundtrip`, the meta LLVM legs
+(`corpus_procedural_macros_llvm`, `corpus_target_uses_llvm`), every `rule_*` reject
+row, base `corpus_{treewalk,ir,ir_verify}`, and the parser/resolver/checker/eval
+unit suites all green. Unblocks `techdesign-bindgen-metaprog-scope.md`'s parked
+DOM `@extern` bindgen: its "Recommended" placement (the Dom surface as a shipped
+`dom.lev` prelude/stdlib segment with co-located `@extern` rules) now has real
+rule-stage participation — the §6 STOP that forced the project-file fallback is
+resolved. Known small edges left for that pickup, none blocking: prelude rules are
+offset-ordered interleaved with user rules (arbitrary but deterministic across the
+two buffers); the reentrant fixpoint and `namespace N` anchor injection still
+operate over the user tree only; and cross-buffer splice sites (`@PreludeAttr()` in
+user code targeting a prelude-declared attribute) are not yet indexed — all
+out-of-scope for the repro and filable if a consumer needs them.

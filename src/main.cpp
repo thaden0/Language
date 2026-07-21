@@ -521,7 +521,11 @@ int main(int argc, char** argv) {
             std::unique_ptr<RuleEngine> engine;
             std::unique_ptr<Resolver> resolver2;
             Resolver* R = &resolver;
-            if (program.hasMeta && !noRules && !sink.hasErrors()) {
+            // #98: run the rule stage when EITHER the user program or the
+            // prelude carries metaprogramming — a rule/attribute shipped in a
+            // prelude/*.lev segment must fire even if the caller has no meta.
+            if ((program.hasMeta || resolver.preludeProgram().hasMeta) &&
+                !noRules && !sink.hasErrors()) {
                 std::vector<ProjectFile> rfiles = project.files;
                 if (rfiles.empty())
                     rfiles.push_back({file.name, 0, (uint32_t)file.text.size(), "", ""});
@@ -562,6 +566,16 @@ int main(int argc, char** argv) {
                     resolver2->setFileRanges(fileRanges);
                     resolver2->setPreludeDir(preludeDir);
                     resolver2->setTargetTriple(targetTriple);
+                    // #98: adopt the rule-processed prelude tree rather than
+                    // re-parsing a pristine one, whenever the prelude carried
+                    // metaprogramming. The rule stage both (a) rewrites prelude
+                    // decls in place — a fresh re-parse would drop the injection
+                    // before the backend sees it — and (b) detaches the prelude's
+                    // own `rule` statements (§5.1), which pass 2 must never see; a
+                    // re-parse would reintroduce them. A prelude with no meta
+                    // (the common case) keeps the old fresh-re-parse path exactly.
+                    if (resolver.preludeProgram().hasMeta)
+                        resolver2->adoptPrelude(std::move(resolver.preludeProgram()));
                     resolver2->run(program);
                     R = resolver2.get();
                 }

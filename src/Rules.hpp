@@ -49,6 +49,12 @@ public:
     // changed (caller re-resolves). Failures are sink diagnostics, never throws.
     bool run(Program& program);
 
+    // #98: true iff a rule rewrote a declaration INSIDE the prelude this run.
+    // main.cpp's pass-2 resolver must then re-resolve the rule-mutated prelude
+    // tree (adoptPrelude) instead of re-parsing a fresh, un-rewritten one — the
+    // prelude AST the backend lowers has to be the one the rule stage touched.
+    bool preludeChanged() const { return preludeMutated_; }
+
     // The evaluated fields of one attribute use (Phase 2's rule input):
     // field name -> compile-time value, in the attribute's field order.
     // `provided` distinguishes an explicitly-written argument from one that
@@ -85,6 +91,24 @@ private:
     DiagnosticSink& sink_;
     Evaluator eval_;             // the oracle in comptime mode (§7.1 reuse)
     bool changed_ = false;
+
+    // #98: the shipped prelude's AST. Before, this was handed in only to seed
+    // comptime globals (eval_.initGlobals); the rule stage never walked it, so a
+    // rule/attribute authored in a prelude/*.lev segment was silently inert.
+    // collectRules/walkAttrs/indexDecls/runRules now cover it too. Its spans live
+    // in a SEPARATE buffer whose offsets collide with the user tree's, so prelude
+    // decls are given a dedicated imports slot (preludeFileIdx_) rather than
+    // routed through fileOf (whose ranges cover the user buffer only).
+    Program* prelude_ = nullptr;
+    int preludeFileIdx_ = -1;      // imports_ slot for the prelude, or -1
+    // While walking the prelude tree, force this file index onto every indexed
+    // decl / resolved attribute instead of fileOf(span). -1 => the ordinary
+    // user-tree path (fileOf).
+    int fileIdxOverride_ = -1;
+    bool preludeMutated_ = false;  // a rule rewrote a prelude decl this run
+    int fileIdxFor(SourceSpan span) const {
+        return fileIdxOverride_ >= 0 ? fileIdxOverride_ : fileOf(span);
+    }
 
     // AST string_views must point at storage that outlives the tree; reified
     // literals and synthesized names live here (deque: stable addresses).

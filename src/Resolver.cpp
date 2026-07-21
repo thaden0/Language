@@ -1502,7 +1502,9 @@ void Resolver::run(Program& program) {
     addToScope(sema_.global, sema_.newSymbol(SymbolKind::Primitive, "void"));
     addToScope(sema_.global, sema_.newSymbol(SymbolKind::Primitive, "None"));
 
-    preludeProgram_ = parsePrelude();
+    // #98: pass 2 adopts the rule-mutated prelude tree (its spans point into the
+    // pass-1 resolver's still-alive prelude buffer); otherwise parse fresh.
+    preludeProgram_ = haveAdoptedPrelude_ ? std::move(adoptedPrelude_) : parsePrelude();
     gatherInto(preludeProgram_.items, sema_.global);
     // Boundary between prelude and program classes in `classSymbols_`: only the
     // program's classes get file-scoped below (prelude spans live in a separate

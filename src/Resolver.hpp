@@ -34,6 +34,18 @@ public:
     void setPreludeDir(std::string dir) { preludeDir_ = std::move(dir); }
     void setTargetTriple(std::string triple) { targetTriple_ = std::move(triple); }
 
+    // #98: adopt an already-parsed prelude tree instead of re-parsing a fresh
+    // one in run(). Used only by main.cpp's pass-2 resolver when the rule stage
+    // rewrote a prelude declaration — the mutated prelude AST the rule engine
+    // produced must be the one re-resolved and lowered, not a pristine re-parse
+    // that would drop the injection. The tree's identifier string_views still
+    // point into the pass-1 resolver's prelude source buffer, which outlives
+    // this resolver (both are alive through lowering in main.cpp).
+    void adoptPrelude(Program&& prog) {
+        adoptedPrelude_ = std::move(prog);
+        haveAdoptedPrelude_ = true;
+    }
+
     void run(Program& program);
     const Sema& sema() const { return sema_; }
     Program& preludeProgram() { return preludeProgram_; }   // for IR lowering
@@ -49,6 +61,8 @@ private:
     // Prelude source kept alive because symbols/tokens reference its text.
     SourceFile preludeFile_;
     Program preludeProgram_;
+    Program adoptedPrelude_;             // #98: set by adoptPrelude(), consumed in run()
+    bool haveAdoptedPrelude_ = false;
     std::vector<Symbol*> classSymbols_;   // every class, in gather order
     std::vector<std::pair<uint32_t, uint32_t>> fileRanges_;   // per-file spans (bug.md #8)
     std::string preludeDir_;    // "" => use the embedded prelude fallback

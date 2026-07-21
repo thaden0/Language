@@ -18,7 +18,7 @@ RuleEngine::RuleEngine(const std::vector<ProjectFile>& files,
                        const SourceFile& file, DiagnosticSink& sink,
                        const ComptimeOptions& opts)
     : files_(files), sema_(sema), file_(file), sink_(sink),
-      eval_(sema, sink) {
+      eval_(sema, sink), prelude_(&prelude) {
     eval_.setComptime(opts);
     eval_.setComptimeParseHook(
         [this](bool expr, const std::string& text, SourceSpan, std::string& err) {
@@ -66,6 +66,9 @@ bool RuleEngine::run(Program& program) {
     // A. Detach rules (and macro decls, which reuse StmtKind::Rule) from the
     // tree — pass 2 must never see either (§5.1).
     collectRules(program.items, "<root>");
+    // #98: prelude-authored rules join the same rules_ list, so a rule shipped
+    // in a prelude/*.lev segment fires exactly like a project-file rule.
+    if (prelude_) collectRules(prelude_->items, "<root>");
     // M22 (§7): static, independent of whether/where a macro is ever called —
     // fires even for a macro nobody uses yet.
     validateMacroDecls();
@@ -88,6 +91,19 @@ bool RuleEngine::run(Program& program) {
     // C. Recompute the imports map on the POST-fold tree — a `uses` a
     // comptime-if spliced in at item level (step B) is visible here.
     imports_ = computeFileImports(files_, program);
+    // #98: the prelude is a distinct buffer with its own offset space that
+    // collides with the user tree's, so it cannot share a slot in `imports_`
+    // keyed by offset. Compute its provenance separately (one synthetic file
+    // covering every offset) and append it at preludeFileIdx_. A prelude decl's
+    // visibility test then resolves against the prelude's OWN declared
+    // namespaces — co-location (a rule + its subject in one file) needs no
+    // `uses`, which is exactly the prelude repro's shape.
+    if (prelude_ && !prelude_->items.empty()) {
+        preludeFileIdx_ = (int)imports_.size();
+        std::vector<ProjectFile> pf = {{"<prelude>", 0u, UINT32_MAX, "", ""}};
+        std::vector<FileImports> pi = computeFileImports(pf, *prelude_);
+        imports_.push_back(std::move(pi[0]));
+    }
     // D. Macro-call expansion (§7), now that imports_ reflects the post-fold
     // tree. A second walk over the same (already-folded) tree: safe to
     // re-run because every comptime-fold site either replaces itself with a
@@ -100,6 +116,15 @@ bool RuleEngine::run(Program& program) {
     macroExpansionEnabled_ = false;
     // E. Attribute resolution (Layer A), scoped by the same recomputed map.
     walkAttrs(program.items);
+    // #98: resolve attributes on prelude decls too (an `@GenSpike` on a
+    // prelude method must resolve for the matching rule to see it). The prelude
+    // buffer's offsets collide with the user tree's, so force its dedicated
+    // imports slot onto processAttrs instead of routing through fileOf.
+    if (prelude_ && preludeFileIdx_ >= 0) {
+        fileIdxOverride_ = preludeFileIdx_;
+        walkAttrs(prelude_->items);
+        fileIdxOverride_ = -1;
+    }
     // E2. Build the splice-site index + validate sites (M43). Always — a malformed
     // `@Name();` site must be rejected even in a rule-free program (named-anchor
     // design §2.1); `expand`'s `at splice` arm reads the index built here.
@@ -108,6 +133,15 @@ bool RuleEngine::run(Program& program) {
     if (!rules_.empty()) {
         std::vector<Ancestor> chain;
         indexDecls(program.items, chain, "<root>");
+        // #98: index prelude decls under their dedicated file slot so a rule
+        // (prelude- or project-declared) can match them, and so the expansion
+        // records target the right visibility set.
+        if (prelude_ && preludeFileIdx_ >= 0) {
+            fileIdxOverride_ = preludeFileIdx_;
+            std::vector<Ancestor> pchain;
+            indexDecls(prelude_->items, pchain, "<root>");
+            fileIdxOverride_ = -1;
+        }
         orderRules();
         runRules();
         // §4: re-run reentrant rules to a fixpoint (no-op unless a reentrant
@@ -1103,7 +1137,7 @@ void RuleEngine::validateAttributeDecl(Stmt* cls) {
 }
 
 void RuleEngine::processAttrs(Stmt* decl) {
-    int fi = fileOf(decl->span);
+    int fi = fileIdxFor(decl->span);
     for (AttrUse& a : decl->attrs) {
         Symbol* cls = resolveAttr(a, fi);
         if (!cls) continue;
@@ -1317,7 +1351,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                 if (const std::vector<Symbol*>* v = parent->localLookup(s->name))
                     for (Symbol* sy : *v)
                         if (sy->kind == SymbolKind::Namespace) { nsym = sy; break; }
-            decls_.push_back({s, "namespace", fileOf(s->span), chain, nsym});
+            decls_.push_back({s, "namespace", fileIdxFor(s->span), chain, nsym});
             chain.push_back({"namespace", s, nsym});
             indexDecls(s->body, chain, full);
             chain.pop_back();
@@ -1326,7 +1360,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                                 : s->isInterface ? "interface"
                                 : s->isValue     ? "struct" : "class";
             Symbol* csym = lookupClassIn(namespaceScope(ns), s->name);
-            decls_.push_back({s, kw, fileOf(s->span), chain, csym});
+            decls_.push_back({s, kw, fileIdxFor(s->span), chain, csym});
             chain.push_back({kw, s, csym});
             indexDecls(s->body, chain, ns);      // members share the namespace
             chain.pop_back();
@@ -1339,7 +1373,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                                 : (s->isGet || s->isSet) ? "accessor"
                                 : !s->callable         ? "field"
                                 : inClass              ? "method" : "function";
-            decls_.push_back({s, kw, fileOf(s->span), chain});
+            decls_.push_back({s, kw, fileIdxFor(s->span), chain});
         }
     }
 }
@@ -2041,6 +2075,11 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
         rec.fileIndex = di.fileIdx;
         expansions_.push_back(std::move(rec));
         changed_ = true;
+        // #98: a rewrite that landed on a prelude decl must survive to the
+        // backend — main.cpp's pass-2 resolver re-resolves this mutated prelude
+        // tree (adoptPrelude) rather than re-parsing a fresh, un-rewritten one.
+        if (preludeFileIdx_ >= 0 && di.fileIdx == preludeFileIdx_)
+            preludeMutated_ = true;
     }
 }
 
