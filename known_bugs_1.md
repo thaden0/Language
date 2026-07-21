@@ -18,9 +18,9 @@ Current standings for this file (within a tier, ordered by bug number):
 
 | Priority | Bugs |
 |----------|---------------|
-| P0       | #95, #99 |
+| P0       | #99 |
 | P1       | #93, #98 |
-| P2       | — |
+| P2       | #102 |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -98,6 +98,74 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
+## #102 [P2] — reassigning a closure-typed FIELD leaks the old closure on LLVM
+
+**Renumbered from #99** (2026-07-20, agent2↔origin/master merge audit): filed as
+#99 on the agent2 line, but origin/master had already assigned #99 to the
+`Array<Struct>`-loop corruption P0 below (canonical, cross-referenced from
+`designs/complete/techdesign-08-auth-security.md` and `known_bugs_2.md`), so this
+closure-field-leak entry takes the next free number. #100/#101 are already in
+`known_bugs_2.md`.
+
+**Found:** 2026-07-20, LA-HTTP-STREAM (server-side streaming responses) ARC
+churn gate. The prelude's `TcpStream`/`ChunkedSink` teardown broke the
+connection<->stream<->callback cycle by overwriting the stored callback field
+with a no-op closure (`onChunk = (s) => {}`), the shape the design specified.
+On LLVM that overwrite never releases the previous closure (or anything it
+captures), so a program that churns callback-bearing objects leaks one closure
+graph per iteration while the oracle's reachability root set stays flat.
+**Priority justification:** P2.2 — resource-only: output is correct on every
+engine (oracle/IR/LLVM print identically) and the oracle reachability oracle
+reports a CONSTANT root set in N; only the LLVM escaping-tier live-at-exit
+grows with N. No wrong value, no crash — memory behavior is wrong on one
+actively-maintained engine.
+
+**Minimal repro** (`@N@` swept by `fuzz/churn_leak.py`-style magnitudes):
+
+```
+class Payload { Array<int> data; int v = 0; }
+class Holder {
+    (int) => void cb; bool has = false;
+    void set((int) => void c) { cb = c; has = true; }
+    void detach() { cb = (x) => { }; has = false; }   // reassign: leaks old cb + its Payload
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        Holder h = Holder(); Payload p = Payload(); p.v = i; p.data = p.data.add(i);
+        h.set((k) => { sink = p.v; });   // closure captures p
+        h.detach();                       // must drop the closure -> drop p; on LLVM it does NOT
+        sink = sink + p.v;
+    }
+    console.writeln(sink);
+}
+run(@N@);
+```
+
+`[heap] live-at-exit` grows ~128 B/iter on LLVM; oracle `--mem-verify` root
+set is `x1` at every N. A `set`-only variant (no `detach` reassignment) is
+FLAT, so the defect is specifically the field REASSIGNMENT release path, not
+closure capture.
+
+**Root-cause pointer:** LLVM lowering of a store to a closure-typed object
+field — the old field value is overwritten without a release. Compare the
+object-field store path (storing a class/`?` value releases the prior value
+correctly) and bug #90's `Op::CallDyn` consumed-receiver release fix, both in
+`src/LlvmGen.cpp`.
+
+**Workaround (debt sites):** make the field an OPTIONAL closure and clear it to
+`None` — an object-field store, which DOES release the prior value (verified
+flat at N=50/800). Applied throughout the LA-HTTP-STREAM prelude teardown:
+`TcpStream.onChunk`/`onClosed` and `ChunkedSink.onDone`/`userClose` are
+`(... => ...)?` cleared to `None` in `close()`/`detach()`, never overwritten
+with a no-op closure. NOTE: this workaround only removes the leak at sites that
+adopt it; the landed base HTTP loopback path (`HttpClient` / `HttpResponseReader`
+reader teardown) still churns a residual per-connection cycle under
+loopback-churn and is not retired by this entry — a full net-stack cycle audit
+is the real fix and is out of scope for the streaming design.
+
+---
+
 ## #93 [P1] — punctuation-only string literals inside inject templates are corrupted
 
 **Found:** 2026-07-19, implementing ORM Track 06 (M1).
@@ -130,28 +198,6 @@ and call it from the template — the ORM does this with
 `Atlantis::Orm::ctx(table, col)` / `ctxRow(col)`
 (`packages/atlantis/src/orm/orm.lev`); templates never carry punctuation-only
 or `@`-leading string literals.
-
-## #95 [P0] — atlantis routing corpus segfaults on LLVM (pre-existing at 2026-07-19 master)
-
-**Found:** 2026-07-19, running the new `packages/atlantis/tests/runtests.sh`
-across all corpus dirs during ORM Track 06 verification.
-**Priority justification:** P0.3 — an actively-maintained engine (LLVM, the
-primary backend) crashes mid-run on checker-accepted, previously-landed code
-(the crash-later variant counts).
-
-**Repro:**
-
-```
-./build/trident plan packages/atlantis/tests/corpus/routing --plan /tmp/r.lvplan --leviathan ./build/leviathan
-./build/leviathan --build-native /tmp/r.bin --plan /tmp/r.lvplan
-/tmp/r.bin        # prints 2 lines ("== M3 Era-A end-to-end ..." + "-- GET / --"), then dumps core
-```
-
-Oracle and IR runs of the same plan produce the full 40+-line expected output
-(`routing.expected`). Verified present with ALL of this session's compiler
-changes stashed (clean master `src/`), so it predates Track 06's work — the
-routing corpus landed green on LLVM 2026-07-13 (Track 02), meaning something
-since regressed it. Not diagnosed further here (out of Track 06 scope).
 
 ## #98 [P1] — metaprogramming rules/attributes declared in the prelude silently never fire
 
@@ -329,6 +375,32 @@ left red, same posture #95 already established for the routing corpus —
 not a new regression to chase down inside Track 08.
 
 ---
+
+#95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
+regression and not runtime-stale: a latent value-struct ARC over-release exposed
+by the 2026-07-19 base-qualified-call merge (Lower.cpp `lowerCall`). Root cause:
+a METHOD call on a value-struct receiver marshaled the receiver into the CallDyn
+window via a plain `Op::Move` — a BARE ALIAS, since the wrap's retain no-ops on
+value classes — and that window register survived to frame exit. bug #66 cleared
+the for-in loop VARIABLE for exactly this stale-alias shape, but a method call on
+the loop var (`Router.finalize`'s `rec.key()`) copies the alias into a SECOND
+(window) register #66's clear never saw. Once the aliased boxed element's array
+died in the same frame (`this.routeList = rebuilt`), `releaseAllRegs` released
+that stale window alias: it read the freed block's classId (garbage), the
+value-class skip in `lv_is_counted` failed, and the "release" decremented a
+freelist next-pointer word — heap corruption surfacing later inside
+`lv_alloc_heap`, far from the site (the classic P0.3 shape). Boxed-only because a
+flat struct is dense-inlined (no per-element free) — the nested `Array<ParamDesc>`
+field forced the boxed path (#66). Fixed in `src/Lower.cpp`: after a value-struct
+(`definiteValueStruct`) receiver's non-consumed method call, void the receiver
+window register (`Op::LoadConst … vvoid()`), same shape as #66's loop-var clear;
+consumed (COW self-append) receivers are containers whose window slot the backend
+already voids. Engine-neutral (an extra dead-store on every engine); oracle/IR
+never crashed but inherit the clear harmlessly. Regression floor:
+`tests/corpus/composition/aggregates/green/array_struct_method_recv_alias.lev`
+(oracle+IR+cpp+llvm; verified red→green — SIGSEGV on LLVM before the fix, `70`
+after). Full atlantis corpus suite + composition/churn-leak/ownership ctest lanes
+green on all engines.
 
 #91 found AND fixed 2026-07-19 (same session, owner-directed): rules and
 attributes declared in a NESTED namespace (`namespace Atlantis { namespace Orm

@@ -1,0 +1,4 @@
+handler:/s
+resp1=xy conn=keep-alive
+handler:/b
+resp2=buffered-ok conn=close

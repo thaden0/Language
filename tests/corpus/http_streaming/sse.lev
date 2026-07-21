@@ -1,0 +1,70 @@
+// LA-HTTP-STREAM §7.3: return-before-end / SSE. The handler registers a
+// repeating timer and RETURNS without ending; the client receives multiple
+// frames on the same open response, then closes the socket. The server's
+// onClose fires exactly once (a one-shot proof counter), cancels the timer,
+// and the process exits by loop drain.
+int countOccur(string hay, string needle) {
+    int c = 0;
+    string h = hay;
+    int idx = h.indexOf(needle);
+    while (idx >= 0) {
+        c = c + 1;
+        h = h.subStr(idx + needle.length(), h.length() - (idx + needle.length()));
+        idx = h.indexOf(needle);
+    }
+    return c;
+}
+
+class Cli {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    bool headSeen = false;
+    ChunkedDecoder dec = ChunkedDecoder();
+    string decoded = "";
+    bool done = false;
+    new Cli(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        Cli self = this;
+        s.onData((c) => self.onData(c));
+        s << "GET /events HTTP/1.1\r\nHost: x\r\n\r\n";
+    }
+    void onData(string c) {
+        if (done) { return; }
+        acc = acc + c;
+        if (!headSeen) {
+            int he = acc.indexOf("\r\n\r\n");
+            if (he < 0) { return; }
+            acc = acc.subStr(he + 4, acc.length() - (he + 4));
+            headSeen = true;
+        }
+        decoded = decoded + dec.feed(acc);
+        acc = "";
+        if (countOccur(decoded, "\n\n") >= 3) {
+            done = true;
+            console.writeln("client: closed after 3 events");
+            s.close();
+            srv.stop();
+        }
+    }
+}
+
+HttpResponse sseHandler(HttpRequest req) {
+    HeaderMap h = HeaderMap();
+    h.set("Content-Type", "text/event-stream");
+    h.set("Cache-Control", "no-cache");
+    return HttpResponse::ofStream(200, h, (sink) => {
+        Timer t = std::every(15);
+        t.subscribe((k) => { sink.write("data: tick\n\n"); });
+        sink.onClose(() => { t.cancel(); console.writeln("server: onClose fired"); });
+    });
+}
+
+void run() {
+    HttpServer server = HttpServer(8098);
+    server.handle((req) => sseHandler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 8098);
+    Cli c = Cli(TcpStream(fd), server);
+    c.start();
+}
+run();

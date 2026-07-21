@@ -1792,7 +1792,11 @@ On the event loop, driven by fd read- and write-watches. `TcpStream` — `(<<)`/
 string?` (`None` = peer closed). **`send` never silently short-writes** (Track 08 F5.6):
 the fd is non-blocking, so a large payload's unsent tail is buffered and a write-watch
 drains it as the kernel makes room; a fatal send (peer gone) drops the buffer and the read
-side delivers the close. `TcpListener` — a **stream of connections**:
+side delivers the close. **`flush() -> bool`** (LA-HTTP-STREAM) parks until every queued
+byte has reached the transport — `true` once the tail drains, `false` on local/peer close
+or a fatal write. It is a queue barrier (not a peer-ack), the fact a caller needs before
+reusing or locally closing the descriptor; ordinary `send` stays queueing and only callers
+that opt into `flush` see backpressure. `TcpListener` — a **stream of connections**:
 `connections((TcpStream) => void)`, `stop()`.
 
 **Connect with a deadline (Track 08 F5):** `std::connectTimeout(host, port, ms, (int) =>
@@ -1825,14 +1829,33 @@ HTTP (in-language, over TCP streams; Track 09 F4 — framework-grade, zero new n
   `feed(chunk) -> bool` state machine (head then body by `Content-Length`; returns true when
   complete; v1 does not pipeline).
 - **`HttpResponse(status, body)`** — `headers` (`HeaderMap`), `withHeader(name, value)`,
-  `reason()`, `render()` (computes `Content-Length` + `Connection`), and `parse(raw)` which
-  **decodes a `Transfer-Encoding: chunked` body transparently**.
+  `reason()`, `render()` (computes `Content-Length` + `Connection`; drops a caller
+  `Content-Length`/`Transfer-Encoding`/`Connection` so the wire copy stays authoritative),
+  and `parse(raw)` which **decodes a `Transfer-Encoding: chunked` body transparently**.
+- **`HttpResponse::ofStream(status, HeaderMap, (ChunkedSink) => void writer)`**
+  (LA-HTTP-STREAM) — the **streaming body mode**: the server sends an authoritative head
+  with `Transfer-Encoding: chunked` (dropping any caller `Content-Length`/`Transfer-Encoding`/
+  `Connection`), then invokes `writer` with a live `ChunkedSink`. The writer may return while
+  the sink stays open — a later timer/subscription callback can keep writing and eventually
+  `end()` (the SSE shape). `isStreaming()` distinguishes the two modes; `render()` throws on a
+  streaming response (only `HttpServer` may drive it). A HEAD request or a 1xx/204/304 status
+  sends the head only and never invokes the writer; a non-`HTTP/1.1` request gets `505` and
+  close instead.
+- **`ChunkedSink`** — the live body handle: **`write(data)`** frames exactly one
+  `chunkEncode(data)` and **parks until it drains** (transport backpressure), `write("")` is a
+  no-op, **`end()`** emits exactly one terminal `0\r\n\r\n`, **`onClose(() => void)`** fires
+  once on a *premature* transport close/abort only (not a clean `end()`), and `isClosed()` is
+  ended-or-aborted. Overlapping callbacks are serialized in arrival order so chunk frames never
+  interleave; `write`/`end` after end or abort are no-ops.
 - **`ChunkedDecoder`** — a fragmentation-proof chunked-transfer decoder (`feed(chunk)`,
   `isDone`); `std::chunkEncode(data)` / `std::chunkEnd()` are the encoder side.
 - **`HttpServer(port)`** — `handle((HttpRequest) => HttpResponse)`. Server-side **keep-alive**
   (a connection with neither side sending `Connection: close` is re-armed for the next
-  request, bounded by 100/connection) and a **500 error path** (an uncaught throw in a handler
-  becomes `500` + `Connection: close`, and the loop survives).
+  request, bounded by 100/connection; a finite streamed response re-arms only after its
+  terminal chunk drains) and a **500 error path** (an uncaught throw in a handler becomes
+  `500` + `Connection: close`, and the loop survives). No request pipelining in v1: bytes
+  arriving while a response is in flight close the connection. Streaming works unchanged over
+  an HTTPS `HttpServer(port, cert, key)`.
 - **`HttpClient`** — `request(method, host, port, path, HeaderMap, body, cb)`, `get`/`post`
   sugar, and the await-able `fetch(host, port, path) -> Promise<HttpResponse>`.
 

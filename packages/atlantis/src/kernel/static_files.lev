@@ -166,9 +166,13 @@ namespace Atlantis {
                     return r;
                 }
 
-                // Large GET: streamed (§5.4). v1 is collect-then-send (mkStreaming
-                // buffers) — correct output; true incremental wire streaming awaits
-                // the Track 09 server-side streaming-response hook (request filed).
+                // Large GET: streamed (§5.4) over the landed server-side hook
+                // (LA-HTTP-STREAM §5.2). The loop holds at most one 64 KiB chunk —
+                // out.write() applies transport backpressure (it parks until the
+                // prior frame drains), so the next File.read cannot run ahead of
+                // the socket; await nextTick() keeps the loop fair even when
+                // flush fast-paths on a writable socket. A peer disconnect flips
+                // out.isClosed() and stops further reads.
                 string ff = full;
                 Array<Pair<string, string>> hdrs = [];
                 hdrs = hdrs.add(Pair::Of("Content-Type", ctype));
@@ -178,11 +182,12 @@ namespace Atlantis {
                 return mkStreaming(200, hdrs, (out) => {
                     using File f = File(ff, std::read);
                     string chunk = f.read(65536);
-                    while (chunk != "") {
-                        out.write(chunk);
+                    while (chunk != "" && !out.isClosed()) {
+                        out.write(chunk);              // transport backpressure; may park
+                        await nextTick();              // fairness even when flush fast-paths
                         chunk = f.read(65536);
                     }
-                    out.end();
+                    if (!out.isClosed()) { out.end(); }
                 });
             }
 

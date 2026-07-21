@@ -1,0 +1,55 @@
+// LA-HTTP-STREAM §7.4/§4.6: bodyless streaming responses and protocol version.
+//  - HEAD /s (HTTP/1.1): head only, no Transfer-Encoding, no body, writer not run;
+//  - GET /204 (HTTP/1.1): 204 head only, no body, writer not run;
+//  - GET /s (HTTP/1.0): 505 close, writer not run.
+// The writer prints if invoked — it must never appear.
+class Driver {
+    HttpServer srv;
+    int step = 0;
+    TcpStream s;
+    string acc = "";
+    new Driver(HttpServer sv) { srv = sv; }
+    void go() {
+        step = step + 1;
+        acc = "";
+        int fd = std::sysTcpConnect("127.0.0.1", 8102);
+        s = TcpStream(fd);
+        Driver self = this;
+        s.onData((c) => self.onData(c));
+        s.onClose(() => self.onClose());
+        if (step == 1) { s << "HEAD /s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"; }
+        else if (step == 2) { s << "GET /204 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"; }
+        else { s << "GET /s HTTP/1.0\r\nHost: x\r\nConnection: close\r\n\r\n"; }
+    }
+    void onData(string c) { acc = acc + c; }
+    void onClose() {
+        int nl = acc.indexOf("\r\n");
+        string statusLine = nl >= 0 ? acc.subStr(0, nl) : acc;
+        int he = acc.indexOf("\r\n\r\n");
+        HeaderMap hm = HeaderMap();
+        if (he >= 0) { hm = std::parseHeaderLines(acc.subStr(nl + 2, he - (nl + 2))); }
+        string body = he >= 0 ? acc.subStr(he + 4, acc.length() - (he + 4)) : "";
+        console.writeln("case" + step + " status=[" + statusLine + "] te=" +
+                        (hm.has("Transfer-Encoding") ? "yes" : "no") + " bodylen=" + body.length());
+        if (step < 3) { this.go(); }
+        else { srv.stop(); }
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    int st = req.path == "/204" ? 204 : 200;
+    HeaderMap h = HeaderMap();
+    return HttpResponse::ofStream(st, h, (sink) => {
+        console.writeln("writer ran for " + req.path);   // must NEVER print
+        sink.write("body");
+        sink.end();
+    });
+}
+
+void run() {
+    HttpServer server = HttpServer(8102);
+    server.handle((req) => handler(req));
+    Driver seq = Driver(server);
+    seq.go();
+}
+run();

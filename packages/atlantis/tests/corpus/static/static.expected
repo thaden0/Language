@@ -22,15 +22,6 @@
   status=404
 == miss falls through to app (GET /nope.txt) ==
   status=404 body=app-miss:/nope.txt
-== SSE ==
-  ended=true
-  |data: hello
-  |
-  |event: tick
-  |data: one
-  |data: two
-  |
-  |
 == facade + IActionResponse ==
   json={"ok":true}
   redirect.status=302 loc=/login

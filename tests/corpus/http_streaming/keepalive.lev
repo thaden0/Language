@@ -1,0 +1,65 @@
+// LA-HTTP-STREAM §7.4: finite streamed response, then a normal buffered request
+// on the SAME connection. The second handler must run only after the first
+// terminal chunk has drained (serial keep-alive across the stream boundary).
+class KA {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    int phase = 0;                           // 0 awaiting stream, 1 awaiting buffered
+    ChunkedDecoder dec = ChunkedDecoder();
+    new KA(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        KA self = this;
+        s.onData((c) => self.onData(c));
+        s << "GET /s HTTP/1.1\r\nHost: x\r\n\r\n";        // keep-alive
+    }
+    void onData(string c) {
+        acc = acc + c;
+        if (phase == 0) {
+            int he = acc.indexOf("\r\n\r\n");
+            if (he < 0) { return; }
+            string body = acc.subStr(he + 4, acc.length() - (he + 4));
+            if (!body.endsWith("0\r\n\r\n")) { return; }  // wait for terminal
+            int fnl = acc.indexOf("\r\n");
+            HeaderMap hm = std::parseHeaderLines(acc.subStr(fnl + 2, he - (fnl + 2)));
+            console.writeln("resp1=" + dec.feed(body) + " conn=" + hm.firstOr("Connection", "?"));
+            acc = "";
+            phase = 1;
+            s << "GET /b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+        } else {
+            int he = acc.indexOf("\r\n\r\n");
+            if (he < 0) { return; }
+            int fnl = acc.indexOf("\r\n");
+            HeaderMap hm = std::parseHeaderLines(acc.subStr(fnl + 2, he - (fnl + 2)));
+            int cl = std::bodyLenOf(hm);
+            int need = cl > 0 ? cl : 0;
+            if (acc.length() < he + 4 + need) { return; }
+            console.writeln("resp2=" + acc.subStr(he + 4, need) + " conn=" + hm.firstOr("Connection", "?"));
+            s.close();
+            srv.stop();
+        }
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    if (req.path == "/s") {
+        console.writeln("handler:/s");
+        HeaderMap h = HeaderMap();
+        return HttpResponse::ofStream(200, h, (sink) => {
+            sink.write("x");
+            sink.write("y");
+            sink.end();
+        });
+    }
+    console.writeln("handler:/b");
+    return HttpResponse(200, "buffered-ok");
+}
+
+void run() {
+    HttpServer server = HttpServer(8099);
+    server.handle((req) => handler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 8099);
+    KA c = KA(TcpStream(fd), server);
+    c.start();
+}
+run();

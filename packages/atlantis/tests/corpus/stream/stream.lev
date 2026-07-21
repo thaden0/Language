@@ -1,0 +1,50 @@
+// Atlantis Track 01 — streaming loopback (LA-HTTP-STREAM §5.1/§5.3). The seam's
+// ChunkedBody is now a live adapter over std::ChunkedSink, so SSE formatting is
+// asserted over a REAL wire: a raw client decodes the chunked response the
+// Atlantis mkStreaming/SseStream producer emits. Identical on oracle+IR+LLVM.
+uses Atlantis::Http;
+
+class Cli {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    new Cli(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        Cli self = this;
+        s.onData((c) => self.onData(c));
+        s << "GET /events HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    }
+    void onData(string c) {
+        acc = acc + c;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) { return; }
+        string wire = acc.subStr(he + 4, acc.length() - (he + 4));
+        if (!wire.endsWith("0\r\n\r\n")) { return; }
+        int fnl = acc.indexOf("\r\n");
+        HeaderMap hm = std::parseHeaderLines(acc.subStr(fnl + 2, he - (fnl + 2)));
+        console.writeln("te=" + hm.firstOr("Transfer-Encoding", "?") +
+                        " ctype=" + hm.firstOr("Content-Type", "?"));
+        ChunkedDecoder dec = ChunkedDecoder();
+        string body = dec.feed(wire);
+        for (string ln in body.split("\n")) { console.writeln("  |" + ln); }
+        s.close();
+        srv.stop();
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    return mkStreaming(200, sseHeaders(), (out) => {
+        SseStream sse = SseStream(out);
+        sse.event("hello");
+        sse.namedEvent("tick", "one\ntwo");
+        sse.close();
+    });
+}
+
+void main() {
+    HttpServer server = HttpServer(18097);
+    server.handle((req) => handler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 18097);
+    Cli c = Cli(TcpStream(fd), server);
+    c.start();
+}

@@ -706,3 +706,37 @@ Each probe: ≤30-line `.lev` program under `packages/atlantis/tests/probes/`, r
   - Full `packages/atlantis/tests/runtests.sh` stays green apart from the pre-existing,
     independently-verified (via `git stash` A/B) `routing (llvm)` failure (bug #95,
     unrelated to this track).
+- 2026-07-20 — **Independent re-verification** (a second, concurrent agent instance
+  worked this same doc from a stale `designs/atlantis/` worktree copy before discovering
+  the M1-M4 landing above at merge time — collision noted for the record, not repeated
+  here). Its own T7-P1..P7 + one extra infra probe corroborate the 2026-07-19 entry almost
+  exactly: same T7-P1 failure mode (a generic's type param can't be inferred from a
+  lambda-literal argument alone; a plain witness value or explicit `fn::<A,R>(...)` both
+  work around it — this is the more precise mechanism behind "LA-16 not landed" above, an
+  LA-18 *specialization-tuple-collection* gap specifically, not a blanket absence of
+  type-position splicing: `A::FromJson`/`A::Empty()` and explicit turbofish both work
+  fine; the lambda-inference gap itself is filed on its own as known_bugs_2.md #101,
+  renumbered from that session's #99 filing), same bare-vs-quoted hole finding, and the
+  same cross-namespace rule/attribute gap (re-confirmed by its own T7-P6 probe and folded
+  into known_bugs_2.md #98 — same defect, one entry). Two additions:
+  1. **`Map<string, JsonValue>` as a class field is LLVM-safe** (probed directly —
+     `packages/atlantis/tests/probes/mcp_p8_jsonvalue_map_field_llvm.lev`, oracle/IR/LLVM
+     all green) — confirms `SchemaRegistry`/`OpenApi::schemas()`'s storage shape (above)
+     rests on solid ground, not just "verified legal" by inspection.
+  2. **A real, unfixed gap in §4.2/§4.3's registry-key premise**: `meta::Param.type` /
+     `meta::Field.type` is not a *stable* canonical spelling — it reproduces however the
+     type was written at its declaration site. Proven directly: the same type used twice
+     in one signature, once bare (via `uses`) and once namespace-qualified, reflects as two
+     different strings (`"Thing"` vs `"NS::Thing"`). This reconciles what looked like a
+     contradiction between the two independent T7-P5 probes above (one tested a
+     bare-via-`uses` parameter and recorded a bare spelling; this session's tested an
+     explicitly-qualified parameter and recorded the qualified spelling — both correct,
+     for different inputs). Consequence: two call sites naming the same DTO differently
+     (one bare, one qualified) register/look up under different `SchemaRegistry` keys for
+     the same type, which would surface as a spurious "unregistered schema" boot error
+     rather than the spelling mismatch it actually is. Not filed as a numbered known_bugs
+     entry (no crash/wrong-output on any *shipped* Track 07 code path today — the shipped
+     corpus happens to spell every DTO consistently) — flagged here as a follow-up so it
+     isn't rediscovered from scratch if a future consumer trips over it; the fix, if ever
+     needed, is normalizing the registry key through the resolved symbol rather than the
+     reflected string.

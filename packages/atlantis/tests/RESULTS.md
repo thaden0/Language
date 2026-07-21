@@ -10,7 +10,8 @@ Run from the repo root:
 
 ```
 ./build/trident run packages/atlantis/tests/corpus/kernel      # M1–M3 acceptance shape
-./build/trident run packages/atlantis/tests/corpus/static      # M4 + SSE + facade
+./build/trident run packages/atlantis/tests/corpus/static      # M4 + facade
+./build/trident run packages/atlantis/tests/corpus/stream       # SSE over a real wire (streaming)
 ./build/trident run packages/atlantis/tests/corpus/loopback    # real traffic over a socket
 ./build/leviathan --run packages/atlantis/tests/probes/p1_function_values.lev
 ./build/leviathan --run packages/atlantis/tests/probes/p2_exceptions.lev
@@ -21,15 +22,18 @@ Run from the repo root:
 | probe p1 function-values | C2 fold: lambda middleware in `Array`/field, `var` fn-locals, capturing return | green | green | green |
 | probe p2 exceptions | C4 hierarchy: interface fields on exceptions, base-ctor, catch order, rethrow | green | green | green |
 | corpus/kernel | Pipeline fold + Context + error→status mapping (404/400/422/413/500) + problem+json + BodyLimit + Health + Deadline + server-side-only 500 logging | green | green | green |
-| corpus/static | P7 traversal canonicalization + serve/ETag(md5)/304/HEAD + `%2e%2e`/`%252e%252e` defense + SSE framing + Builder/App facade + IActionResponse | green | green | green |
+| corpus/static | P7 traversal canonicalization + serve/ETag(md5)/304/HEAD + `%2e%2e`/`%252e%252e` defense + Builder/App facade + IActionResponse | green | green | green |
+| corpus/stream | SSE framing asserted over a REAL wire — `mkStreaming`/`SseStream` now adapt the landed `std::ChunkedSink` (LA-HTTP-STREAM), a raw client decoding the chunked response | green | green | green |
 | corpus/loopback | the `Server` (wrapping Track 09's hardened `HttpServer`) serving real traffic through the full pipeline with an in-process `HttpClient`; exception→status end-to-end; 500 internals never leak the wire | green | green | green |
 
 **Milestone coverage** (design §12): M0 probes ✓, M1 pipeline/Context/Respond/seam/Server ✓,
 M2 Log + AccessLog + ErrorMapper + problem+json ✓, M3 Health/BodyLimit/Deadline ✓,
-M4 StaticFiles (canonicalization/types/ETag/304/HEAD; large-file streaming is
-collect-then-send interim) ✓, M5 SSE/ChunkedBody surface ✓ (finite; unbounded push
-awaits the streaming-response hook — `designs/requests/accepted/request-http-streaming-response.md`),
-R10 Builder/App facade + IActionResponse ✓.
+M4 StaticFiles (canonicalization/types/ETag/304/HEAD; large-file streaming now streams
+incrementally over `std::ChunkedSink` with a cooperative 64 KiB loop + transport
+backpressure — LA-HTTP-STREAM landed, no longer collect-then-send) ✓, M5 SSE/ChunkedBody
+surface ✓ — `ChunkedBody` is now a thin adapter over the live server-side streaming hook, so
+unbounded push (a timer that never ends) and the SSE `onClose` disconnect-cleanup work on a
+real wire (`corpus/stream`), R10 Builder/App facade + IActionResponse ✓.
 
 **Language findings filed** (bug.md): #37 qualified/nested namespace resolution (the
 C1 namespace layout is expressed via nested-brace `namespace Atlantis { namespace Http
