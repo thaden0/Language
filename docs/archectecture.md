@@ -219,3 +219,19 @@ interpreter and the compiled backends behave identically.
   50 files.
 - The `X64.*` / `X64Gen.*` native backend is **frozen**: it is documented here
   for completeness but must not be modified, run, or tested.
+
+---
+
+### Duplication policy
+
+New shared logic must live in one place — engine-shared runtime semantics go
+in `RuntimeCore` (`src/runtime/`), everything else in the layer that owns the
+concern — never copy-pasted between files. This is enforced mechanically: the
+`clone-ratchet` ctest runs `tools/clonedet.py check`, a winnowing-style clone
+detector (8-significant-line windows, identifier-blind) over `src/**` (the
+frozen `X64*` files are never scanned), and fails the build if any file pair's
+duplicated-window count exceeds the checked-in baseline in
+`tools/clone_baseline.json`. Decreases are allowed and should be captured
+opportunistically by regenerating the baseline
+(`python3 tools/clonedet.py baseline > tools/clone_baseline.json`); use
+`python3 tools/clonedet.py scan` to inspect current duplication by pair.

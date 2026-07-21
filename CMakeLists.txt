@@ -175,6 +175,12 @@ enable_testing()
 # virtue of living at src/ root).
 add_test(NAME layering COMMAND bash ${CMAKE_SOURCE_DIR}/tools/check_layering.sh)
 
+# refactor_1 session 08: fail on NEW cross-file duplication above the checked-in
+# baseline (identifier-blind winnowing; X64 never scanned).
+add_test(NAME clone-ratchet
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/clonedet.py check
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(unittests tests/test_lexer.cpp)
 target_link_libraries(unittests PRIVATE langfront)
 add_test(NAME unittests COMMAND unittests)
