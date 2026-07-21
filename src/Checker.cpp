@@ -3994,6 +3994,23 @@ Type Checker::genericReturn(Symbol* cls, const Stmt* fn, const Type& receiver,
                 (*lambdaWalked)[i] = 1;
                 continue;
             }
+            // bug #101 (LA-18): a lambda argument's VALUE type was deferred to
+            // unknown() during arg collection, so the value-type unify above saw
+            // no evidence for a generic parameter that appears only in the
+            // lambda's parameter position (`(A) => R` matched by `(Left a) => a`
+            // binds R from the body below, but nothing bound A). Ordinary
+            // generic checking tolerates this because a `specializationRequired`
+            // callable's return type here (`() => string`) doesn't mention A —
+            // but LA-18's specialization-set collector needs the full A/R tuple.
+            // Consult the lambda's OWN declared parameter types, matching them
+            // against the function parameter's declared param types, before the
+            // body is checked. This is the reuse §4.1 point 4 of
+            // designs/complete/techdesign-generic-static-members.md specifies.
+            if (pt && pt->kind == TypeKind::Function)
+                for (size_t j = 0; j < pt->funcParams.size() && j < a->params.size(); ++j)
+                    if (a->params[j].type)
+                        unify(pt->funcParams[j].get(),
+                              fromTypeRef(a->params[j].type.get()), subst);
             std::vector<Type> ptypes;
             if (pt && pt->kind == TypeKind::Function)
                 for (const TypeRefPtr& fp : pt->funcParams)

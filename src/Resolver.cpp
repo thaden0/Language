@@ -525,6 +525,14 @@ void Resolver::resolveExprTypes(Expr* e, Scope* scope) {
         }
         return;
     }
+    // bug #101: a lambda literal's DECLARED parameter types (`(Left a) => ...`)
+    // must resolve like any declared type, so downstream generic inference — in
+    // particular LA-18's specialization-set collector, which unifies a generic
+    // type parameter (`(A) => R`) against the lambda's own declared param type —
+    // sees a resolved symbol instead of an opaque, unresolved TypeRef. Harmless
+    // for non-lambda exprs (their `params` vector is empty).
+    for (Param& p : e->params)
+        if (p.type) resolveType(p.type.get(), scope);
     // Generic descent: find expression-carried types nested anywhere.
     resolveExprTypes(e->a.get(), scope);
     resolveExprTypes(e->b.get(), scope);

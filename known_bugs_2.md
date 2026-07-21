@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #101 |
+| P1       | — |
 | P2       | — |
 | P3       | — |
 
@@ -28,82 +28,6 @@ separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two 
 Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
 green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
-
----
-
-## #101 [P1] — LA-18 specialization can't determine a type tuple from a lambda-typed argument alone
-
-**Renumbered from #99** (2026-07-20, merge audit): filed as #99 in the agent0
-session before its merge with origin/master, which had independently assigned
-#99 (`known_bugs_1.md`, the `Array<Struct>`-loop corruption P0) and #100
-(already fixed — see commits prefixed `bug.md #100`). The original merge
-resolution folded this entry into #98 as a note; it is a distinct defect
-(reproduces with no rules/attributes involved; different root-cause site), so
-it is restored here under the next free number.
-
-**Found:** 2026-07-20, implementing Atlantis Track 07 (`designs/atlantis/techdesign-07-mcp-openapi.md`,
-probe T7-P1) — the `makeTool<A,R>(string, string, Array<ParamSpec>, (A) => R fn)` adapter shape.
-**Priority justification:** P1.2 — the only workaround is per-use (a plain witness value of type `A`
-in the call, or explicit `fn::<A, R>(...)` type arguments); every future LA-18 consumer that infers a
-`specializationRequired` generic's type purely from a lambda-literal argument's declared parameter
-type must independently discover one of those two workarounds. Not P0: it is a loud compile error
-(`cannot determine a concrete type tuple`), never silent, and a per-call fix exists.
-
-**NOT the bug:** `A::member` itself. Calling a static-shaped labeled ctor on a function-level generic
-type parameter works exactly as `designs/complete/techdesign-generic-static-members.md` (LA-18)
-describes — confirmed directly (`packages/atlantis/tests/probes/mcp_p1_generic_labeled_ctor_type_param.lev`
-compiles and runs once the `A::Zero()` call is removed, and a companion witness-argument repro below
-compiles and runs with it present). The bug is narrower: **which call shapes let the specialization
-pass *see* the concrete type**.
-
-**Repro:**
-
-```
-namespace Probe {
-    () => string wrap<A, R>(string tag, (A) => R fn) {
-        string eager = A::Zero().tag();      // <- specializationRequired because of this
-        return () => tag + ":" + eager;
-    }
-}
-uses Probe;
-class Left { new Zero() { } string tag() => "L"; }
-var l = Probe::wrap("left", (Left a) => a);   // ERROR
-console.writeln(l());
-```
-
-```
-error: cannot determine a concrete type tuple for generic 'wrap' at this call site
-```
-
-Deleting the `A::Zero()` line (making `wrap` an ordinary, non-`::`-using generic) makes the identical
-call compile and run — plain generic checking infers `A`/`R` from the lambda argument's declared
-type just fine (`inferConstruction`/`genericReturn`, the same machinery LA-18 §4.1 point 4 says its
-own tuple collector reuses). Only the **specialization-set collection** step added by LA-18 fails to
-pick up the tuple here.
-
-**Confirmed workarounds (both compile and run correctly):**
-1. A plain witness *value* argument of type `A` alongside the lambda:
-   `A witness<A>(A w) => A::Zero().tag(); apply6(Left())` — succeeds (no lambda involved at all).
-2. Explicit generic type arguments at the call site, `::<...>` syntax:
-   `Probe::apply3::<Left, Left>("hi", (Left a) => a)` — succeeds; note the call-site spelling is
-   `name::<T1,T2>(...)`, not `name<T1,T2>(...)` (the latter parses as a chained comparison and a
-   separate, pre-existing diagnostic — "cannot reference generic function ... in value position" —
-   points at the `::<...>` spelling).
-
-**Root-cause pointer:** not yet narrowed inside `Checker.cpp`'s specialization-set collector (the
-LA-18 M1 code path, `designs/complete/techdesign-generic-static-members.md` §4.1 point 4); the
-collector evidently keys off argument-VALUE type inference and does not additionally consult a
-lambda-LITERAL argument's own declared parameter type the way ordinary (non-specialization) generic
-checking does.
-
-**Workaround (debt sites):** Atlantis Track 07's `@Tool` rule cannot emit a fully-generic,
-lambda-argument-inferred `makeTool<A,R>(...)` call from a rule template (the rule has no bound
-declaration for a matched method's parameter TYPE to spell an explicit `::<AddArgs, int>` — only
-`$p.name`/`$p.type` as string VALUES, confirmed separately, see T7-P5). Track 07 implements its
-design's own pre-authorized §3.5 fallback ladder rung 3 instead: the rule generates tool metadata
-(name/description/param descriptors) only; typed dispatch adapters are hand-written in the app's
-composition root, where the concrete DTO type is already spelled by the author. Debt site:
-`packages/atlantis/src/mcp/**` once implemented.
 
 ---
 
@@ -435,3 +359,71 @@ the missing-`uses` warning — the visibility guard is intact. Full suites green
 forced into flat `Atlantis` instead of nested `Atlantis::OpenApi` to dodge this
 bug) is now safe to revert to its intended nested placement — left in place as
 optional cleanup for the Track 07 owner.
+
+#101 fixed 2026-07-21 (full fix for the documented repro shape; see scope note
+below): LA-18's specialization-set collector (`Checker::recordSpecialization`,
+fed by `Checker::genericReturn` in `src/Checker.cpp`) could not determine a
+concrete type tuple for a `specializationRequired` generic (one that calls a
+static-shaped labeled ctor `A::Zero()` on a callable type parameter) when the
+ONLY evidence for a type parameter was a lambda-literal argument's own declared
+parameter type — e.g. `Probe::wrap("left", (Left a) => a)` for
+`() => string wrap<A, R>(string tag, (A) => R fn)`. Loud error at the call site:
+`cannot determine a concrete type tuple for generic 'wrap' at this call site`.
+
+Root cause — TWO gaps, both in the shared front end (engine-independent):
+1. `Resolver::resolveExprTypes` (`src/Resolver.cpp`) descended into a lambda's
+   body/args but never resolved the lambda's OWN declared parameter types
+   (`(Left a)` → the `Left` TypeRef kept a null `resolvedSymbol`). So even where
+   downstream inference tried to read that type it got an opaque, unresolved
+   ref (`fromTypeRef` returns `unknown()`/empty-canonical for an unresolved
+   Named TypeRef).
+2. `Checker::genericReturn`'s lambda-walk bound the RETURN type var (`R`, from
+   the checked body) but never unified the function parameter's declared param
+   types (`(A) => R`) against the lambda's own declared param types, so `A` was
+   never bound. A lambda argument's VALUE type is deferred to `unknown()` during
+   argument collection (`typeOfCallInner`), so the ordinary value-type unify saw
+   no evidence for `A` either. Ordinary (non-`::`) generics tolerated this
+   because a `specializationRequired` callable's return type here (`() => string`)
+   doesn't mention `A`; LA-18's collector needs the full `A`/`R` tuple, so it
+   alone failed. This is the reuse `designs/complete/techdesign-generic-static-members.md`
+   §4.1 point 4 already specifies — the LA-18 M1 implementation simply omitted it
+   (a gap, not a deliberate limitation; no staging conflict was found — the
+   lambda's DECLARED param type is available before the body is checked, so it
+   can be unified eagerly ahead of the `recordSpecialization` call).
+
+Fix: (1) `Resolver::resolveExprTypes` now resolves each `e->params[i].type`
+(harmless for non-lambda exprs — their `params` vector is empty). (2)
+`Checker::genericReturn`'s lambda-walk, before building `ptypes`/checking the
+body, unifies `pt->funcParams[j]` against `fromTypeRef(a->params[j].type)` for
+each lambda-declared param, so `A` is bound from `(Left a)` and the tuple is
+concrete when `recordSpecialization` runs.
+
+Scope: FULL fix for the documented repro shape and the general single-hop case —
+a lambda argument whose declared parameter type directly is (or contains, via
+`unify`'s existing higher-kinded/generic recursion) the generic parameter. Both
+documented workarounds still pass (witness-value arg; explicit `::<T1,T2>`). Not
+exhaustively swept: deeply nested/higher-order shapes where a type var appears
+only inside a lambda parameter that is itself a function type — those ride the
+same `unify` path but have no corpus coverage yet.
+
+Regression floor: `tests/corpus/generic_static_members/bug101_lambda_typed_specialization.ext`
+(new, green on all five lanes: treewalk, IR, emit-C++, ELF, LLVM) — two distinct
+element types (`Left`/`Right`) inferred purely from lambda-literal declared param
+types, forcing two distinct specializations, prints `left:L` / `right:R`.
+Verified: the entry's exact repro prints `left:L`; both workarounds
+(witness-value, `::<Left, Left>`) still compile and run on oracle+IR; the whole
+`generic_static_members` corpus + `explicit_generic_call_args` + `composition`
+suites + `checkertests` (390 checks) + `corpus_treewalk`/`_ir` all green; the
+Atlantis probe suite (`packages/atlantis/tests/runtests.sh`) shows no new
+failures (its only red, `static (llvm)`, is the pre-existing Router/Context
+LLVM-lane bug — oracle+IR pass, and this front-end fix is engine-independent).
+Track 07 unblock note: this fix removes the compiler obstacle that pushed the
+`@Tool` rule to its §3.5 fallback ladder rung 3 (hand-written adapters) — a
+fully-generic `makeTool<A,R>(..., (A) => R fn)` call can now infer `A` from a
+lambda argument's declared param type. The separate rule-template limitation
+(a rule has no bound handle for a matched method's parameter TYPE to spell an
+explicit `::<...>`, T7-P5) is unaffected; whoever revisits the generic approach
+should confirm the tool call is written with a real lambda literal (not spliced
+purely from string `$p.type` values). Design doc unchanged (the fix restores
+its §4.1 point 4 intent); left in `designs/complete/` as the entry already
+resides there.
