@@ -61,6 +61,17 @@ static int termRestoreRc() {
 }
 static void termRestoreAtexit() { termRestoreRc(); }
 
+// Raw mode unbuffers the engines' captured stdout (RuntimeValue.hpp). Declared
+// down here because g_ttyRaw is the authority and lives in this file.
+void interpEmitStdout(std::string& buf, const char* data, size_t len) {
+    if (!g_ttyRaw) { buf.append(data, len); return; }
+    if (!buf.empty()) {
+        ssize_t n = ::write(1, buf.data(), buf.size()); (void)n;
+        buf.clear();
+    }
+    ssize_t n = ::write(1, data, len); (void)n;
+}
+
 // Raw-mode safety handlers (designs/techdesign-terminal-floor.md §3): the
 // interpreter analogue of the floor's lv_term_safety_handler. An external
 // SIGTERM/HUP/INT/QUIT restores the terminal (single tcsetattr — async-signal-
@@ -1322,13 +1333,13 @@ bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& ou
                 out = vvoid(); return true;
             }
             const char* p = (const char*)bd.bytes->data() + bd.off + off;
-            if ((fd == 1 || fd == 2) && sink) *sink += std::string(p, (size_t)len);
+            if ((fd == 1 || fd == 2) && sink) interpEmitStdout(*sink, p, (size_t)len);
             else { ssize_t n = write((int)fd, p, (size_t)len); (void)n; }
             out = vint(len); return true;
         }
         const std::string& data = args.size() > 1 ? args[1].s : out.s;
         if ((fd == 1 || fd == 2) && sink) {
-            *sink += data;                     // engine captures stdout/stderr
+            interpEmitStdout(*sink, data);     // engine captures — unless raw mode
         } else {
             ssize_t n = write((int)fd, data.data(), data.size());
             (void)n;

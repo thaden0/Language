@@ -346,6 +346,17 @@ bool nativeCall(std::string_view cls, const std::string& method, const Value& se
 bool nativeFreeCall(const std::string& name, std::vector<Value>& args, Value& out,
                     std::string& err, std::string* sink);
 
+// Interpreter stdout emission. Normally appends to `buf` — the engine's capture,
+// printed once the program ends. Under RAW MODE it drains `buf` and writes
+// through to fd 1 instead: a raw-mode program is mid-conversation with the
+// terminal (term::size()'s cursor-report fallback writes \x1b[6n and then BLOCKS
+// reading the reply), so capturing its output deadlocks it. Order is preserved
+// and the drain leaves nothing for the end-of-run print to double.
+void interpEmitStdout(std::string& buf, const char* data, size_t len);
+inline void interpEmitStdout(std::string& buf, const std::string& text) {
+    interpEmitStdout(buf, text.data(), text.size());
+}
+
 // bug #35 (reject route A): does `v` (a program global's CURRENT value) reach a
 // Promise-derived object the A-1 thread boundary forbids? A spawn body may
 // reference a Promise through a bare global rather than a captured local, and

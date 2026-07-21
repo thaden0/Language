@@ -134,15 +134,82 @@ generated function names (`f1287`, `f2198`, …) don't map back to `.lev` source
 without a symbol table, so the root cause is unisolated beyond "somewhere in
 the CPR-response parse/dispatch path."
 
-**Verification gaps (for whoever picks this up):** (1) Whether oracle/IR share
-the crash is **not confirmed** — the same pty-based repro against
-`leviathan --plan build/plan.lvplan --run`/`--ir` produced zero observable
-output at all within a several-second window (no crash, no startup line, no
-hang-then-flush), unlike the LLVM binary which prints immediately. This may be
-an unrelated stdio-buffering difference between the tree-walk/IR interpreter
-and the compiled binary when stdout is a pty, rather than the same bug being
-masked — not diagnosed. (2) No workaround identified; anyone needing to run a
-compiled Sonar app interactively in a real terminal today will hit this.
+**2026-07-20 update — does NOT currently reproduce; treat as LATENT, not fixed.**
+`examples/helm` rebuilt at `b397656` (which includes #95's fix, `ffa9e6e`) and
+driven through a 24-case pty matrix — the repro script above verbatim, plus
+split/delayed/oversized/garbage/absent CPR replies, focus and bracketed-paste
+bytes around the reply, keystrokes, and SIGWINCH storms that re-enter
+`onWinch()` → `r.size()` — completes and renders correctly every run, with the
+CPR fallback firing 3-4× per run and parsing. Identical results before and after
+the #95 merge, so `ffa9e6e` is not what changed it.
+
+**Kept open at P0 anyway**, because non-reproduction is weak evidence for this
+defect class: see the root-cause pointer below. Whoever lands #99's fix should
+re-run the matrix — that is the cheap check that decides whether this entry
+dies or was merely masked.
+
+**Root-cause pointer (revised 2026-07-20, supersedes "somewhere in the
+CPR-response parse/dispatch path"):** most likely a member of the LLVM
+**borrowed value-struct alias** family, not anything CPR-specific. The unifying
+statement (Agent2, #99 phase 1): *any lowering that leaves a borrowed
+value-struct alias in a register must void that register before control can
+reach `releaseAllRegs`* — currently violated on (a) loop early-return edges and
+(b) the `Await`→`CopyVal` sequence. #95 (`ffa9e6e`) was the value-struct method
+receiver instance of the same statement; #99 (`known_bugs_1.md`) is the open one.
+The shapes line up: `Sonar::Size` is a value struct (`sonar/src/geometry.lev:23`),
+`App.onWinch()` → `r.size()` runs inside the await-driven callback chain, and
+this entry's own backtrace (`lv_task_trampoline` → `lv_run_closure_thunk` → opaque
+frames, faulting away from the causing site) is the crash-later signature all
+three share. Mechanism, if so (#95's, proven): `releaseAllRegs()`
+(`src/LlvmGen.cpp`, run at every `Op::Ret`/`RetVoid`/unwind) releases the stale
+alias; the release reads the freed block's classId as garbage, `lv_is_counted`'s
+value-class skip fails, and the decrement lands on a **freelist next-pointer
+word**, surfacing later inside `lv_alloc_heap`. Note `ffa9e6e` (#95's fix) does
+NOT close #99 — the auth corpus still crashes with it in place — so the matrix
+above being unchanged across that merge is expected and settles nothing.
+
+**Decisive check, NOT yet run:** if this entry is that family, the corruption is
+still occurring on every Helm run and merely landing somewhere harmless — so a
+freelist-integrity trap (`bug99.md`'s step 1: walk every `g_freelist[c]` at the
+top of `lv_alloc_heap`/`lv_free_raw`, trap on the first node that is out-of-region
+or not 16-byte-aligned), or an `LANG_RT_SANITIZE` lvrt linked into the Helm
+binary, would fire on runs the matrix above scored "alive". That turns this
+entry's status from "cannot reproduce" into a real yes/no. Corruption of this
+shape appears and disappears as unrelated code
+shifts heap layout — `a302c23` ("Convert Pair to a value struct") landed between
+this entry being filed and the matrix above being run, and does exactly that —
+which is why "it stopped crashing" must not be read as "it was fixed."
+
+**Verification gap CLOSED (was gap 1):** "oracle/IR produced zero observable
+output at all" was NOT stdio buffering masking a crash — it was a DEADLOCK, and
+the buffering was its cause. `sysWrite(1, …)` on the interpreters appends to the
+engine's capture buffer (`Evaluator::out_`, printed once the program ends)
+instead of the descriptor, so `term::size()`'s probe bytes never reached the tty,
+nothing answered, and `readCursorReport()`'s `sysRead(0, 16)` blocked forever
+under raw mode's `VMIN=1`. LLVM writes fd 1 directly and was unaffected — the
+engines diverged because one of them captures. Fixed 2026-07-20: raw mode now
+unbuffers the capture (`interpEmitStdout()`, `src/RuntimeNatives.cpp`, declared
+in `src/RuntimeValue.hpp`), routed through by `sysWrite`,
+`Evaluator::emitConsole`, and `IrInterp`'s `Op::Print`/`PrintNl` so a raw-mode
+program's console and `sysWrite` output keep their relative order. Non-tty runs
+never enter raw mode, so every `.expected` golden is untouched.
+
+**Regression floor (new, 2026-07-20):** `tests/corpus/floor/winsize_cpr.lev` +
+the `cpr` mode of `tests/floor_pty.py`, wired into `run_terminal_floor.sh` on
+oracle/IR/LLVM. The CPR probe had NO automated coverage at all before this —
+every other winsize lane either has a real `TIOCGWINSZ` answer (no fallback) or
+no tty (fallback guarded off by `isRaw()`), which is why it was hand-run only
+and why this bug went unseen for a full release of the floor.
+
+**Remaining gap:** (2) still open — no workaround, if it returns.
+
+**Separate finding, NOT filed as its own entry pending a ruling:** a CPR reply of
+≥999 rows (`\x1b[999;999R` and up) kills a compiled Sonar app with
+`lvrt: heap exhausted`, exit 1 — loud, not corruption. Reproduces identically on
+every tree tested. Left alone deliberately: the probe is `\x1b[999C\x1b[999B`, so
+a well-behaved terminal can never answer larger than 999, and clamping inside
+`term::size()` would mean reporting a size the terminal did not give. Owner ruling
+wanted on whether the floor should clamp, the heap should grow, or neither.
 
 ---
 

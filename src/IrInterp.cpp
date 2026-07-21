@@ -574,8 +574,8 @@ Value IrInterp::frameExec(int fnIndex, std::vector<Value>& regs,
                 }
                 break;
             }
-            case Op::Print:   out_ += valueToString(regs[in.a]); break;
-            case Op::PrintNl: out_ += "\n"; break;
+            case Op::Print:   interpEmitStdout(out_, valueToString(regs[in.a])); break;
+            case Op::PrintNl: interpEmitStdout(out_, "\n", 1); break;
             case Op::VFree:   break;   // §15: ELF-backend reclamation; shared_ptr frees here
         }
         if (memOn_) {

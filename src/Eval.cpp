@@ -477,7 +477,7 @@ void Evaluator::emitConsole(const std::string& text) {
         std::fflush(stdout);
         return;
     }
-    out_ += text;
+    interpEmitStdout(out_, text);   // captured; write-through once raw mode is on
 }
 
 // One step of comptime evaluation budget. Exhaustion raises an UNCATCHABLE
