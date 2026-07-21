@@ -55,6 +55,8 @@ add_custom_command(
 add_library(langfront
   ${LV_PRELUDE_EMBEDDED}
   src/Parser.cpp
+  src/ParserExpr.cpp
+  src/ParserMeta.cpp
   src/AstPrinter.cpp
   src/Project.cpp
   # --- Track A: compiler build-plan input (techdesign-toolchain.md §5.1) ---
@@ -62,8 +64,16 @@ add_library(langfront
   # --- end Track A ---
   src/Resolver.cpp
   src/Checker.cpp
+  src/CheckerInfer.cpp
+  src/CheckerFlow.cpp
+  src/CheckerDispatch.cpp
+  src/CheckerGenerics.cpp
+  src/CheckerReify.cpp
   src/Eval.cpp
   src/Rules.cpp
+  src/RulesExpand.cpp
+  src/RulesClone.cpp
+  src/RuntimeCore.cpp
   src/RuntimeLoop.cpp
   src/RuntimeNatives.cpp
   src/Lower.cpp
@@ -85,7 +95,7 @@ execute_process(COMMAND llvm-config-18 --cmakedir
 find_package(LLVM QUIET CONFIG HINTS "${LLVM_CMAKE_DIR_HINT}")
 if (LLVM_FOUND)
   message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} found — native backend enabled")
-  target_sources(langfront PRIVATE src/LlvmGen.cpp)
+  target_sources(langfront PRIVATE src/LlvmGen.cpp src/LlvmGenOps.cpp src/LlvmGenGlue.cpp)
   target_include_directories(langfront SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
   target_compile_definitions(langfront PUBLIC HAVE_LLVM)
   target_link_libraries(langfront PUBLIC LLVM)
