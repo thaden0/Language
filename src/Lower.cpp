@@ -764,7 +764,22 @@ void Lowerer::lowerStmt(Stmt* s) {
             maybeVFree(r);
             break;
         }
-        case StmtKind::Return:
+        case StmtKind::Return: {
+            // bug.md #99: an early `return` from inside a for-in over
+            // Array<Struct> jumps straight to Op::Ret/releaseAllRegs, bypassing
+            // the post-loop void that clears the borrowed value-struct loop-var
+            // alias (StmtKind::ForIn). Void every active loop's borrowedElem
+            // here — AFTER the return value is computed (so `return p.value`
+            // still reads the field first), BEFORE control reaches the frame
+            // exit — so releaseAllRegs never releases a value-struct alias whose
+            // backing array may already have been freed in this frame. Same
+            // family as #95/#66: never leave a borrowed value-struct alias live
+            // at a path that reaches releaseAllRegs.
+            auto clearBorrowedElems = [&] {
+                for (LoopCtx& lc : loops_)
+                    if (lc.borrowedElem >= 0)
+                        emit(Op::LoadConst, lc.borrowedElem, addConst(vvoid()));
+            };
             if (usings_.empty()) {
                 // byte-identical to pre-F3 lowering when no using is active.
                 if (s->expr) {
@@ -774,9 +789,10 @@ void Lowerer::lowerStmt(Stmt* s) {
                         emit(Op::CopyVal, rc, rv);
                         if (s->expr->definiteValueStruct) last().c = 1;
                         maybeVFree(rv);    // §15: chained struct call copied into the return
+                        clearBorrowedElems();
                         emit(Op::Ret, rc);
-                    } else emit(Op::Ret, rv);
-                } else emit(Op::RetVoid);
+                    } else { clearBorrowedElems(); emit(Op::Ret, rv); }
+                } else { clearBorrowedElems(); emit(Op::RetVoid); }
             } else {
                 // techdesign-02 F3: a using is active — compute the value as
                 // usual, funnel it into the per-function chain register, then
@@ -797,10 +813,14 @@ void Lowerer::lowerStmt(Stmt* s) {
                         emit(Op::Move, chainRetReg_, rc);
                     } else emit(Op::Move, chainRetReg_, rv);
                 }
+                // bug.md #99: same borrowed-elem void, before jumping into the
+                // using cleanup chain that eventually emits the real Ret.
+                clearBorrowedElems();
                 usings_.back().retJumps.push_back(emit(Op::Jump, 0));
                 usings_.back().needRet = true;
             }
             break;
+        }
         case StmtKind::Throw:
             emit(Op::Throw, lowerExpr(s->expr.get()));
             break;
@@ -976,6 +996,13 @@ void Lowerer::lowerStmt(Stmt* s) {
                 if (colElem) emit(Op::VFree, elem);   // free the prior step's gather
                 emit(Op::IterAt, elem, iter, idx);
                 loops_.push_back({}); loops_.back().usingsFloor = usings_.size(); loops_.back().stmt = s;
+                // bug.md #99: record the borrowed value-struct loop-var register
+                // (same gate as the post-loop void below) so an early `return`
+                // from inside the body voids it before releaseAllRegs, exactly
+                // as the post-loop clear and `break` already do.
+                if (!colElem && s->type && s->type->resolvedSymbol &&
+                    s->type->resolvedSymbol->isValue)
+                    loops_.back().borrowedElem = elem;
                 lowerStmt(s->thenBranch.get());
                 int incPos = (int)F().code.size();
                 for (int j : loops_.back().continueJumps) F().code[j].a = incPos;

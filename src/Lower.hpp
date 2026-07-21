@@ -66,6 +66,17 @@ private:
         std::vector<int> breakJumps, continueJumps;
         size_t usingsFloor = 0;
         const Stmt* stmt = nullptr;
+        // bug.md #99: register holding a BORROWED value-struct loop variable
+        // (a for-in over Array<Struct> where IterAt aliases the boxed element,
+        // per #66). The post-loop void at StmtKind::ForIn clears this so the
+        // stale alias is not released at frame exit, and `break` reaches that
+        // void too — but an early `return` jumps straight to Op::Ret /
+        // releaseAllRegs, bypassing it. A Return statement voids every active
+        // loop's borrowedElem before returning so releaseAllRegs never releases
+        // a value-struct alias whose backing array may already be freed
+        // (the #95/#66 family: a borrowed alias left live at frame exit). -1 =
+        // this loop has no borrowed value-struct elem.
+        int borrowedElem = -1;
     };
     std::vector<LoopCtx> loops_;
     // techdesign-labeled-break-continue.md F5: one using's break/continue
