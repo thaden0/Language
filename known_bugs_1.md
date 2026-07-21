@@ -98,7 +98,7 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
-## #102 [P2] — reassigning a closure-typed FIELD leaks the old closure on LLVM
+## #102 [P2] — closure-typed FIELD reassignment "leak" is a refcount CYCLE from unconditional `this`-capture, not a missing field-store release
 
 **Renumbered from #99** (2026-07-20, agent2↔origin/master merge audit): filed as
 #99 on the agent2 line, but origin/master had already assigned #99 to the
@@ -107,34 +107,85 @@ a plain `.lev` source file without editing the compiler or the prelude.
 closure-field-leak entry takes the next free number. #100/#101 are already in
 `known_bugs_2.md`.
 
-**Found:** 2026-07-20, LA-HTTP-STREAM (server-side streaming responses) ARC
-churn gate. The prelude's `TcpStream`/`ChunkedSink` teardown broke the
-connection<->stream<->callback cycle by overwriting the stored callback field
-with a no-op closure (`onChunk = (s) => {}`), the shape the design specified.
-On LLVM that overwrite never releases the previous closure (or anything it
-captures), so a program that churns callback-bearing objects leaks one closure
-graph per iteration while the oracle's reachability root set stays flat.
-**Priority justification:** P2.2 — resource-only: output is correct on every
-engine (oracle/IR/LLVM print identically) and the oracle reachability oracle
-reports a CONSTANT root set in N; only the LLVM escaping-tier live-at-exit
-grows with N. No wrong value, no crash — memory behavior is wrong on one
-actively-maintained engine.
+**RE-DIAGNOSED 2026-07-21** (implementation agent assigned to fix the
+originally-filed root cause below): the original theory — "LLVM's closure-field
+store forgets to release the prior value" — does **not** hold on current HEAD and
+was never engine-specific. Re-investigated rather than fixed; see full findings
+before acting on this entry.
 
-**Minimal repro** (`@N@` swept by `fuzz/churn_leak.py`-style magnitudes):
+**What's actually true, evidence-backed:**
+- The closure-typed field store path in `src/LlvmGen.cpp` (`Op::RawSet` fixed-slot
+  path and `Op::SetMember`/`lvrt_setm`) DOES stash-old/release-old/retain-new
+  correctly — confirmed by reading the emitted IR for `detach()` (the release call
+  is present) and by a control repro (`oldrelease.ext`: reassign `cb` to a closure
+  with NO `this`-capture, while the OLD `cb` closure captures a heap `Payload`) —
+  flat on LLVM at N=100/800 (640 B, root set 13 constant). Reassignment release
+  works; adding a second release at this site would double-free.
+- The real defect: **a lambda literal written inside a method unconditionally
+  captures `this`**, even when its body references neither `this` nor any member
+  (`src/Lower.cpp:1881-1883` appends `{"this", enclosingThis}` to the capture set
+  for any member-born lambda regardless of whether `this`/a member is in the
+  referenced-free-variable set the surrounding code already computes). When that
+  lambda is stored back into a field of the SAME object — exactly this entry's
+  `detach() { cb = (x) => { }; }` shape — it forms a genuine reference cycle
+  `h → h.cb → closure → this=h`. Leviathan is pure refcounting with **no cycle
+  collector**, so both nodes leak by design-of-the-defect, not by a missing
+  release.
+- **Not LLVM-specific.** `--mem-verify`'s root-set count (`src/MemVerify.cpp:14`)
+  is itself refcount-based (`!weak_ptr.expired()` over the oracle's `shared_ptr`
+  graph), so a cycle survives there too. Re-measured on this entry's own repro on
+  a fresh build: LLVM live-at-exit `13440 → 103040 B` **and** oracle root set
+  `213 → 1613`, both growing ~2 objects/iter — the "oracle root set constant at
+  x1" claim in the original filing does not reproduce; the churn harness itself
+  now rejects this repro ("root set itself changed with N … fix the corpus
+  program"). There is no clean engine differential to floor as a regression test
+  the way #90/#95/#99/#94/#96 were.
+
+**Why this is not a straightforward backend fix:** the over-capture is in
+shared front-end lowering (`src/Lower.cpp`), replicated in the tree-walk oracle's
+own capture logic AND in the **frozen `src/X64Gen.cpp`** (no-touch backend) —
+narrowing capture only for LLVM would desync the three engines and break
+differential corpus lanes. The capture list also feeds the spawn/cross-thread
+reject checks, so it has reach beyond ARC. This is a **language-semantics
+design decision** (should a method-nested lambda capture `this` only when its
+body actually references `this`/a member, narrowing the current
+always-capture rule?), not a per-backend bug fix — hence capped at P2 per the
+priority system's override 2 (semantics ruling required) rather than resolved
+inline by an implementation agent.
+
+**Priority justification (revised):** P2.1 — the observable behavior itself
+(should this closure be part of a live cycle at all?) is undecided pending a
+capture-semantics ruling; capped per override 2. (The original P2.2 resource-only
+framing no longer applies — this isn't one-engine-wrong, it's cross-engine
+correct-per-current-semantics-but-those-semantics-are-suspect.)
+
+**Concrete candidate fix, NOT yet ruled on:** in `src/Lower.cpp` around line
+1881, capture `this` only if `lamFree.count("this")` OR some name in `lamFree`
+satisfies `classHasMember(curClass_, name)` — bare member reads/writes/self-calls
+are already collected as names by `lwrCollectExprNames`, so this only requires
+consulting a set already computed. This can only ever REDUCE capture (never
+under-capture relative to today), but must be applied consistently to the
+oracle's own capture logic and reconciled with the frozen `X64Gen.cpp` backend
+(or explicitly ruled out-of-scope for ELF as a frozen/reference-only engine) —
+a design call, not this entry's implementation agent's to make unilaterally.
+
+**Minimal repro** (`@N@` swept by `fuzz/churn_leak.py`-style magnitudes) — kept
+for reference; note the harness now flags it as an invalid churn-leak floor
+per the re-diagnosis above (root set itself grows with N):
 
 ```
 class Payload { Array<int> data; int v = 0; }
 class Holder {
     (int) => void cb; bool has = false;
     void set((int) => void c) { cb = c; has = true; }
-    void detach() { cb = (x) => { }; has = false; }   // reassign: leaks old cb + its Payload
+    void detach() { cb = (x) => { }; has = false; }   // reassign: closure created here captures `this`=h unconditionally
 }
 void run(int n) {
     int sink = 0;
     for (int i in 1..n) {
         Holder h = Holder(); Payload p = Payload(); p.v = i; p.data = p.data.add(i);
         h.set((k) => { sink = p.v; });   // closure captures p
-        h.detach();                       // must drop the closure -> drop p; on LLVM it does NOT
+        h.detach();                       // creates h -> h.cb -> closure -> this=h cycle; both leak, no collector, on EVERY engine
         sink = sink + p.v;
     }
     console.writeln(sink);
@@ -142,27 +193,26 @@ void run(int n) {
 run(@N@);
 ```
 
-`[heap] live-at-exit` grows ~128 B/iter on LLVM; oracle `--mem-verify` root
-set is `x1` at every N. A `set`-only variant (no `detach` reassignment) is
-FLAT, so the defect is specifically the field REASSIGNMENT release path, not
-closure capture.
+**Workaround (debt sites, unchanged, still required):** make the field an
+OPTIONAL closure and clear it to `None` instead of reassigning to a no-op
+closure — `None` is a plain object-field store (no lambda literal created, no
+spurious `this`-capture, no cycle). Applied throughout the LA-HTTP-STREAM
+prelude teardown: `TcpStream.onChunk`/`onClosed` and `ChunkedSink.onDone`/
+`userClose` are `(... => ...)?` cleared to `None` in `close()`/`detach()`
+(`prelude/std.lev:719-720`, `:1328-1329`). **Confirmed 2026-07-21 still
+required and NOT revertable** — reverting to a no-op-closure reassignment
+reintroduces the exact `this`-capture cycle. The separately-flagged residual
+per-connection cycle in the landed base HTTP loopback path (`HttpClient`/
+`HttpResponseReader` reader teardown) is the SAME class of defect (a refcount
+cycle, no collector) but through genuine mutual references, not the spurious-
+capture path — orthogonal to this entry; narrowing `this`-capture would not
+retire it. A full net-stack cycle audit remains the real fix for that one and
+is out of scope here.
 
-**Root-cause pointer:** LLVM lowering of a store to a closure-typed object
-field — the old field value is overwritten without a release. Compare the
-object-field store path (storing a class/`?` value releases the prior value
-correctly) and bug #90's `Op::CallDyn` consumed-receiver release fix, both in
-`src/LlvmGen.cpp`.
-
-**Workaround (debt sites):** make the field an OPTIONAL closure and clear it to
-`None` — an object-field store, which DOES release the prior value (verified
-flat at N=50/800). Applied throughout the LA-HTTP-STREAM prelude teardown:
-`TcpStream.onChunk`/`onClosed` and `ChunkedSink.onDone`/`userClose` are
-`(... => ...)?` cleared to `None` in `close()`/`detach()`, never overwritten
-with a no-op closure. NOTE: this workaround only removes the leak at sites that
-adopt it; the landed base HTTP loopback path (`HttpClient` / `HttpResponseReader`
-reader teardown) still churns a residual per-connection cycle under
-loopback-churn and is not retired by this entry — a full net-stack cycle audit
-is the real fix and is out of scope for the streaming design.
+**Next step:** route the capture-semantics question to a design agent/owner
+ruling (oracle + `Lower.cpp` + frozen `X64Gen.cpp` consistency, and the
+spawn/cross-thread reject checks' reliance on the capture list), then dispatch
+implementation once ruled.
 
 ---
 
