@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | #97, #98, #101 |
+| P1       | #98, #101 |
 | P2       | — |
 | P3       | — |
 
@@ -31,67 +31,13 @@ Fixing #N means: fix, delete the entry here, promote red→green — one commit.
 
 ---
 
-## #97 [P1] — sockets/process/pty classes cannot be compiled for a Windows target: prelude over-marking drags the task natives in
-
-**Found:** 2026-07-19, implementing the pty floor's Windows lane
-(`designs/complete/techdesign-03-pty-windows-conpty.md` S3/G-PTY3).
-**Priority justification:** P1.2 — the only workaround is per-use: every track
-that wants sockets, a child process, or a pty on a Windows target must
-independently discover this and hand-roll the floor natives at each site; no
-single workaround retires it. (P2.3 also matches — a documented feature fails
-loud on one lane while working on the others — but P1 is evaluated first and
-P1.2 fits the workaround shape exactly.)
-
-**NOT the bug:** that `spawn`/`Channel`/`TaskGroup` are unsupported on a
-Windows target. That is a deliberate ruling (LA-30 G5: win32 needs the Fiber
-API, so tasks stay pump-pinned — `runtime/lv_task.c:27-57`), documented in
-`docs/reference.md`. The bug is its **blast radius**.
-
-**Repro** — no task feature anywhere in the program:
-
-```
-$ printf 'TcpListener l = TcpListener(9099);\n' > t.lev
-$ leviathan --native-obj t.o --target x86_64-pc-windows-gnu t.lev
-error: LLVM backend: tasks: unsupported on Windows (v1) — 'sysTaskCancel'
-       has no Windows lowering
-```
-
-Identical failure for `TcpStream`, `Process`, and `Pty`. Expected: these
-compile for a Windows triple (nothing in any design rejects them, and
-`docs/reference.md` documents sockets/`Process`/`Pty` without a Windows
-carve-out — only threads/`spawn` carry one). Actual: a whole capability family
-is unbuildable for the target, and the diagnostic names a native the program
-never mentions, so the message mis-attributes the cause.
-
-**Root-cause pointer:** two independent contributors; narrowing **either** one
-fixes it.
-1. Prelude over-marking (`src/Resolver.cpp:3232` documents this exact
-   mechanism breaking `--build` once before): marking is arity-blind and
-   by-name, so `TcpStream`/`File`'s `close()` also marks `TaskGroup::close()`,
-   whose body reaches `std::sysTaskCancel` (`src/Resolver.cpp:1414`).
-2. The reject is **emission**-gated, not reachability-gated
-   (`src/LlvmGen.cpp:2752-2765`): it fires when the row is emitted, reachable
-   or not. The wasm gate immediately above it already has the two-tier shape
-   (reachable → diagnostic; prelude-only → `lvrt_unsupported` trap) that would
-   answer this.
-
-**Owner ruling needed before a fix lands** (which of the two to narrow is a
-gate question, not a pty question): recorded as
-`designs/requests/request-windows-task-gate.md`.
-
-**Workaround (debt sites):** drive the **floor natives** directly instead of
-the prelude class — `std::sysPtySpawn`/`sysRecv`/`sysSend`/`sysPtyResize`/
-`sysKill`/`sysReap` compile and run on Windows today. Applied in
-`tests/pty_win_driver.lev` (the G-PTY3 behavioral lane, which is why it does
-not use `Pty`). `tests/run_wine_cross.sh` avoids the area entirely — its scope
-note excludes net corpus.
-
 ## #98 [P1] — a rule cannot match an attribute declared in a different namespace than the rule itself
 
 **Renumbered from #96** (2026-07-19, same day) to resolve a cross-branch bug-
 number collision on merge — origin/master independently filed a DIFFERENT #96
-(the `term::size()` CPR segfault above) and #97 (the Windows task-gate entry
-above) the same day. This entry's content is otherwise unchanged; any prior
+(the `term::size()` CPR segfault above) and #97 (the Windows task-gate entry,
+now fixed — see the writeup at the bottom of this file) the same day. This
+entry's content is otherwise unchanged; any prior
 reference to "known_bugs_2.md #96" for the cross-namespace rule-matching
 finding now means #98.
 
@@ -460,3 +406,65 @@ explained and closed — it was this same corruption planted on every Helm run a
 merely landing somewhere harmless once heap layout shifted; with the borrowed
 `await` (and #95/#99) aliases voided, no stale value-struct alias reaches
 `releaseAllRegs` on any of the three violating shapes.
+
+#97 fixed 2026-07-21: sockets/`Process`/`Pty` classes could not be compiled for
+a Windows target (`--target x86_64-pc-windows-gnu`) — a program with no task
+feature in it at all (`TcpListener l = TcpListener(9099);`) failed with
+`tasks: unsupported on Windows (v1) — 'sysTaskCancel' has no Windows lowering`.
+
+Root cause (the two contributors the entry named): (1) the prelude's arity-blind
+by-name over-marking pulls `TaskGroup::close`/`Channel::send`/`Channel::close`
+into every build via `TcpStream`/`File`'s own `close()`/`send()` (the emission
+over-approximation the reachable walk needs for `nativeMethodCovered`), and their
+bodies reach the task/channel natives; (2) the Windows reject in
+`src/LlvmGen.cpp`'s `CallNativeFn` lowering was **emission**-gated — it fired the
+moment a marked row was emitted, reachable from user code or not.
+
+Fix (narrowed contributor 2, the emission gate — the smaller, better-precedented
+change the request doc recommended; contributor 1's over-marking was left intact,
+it is load-bearing for `nativeMethodCovered`): the task, thread/channel, and
+`sysSpawn` Windows rejects in `src/LlvmGen.cpp` now take the **two-tier** shape of
+the wasm gate immediately above them (Track W hard-03). Tier 1 — the native sits
+in a **user-reachable** function (`userReach[index]`, rooted at `@main`, NOT
+`@ginit`, computed by `computeReachable`): the user genuinely wrote
+`spawn`/`Channel`/`TaskGroup`/`Process`, so today's frozen compile-time diagnostic
+fires unchanged (LA-30 G5 stands — win32 tasks still need the Fiber API). Tier 2 —
+the native was dragged in only by the prelude over-marking and is never
+user-reachable: it lowers to the `lvrt_unsupported` trap (never returns; an int-0
+store keeps the IR well-formed, the `sysExit` precedent), so the build **succeeds**
+and the program can only fail if it actually reaches the construct at runtime,
+which by construction it cannot. `userReach` deliberately does no by-name
+CallDyn fallback (its existing comment), so the over-marked task methods on
+never-constructed classes are correctly tier-2.
+
+**`sysSpawn`/`sysPidfdOpen` experiment outcome (the doc's open question):** yes,
+the over-approximation drags the process floor in too — with the tasks arm
+neutralized, the repro fell through to `threads: unsupported … 'sysChannelSend'`
+(TcpStream's `send()` marking `Channel::send`), then to
+`process spawn: unsupported … 'sysPidfdOpen'` (the `Pty` class's own reap method
+genuinely calls `std::sysPidfdOpen`). Resolution split by native honesty:
+`sysPidfdOpen` now simply **lowers** on Windows like `sysReap`/`sysKill` — its
+win32 floor returns the frozen `-1` sentinel by ruling (`lv_plat_win32.c:252`,
+D-W2) and the `Pty` prelude's poll-reap fallback already handles that, so the
+reject on it was over-broad and is removed (it is user-reachable from `Pty`, so a
+tier-2 trap would be wrong — the code must actually call it and get `-1`).
+`sysSpawn` (pipes-spawn, no win32 floor, D4) keeps the two-tier reject, so a
+genuine `Process` construction still fails at compile time naming spawn, while a
+prelude-only drag-in traps. The thread/channel arm got the same two-tier gate
+because `Channel` is a task feature reached by the same over-marking.
+
+Regression coverage: `tests/run_sysnatives.sh` §12 — `sysPidfdOpen` moved from
+`win_reject` to `win_lowers`; new `win_lowers` assertions that `TcpListener`,
+`TcpStream`, `Pty`, and a plain non-task program all compile for the Windows
+triple; new `win_reject_msg` assertions that a genuine `Process`, `spawn`,
+`Channel`, and `TaskGroup` still reject with the frozen native-naming diagnostic.
+Verified: the three classes emit valid COFF/PE objects for
+`x86_64-pc-windows-gnu`; no POSIX regression (`corpus_tasks_llvm`,
+`corpus_threads_llvm`, `corpus_sys_spawn_llvm`, `corpus_sys_pty_llvm`,
+`corpus_core_llvm`/`_native`, and the treewalk/IR siblings all green — this only
+touches the Windows-target code path); the LA-30 ruling and
+`runtime/lv_task.c`'s `lv_tasks_enabled()==0` on win32 are untouched. (Note: two
+pre-existing `emit-cpp` deferral assertions in the same script — Process/Pty
+under `--build` — were already red on the pre-fix binary, unrelated to this fix;
+a separate CGen coverage-ordering matter.) Unblocks Helm H10/G-H6 and
+sockets-on-Windows (Trident fetch, Atlantis) broadly.

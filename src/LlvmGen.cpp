@@ -2776,9 +2776,29 @@ struct Gen {
                             // All results are scalar ints (no ARC); joinAll and
                             // awaitAny2 PARK and may raise — the blanket
                             // emitThrowCheck below this else-chain dispatches.
+                            //
+                            // bug #97: the Windows reject is TWO-TIER, the same
+                            // shape as the wasm gate above (Track W hard-03).
+                            // Tier 1 — the row sits in a user-reachable function
+                            // (userReach[index]): the user genuinely wrote
+                            // spawn/Channel/TaskGroup, so keep today's frozen
+                            // compile-time diagnostic (LA-30 G5 stands). Tier 2 —
+                            // the row was dragged in only by the prelude's
+                            // arity-blind over-marking (e.g. TcpStream/File
+                            // `close()` marking TaskGroup::close, whose body
+                            // reaches sysTaskCancel) and is NOT user-reachable:
+                            // it can never run, so it lowers to the
+                            // lvrt_unsupported trap instead of bricking the build.
+                            // This is what lets sockets/Pty compile for Windows
+                            // without a task feature anywhere in the program.
                             if (targetWindows) {
-                                fail("tasks: unsupported on Windows (v1) — "
-                                     "'" + n + "' has no Windows lowering");
+                                if (userReach[index]) {
+                                    fail("tasks: unsupported on Windows (v1) — "
+                                         "'" + n + "' has no Windows lowering");
+                                } else {
+                                    b.CreateCall(rtUnsupported, {cstr(n)});
+                                    storeTP(b, regs[in.a], i64C(1), i64C(0));
+                                }
                             } else if (n == "sysTaskRun") {
                                 b.CreateCall(rtSysTaskRun, {regs[in.a], arg(0)});
                             } else if (n == "sysTaskCancel") {
@@ -2799,9 +2819,24 @@ struct Gen {
                             // (mingw emulated-TLS != LLVM COFF lowering), so real
                             // threads would share what must be isolated — reject
                             // at compile time rather than emit a broken worker.
+                            //
+                            // bug #97: TWO-TIER, exactly like the task arm above.
+                            // `Channel` is a task feature (spawn/Channel/
+                            // TaskGroup), and the prelude's arity-blind
+                            // over-marking drags Channel::send/close in via
+                            // TcpStream's own send()/close() — so a socket/Pty
+                            // build with no Channel in it would otherwise brick
+                            // here. Tier 1 (user-reachable) keeps the frozen
+                            // diagnostic; tier 2 (prelude-only, unreachable)
+                            // traps at runtime and lets the build succeed.
                             if (targetWindows) {
-                                fail("threads: unsupported on Windows (v1) — "
-                                     "'" + n + "' has no Windows lowering");
+                                if (userReach[index]) {
+                                    fail("threads: unsupported on Windows (v1) — "
+                                         "'" + n + "' has no Windows lowering");
+                                } else {
+                                    b.CreateCall(rtUnsupported, {cstr(n)});
+                                    storeTP(b, regs[in.a], i64C(1), i64C(0));
+                                }
                             } else if (n == "sysThreadTransfer") {
                                 // The flatten/rebuild boundary (§4): one deep copy
                                 // through a self-contained buffer, returned at +1.
@@ -2925,13 +2960,34 @@ struct Gen {
                             // pipes-spawn stays POSIX-only, the threads
                             // Windows-reject precedent (D4). The pty path is the
                             // sanctioned Windows child story (designs/pty/ 03).
-                            if (targetWindows) {
-                                fail("process spawn: unsupported on Windows (v1) — '" + n +
-                                     "' has no Windows lowering (techdesign-spawn-llvm.md)");
+                            //
+                            // bug #97 (open-question outcome): the prelude
+                            // over-marking dragged sysPidfdOpen into socket/Pty
+                            // builds — but sysPidfdOpen is NOT like sysSpawn.
+                            // Its win32 floor (lv_plat_win32.c:252) returns the
+                            // frozen -1 sentinel BY RULING (D-W2), which the Pty
+                            // prelude's poll-reap fallback handles as its ordinary
+                            // "pidfd unavailable" path — zero new prelude code.
+                            // So sysPidfdOpen simply LOWERS on Windows, exactly
+                            // like sysReap/sysKill (Windows-clean since pty/ 03);
+                            // the reject was over-broad. Only sysSpawn stays
+                            // rejected (pipes-spawn has no win32 floor, D4), and
+                            // now two-tier: tier 1 (user-reachable — a genuine
+                            // `Process` construction) keeps the frozen spawn
+                            // diagnostic, so Process stays fully rejected on
+                            // Windows; tier 2 (prelude-only, unreachable) traps.
+                            if (targetWindows && n == "sysSpawn") {
+                                if (userReach[index]) {
+                                    fail("process spawn: unsupported on Windows (v1) — 'sysSpawn'"
+                                         " has no Windows lowering (techdesign-spawn-llvm.md)");
+                                } else {
+                                    b.CreateCall(rtUnsupported, {cstr(n)});
+                                    storeTP(b, regs[in.a], i64C(1), i64C(0));
+                                }
                             } else if (n == "sysSpawn") {
                                 b.CreateCall(rtSysSpawn, {regs[in.a], arg(0), arg(1)});
                                 retainDst();   // fresh heap Array<int> -> +1 (D1, sysArgs parity)
-                            } else {  // sysPidfdOpen
+                            } else {  // sysPidfdOpen: real fd on POSIX, -1 sentinel on Windows
                                 b.CreateCall(rtSysPidfdOpen, {regs[in.a], arg(0)});
                             }
                         } else if (n == "sysReap" || n == "sysKill") {
