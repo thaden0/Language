@@ -1,0 +1,4 @@
+await timer
+sum 42
+status 200
+body: Hi /async

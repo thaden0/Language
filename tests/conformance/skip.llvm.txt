@@ -1,0 +1,3 @@
+# Per-leg skips for the llvm (`leviathan --build-native`) leg.
+# Format: <relative/prog.lev>  <one-line reason>   (reason REQUIRED)
+# Currently empty: every conformance program runs on the LLVM leg.

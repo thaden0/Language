@@ -1,0 +1,63 @@
+// Track 05 M4: Map additions (§3) + Set<T> (§4.1). Runs on the full shared
+// corpus (every engine, including --emit-elf): Set's with/without rebuild via
+// bracket sugar, never `.with()`/`.without()` by name, so it doesn't inherit
+// Bug 18 (bug.md — those two named natives are missing from LLVM's and
+// X64Gen's dispatch).
+void run() {
+    Map<string, int> ages = Map();
+    ages["alice"] = 30;
+    ages["bob"] = 25;
+
+    int? a = ages.atOrNone("alice");
+    if (a != None) console.writeln(a); else console.writeln("none");
+    int? c = ages.atOrNone("carol");
+    if (c != None) console.writeln(c); else console.writeln("none");
+    console.writeln(ages.atOr("carol", -1));
+    console.writeln(ages.atOr("alice", -1));
+
+    Array<Pair<string, int>> entries = ages.entries();
+    console.writeln(entries.length());
+    for (Pair e in entries.sortBy((p) => p.first))
+        console.writeln(e.first + "=" + e.second.toString());
+
+    Map<string, int> more = Map();
+    more["carol"] = 40;
+    more["alice"] = 99;
+    Map<string, int> merged = ages.withAll(more);
+    for (Pair e in merged.entries().sortBy((p) => p.first))
+        console.writeln(e.first + "=" + e.second.toString());
+    console.writeln(ages["alice"]);        // withAll is pure: `ages` unchanged
+
+    Map<string, string> lens = ages.mapValues((n) => n.toString() + "!");
+    console.writeln(lens["alice"]);
+
+    Map<string, int> adults = ages.whereEntries((k, v) => v >= 28);
+    for (Pair e in adults.entries().sortBy((p) => p.first)) console.writeln(e.first);
+
+    // --- Set<T> ---
+    Set<int> s1 = Set([1, 2, 3]);
+    console.writeln(s1.length());
+    console.writeln(s1.has(2));
+    console.writeln(s1.has(9));
+
+    Set<int> s2 = s1.with(9);
+    console.writeln(s1.has(9));            // with is pure: s1 unchanged
+    console.writeln(s2.has(9));
+    console.writeln(s2.length());
+
+    Set<int> s3 = s2.without(1);
+    console.writeln(s3.has(1));
+    console.writeln(s3.length());
+    console.writeln(s2.length());          // without is pure: s2 unchanged
+
+    Set<int> other = Set([3, 4, 5]);
+    console.writeln(s1.union(other).toArray().sort((x, y) => x - y).joinToString(","));
+    console.writeln(s1.intersect(other).toArray().sort((x, y) => x - y).joinToString(","));
+    console.writeln(s1.except(other).toArray().sort((x, y) => x - y).joinToString(","));
+
+    Set<int> empty = Set();
+    console.writeln(empty.isEmpty());
+    console.writeln(empty.length());
+    console.writeln(s1.toString());
+}
+run();

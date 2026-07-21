@@ -1,0 +1,11 @@
+while sum=23
+dowhile psum=12
+for fsum=19
+forin asum=12
+nested outerSum=12
+ifInLoop sum=16
+tryInLoop sum=7
+matchArmBreak sum=18
+loopInCatch sum=6
+nestedDoWhileFor total=12
+lambdaOwnLoop=3

@@ -1,0 +1,80 @@
+// Track "stdlib tail methods" M3 (designs/techdesign-stdlib-tail-methods.md
+// §3): Array<T>.orderBy<K> / OrderedArray<T>.thenBy<K> -- orderBy is the
+// K=1-run degenerate case of thenBy, so there is exactly one sort algorithm
+// behind both. Pure prelude wrapper, no natives, no backend edits.
+
+class Person {
+    string lastName;
+    string firstName;
+    int id;                 // hidden original-order marker, not a sort key
+    new Person(string ln, string fn, int i) { lastName = ln; firstName = fn; id = i; }
+    string toString() => lastName + " " + firstName + "#" + id.toString();
+}
+
+// (a) single-key orderBy vs. the existing sortBy on distinct keys: same output.
+Array<int> nums = [5, 3, 8, 1, 9, 2];
+console.writeln(nums.sortBy((n) => n).joinToString(","));                  // 1,2,3,5,8,9
+console.writeln(nums.orderBy((n) => n).toArray().joinToString(","));       // 1,2,3,5,8,9
+
+// (b) the request's own lastName/thenBy(firstName) example: a shared lastName
+// in non-firstName-sorted input order, proving thenBy reorders WITHIN the
+// tied group (Zoe comes before Amy in the input, after in the output).
+Array<Person> team = [
+    Person("Lee", "Zoe", 1),
+    Person("Adams", "Bob", 2),
+    Person("Lee", "Amy", 3)
+];
+console.writeln(team.orderBy((p) => p.lastName).thenBy((p) => p.firstName).toArray().joinToString(", "));
+// Adams Bob#2, Lee Amy#3, Lee Zoe#1
+
+// (c) the stability-proof case: several records share the primary key
+// (lastName), some of those also share the secondary key (firstName); each
+// record's hidden `id` marks its original input position. Asserts (i)
+// different-lastName groups never interleave regardless of firstName and
+// (ii) records tied on BOTH keys keep their original relative input order.
+Array<Person> roster = [
+    Person("Smith", "Bo", 1),
+    Person("Jones", "Al", 2),
+    Person("Smith", "Al", 3),
+    Person("Jones", "Al", 4),   // tied with id=2 on BOTH keys
+    Person("Smith", "Al", 5),   // tied with id=3 on BOTH keys
+    Person("Jones", "Bo", 6)
+];
+console.writeln(roster.orderBy((p) => p.lastName).thenBy((p) => p.firstName).toArray().joinToString(", "));
+// Jones Al#2, Jones Al#4, Jones Bo#6, Smith Al#3, Smith Al#5, Smith Bo#1
+
+// (d) empty array.
+Array<Person> empty = [];
+console.writeln(empty.orderBy((p) => p.lastName).toArray().length());      // 0
+console.writeln(empty.orderBy((p) => p.lastName).isEmpty());               // true
+
+// (e) single-element array.
+Array<Person> single = [Person("Only", "One", 100)];
+console.writeln(single.orderBy((p) => p.lastName).toArray().joinToString(", "));   // Only One#100
+
+// (f) direct for-loop iteration over an OrderedArray, no .toArray().
+string joinOrdered(OrderedArray<Person> src) {
+    string acc = "";
+    for (Person p in src) acc = acc + p.toString() + "|";
+    return acc;
+}
+OrderedArray<Person> ordered = team.orderBy((p) => p.lastName).thenBy((p) => p.firstName);
+console.writeln(joinOrdered(ordered));   // Adams Bob#2|Lee Amy#3|Lee Zoe#1|
+
+// (g) a third chained .thenBy call.
+class Ranked {
+    string a;
+    string b;
+    int c;
+    int id;
+    new Ranked(string x, string y, int z, int i) { a = x; b = y; c = z; id = i; }
+    string toString() => a + "/" + b + "/" + c.toString() + "#" + id.toString();
+}
+Array<Ranked> rk = [
+    Ranked("X", "X", 2, 1),
+    Ranked("X", "X", 1, 2),
+    Ranked("Y", "A", 5, 3),
+    Ranked("X", "A", 9, 4)
+];
+console.writeln(rk.orderBy((r) => r.a).thenBy((r) => r.b).thenBy((r) => r.c).toArray().joinToString(", "));
+// X/A/9#4, X/X/1#2, X/X/2#1, Y/A/5#3

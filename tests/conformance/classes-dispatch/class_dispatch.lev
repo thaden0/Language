@@ -1,0 +1,66 @@
+// designs/complete/techdesign-class-method-dispatch.md M1: a class-typed
+// receiver now dispatches on the receiver's RUNTIME slot, uniformly with the
+// interface path — devirtualized (direct call) only when no subclass
+// overrides the resolved method. Covers all three dispatch-decision sites.
+
+class Animal {
+    string speak() => "...";
+    string tag() => "[" + speak() + "]";   // S2: bare this-call to an overridable method
+}
+class Dog : Animal {
+    string speak() => "Woof";
+}
+class Loud : Animal {
+    // no override -> devirtualizes; proves the fast path survives untouched
+    string shout() => speak().toUpper();
+}
+
+// §5.2/M3: an overridden overload set with DISTINCT arities per overload is
+// the safe shape — the decision is still per-signature (only speak() is
+// overridden below), so speak(int) stays static while speak() goes dynamic,
+// and the M3 diagnostic (checker tests) must not fire on this shape.
+class Named {
+    string speak() => "a";
+    string speak(int n) => "a-" + n.toString();
+}
+class NamedDog : Named {
+    string speak() => "WOOF";        // overrides only the nullary overload
+}
+
+// S1: through a parameter, base-typed
+string callSpeak(Animal a) => a.speak();
+
+void run() {
+    // S1: base-typed parameter, derived instance -> the override runs.
+    console.writeln(callSpeak(Dog()));          // Woof
+
+    // S2: an inherited method calling another via a bare (this-relative) name
+    // -> the override runs even though the call is written inside Animal.
+    Dog d;
+    console.writeln(d.tag());                   // [Woof]
+
+    // No override anywhere below Animal for a plain Animal instance -> still
+    // correct through the same base-typed call.
+    Animal a;
+    console.writeln(callSpeak(a));               // ...
+
+    // Devirtualized fast path: Loud has no override of speak(), byte-identical
+    // static bind, still correct.
+    Loud l;
+    console.writeln(l.shout());                  // ...
+
+    // S3: a method reference to Animal::speak, stored and invoked against a
+    // derived instance -> the override runs (LA-25 method reference becomes
+    // override-correct via S3).
+    var ref = Animal::speak;
+    console.writeln(ref(Dog()));                 // Woof
+
+    // §5.2: the safe overridden-overload-set shape, both arities correct.
+    Named base;
+    NamedDog nd;
+    Named viaBase = nd;
+    console.writeln(viaBase.speak());            // WOOF (overridden -> dynamic)
+    console.writeln(viaBase.speak(5));            // a-5  (not overridden -> static)
+    console.writeln(base.speak());                // a
+}
+run();

@@ -1,0 +1,32 @@
+// Layer D (metaprog Phase 4 §2.2): a `@Memo` rule wraps a pure single-valued
+// method in a cache-check. `$body` (expression position) captures the original
+// computation; the wrapper stores and reuses its result. The real work runs in
+// `raw`, so `computeCount` proves the cache short-circuits repeat calls.
+namespace Cache {
+    attribute Memo { }
+    rule memo rewrites body of m {
+        match @Memo on method m
+        replace `
+            if (store.has(n)) { return store.at(n); }
+            var __r = $body;
+            store[n] = __r;
+            return __r;
+        `
+    }
+}
+uses Cache;
+
+class Mathy {
+    Map<int, int> store;
+    int computeCount = 0;
+    int raw(int n) { computeCount = computeCount + 1; return n * n; }
+
+    @Memo
+    int expensive(int n) => raw(n);
+}
+
+Mathy m = Mathy();
+console.writeln(m.expensive(3));
+console.writeln(m.expensive(3));
+console.writeln(m.expensive(4));
+console.writeln(m.computeCount);   // 3 and 4 each computed once; 2nd expensive(3) is cached

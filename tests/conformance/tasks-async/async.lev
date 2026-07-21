@@ -1,0 +1,26 @@
+// async/await (§14): a Promise is a one-shot stream; await parks on the event
+// loop until it resolves. No function coloring — await is allowed anywhere.
+Promise<int> later(int ms, int result) {
+    Promise<int> p = Promise();
+    Timer t = std::after(ms);
+    t.subscribe((n) => p.resolve(result));
+    return p;
+}
+
+void run() {
+    // await a timer-backed promise
+    console.writeln("await timer");
+    int a = await later(10, 7);
+    int b = await later(5, 35);
+    console.writeln("sum " + (a + b));
+
+    // await an HTTP round-trip — linear, no callback pyramid, same loop
+    HttpServer server = HttpServer(8093);
+    server.handle((req) => HttpResponse(200, "Hi " + req.path));
+    HttpClient client = HttpClient();
+    HttpResponse r = await client.fetch("127.0.0.1", 8093, "/async");
+    console.writeln("status " + r.status);
+    console.writeln("body: " + r.body);
+    server.stop();
+}
+run();

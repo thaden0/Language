@@ -1863,3 +1863,34 @@ else()
   message(STATUS "G-PTY3: Windows ConPTY lane SKIPPED "
                  "(need a MinGW-w64 cross compiler; not found)")
 endif()
+
+# ---------------------------------------------------------------------------
+# refactor_1 session 07 (techdesign-07): backend-agnostic conformance corpus.
+# One ctest test per (leg x program) over tests/conformance/<area>/<name>.lev,
+# on three legs: interp (--run), cgen (--build), llvm (--build-native).
+# There is NO x64/ELF leg — ever. Per-leg skips live in
+# tests/conformance/skip.<leg>.txt (reason REQUIRED per line); run.sh prints
+# the reason and exits 77, which ctest reports as Skipped — visible, never
+# silent. LEVIATHAN_BIN points run.sh at this build's compiler.
+file(GLOB_RECURSE CONFORMANCE_PROGRAMS
+     "${CMAKE_SOURCE_DIR}/tests/conformance/*.lev")
+list(SORT CONFORMANCE_PROGRAMS)
+foreach(prog ${CONFORMANCE_PROGRAMS})
+  file(RELATIVE_PATH prog_rel "${CMAKE_SOURCE_DIR}/tests/conformance" "${prog}")
+  string(REPLACE ".lev" "" tname "${prog_rel}")
+  string(REPLACE "/" "_" tname "${tname}")
+  foreach(leg interp cgen llvm)
+    add_test(NAME "conf_${leg}_${tname}"
+             COMMAND bash "${CMAKE_SOURCE_DIR}/tests/conformance/run.sh"
+                     "${leg}" "${prog}")
+    set_tests_properties("conf_${leg}_${tname}" PROPERTIES
+                         SKIP_RETURN_CODE 77
+                         TIMEOUT 300
+                         ENVIRONMENT "LEVIATHAN_BIN=$<TARGET_FILE:leviathan>")
+  endforeach()
+endforeach()
+
+# techdesign-07 Part A completeness gate: every enumerator of `enum class Op`
+# in src/ir/Ir.hpp must appear as an exact-name heading in docs/ir-spec.md.
+add_test(NAME ir_spec_complete
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/conformance/check_ir_spec.sh")
