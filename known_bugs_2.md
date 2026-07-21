@@ -640,3 +640,22 @@ already handle their own consumed contract). Verified flat at N=1/20/100 on
 the original repro, `fuzz/task_churn/park_inside_callback.lev` (promoted from
 XFAIL-LLVM to a plain regression floor), and a new
 `tests/corpus/churn/field_cow_across_methods.ext` churn-leak floor.
+
+#104 fixed 2026-07-20 (found+fixed in-session, refactor_1 session 02 — the
+Eval.cpp/IrInterp.cpp divergence audit that drove the RuntimeCore extraction):
+the oracle (`Evaluator::combine`)'s hand-maintained operator-symbol map omitted
+`|` and `&`. In unchecked/prelude code (where `Expr::resolved` is null) the
+oracle reached the object-operator dispatch path, but its `opSymbol` table
+stopped at `<<`/`>>` and mapped `|`/`&` to `"?"` — so applying `|` or `&` to an
+object whose class defines that operator method looked up a nonexistent `"?"`
+method and raised the wrong error (`no operator '?' on 'X'`), while `IrInterp`'s
+`objectArith` dispatched the resolved `|`/`&` method correctly. Expected: both
+engines dispatch the resolved operator method, or raise `"no operator '|' on
+'X'"` if the class lacks it. Same root-cause family as bug.md #13 (hand-copied
+operator/method-name tables drifting between the two engines). Fixed
+structurally by the RuntimeCore unification (`043c0d5`): the new shared
+`rtOpSymbol` table in `src/RuntimeCore.cpp` includes `|` and `&` (matching
+IrInterp and the checker's authoritative table — the correct side), and both
+engines now consume that single table, so this class of drift cannot recur.
+Filed for the historical record per the refactor_1 doc's finding-disposition
+rule (b) — no further action needed.
