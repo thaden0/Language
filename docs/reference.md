@@ -2304,6 +2304,27 @@ every rule that can touch it.
   (naming the rule, mirroring the `where`-clause bool check); a `$else` with no
   preceding `$if`, or a branch whose contents don't fit its fragment kind, is a
   parse error.
+- **`$f.type` / `$p.name` in type/identifier position, `name_$hole`
+  concatenation, and `$ident(…)` name synthesis** — three ways to splice a
+  bound value's *string* where a **name or type token** is expected, all
+  author-chosen and therefore alpha-rename-exempt. (1) A `$for`-bound
+  `meta::Field`/`meta::Param`/`meta::Method`'s **canonical `.type` or `.name`
+  string stands in for a type**: `$for f in C.fields : $f.type copy_$f =
+  this.$f;` declares one typed local per field (and `$p.type::FromJson(v)` names
+  a labeled constructor on the spliced type); only `.type`/`.name` are reifiable
+  as a type, any other field is a rule-stage error (M39). (2) A **literal
+  identifier prefix glued to a hole** (`copy_$f`, `local_$idx`) lexes as one
+  composite identifier and expands to the concatenated name (`copy_x`, …). (3)
+  **`$ident(a, b, …)`** in any decl-name position (`class $ident(C.name,
+  "Cols")`, a member name) builds the name by concatenating its **comptime-string
+  args** — a non-string arg or an illegal result is a rule-stage error (M38). A
+  `$ident`-synthesized declaration name that **collides** with an existing decl
+  in its target namespace is a rule-stage error naming both sites (M37) — never
+  silent shadowing. (Known limitation: a class injected `at namespace N` can be
+  consumed cross-namespace by *call* but not yet as a *type* from outside N;
+  consume such a synthesized descriptor within its own namespace.) A `member of`
+  template may inject **several members** (`int a()=>1; int b()=>2;`), each
+  subject to the same collision check.
 - **Additive + hygienic (by default):** ordinary rules only add code (no silent
   rewrites); the loud, explicitly-marked exception is a `rewrites` rule (below).
   A local a template declares is alpha-renamed to a fresh symbol, so injected

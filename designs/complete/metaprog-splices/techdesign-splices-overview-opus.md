@@ -1,6 +1,12 @@
 # Tech Design: Rule-Template Splice Extensions — Overview
 
-**Status:** design for review — no implementation yet. Closes
+**Status: ALL FOUR FILES IMPLEMENTED.** File 01 (A/B1/C) landed last, alongside this
+status update; files 02 (B2), 03 (E), and 04 (F + addendum) had already landed
+independently (each moved to `designs/complete/metaprog-splices/` with its own
+Status note — see those files for implementation detail). Every ask in the decision
+table below (A–F, addendum) is closed; nothing from `request-metaprog-splices.md`
+remains open. This file and `-positions-opus.md` move to
+`designs/complete/metaprog-splices/` together. Closes
 `designs/requests/request-metaprog-splices.md` (LA-15/16/17/22, plus the 2026-07-13
 class/struct addendum). Companion to `designs/complete/techdesign-metaprog-phase4.md`
 (Layers B–D, landed) and `designs/requests/accepted/request-metaprog-attr-values.md`

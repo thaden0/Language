@@ -454,6 +454,20 @@ std::string Resolver::resolveType(TypeRef* t, Scope* scope) {
                 // ::-qualified: walk the namespace path (§12), then find the type
                 // in the final namespace's OWN scope (localLookup, not lookup —
                 // a qualified name must not leak out to enclosing scopes).
+                //
+                // Known limitation (techdesign-splices-positions §3.5): a
+                // metaprogramming rule that injects a class `at namespace N`
+                // cannot have that class consumed AS A TYPE (`N::Foo x`) from
+                // OUTSIDE N. Type resolution runs in resolve pass 1, which is
+                // BEFORE the rule stage injects N, so this walk hard-errors here
+                // ("unknown namespace") and — because the rule stage is gated on
+                // `!sink.hasErrors()` (driver/main.cpp) — the injection never
+                // happens. Cross-namespace *call* resolution works because calls
+                // are resolved only by the Checker, which runs after injection.
+                // A real fix means deferring/softening pass-1 type errors across
+                // the whole meta pipeline (out of scope here); the design's
+                // workaround is to consume a synthesized descriptor within its
+                // own injected namespace (see tests/corpus/meta/rule_ident_synth).
                 Symbol* ns = nullptr;
                 for (size_t i = 0; i < t->path.size(); ++i) {
                     std::string_view seg = t->path[i];

@@ -350,6 +350,34 @@ private:
     Param cloneParam(const Param& p, Bindings& b, bool& err);
     std::string_view declRefName(const Binding& bnd) const;
 
+    // --- splice positions (techdesign-splices-positions, file 01) -------------
+    // Resolve one bare `$hole` to the STRING it contributes to a synthesized or
+    // composite identifier: a decl's name, a meta value's `name` field, or a
+    // primitive value stringified. Diagnoses + sets `err` if unbound / not
+    // name-able. Used by spliceCompositeName only.
+    bool holeNameString(std::string_view hole, const Bindings& b, SourceSpan span,
+                        std::string& out, bool& err);
+    // B1: splice a composite identifier `pre_$hole…` (`copy_$f`) into a concrete
+    // interned name — literal runs pass through, holes resolve via
+    // holeNameString. Validates the result is a legal identifier (M38 shape).
+    std::string_view spliceCompositeName(std::string_view name, const Bindings& b,
+                                         SourceSpan span, bool& err);
+    // C: evaluate a `$ident(a, b, …)` decl name — each arg a comptime string,
+    // concatenated + validated + interned (M38 on a non-string arg or an illegal
+    // result). Returns an empty view (and sets `err`) on failure.
+    std::string_view synthIdentName(const Stmt* s, Bindings& b, SourceSpan span, bool& err);
+    // C collision guard (M37): a namespace-scope `$ident`-synthesized decl name
+    // must be unique — clashing with a prior synth this run or an existing decl
+    // in the same namespace is a rule-stage error naming both sites.
+    void checkSynthCollision(Stmt* decl, const std::string& ns, const OwnedRule& r);
+    // The namespace path a decl lives in ("<root>" for top level), from its
+    // indexed ancestor chain — for the M37 same-scope comparison.
+    std::string declNamespace(const DeclInfo& di) const;
+    // "<root>"-aware qualified rule name for diagnostics.
+    std::string qualRuleName(const OwnedRule& r) const;
+    // M37 bookkeeping: "ns::name" -> the span that first synthesized it this run.
+    std::map<std::string, SourceSpan> synthDeclNames_;
+
     // §10: the rule/macro currently being cloned, for definition-site
     // qualification — set by expand()/expandMacroCall() before any
     // cloneStmt/cloneExpr call, read by cloneExpr's free-Name handling.

@@ -110,7 +110,16 @@ static size_t skipTypeFull(const std::vector<Token>& t, size_t i) {
             return skipTypeFull(t, j + 1);                    // return type (may be lambda)
         return i;                                             // a plain parenthesized expr
     }
-    if (t[i].kind == TokenKind::Identifier) return skipTypeSuffix(t, i + 1);
+    if (t[i].kind == TokenKind::Identifier) {
+        // B1 dotted-hole type (techdesign-splices-positions §2): `$f.type` /
+        // `$p.name` is one type token in fragment mode. Consume the `.field` so
+        // the decl-vs-expression lookahead sees the var name that follows it.
+        size_t j = i + 1;
+        if (!t[i].text.empty() && t[i].text[0] == '$' && j + 1 < t.size() &&
+            t[j].kind == TokenKind::Dot && t[j + 1].kind == TokenKind::Identifier)
+            j += 2;
+        return skipTypeSuffix(t, j);
+    }
     return i;
 }
 static TypeRefPtr mkType(TypeKind k, SourceSpan sp) {
@@ -223,6 +232,19 @@ TypeRefPtr Parser::parseTypePrimary() {
     if (at(TokenKind::Identifier)) { t->name = cur().text; advance(); }
     else error("type name");
 
+    // B1 dotted-hole type (techdesign-splices-positions §2): `$f.type` /
+    // `$p.name` — a bound meta value's canonical-string field standing in for a
+    // type name. Only after a `$hole` head; the field is resolved at clone time
+    // (cloneType), not here. `.field` is consumed so the type ends before it.
+    if (!t->name.empty() && t->name[0] == '$' && at(TokenKind::Dot) &&
+        peek(1).kind == TokenKind::Identifier) {
+        t->holeBind = t->name;                       // "$f"
+        advance();                                   // '.'
+        t->holeField = cur().text;                   // "type" | "name"
+        advance();
+        return wrapNullable(std::move(t));
+    }
+
     // ::-qualified type name: A::B::C -> path=[A, B], name=C. The qualifier
     // names the namespace(s) the type lives in (§12); generics bind the final
     // segment.
@@ -321,7 +343,16 @@ bool Parser::looksLikeVarDecl() const {
     // is really a parenthesized/IIFE expression leaves the index unmoved (no
     // `=>` follows its balanced parens) and is rejected below.
     size_t i;
-    if (peek(0).kind == TokenKind::Identifier) i = skipTypeSuffix(tokens_, pos_ + 1);
+    if (peek(0).kind == TokenKind::Identifier) {
+        size_t after = pos_ + 1;
+        // B1 dotted-hole type `$f.type` (fragment): consume `.field` so the var
+        // name after it is seen, exactly as skipTypeFull does for the same shape.
+        if (!peek(0).text.empty() && peek(0).text[0] == '$' &&
+            pos_ + 2 < tokens_.size() && tokens_[pos_ + 1].kind == TokenKind::Dot &&
+            tokens_[pos_ + 2].kind == TokenKind::Identifier)
+            after = pos_ + 3;
+        i = skipTypeSuffix(tokens_, after);
+    }
     else if (peek(0).kind == TokenKind::LParen) {
         i = skipTypeFull(tokens_, pos_);
         if (i == pos_) return false;                 // not a lambda type -> expression
@@ -780,7 +811,9 @@ StmtPtr Parser::parseClassMemberInner(Access sectionAccess, bool sectionConst) {
 
     // named member. A return type has already been consumed, so get/set/etc.
     // here are the member NAME, not the accessor keyword (`void get(...)`).
-    if (at(TokenKind::Identifier) || parserDetail::isContextualName(cur().kind)) {
+    if (tryParseNameSynth(m.get())) {
+        /* C: `int $ident(C.name,"Get")()` — name synthesized at expansion */
+    } else if (at(TokenKind::Identifier) || parserDetail::isContextualName(cur().kind)) {
         m->name = cur().text; m->selector.text = cur().text; advance();
     } else {
         error("member name");
@@ -801,11 +834,29 @@ StmtPtr Parser::parseClassMemberInner(Access sectionAccess, bool sectionConst) {
     return m;
 }
 
+// C name synthesis (techdesign-splices-positions §3): `$ident(a, b, …)`. `$ident`
+// lexes as a hole only in fragment mode, so this branch is dead in ordinary
+// source. The args are ordinary comptime expressions (a `$hole.field`, a bare
+// `$hole`, or a string literal); the rule engine evaluates + concatenates them
+// to the actual name at expansion (M37/M38).
+bool Parser::tryParseNameSynth(Stmt* into) {
+    if (!(at(TokenKind::Identifier) && cur().text == "$ident" &&
+          peek(1).kind == TokenKind::LParen))
+        return false;
+    advance();                                       // '$ident'
+    into->nameSynthArgs = parseArgs();               // ( a, b, … )
+    into->hasNameSynth = true;
+    if (into->nameSynthArgs.empty())
+        error("at least one comptime-string argument to $ident");
+    return true;
+}
+
 StmtPtr Parser::parseClass(Access access, bool isInterface, bool isValue) {
     auto c = parserDetail::mkStmt(StmtKind::Class, cur().span);
     c->access = access; c->isInterface = isInterface; c->isValue = isValue;
     advance();  // 'class' / 'struct' / 'interface'
-    if (at(TokenKind::Identifier)) { c->name = cur().text; advance(); }
+    if (tryParseNameSynth(c.get())) { /* name synthesized at expansion */ }
+    else if (at(TokenKind::Identifier)) { c->name = cur().text; advance(); }
     else error("class name");
 
     parseTypeParams(c->generics);                 // generic params <T, U>
@@ -832,7 +883,17 @@ StmtPtr Parser::parseClass(Access access, bool isInterface, bool isValue) {
             continue;
         }
         size_t before = pos_;
-        StmtPtr m = parseClassMember(section, constSection);
+        // Member-position `$for`/`$if` splices inside a quasiquoted class body
+        // (`class $ident(…) { $for f … : … }`, techdesign-splices-positions §3.5).
+        // These heads lex only in fragment mode, so this dispatch is dead in
+        // ordinary source — the same reasoning the statement grammar uses for a
+        // body-nested `$for`.
+        StmtPtr m;
+        if (at(TokenKind::Identifier) &&
+            (cur().text == "$for" || cur().text == "$if" || cur().text == "$else"))
+            m = parseFragmentStmt(SpliceBody::Member);
+        else
+            m = parseClassMember(section, constSection);
         if (m) c->body.push_back(std::move(m));
         if (pos_ == before) { error("member"); advance(); synchronize(); }
     }

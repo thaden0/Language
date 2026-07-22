@@ -454,7 +454,7 @@ struct Printer {
                         ? "\"" + sv(a.markerName) + "\"" : sv(a.target);
                     line(indent + 1, std::string("inject at ") + an + " " + target);
                     for (const StmtPtr& t : a.tmplStmts) stmt(indent + 2, t.get());
-                    if (a.tmplMember) stmt(indent + 2, a.tmplMember.get());
+                    for (const StmtPtr& t : a.tmplMembers) stmt(indent + 2, t.get());
                     if (a.tmplExpr) line(indent + 2, "Expr " + exprStr(a.tmplExpr.get()));
                 }
                 break;

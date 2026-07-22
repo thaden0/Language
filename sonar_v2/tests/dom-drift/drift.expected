@@ -19,3 +19,26 @@ write
 == fragment auto-wrap ==
 true
 2
+== tier-2 registry-coverage ==
+true
+true
+true
+true
+== tier-3 ladder ==
+hello
+hello
+true
+false
+world
+world
+true
+false
+Click
+Click
+true
+hello span
+hello span
+true
+false
+== tier-4 round-trip ==
+true

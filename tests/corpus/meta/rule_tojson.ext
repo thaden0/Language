@@ -1,0 +1,26 @@
+// (A) close-out (techdesign-splices-positions §1): a `$for`-bound field in
+// member-selector position (`this.$f`) inside an ARRAY-literal element, plus a
+// twin key array of `$f.name`, generate a class's key/value projection in ONE
+// `member of` inject — the toJson "Mechanism A" the request gates on, expressible
+// with two already-landed primitives (array `$for` splice + `this.$f` selector)
+// and no engine change. Also exercises the multi-member `member of` (§1.4): the
+// template injects TWO methods, both of which must survive.
+namespace J {
+    attribute Jsonable { }
+    rule toj {
+        match @Jsonable(a) on class C
+        inject `Array<string> keys() => [ $for f in C.fields : $f.name ];
+                Array<int>    vals() => [ $for f in C.fields : this.$f ];` at member of C
+    }
+}
+uses J;
+
+@Jsonable
+class Point {
+    int x = 3;
+    int y = 4;
+}
+
+Point p = Point();
+console.writeln(p.keys().joinToString(","));
+console.writeln(p.vals().joinToString(","));

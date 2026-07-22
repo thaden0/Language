@@ -1,0 +1,20 @@
+// Hand-written twin of rule_type_splice.ext: the per-field typed copies the
+// B1 splice generates, written out by hand (each `$f.type copy_$f = this.$f`
+// resolves to `int copy_x = this.x` etc.). Byte-identical --run / --ir output —
+// the acceptance proof that `$f.type` in type position and `copy_$f` composite
+// identifiers expand to exactly this hand code.
+class Point {
+    int x = 3;
+    int y = 7;
+    Array<string> dump() {
+        Array<string> out = [];
+        int copy_x = this.x;
+        int copy_y = this.y;
+        out = out.add("x" + "=" + copy_x.toString());
+        out = out.add("y" + "=" + copy_y.toString());
+        return out;
+    }
+}
+
+Point p = Point();
+console.writeln(p.dump().joinToString(", "));
