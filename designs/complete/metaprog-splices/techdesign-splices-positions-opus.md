@@ -1,19 +1,41 @@
 # Tech Design 01 — Splice Positions: `this.$f` (close A), `$f.type` (B1), `$ident(…)` (C)
 
+**Status: IMPLEMENTED** (agent2, on top of the `refactor_1` TU split — `src/frontend/`,
+`src/meta/`, `src/sema/`). Composite-identifier lexing (`src/frontend/Lexer.cpp`), the
+dotted-hole type form and `$ident(...)` name-synthesis parse (`src/frontend/Parser.cpp`,
+`ParserMeta.cpp`), the `TypeRef` hole fields / `Stmt::nameSynthArgs` (`src/core/Ast.hpp`),
+and the clone-time splice + collision guard (`src/meta/RulesClone.cpp`,
+`RulesExpand.cpp`) all ship. Diagnostics M37 (namespace-scope `$ident` collision), M38
+(bad `$ident` arg / illegal synthesized identifier), M39 (unreifiable `$f.type` field)
+fire with the exact message shapes this file specifies. The §1.4 `member of` multi-member
+fix landed too (`RuleAction::tmplMembers` is now a list). Corpus:
+`tests/corpus/meta/rule_{tojson,type_splice,ident_synth,member_multi}{,_twin}.ext` (green,
+byte-identical twins, `--run`/`--ir`/`--expand` roundtrip) and
+`tests/negative/rule_{ident_badarg,ident_collision,type_splice_badfield}.ext` (red, each
+producing its exact designed diagnostic). `docs/reference.md` §Rules documents `$f.type`/
+`$p.name` in type/identifier position, `name_$hole` concatenation, and `$ident(...)`
+synthesis with its collision rule. Full meta corpus + C++ unit suites (parser/resolver/
+checker/eval/meta) regression-clean.
+
+**One documented, deliberately out-of-scope limitation** (pre-existing, not a defect in
+this design): cross-namespace **type** consumption of a namespace-scope injected class
+(`N::Foo x` from outside `N`) still fails — type resolution runs in resolve pass 1, before
+the rule stage injects `N`, and the rule stage is gated on zero pass-1 errors
+(`src/driver/main.cpp`). Cross-namespace *call* resolution is unaffected (the Checker runs
+after injection). Reproduces with a literal class name too, so it predates this design.
+Documented at `src/sema/Resolver.cpp` (the `::`-qualified type-resolution walk) and in
+`docs/reference.md`; this file's own worked example (§3.5) follows the design's own
+workaround and consumes the synthesized descriptor within its own namespace. A real fix
+means deferring/softening pass-1 type errors across the whole meta pipeline — out of
+scope here, filed as a follow-on if a track needs cross-namespace type consumption.
+
+The reference attempt on branch `metaprog-splices-positions-attempt` (superseded by this
+landing, built on the pre-`refactor_1` monolithic `Rules.cpp`/`Parser.cpp`) has been
+deleted.
+
 **Part of** `designs/metaprog-splices/` (see `-overview-opus.md`). **Complexity:** opus
 (metaprog engine — `cloneExpr`/`cloneType`/`cloneStmt` + fragment parser + collision
 semantics). **Grounding commit:** `cc071c3`, spiked live against `build/leviathan`.
-
-> **Status: NOT yet implemented on master.** A first, working implementation attempt is
-> preserved for reference on branch **`metaprog-splices-positions-attempt`** (it covers
-> A/B1/C, the M37–M39 diagnostics, and the §1.4 multi-member `member of` fix, with green
-> corpus twins). It also surfaced one pre-existing limitation to account for when
-> implementing for real: **cross-namespace *type* consumption of a namespace-scope
-> injected class fails in the resolver** (reproduces with a literal class name too — an
-> injected namespace's types are not registered before type resolution runs, though
-> cross-namespace *call* resolution works), so the §3.5 worked example must consume the
-> synthesized descriptor within its own namespace. **Delete the
-> `metaprog-splices-positions-attempt` branch once this design is implemented for real.**
 
 Covers three asks that all live in the **hole → clone → splice** pipeline (overview §1):
 - **(A) member-selector `this.$f`** — **already works**; this file closes it with a corpus
