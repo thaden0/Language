@@ -1,0 +1,37 @@
+// XFAIL-ELF: frozen X64Gen's StoreGlobal retains the new value but never
+// releases the old one (X64Gen.cpp Op::StoreGlobal — store + retain only), so
+// every superseded global buffer leaks on ELF; bug #73's fix is LLVM-scoped.
+// Churn corpus (ARC leak net) — bug #73: a GLOBAL Array<T> grown by the COW
+// self-append idiom `xs = xs.add(...)`. Each store must release the global
+// slot's OLD reference before retaining the new one; without it, every
+// superseded intermediate buffer stays live (~160B/iteration here, O(N^2) in
+// the grow-only shape). Covers both a file-global and a namespace-global
+// written from inside its own namespace (the Sonar/DOM carrier shape). The
+// globals are reset each iteration and emptied at exit, so live-at-exit is
+// constant in N. @N@ is substituted by fuzz/churn_leak.py.
+Array<int> gxs = [];
+namespace Store {
+    Array<int> xs = [];
+    void reset() {
+        xs = [];
+    }
+    int bump(int i) {
+        xs = xs.add(i);
+        xs = xs.add(i + 1);
+        return xs.length();
+    }
+}
+void run(int n) {
+    int sink = 0;
+    for (int i in 1..n) {
+        gxs = [];
+        gxs = gxs.add(i);
+        gxs = gxs.add(i + 1);
+        Store::reset();
+        sink = sink + gxs.length() + Store::bump(i);
+    }
+    gxs = [];
+    Store::reset();
+    console.writeln(sink);
+}
+run(@N@);

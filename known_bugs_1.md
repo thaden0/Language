@@ -98,6 +98,53 @@ a plain `.lev` source file without editing the compiler or the prelude.
 - **P3.4** Cosmetic only (formatting/spelling of output), no value or
   control-flow difference.
 
+#73 closed 2026-07-21 (global `Array<T>` COW self-append leak on LLVM native).
+Verification + register closure: the fix itself was already in the tree, landed
+un-registered — the design docs (`examples/recon/DESIGN-2.md`,
+`designs/sonar/dom/techdesign-00-dom-overview.md`,
+`designs/sonar_v2/dom/techdesign-00-dom-overview.md`) still carried it as
+"[P2, OPEN]" and workaround mandates ("grow a local, assign once"; "no
+namespace-global growing arrays") were still being propagated.
+
+Filed symptom: a global (file-level or namespace-level) `Array<T>` grown in a
+loop by the COW self-append idiom `xs = xs.add(v);` leaked every superseded
+intermediate buffer on the LLVM native backend — O(N²) live bytes in the
+grow-only shape (`lvrt: heap exhausted` near N≈10k) — while the identical
+idiom on a LOCAL was clean (#31/#90 territory).
+
+Root cause: `Op::StoreGlobal` in the LLVM backend originally mirrored the
+X64Gen parity path (`src/X64Gen.cpp` `Op::StoreGlobal` — store + retain the
+new value only), which skips releasing the global slot's OLD reference on the
+false premise that globals are write-once. Locals never hit this: a local
+write-back reuses the register window (#90's consumed-receiver release), but a
+global write-back goes through the dk==0 StoreGlobal slot store, which owns
+its own ARC. Fix (already present): `src/backend/LlvmGenOps.cpp`
+`Op::StoreGlobal` stashes the old slot value, stores + retains the new one,
+then releases the old (retain-new-before-release-old keeps `xs = xs`
+self-assign safe; the zero-initialized globals array makes the first store's
+release a no-op).
+
+Proven this is THE relevant code by red/green differential (2026-07-21):
+temporarily removing only the release-old call and rebuilding reproduces the
+filed leak exactly — churn shape (global reset + grown twice per iteration)
+live-at-exit 16,736 B at N=100 → 128,736 B at N=800 (~160 B/iteration, oracle
+root set constant at 14); grow-only shape goes quadratic, 122,176 B at N=100 →
+7,548,224 B at N=800. With the release-old restored: flat 672 B at both N,
+root set constant — and the grow-only shape is linear (the genuinely-reachable
+final buffer only). Namespace-globals written from inside their own
+namespace's functions (the Sonar/DOM carrier shape) measure equally flat; note
+`NS::x = ...` from OUTSIDE the namespace does not lower at all on the IR
+engines ("IR: not yet lowerable: name 'Store'") — a separate limitation, not a
+leak. Object-element (`Array<Node>`) and in-language-callee
+(`xs = xs.skip(1)`, the #90 shape with a global write-back target) variants:
+flat. Columnar and `--no-columnar` layouts: both flat.
+
+Regression floor: `tests/corpus/churn/global_array_cow_growth.lev` (file-global
++ namespace-global COW growth, reset per iteration; runs in both churn-leak
+lanes). Marked `XFAIL-ELF`: frozen X64Gen's StoreGlobal still never releases
+the old value, so the leak persists on ELF — P3.2 frozen-backend debt, no
+X64Gen change permitted. The three design docs above now point here.
+
 #102 fixed 2026-07-21 (method-nested lambda over-captured `this`, forming an
 uncollectable refcount cycle when the closure was stored into a field of the same
 object). Ruling + fix, not just a diagnosis.

@@ -228,8 +228,10 @@ ships differential oracle/IR/LLVM goldens with ONE shared `.expected`; emit-C++ 
 - **#74 [P0.3, OPEN]** — no `Array<Struct>.add` loops, anywhere. Every DOM collection is either an
   array of **reference classes** (DomNode, Binding, NodeMeta rows) or **parallel primitive columns**
   (the theme.lev precedent). Structs never enter growing arrays.
-- **#73 [P2, OPEN]** — no namespace-global growing arrays; every growing carrier lives on an
-  instance (Document/registry objects), and bulk builds fill a local then assign once.
+- **#73 [P2, FIXED 2026-07-21]** — global/namespace-global COW array growth no longer leaks on
+  LLVM native (`Op::StoreGlobal` release-old, `src/backend/LlvmGenOps.cpp`; floor
+  `tests/corpus/churn/global_array_cow_growth.lev`; see `known_bugs_1.md` #73). The
+  instance-carrier + fill-a-local-then-assign-once pattern is retained as style, not a mandate.
 - **#72** — dialogs surface network nothing; not applicable.
 - **Fixed-but-disciplined**: explicit `this.` receivers in every stored lambda (#53 discipline —
   fixed at source, kept as house style); no char literals in call-argument position (#50 shape —
