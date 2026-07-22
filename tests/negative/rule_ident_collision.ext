@@ -1,0 +1,21 @@
+// (C) collision guard (techdesign-splices-positions §3.4, M37): a
+// `$ident(…)`-synthesized declaration name that clashes with an existing
+// declaration in the same namespace is a rule-stage error naming BOTH sites —
+// never silent shadowing (bug.md #22). Here the rule synthesizes `UserCols` at
+// namespace Gen, where a hand-written `UserCols` already lives.
+namespace App {
+    attribute Entity { }
+    rule cols {
+        match @Entity on class C
+        inject `class $ident(C.name, "Cols") { int marker = 1; }` at namespace Gen
+    }
+}
+uses App;
+
+@Entity class User { int age; }
+
+namespace Gen {
+    class UserCols { int hand = 9; }
+}
+
+console.writeln("unreached");

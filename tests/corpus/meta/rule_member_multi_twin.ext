@@ -1,0 +1,10 @@
+// Hand-written twin of rule_member_multi.ext: both members the multi-member
+// `member of` inject produces, written out by hand. Byte-identical --run / --ir
+// output — the acceptance proof that the second member no longer vanishes.
+class W {
+    int a() => 1;
+    int b() => 2;
+}
+
+W w = W();
+console.writeln(w.a() + w.b());

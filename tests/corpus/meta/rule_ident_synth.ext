@@ -1,0 +1,29 @@
+// (C) name synthesis (techdesign-splices-positions §3): `$ident(a, b, …)` builds
+// a declaration name from comptime strings — `$ident(C.name, "Cols")` -> a class
+// `UserCols` whose fields (one per @Entity field, via `$for`) hold their own
+// names, the Track-06 compile-checked column descriptor. Consumed by a sibling
+// helper injected into the same namespace (cross-namespace TYPE use of an
+// injected class is a separate resolver gap; call resolution across namespaces
+// works, so the descriptor is exercised through Gen::probe()).
+namespace App {
+    attribute Entity { }
+    rule cols {
+        match @Entity on class C
+        inject `class $ident(C.name, "Cols") {
+                    $for f in C.fields : string $f = $f.name;
+                }
+                string probe() {
+                    UserCols c = UserCols();
+                    return c.fullName + "," + c.age;
+                }` at namespace Gen
+    }
+}
+uses App;
+
+@Entity
+class User {
+    string fullName;
+    string age;
+}
+
+console.writeln(Gen::probe());
