@@ -1,0 +1,7 @@
+name = "atlantis-views-devreload-corpus"
+sources = ["views_devreload.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

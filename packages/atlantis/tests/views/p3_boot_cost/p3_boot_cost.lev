@@ -1,0 +1,45 @@
+// Atlantis Track 09 — Views P-3 (design §9): parse-at-boot cost. Generates 100
+// synthetic templates x ~4KB each under a throwaway `Resources/Views` tree, times
+// `Engine(cfg, logger)` (which parses every one, §8) via `sysMonotonic`, and prints
+// both the template count (deterministic — the golden-comparable part) and whether
+// it stayed under a generous budget. Real millisecond numbers are recorded in the
+// design's §13 log from a manual run per engine (timing itself is not a golden value).
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+string pad(int n) {
+    string body = "";
+    int i = 0;
+    while (i < 60) { body = body + "0123456789"; i = i + 1; }   // ~600 bytes
+    string block = "<p>{{ title }} row " + n.toString() + " " + body + "</p>\n";
+    string out = "";
+    i = 0;
+    while (i < 6) { out = out + block; i = i + 1; }             // ~4KB total
+    return out;
+}
+
+void main() {
+    string root = "packages/atlantis/tests/views/p3_boot_cost/_fixture";
+    std::sysMkdir(root);
+    int i = 0;
+    while (i < 100) {
+        using File f = File(root + "/t" + i.toString() + ".lhtml", std::write);
+        f.write(pad(i));
+        i = i + 1;
+    }
+
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    int start = std::sysMonotonic();
+    EngineConfig cfg = EngineConfig(root, false, "/public");
+    Engine e = Engine(cfg, logger);
+    int elapsed = std::sysMonotonic() - start;
+
+    console.writeln("loaded_templates=" + e.cache.length().toString());
+    console.writeln("under_budget_2000ms=" + (elapsed < 2000).toString());
+
+    i = 0;
+    while (i < 100) { std::sysRemove(root + "/t" + i.toString() + ".lhtml"); i = i + 1; }
+    std::sysRemove(root);
+}
+main();

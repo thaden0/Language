@@ -19,7 +19,7 @@ Current standings for this file (within a tier, ordered by bug number):
 | Priority | Bugs |
 |----------|---------------|
 | P0       | — |
-| P1       | — |
+| P1       | #105 |
 | P2       | — |
 | P3       | — |
 
@@ -154,6 +154,79 @@ both N). Regression floor `tests/corpus/churn/method_lambda_this_cycle.ext`
 (XFAIL-ELF for the orthogonal frozen-backend closure-field gap; a real PASS on
 the LLVM lane). Full closure/lambda/spawn/task/thread/meta/composition corpora
 green across treewalk/ir/llvm.
+
+---
+
+#105 [P1] found 2026-07-21 (Atlantis Track 09 views, P-probe/corpus work — build
+verified fresh against HEAD 43f3a21 before filing, per the rebuild-first policy).
+**[P1.2]**: the only workaround is per-callsite (rename the offending
+local/parameter), and any future track that happens to name a local or
+parameter `expr` and then calls a native method on it will independently
+rediscover this.
+
+**Repro** (minimal, `--ir` and `--build-native`, no Atlantis dependency
+needed — the ONLY thing that matters is the identifier spelling):
+```
+class Foo {
+    int classify(string expr) {
+        return expr.byteAt(0);
+    }
+}
+void main() {
+    Foo f = Foo();
+    console.writeln(f.classify("title").toString());
+}
+main();
+```
+**Expected:** `116` (`'t'`), matching the oracle (`--run`), which prints it
+correctly.
+
+**Actual:**
+- `--ir`: `Uncaught RuntimeException: unknown native 'byteAt'` (raised from
+  `IrInterp.cpp`'s `CallNativeFn` case, `src/backend/IrInterp.cpp:264` — the
+  `nativeFreeCall` dispatch fails to find `byteAt` at all, despite `byteAt`
+  being a landed, pervasively-used native elsewhere).
+- `--build-native` (LLVM): refuses to compile — `error: LLVM backend: native
+  floor function 'byteAt'` (misreported as an unsupported/deferred floor
+  native).
+
+Renaming ONLY the parameter (`expr` -> `s`, or `expr` -> `xexpr`, or `expr` ->
+anything else), with the method body otherwise byte-for-byte identical, makes
+both engines pass and print `116`. The receiver need not even be a parameter —
+a plain local `string expr = "title";` inside the method reproduces it too;
+the fault is the identifier itself, not its declaration form.
+
+**Scope:** confirmed to reproduce for at least `byteAt`, `startsWith`,
+`contains`, `endsWith`, `indexOf` as the method being called on a
+local/parameter named exactly `expr` — i.e. it is not specific to one native,
+one argument shape, or (contrary to this entry's own first-draft hypothesis
+while it was being chased down) whether the argument contains a `"` byte:
+that was a red herring from the original repro coincidentally naming its
+receiver `expr`. Sibling-looking identifiers tried and found NOT to trigger
+it: `stmt`, `node`, `value`, `type`, `s`. Oracle (`--run`) is correct in every
+case tried, on every receiver name.
+
+**Root-cause pointer (not fixed here — Leviathan source, Opus-tier, out of
+this track's scope):** a local/parameter named exactly `expr` appears to
+collide with an internal compiler symbol of the same spelling somewhere in
+the shared IR-lowering/native-call-classification path (`src/ir/Lower.cpp`
+and whatever LLVM-side coverage-check builds its "floor function"
+diagnostic), corrupting how a subsequent method call on that binding is
+classified (ends up routed through `CallNativeFn`/`nativeFreeCall` — the
+free-native floor table — instead of ordinary method dispatch). Not
+investigated further at the C++ level (out of scope for a Sonnet-tier
+library track); a `grep -n '"expr"'` across `src/` found no literal string
+match, so the collision is likely structural (e.g. a reused AST/temp-naming
+scheme) rather than a simple hardcoded name check.
+
+**Workaround used in this track** (`packages/atlantis/src/views/parser.lev`):
+the one parameter that was named `expr` (`classifyOutput`) is renamed to
+`exprText`; the affected quote-detection checks are also written byte-wise
+(`s.byteAt(i) == 34`) rather than `.startsWith("\"")`/`.endsWith("\"")` as a
+belt-and-suspenders leftover from chasing this down (harmless either way, and
+arguably clearer at the call sites that care about a specific byte value).
+Any future code should simply avoid naming a local/parameter `expr` until
+this is fixed at the source.
 
 #95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
 regression and not runtime-stale: a latent value-struct ARC over-release exposed

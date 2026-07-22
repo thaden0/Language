@@ -1,0 +1,10 @@
+<h1>{{ title }}</h1>
+{{#if user}}<p>Hello, {{ user.name }} ({{ user.age }})</p>{{#else}}<p>Hello, guest</p>{{/if}}
+<ul>
+{{#for item in items}}<li>{{$index}}: {{ item.label }}</li>
+{{/for}}</ul>
+<p>empty:[{{#if items}}has{{#else}}none{{/if}}]</p>
+<p>missing:[{{ nope.value }}]</p>
+<p>raw:[{{{ rawHtml }}}]</p>
+<p>escaped:[{{ dangerous }}]</p>
+<p>zero:[{{#if zero}}yes{{#else}}no{{/if}}]</p>

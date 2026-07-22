@@ -1,0 +1,7 @@
+name = "atlantis-views-p4"
+sources = ["p4_render_throughput.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

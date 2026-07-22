@@ -3,6 +3,8 @@
 // from the REPO ROOT (fixture root is a repo-relative path). Identical on
 // oracle + IR + LLVM.
 uses Atlantis::Http;
+uses Atlantis::Views;
+uses Atlantis::Log;
 
 string opt(string? v) => v != None ? v : "None";
 
@@ -69,7 +71,13 @@ void main() {
     // its owning response connection, so the old disconnected-ChunkedBody
     // inspection was rewritten as a streaming loopback assertion.
 
-    // Facade + IActionResponse.
+    // Facade + IActionResponse. `Http::View.render()` calls the real Track 09 engine
+    // now (facade.lev) — install one so the sugar has somewhere to render through.
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig vcfg = EngineConfig("packages/atlantis/tests/corpus/static/Resources/Views", false, "/public");
+    install(Engine(vcfg, logger));
+
     console.writeln("== facade + IActionResponse ==");
     Context fc = Context(req("GET", "/x", ""));
     console.writeln("  json=" + actionResult(Json("{\"ok\":true}"), fc).body);

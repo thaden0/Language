@@ -1,0 +1,117 @@
+// Atlantis Track 09 — Views: the controller-facing surface (design §4/§5).
+//
+// `View` + `view()`/`view<T>()`/`fragment()` are the typed boundary (§1.2/§4.1): a
+// handler builds a `View` value and hands it to `render(ctx, v)` (§4.3's own worked
+// example calls exactly this), which resolves the installed `Engine` and returns an
+// ordinary `HttpResponse` — Track 02's `Route<C>.invoke` is fixed at `(C, Context) =>
+// HttpResponse` (routing/route.lev), so this is the seam, not an automatic
+// View-return-type dispatch.
+namespace Atlantis {
+    namespace Views {
+
+        class View {
+            string templateName;
+            JsonValue model;
+            int status;
+            bool asFragment;
+            new View(string templateName, JsonValue model, int status, bool asFragment) {
+                this.templateName = templateName;
+                this.model = model;
+                this.status = status;
+                this.asFragment = asFragment;
+            }
+        }
+
+        View view(string name, JsonValue model) => View(name, model, 200, false);
+        // §4.1: the generic overload compiles only for a T carrying C7's toJson() member.
+        View view<T>(string name, T model) => View(name, model.toJson(), 200, false);
+        View fragment(string name, JsonValue model) {
+            View v = view(name, model);
+            v.asFragment = true;
+            return v;
+        }
+        View fragment<T>(string name, T model) {
+            View v = view::<T>(name, model);
+            v.asFragment = true;
+            return v;
+        }
+
+        // §5.2 — one route, HX-Request decides page vs. fragment.
+        bool wantsFragment(Http::Context ctx) => (Http::reqHeader(ctx.request, "HX-Request") ?? "") == "true";
+
+        // §5.4 reserved model key; `view()`/`render()` warn (not error) on collision.
+        string flashModelKey() => "flash";
+
+        // Pops every `_flash.*` entry (read-once) into the reserved `flash` model key.
+        // A model that isn't a JSON object can't carry the reserved key — flash is
+        // silently unavailable for it (documented v1 edge, §5.4 only promises the
+        // `JsonValue::ofObject` composition shape §4.2 shows).
+        JsonValue mergeFlash(Http::Context ctx, JsonValue model, Log::Logger logger) {
+            Auth::SessionRecord? recOpt = Auth::currentSessionRecord(ctx);
+            if (recOpt == None) {
+                return model;
+            } else {
+                Auth::SessionRecord rec = recOpt ?? Auth::SessionRecord(None, "", 0, 0);
+                Map<string, JsonValue> flashObj = Map();
+                Map<string, string> remaining = Map();
+                bool any = false;
+                for (Pair e in rec.flash) {
+                    if (e.first.startsWith("_flash.")) {
+                        string k = e.first.subStr(7, e.first.length() - 7);
+                        flashObj[k] = JsonValue::ofStr(e.second);
+                        any = true;
+                    } else {
+                        remaining[e.first] = e.second;
+                    }
+                }
+                if (!any) {
+                    return model;
+                } else {
+                    rec.flash = remaining;                 // read-once pop
+                    await Auth::putSessionRecord(ctx, rec);
+                    if (!model.isObject()) {
+                        return model;
+                    } else {
+                        Map<string, JsonValue>? mo = model.asObject();
+                        Map<string, JsonValue> out = Map();
+                        if (mo != None) {
+                            Map<string, JsonValue> src = mo;
+                            for (Pair e in src) { out[e.first] = e.second; }
+                        }
+                        if (out.has(flashModelKey())) {
+                            logger.warn("view model already carries the reserved 'flash' key — overwritten",
+                                []);
+                        }
+                        out[flashModelKey()] = JsonValue::ofObject(flashObj);
+                        return JsonValue::ofObject(out);
+                    }
+                }
+            }
+        }
+
+        // Writes one flash entry for the NEXT request to read (§5.4). No-op (silently)
+        // if there is no live session on this request — same posture as `{{csrf}}`
+        // needing session middleware installed.
+        void flash(Http::Context ctx, string key, string value) {
+            Auth::SessionRecord? recOpt = Auth::currentSessionRecord(ctx);
+            if (recOpt != None) {
+                Auth::SessionRecord rec = recOpt ?? Auth::SessionRecord(None, "", 0, 0);
+                rec.flash["_flash." + key] = value;
+                await Auth::putSessionRecord(ctx, rec);
+            }
+        }
+
+        // The controller-facing entry point (§4.3's own example calls exactly this):
+        // resolves the installed Engine, pops flash into the model, renders, and wraps
+        // the HTML in an ordinary HttpResponse.
+        HttpResponse render(Http::Context ctx, View v) {
+            Engine e = engineOrThrow();
+            JsonValue model = mergeFlash(ctx, v.model, e.logger);
+            RenderEnv env = e.buildRenderEnv(ctx);
+            string html = e.renderNamed(v.templateName, model, v.asFragment, env);
+            HttpResponse r = HttpResponse(v.status, html);
+            r.withHeader("Content-Type", "text/html; charset=utf-8");
+            return r;
+        }
+    }
+}

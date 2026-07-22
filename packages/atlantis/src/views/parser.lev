@@ -1,0 +1,449 @@
+// Atlantis Track 09 — Views: the hand-rolled template parser (design §2.4, no regex —
+// LA-13). One `Parser` instance parses exactly one file's source into a `Template`,
+// collecting EVERY error it finds (never stopping at the first, §8 point 1) and
+// resynchronizing at the next `{{` after a malformed tag.
+//
+// Recovery policy (documented simplification, not a grammar change): a *mismatched*
+// close tag (e.g. `{{/for}}` where an `{{/if}}` was expected) is reported against the
+// open construct's own line and treated as closing the innermost frame anyway — this
+// keeps one pass linear and simple rather than attempting full bracket-matching
+// recovery; a template that trips this is already broken and boot refuses to start
+// regardless (§8 point 4).
+namespace Atlantis {
+    namespace Views {
+
+        int countNewlines(string s) {
+            int n = s.length();
+            int i = 0;
+            int c = 0;
+            while (i < n) {
+                if (s.byteAt(i) == 10) { c = c + 1; }
+                i = i + 1;
+            }
+            return c;
+        }
+
+        // A single scanned tag's classification result. Bare declarations
+        // auto-construct (reference.md §4.3), so only the fields relevant to
+        // `kind` are ever set by the caller.
+        class TagInfo {
+            string kind;              // "output" | "literal" | "if" | "else" | "endif" |
+                                       // "for" | "endfor" | "include" | "layout" | "block" |
+                                       // "endblock" | "yield" | "csrf" | "asset" | "comment" |
+                                       // "handled_error" (an error was already recorded)
+            int line;
+            Array<string> path;
+            bool raw;
+            string litValue;
+            string varName;
+            string name;
+        }
+
+        class Parser {
+            string file;
+            string src;
+            int pos;
+            int line;
+            Array<ParseError> errors = [];
+            int scriptOpen;           // cumulative <script>/<style> nesting seen so far
+            int styleOpen;
+            int lintAllowLine;        // line of the most recent `{{! lint:allow }}`, -1 = none
+            string lastStop = "";     // which close ended the last parseSequence() call
+            string lastTextRun = "";  // the text run just added, for context-lint lookback
+
+            new Parser(string file, string src) {
+                this.file = file;
+                this.src = src;
+                this.pos = 0;
+                this.line = 1;
+                this.scriptOpen = 0;
+                this.styleOpen = 0;
+                this.lintAllowLine = 0 - 1;
+            }
+
+            void err(int atLine, string msg) {
+                this.errors = this.errors.add(ParseError(this.file, atLine, msg));
+            }
+            void warn(int atLine, string msg) {
+                ParseError w = ParseError(this.file, atLine, "warning: " + msg);
+                this.errors = this.errors.add(w);
+            }
+
+            // §3.2 context lints — cheap string scans over the text immediately
+            // preceding an interpolation tag, plus a whole-file open/close tally for
+            // <script>/<style>. Heuristic by design; `{{! lint:allow }}` on the
+            // preceding line downgrades a hit to a (still-printed) warning.
+            void trackScriptStyle(string text) {
+                string low = text.toLower();
+                this.scriptOpen = this.scriptOpen + low.count("<script") - low.count("</script");
+                this.styleOpen = this.styleOpen + low.count("<style") - low.count("</style");
+                if (this.scriptOpen < 0) { this.scriptOpen = 0; }
+                if (this.styleOpen < 0) { this.styleOpen = 0; }
+            }
+
+            // Byte-level checks throughout this file rather than `.startsWith("\"")`/
+            // `.endsWith("\"")` — not for the quote character itself (that part is
+            // harmless), but because the ORIGINAL code named these locals `expr`
+            // (matching the design's own "expr" grammar term), and a local/parameter
+            // named EXACTLY `expr` breaks every native method call on it, on IR and
+            // LLVM — bug #105 (known_bugs_1.md), filed, not fixed here (compiler-
+            // internal, out of this track's scope). Renamed to `exprText`
+            // (classifyOutput) and written byte-wise here as the two independent
+            // mitigations landed while chasing this down.
+            bool endsWithQuotePair(string s) {
+                int n = s.length();
+                if (n < 2) { return false; }
+                int last = s.byteAt(n - 1);
+                return last == 34 || last == 39;   // '"' or '\''
+            }
+
+            bool endsWithOpenEventAttr(string t) {
+                string s = t.trimEnd();
+                if (s.length() < 2 || s.byteAt(s.length() - 2) != 61 || !endsWithQuotePair(s)) { return false; }
+                string body = s.subStr(0, s.length() - 2);
+                int i = body.length() - 1;
+                int start = i + 1;
+                while (i >= 0) {
+                    int b = body.byteAt(i);
+                    bool ok = (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 45 || b == 95;
+                    if (!ok) { i = 0 - 1; } else { start = i; i = i - 1; }
+                }
+                string attrName = body.subStr(start, body.length() - start).toLower();
+                return attrName.startsWith("on");
+            }
+
+            bool endsWithUnquotedAttr(string t) {
+                string s = t.trimEnd();
+                return s.endsWith("=");
+            }
+
+            void lintPrecedingContext(string precedingText, int tagLine) {
+                bool allowed = this.lintAllowLine == tagLine - 1;
+                if (this.scriptOpen > 0) {
+                    this.reportLint(tagLine, "interpolation inside <script> (context-blind escaping is unsafe here — move data out of script, or {{! lint:allow }})", allowed);
+                }
+                if (this.styleOpen > 0) {
+                    this.reportLint(tagLine, "interpolation inside <style> (context-blind escaping is unsafe here — {{! lint:allow }} to override)", allowed);
+                }
+                if (this.endsWithOpenEventAttr(precedingText)) {
+                    this.reportLint(tagLine, "interpolation inside an event-handler attribute (onclick=… ) — {{! lint:allow }} to override", allowed);
+                } else if (this.endsWithUnquotedAttr(precedingText)) {
+                    this.reportLint(tagLine, "interpolation in an unquoted attribute value — quote the attribute, or {{! lint:allow }} to override", allowed);
+                }
+            }
+            void reportLint(int atLine, string msg, bool allowed) {
+                if (allowed) { this.warn(atLine, msg); } else { this.err(atLine, msg); }
+            }
+
+            // ---- expression grammar: `path | literal` (§2.2) -----------------------
+            Array<string>? parsePathOnly(string s) {
+                if (s == "" || s == "true" || s == "false") { return None; }
+                if (s.byteAt(0) == 34) { return None; }
+                int b0 = s.byteAt(0);
+                if ((b0 >= 48 && b0 <= 57) || b0 == 45) { return None; }
+                Array<string> segs = s.split(".");
+                for (string seg in segs) {
+                    if (seg == "") { return None; }
+                }
+                return segs;
+            }
+
+            TagInfo classifyOutput(string exprText, int atLine, bool raw) {
+                TagInfo ti = TagInfo();
+                ti.line = atLine;
+                if (exprText == "") {
+                    this.err(atLine, "empty {{ }} expression");
+                    ti.kind = "handled_error";
+                    return ti;
+                }
+                if (exprText == "true" || exprText == "false") {
+                    ti.kind = "literal"; ti.litValue = exprText; ti.raw = raw;
+                    return ti;
+                }
+                if (exprText.byteAt(0) == 34) {
+                    if (exprText.length() >= 2 && exprText.byteAt(exprText.length() - 1) == 34) {
+                        ti.kind = "literal"; ti.litValue = exprText.subStr(1, exprText.length() - 2); ti.raw = raw;
+                        return ti;
+                    } else {
+                        this.err(atLine, "unterminated string literal in expression '" + exprText + "'");
+                        ti.kind = "handled_error";
+                        return ti;
+                    }
+                }
+                int b0 = exprText.byteAt(0);
+                if ((b0 >= 48 && b0 <= 57) || b0 == 45) {
+                    int? n = exprText.toInt();
+                    if (n == None) {
+                        this.err(atLine, "invalid numeric literal '" + exprText + "'");
+                        ti.kind = "handled_error";
+                        return ti;
+                    } else {
+                        ti.kind = "literal"; ti.litValue = exprText; ti.raw = raw;
+                        return ti;
+                    }
+                }
+                Array<string>? path = this.parsePathOnly(exprText);
+                if (path == None) {
+                    this.err(atLine, "invalid path expression '" + exprText + "'");
+                    ti.kind = "handled_error";
+                    return ti;
+                } else {
+                    ti.kind = "output"; ti.path = path; ti.raw = raw;
+                    return ti;
+                }
+            }
+
+            string? dequote(string s) {
+                if (s.length() >= 2 && s.byteAt(0) == 34 && s.byteAt(s.length() - 1) == 34) {
+                    return s.subStr(1, s.length() - 2);
+                } else {
+                    return None;
+                }
+            }
+
+            // Reads exactly one `{{ ... }}` / `{{{ ... }}}` construct starting at
+            // `this.pos` (which points at the opening `{{`), advancing `pos`/`line`
+            // past it. Every error path returns kind "handled_error" (already logged).
+            TagInfo readTag() {
+                int startLine = this.line;
+                string three = this.src.subStr(this.pos, 3);
+                if (three == "{{{") {
+                    int closeIdx = this.src.indexOfFrom("}}}", this.pos + 3);
+                    if (closeIdx < 0) {
+                        this.err(startLine, "unterminated {{{ ... }}} (no closing '}}}')");
+                        this.pos = this.src.length();
+                        TagInfo ti = TagInfo(); ti.kind = "handled_error"; return ti;
+                    }
+                    string content = this.src.subStr(this.pos + 3, closeIdx - (this.pos + 3));
+                    this.line = startLine + countNewlines(content);
+                    this.pos = closeIdx + 3;
+                    return this.classifyOutput(content.trim(), startLine, true);
+                }
+                int closeIdx2 = this.src.indexOfFrom("}}", this.pos + 2);
+                if (closeIdx2 < 0) {
+                    this.err(startLine, "unterminated {{ ... }} (no closing '}}')");
+                    this.pos = this.src.length();
+                    TagInfo ti = TagInfo(); ti.kind = "handled_error"; return ti;
+                }
+                string content2 = this.src.subStr(this.pos + 2, closeIdx2 - (this.pos + 2));
+                this.line = startLine + countNewlines(content2);
+                this.pos = closeIdx2 + 2;
+                string c = content2.trim();
+                TagInfo ti = TagInfo();
+                ti.line = startLine;
+                if (c.startsWith("!")) {
+                    string body = c.subStr(1, c.length() - 1).trim();
+                    if (body == "lint:allow") { this.lintAllowLine = startLine; }
+                    ti.kind = "comment";
+                    return ti;
+                }
+                if (c.startsWith("#if")) {
+                    string rest = c.subStr(3, c.length() - 3).trim();
+                    Array<string>? p = this.parsePathOnly(rest);
+                    if (p == None) {
+                        this.err(startLine, "{{#if}} condition must be a plain path, got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else {
+                        ti.kind = "if"; ti.path = p; return ti;
+                    }
+                }
+                if (c == "#else") { ti.kind = "else"; return ti; }
+                if (c == "/if")   { ti.kind = "endif"; return ti; }
+                if (c.startsWith("#for")) {
+                    string rest = c.subStr(4, c.length() - 4).trim();
+                    int inIdx = rest.indexOf(" in ");
+                    if (inIdx < 0) {
+                        this.err(startLine, "{{#for}} expects 'x in expr', got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    }
+                    string varName = rest.subStr(0, inIdx).trim();
+                    string pathText = rest.subStr(inIdx + 4, rest.length() - (inIdx + 4)).trim();
+                    Array<string>? p = this.parsePathOnly(pathText);
+                    if (varName == "") {
+                        this.err(startLine, "{{#for}} expects 'x in expr' (a plain path), got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else if (p == None) {
+                        this.err(startLine, "{{#for}} expects 'x in expr' (a plain path), got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else {
+                        ti.kind = "for"; ti.varName = varName; ti.path = p; return ti;
+                    }
+                }
+                if (c == "/for") { ti.kind = "endfor"; return ti; }
+                if (c.startsWith(">")) {
+                    string name = c.subStr(1, c.length() - 1).trim();
+                    if (name == "") {
+                        this.err(startLine, "{{> }} needs a partial name");
+                        ti.kind = "handled_error"; return ti;
+                    }
+                    ti.kind = "include"; ti.name = name; return ti;
+                }
+                if (c.startsWith("#layout")) {
+                    string rest = c.subStr(7, c.length() - 7).trim();
+                    string? name = this.dequote(rest);
+                    if (name == None) {
+                        this.err(startLine, "{{#layout}} expects a quoted name, got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else {
+                        ti.kind = "layout"; ti.name = name; return ti;
+                    }
+                }
+                if (c.startsWith("#block")) {
+                    string rest = c.subStr(6, c.length() - 6).trim();
+                    string? name = this.dequote(rest);
+                    if (name == None) {
+                        this.err(startLine, "{{#block}} expects a quoted name, got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else {
+                        ti.kind = "block"; ti.name = name; return ti;
+                    }
+                }
+                if (c == "/block") { ti.kind = "endblock"; return ti; }
+                if (c.startsWith("#yield")) {
+                    string rest = c.subStr(6, c.length() - 6).trim();
+                    if (rest == "") {
+                        ti.kind = "yield"; ti.name = ""; return ti;
+                    } else {
+                        string? name = this.dequote(rest);
+                        if (name == None) {
+                            this.err(startLine, "{{#yield}} expects a quoted name or none, got '" + rest + "'");
+                            ti.kind = "handled_error"; return ti;
+                        } else {
+                            ti.kind = "yield"; ti.name = name; return ti;
+                        }
+                    }
+                }
+                if (c == "csrf") { ti.kind = "csrf"; return ti; }
+                if (c.startsWith("asset ")) {
+                    string rest = c.subStr(6, c.length() - 6).trim();
+                    string? assetPathVal = this.dequote(rest);
+                    if (assetPathVal == None) {
+                        this.err(startLine, "{{asset}} expects a quoted path, got '" + rest + "'");
+                        ti.kind = "handled_error"; return ti;
+                    } else {
+                        ti.kind = "asset"; ti.name = assetPathVal; return ti;
+                    }
+                }
+                return this.classifyOutput(c, startLine, false);
+            }
+
+            // The main scanning loop, shared by the top-level body and every nested
+            // frame (`if`/`for`/`block`). `stop` is one of "" (top level; runs to
+            // EOF), "if" (stop at #else or /if), "elseof" (stop at /if only), "for"
+            // (stop at /for), "block" (stop at /block). `this.lastStop` records which
+            // close ended the call ("eof" | "else" | "endif" | "endfor" | "endblock").
+            Array<Node> parseSequence(Template t, bool topLevel, string stop) {
+                Array<Node> out = [];
+                while (true) {
+                    int tagStart = this.pos < this.src.length() ? this.src.indexOfFrom("{{", this.pos) : (0 - 1);
+                    int textEnd = tagStart >= 0 ? tagStart : this.src.length();
+                    if (textEnd > this.pos) {
+                        string txt = this.src.subStr(this.pos, textEnd - this.pos);
+                        out = out.add(TextNode(this.line, txt));
+                        this.trackScriptStyle(txt);
+                        this.line = this.line + countNewlines(txt);
+                        this.pos = textEnd;
+                        this.lastTextRun = txt;
+                    } else {
+                        this.lastTextRun = "";
+                    }
+                    if (tagStart < 0) {
+                        this.lastStop = "eof";
+                        return out;
+                    }
+                    TagInfo tag = this.readTag();
+                    if (tag.kind == "handled_error") { continue; }
+                    if (tag.kind == "comment") { continue; }
+                    if (tag.kind == "output") {
+                        this.lintPrecedingContext(this.lastTextRun, tag.line);
+                        out = out.add(OutputNode(tag.line, tag.path, tag.raw));
+                        continue;
+                    }
+                    if (tag.kind == "literal") {
+                        this.lintPrecedingContext(this.lastTextRun, tag.line);
+                        out = out.add(LiteralNode(tag.line, tag.litValue, tag.raw));
+                        continue;
+                    }
+                    if (tag.kind == "csrf") { out = out.add(CsrfNode(tag.line)); continue; }
+                    if (tag.kind == "asset") { out = out.add(AssetNode(tag.line, tag.name)); continue; }
+                    if (tag.kind == "include") { out = out.add(IncludeNode(tag.line, tag.name)); continue; }
+                    if (tag.kind == "yield") { out = out.add(YieldNode(tag.line, tag.name)); continue; }
+                    if (tag.kind == "if") {
+                        out = out.add(this.parseIf(t, tag.line, tag.path));
+                        continue;
+                    }
+                    if (tag.kind == "for") {
+                        Array<Node> body = this.parseSequence(t, false, "for");
+                        if (this.lastStop != "endfor") {
+                            this.err(tag.line, "unclosed {{#for}} (opened line " + tag.line.toString() + ")");
+                        }
+                        out = out.add(ForNode(tag.line, tag.varName, tag.path, body));
+                        continue;
+                    }
+                    if (tag.kind == "layout") {
+                        if (!topLevel || !out.isEmpty() || t.layoutName != None) {
+                            this.err(tag.line, "{{#layout}} must be the first construct in the template");
+                        } else {
+                            t.layoutName = tag.name;
+                            t.layoutLine = tag.line;
+                        }
+                        continue;
+                    }
+                    if (tag.kind == "block") {
+                        Array<Node> body = this.parseSequence(t, false, "block");
+                        if (this.lastStop != "endblock") {
+                            this.err(tag.line, "unclosed {{#block}} (opened line " + tag.line.toString() + ")");
+                        }
+                        if (!topLevel) {
+                            this.err(tag.line, "{{#block}} is only allowed at the top level (not nested)");
+                        } else {
+                            t.blocks[tag.name] = body;
+                        }
+                        continue;
+                    }
+                    if (tag.kind == "else") {
+                        if (stop == "if") { this.lastStop = "else"; return out; }
+                        this.err(tag.line, "unexpected {{#else}} (no open {{#if}})");
+                        continue;
+                    }
+                    if (tag.kind == "endif") {
+                        if (stop == "if" || stop == "elseof") { this.lastStop = "endif"; return out; }
+                        this.err(tag.line, "unexpected {{/if}} (no open {{#if}})");
+                        continue;
+                    }
+                    if (tag.kind == "endfor") {
+                        if (stop == "for") { this.lastStop = "endfor"; return out; }
+                        this.err(tag.line, "unexpected {{/for}} (no open {{#for}})");
+                        continue;
+                    }
+                    if (tag.kind == "endblock") {
+                        if (stop == "block") { this.lastStop = "endblock"; return out; }
+                        this.err(tag.line, "unexpected {{/block}} (no open {{#block}})");
+                        continue;
+                    }
+                    this.err(tag.line, "unknown tag kind (internal)");
+                }
+            }
+
+            IfNode parseIf(Template t, int ifLine, Array<string> condPath) {
+                Array<Node> thenNodes = this.parseSequence(t, false, "if");
+                Array<Node> elseNodes = [];
+                if (this.lastStop == "else") {
+                    elseNodes = this.parseSequence(t, false, "elseof");
+                    if (this.lastStop != "endif") {
+                        this.err(ifLine, "unclosed {{#if}} (opened line " + ifLine.toString() + ")");
+                    }
+                } else if (this.lastStop != "endif") {
+                    this.err(ifLine, "unclosed {{#if}} (opened line " + ifLine.toString() + ")");
+                }
+                return IfNode(ifLine, condPath, thenNodes, elseNodes);
+            }
+
+            Template parseTemplate(string name, string filePath, int mtime, int size) {
+                Template t = Template(name, filePath, mtime, size);
+                t.body = this.parseSequence(t, true, "");
+                return t;
+            }
+        }
+    }
+}

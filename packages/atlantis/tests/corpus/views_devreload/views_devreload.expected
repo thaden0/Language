@@ -1,0 +1,5 @@
+== before edit ==
+Hello, World!
+
+== after edit (same Engine instance, no restart) ==
+Hi there, World! (edited, longer content to guarantee a size change)

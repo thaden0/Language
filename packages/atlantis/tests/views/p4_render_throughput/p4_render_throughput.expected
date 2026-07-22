@@ -1,0 +1,4 @@
+len_N=32809
+len_2N=65609
+len_ratio_is_2x=true
+no_quadratic_blowup=true

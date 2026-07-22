@@ -1,0 +1,5 @@
+boot_refused=true
+view boot failed:
+packages/atlantis/tests/corpus/views_errors/Resources/Views/broken.lhtml:3: unterminated {{ ... }} (no closing '}}')
+packages/atlantis/tests/corpus/views_errors/Resources/Views/broken_if.lhtml:2: unclosed {{#if}} (opened line 2)
+packages/atlantis/tests/corpus/views_errors/Resources/Views/broken.lhtml:2: {{> nope/missing}} targets an unknown template

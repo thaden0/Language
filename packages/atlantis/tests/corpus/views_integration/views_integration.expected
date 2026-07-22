@@ -1,0 +1,17 @@
+authenticated=true
+== first render (flash present) ==
+status=200 ctype=text/html; charset=utf-8
+<h1>Top links</h1>
+<form><input type="hidden" name="_csrf" value="<REDACTED>"></form>
+<link rel="stylesheet" href="/public/css/app.css">
+<div class="notice">Link added</div>
+
+== second render (flash popped, read-once) ==
+<h1>Top links</h1>
+<form><input type="hidden" name="_csrf" value="<REDACTED>"></form>
+<link rel="stylesheet" href="/public/css/app.css">
+
+
+asFragment=true
+wantsFragment(hx)=true
+wantsFragment(plain)=false

@@ -1,0 +1,12 @@
+// Atlantis Track 09 — Views P-6 (design §9): JsonValue number rendering. `toJson`'d
+// int fields should print `3` not `3.0` through the Track 09 formatter, per the
+// design's own instruction: if not, COORDINATE before writing a local formatter — never
+// shim it. Finding recorded in the design's §13 log (this is a real, pre-existing,
+// documented limitation — reference.md §6.11 already pins "42.000000" as the v1 wire
+// format, revisited only when float formatting is addressed globally, §19).
+void main() {
+    console.writeln(JsonValue::ofNum(3.0).render());
+    console.writeln(JsonValue::ofNum(0.0).render());
+    console.writeln(JsonValue::ofNum(3.5).render());
+}
+main();

@@ -1,0 +1,37 @@
+// Atlantis Track 09 — Views V-M1 acceptance: a single-file template exercising
+// output/if-else/for/$index/raw/escaping/missing-key policy + prod-mode warn+empty.
+// Run from the REPO ROOT (fixture root is a repo-relative path, same convention as
+// tests/corpus/static). Deterministic across oracle/IR/LLVM (no timestamps printed —
+// warnings are captured, only their COUNT is shown).
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+void main() {
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig("packages/atlantis/tests/corpus/views_basic/Resources/Views", false, "/public");
+    Engine e = Engine(cfg, logger);
+
+    Map<string, JsonValue> user = Map();
+    user["name"] = JsonValue::ofStr("Ann");
+    user["age"] = JsonValue::ofNum(3.0);
+
+    Map<string, JsonValue> item0 = Map();
+    item0["label"] = JsonValue::ofStr("a");
+    Map<string, JsonValue> item1 = Map();
+    item1["label"] = JsonValue::ofStr("b");
+
+    Map<string, JsonValue> model = Map();
+    model["title"] = JsonValue::ofStr("Hi");
+    model["user"] = JsonValue::ofObject(user);
+    model["items"] = JsonValue::ofArray([JsonValue::ofObject(item0), JsonValue::ofObject(item1)]);
+    model["rawHtml"] = JsonValue::ofStr("<b>bold</b>");
+    model["dangerous"] = JsonValue::ofStr("<script>&'\"");
+    model["zero"] = JsonValue::ofNum(0.0);
+
+    RenderEnv env = RenderEnv("", "/public");
+    string html = e.renderNamed("home", JsonValue::ofObject(model), false, env);
+    console.writeln(html);
+    console.writeln("warnings=" + sink.count().toString());
+}
+main();

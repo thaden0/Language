@@ -1,0 +1,38 @@
+// Atlantis Track 09 — Views V-M2 acceptance: dev-mode mtime+size reload (§2.1) —
+// "editing a partial in dev reflects without restart". The engine is booted ONCE
+// (`dev=true`); the fixture is then rewritten with a DIFFERENT SIZE (so the
+// mtime+size check (§2.1) fires the reload even when both writes land in the same
+// wall-clock second — P-1 found real filesystems here are second-granular) and
+// re-rendered through the SAME `Engine` instance, with no second construction. The
+// fixture is restored to its committed content afterward, so repeated runs (and `git
+// status`) stay clean. Run from the REPO ROOT.
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+void main() {
+    string path = "packages/atlantis/tests/corpus/views_devreload/Resources/Views/greet.lhtml";
+    string original = "Hello, {{ name }}!\n";
+
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig("packages/atlantis/tests/corpus/views_devreload/Resources/Views", true, "/public");
+    Engine e = Engine(cfg, logger);
+
+    Map<string, JsonValue> model = Map();
+    model["name"] = JsonValue::ofStr("World");
+    RenderEnv env = RenderEnv("", "/public");
+
+    console.writeln("== before edit ==");
+    console.writeln(e.renderNamed("greet", JsonValue::ofObject(model), false, env));
+
+    { using File f = File(path, std::write);
+      f.write("Hi there, {{ name }}! (edited, longer content to guarantee a size change)\n"); }
+
+    console.writeln("== after edit (same Engine instance, no restart) ==");
+    console.writeln(e.renderNamed("greet", JsonValue::ofObject(model), false, env));
+
+    // restore the fixture so the corpus stays byte-identical between runs
+    { using File f = File(path, std::write);
+      f.write(original); }
+}
+main();

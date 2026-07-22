@@ -583,3 +583,129 @@ app-hosted dispatch, R3):
 - 2026-07-07 (R10) — §0R added: `Resources/Views/*.lhtml` path/extension convention from
   the example; `Atlantis::View(name)` is the Track 01 §3R IActionResponse whose render
   calls this engine; static assets under `Public/`. Engine design unchanged.
+- 2026-07-21 — **V-M0/V-M1/V-M2/V-M3 implemented** (Sonnet-tier, pure `.lev` library code,
+  no compiler/runtime changes). V-M4 reached only as far as wiring the kernel's
+  `Http::View` sugar and updating `tests/corpus/static`'s own facade assertion end-to-end
+  through the real engine; the standalone `examples/atlantis-demo` app (AG-7,
+  2027-01-15, explicitly Wave-4/can-lag) was NOT built — out of scope for this pass, see
+  the milestone note below.
+
+  **Files added** — `packages/atlantis/src/views/{node,escape,parser,engine,view,command}.lev`
+  (Node hierarchy + `ParseError`/`Template`; the escaper; the hand-rolled parser;
+  `Engine`/`Frame`/`RenderEnv`/`Resolved`/`resolvePath`/boot walk/cross-file checks/dev
+  reload/the `install`/`engineOrThrow` holder; `View`/`view()`/`view<T>()`/`fragment()`/
+  `wantsFragment`/`flash`/`mergeFlash`/`render(ctx,v)`; the `./myapp views` command).
+  `packages/atlantis/trident.toml` gained `src/views/*.lev`.
+
+  **P-probes (§9), `packages/atlantis/tests/views/`, all six run and recorded, oracle
+  AND IR AND LLVM (P-1/P-2 needed no Atlantis dependency; P-3/P-5/P-6 ran only after
+  the engine/node types existed, a sequencing deviation from "before feature work" —
+  noted below):**
+  - **P-1** (`p1_mtime.lev`) — GREEN on all three. `std::fileModified`/`sysStat(.,2)`
+    mtime IS observable; this system's real-filesystem granularity is whole-seconds
+    (confirmed by spinning past 1.1s via `sysMonotonic` before rewriting), so §2.1's
+    size+mtime PAIR is exactly the needed mitigation for same-second edits (exercised
+    directly by V-M2's `views_devreload` corpus case, which never waits a second).
+  - **P-2** (`p2_listdir_read.lev`) — GREEN on all three: a 20-file, 3-level-nested tree
+    built at runtime, walked recursively via `sysListDir`+`isDir`, and read back via
+    whole-file `File` reads — byte-identical file count/lengths on oracle/IR/LLVM. No
+    STOP-3 condition; the filesystem quartet is solid on the primary (LLVM) backend.
+  - **P-3** (`p3_boot_cost/`) — GREEN on all three. 100 x ~4KB synthetic templates:
+    oracle ~0.9s wall (process startup dominates; parse itself is a small slice), IR
+    ~1.3s wall, LLVM ~0.15s wall including process start — all comfortably under the
+    ≤250ms-class LLVM budget once startup overhead is discounted; boot is once, so even
+    the interpreter numbers are a non-issue in practice.
+  - **P-4** (`p4_render_throughput/`) — GREEN on all three, scaled down from the design's
+    literal "10k rows" to 800/1600 rows (see deviation note below) — output length
+    exactly doubles (no quadratic blowup in the OUTPUT), and LLVM render time is
+    sub-millisecond-class at this scale (fastest of the three, as expected — prod is
+    LLVM, C8).
+  - **P-5** (`p5_match_dispatch/`) — GREEN on all three: `match` over the real 10-class
+    Node hierarchy (`Node` + 9 subclasses) with `else`, every arm selects correctly and
+    narrows in-arm member access (`n.text`, `n.path`, `n.condPath`, …) — the design's
+    own `match` showcase works exactly as sketched (§2.4's `renderNodes`/`walkNodes`
+    are the real, shipped versions of this probe's pattern).
+  - **P-6** (`p6_number_format.lev`) — RED against the design's *desired* outcome, but
+    this is a confirmed, PRE-EXISTING, already-documented limitation, not a views-track
+    bug: `JsonValue::ofNum(3.0).render()` prints `"3.000000"`, not `"3"`, identically on
+    all three engines (reference.md §6.11 already pins this exact wire format). Per the
+    design's own instruction ("coordinate... before writing a local formatter"), NO
+    local formatter was written; `$index` and any numeric model field render with the
+    six-decimal tail through the template engine today. Documented in reference.md's
+    new §6.13a. Revisit only when float/JSON formatting is addressed globally (§19).
+
+  **Deviation — P-3/P-4/P-5/P-6 sequencing.** The design asks for all P-probes
+  "BEFORE feature work"; P-1/P-2 (pure floor-native capability checks) were run first
+  as intended, but P-3/P-5/P-6 inherently need the Node/Parser/Engine types to exist
+  (P-5 specifically probes the REAL 10-class hierarchy, not a throwaway stand-in) and
+  P-4 needs a working renderer, so those four were run once M1's types landed instead.
+  No risk materialized retroactively (all four are green), but flagged as a deviation
+  in the letter of §9's ordering, not its risk-reduction intent.
+
+  **Deviation — P-4 row count.** Scaled from the design's literal 10k rows down to
+  800/1600. Reason: `StringBuilder` self-append is DOCUMENTED quadratic on the oracle
+  and IR tree-walk/bytecode interpreters specifically (reference.md §6.3.5, a
+  pre-existing, out-of-scope gap unrelated to this track's code shape) — a genuine
+  10k-row oracle run measured **1m58s** wall before the scale-down (LLVM itself stayed
+  fast throughout; only the two interpreters are affected). 800/1600 rows still proves
+  O(total) scaling (exact 2x output-length doubling) and no quadratic blowup within a
+  practical manual-run time budget; the full 10k-row LLVM number was independently spot-
+  checked (sub-millisecond render) and logged above.
+
+  **Bug found and filed — #105 (`known_bugs_1.md`, P1).** While chasing what first
+  looked like a "native string method fails when its argument contains a `\"`" bug
+  (the initial, WRONG hypothesis — worth recording so nobody re-derives it), root-
+  caused to something narrower and stranger: a local variable or parameter named
+  EXACTLY `expr` breaks every subsequent native method call on it (`unknown native
+  '<name>'` on `--ir`; "LLVM backend: native floor function '<name>'" refusing to
+  compile on `--build-native`), independent of argument content — confirmed for
+  `byteAt`/`startsWith`/`contains`/`endsWith`/`indexOf`; oracle is unaffected; sibling
+  identifiers (`stmt`, `node`, `value`, `type`, `s`) do NOT trigger it. Filed with a
+  minimal repro, not fixed (Leviathan compiler internals, Opus-tier, out of this
+  Sonnet-tier library track's scope). Worked around by renaming the one offending
+  parameter (`classifyOutput`'s `expr` -> `exprText`, `views/parser.lev`) plus writing
+  the file's own quote-detection helpers byte-wise (`byteAt(i) == 34`) as a harmless
+  belt-and-suspenders leftover from the investigation.
+
+  **Corpus (`packages/atlantis/tests/corpus/views_*`, golden oracle+IR+LLVM unless
+  noted):** `views_basic` (V-M1 — output/if-else/for/`$index`/raw/escape/missing-key
+  prod-warn policy, single file); `views_errors` (V-M1 negative — a corrupt two-file
+  corpus produces the expected aggregated `file:line: message` list and refuses to
+  boot, proving the parser collects every error in one pass rather than stopping at
+  the first); `views_layout` (V-M2 — partials, layout/block/yield weave, plus
+  `./myapp views`' `name -> file (layout, blocks, partials)` listing); `views_devreload`
+  (V-M2 — the SAME `Engine` instance picks up an edited template with no restart, via
+  the mtime+size pair, no second-boundary wait needed since the edit also changes
+  size); `views_integration` (V-M3 — `view()`/`view<T>()`/`fragment()`, `{{csrf}}`
+  against a real Track 08 session, flash write/read-once via the new
+  `Auth::currentSessionRecord`/`putSessionRecord` seam, `{{asset}}`, and
+  `wantsFragment` via `HX-Request`). `tests/corpus/static` (Track 01, pre-existing) was
+  UPDATED: its own comment already anticipated this ("`Atlantis::View('home')` sugar
+  lands with 09") — `Http::View.render()` now renders through the installed engine
+  against a real `Resources/Views/home.lhtml` fixture; the golden's last line changed
+  from the placeholder `[view:home]` to the real rendered `<!doctype
+  html><h1>home v</h1>`.
+
+  **Additive Track 08 seam (STOP-4, coordinated in this log rather than forked):**
+  `auth/session.lev` gained `SessionRecord.flash` (a bare `Map<string,string> = Map()`
+  field default — no constructor signature change, every existing call site
+  untouched) and a process-wide `installedSessionStrategy` holder +
+  `currentSessionRecord(ctx)`/`putSessionRecord(ctx, rec)` (mirrors this track's own
+  `Views::install`/`engineOrThrow` idiom, since `Http::Context` reaches no runtime
+  container either way). A composition root that calls `useAuthentication([...])`
+  should also call `Auth::installSessionStrategy(strat)` with the same instance for
+  flash (and any future session read/write need) to have a seam.
+
+  **Deviation — reserved model key collision handling (§5.4).** The design says
+  `view()` should warn on a `flash` key collision; landed instead as `render()`/
+  `mergeFlash` warning at MERGE time (the point flash is actually known to exist),
+  via the engine's own `Log::Logger` — equivalent outcome, simpler plumbing (the bare
+  `view()`/`fragment()` constructors have no logger to reach).
+
+  **Not built:** the Inertia seam (§6), asset fingerprinting, comptime templates, and
+  nested layouts remain explicitly post-v1 per the design's own §11 table — untouched.
+  The standalone `examples/atlantis-demo` app (V-M4/AG-7) was not built; `designs/
+  atlantis/example/` was left as an illustrative, not-necessarily-compiling sketch per
+  the task's own instruction (its `Resources/Views/home.lhtml` is still the placeholder
+  text — improving it was explicitly optional and deferred in favor of the tested
+  corpus fixtures above, which exercise the same real engine).

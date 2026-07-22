@@ -1,0 +1,43 @@
+// Atlantis Track 09 — Views V-M2 acceptance: partials (`{{> name}}`), layout/block/
+// yield, cross-file boot checks, and the `./myapp views` diagnostic (§8). Run from the
+// REPO ROOT (fixture root is a repo-relative path, same convention as tests/corpus/static).
+uses Atlantis::Views;
+uses Atlantis::Log;
+uses Atlantis::Config;
+
+Engine buildEngine(Config cfg) {
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig ecfg = EngineConfig("packages/atlantis/tests/corpus/views_layout/Resources/Views", false, "/public");
+    return Engine(ecfg, logger);
+}
+
+void main() {
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig("packages/atlantis/tests/corpus/views_layout/Resources/Views", false, "/public");
+    Engine e = Engine(cfg, logger);
+
+    Map<string, JsonValue> link0 = Map();
+    link0["title"] = JsonValue::ofStr("Leviathan");
+    Map<string, JsonValue> link1 = Map();
+    link1["title"] = JsonValue::ofStr("Atlantis");
+    Map<string, JsonValue> model = Map();
+    model["title"] = JsonValue::ofStr("Top links");
+    model["site"] = JsonValue::ofStr("MySite");
+    model["links"] = JsonValue::ofArray([JsonValue::ofObject(link0), JsonValue::ofObject(link1)]);
+
+    RenderEnv env = RenderEnv("", "/public");
+    console.writeln("== full page (layout weave) ==");
+    console.writeln(e.renderNamed("links/index", JsonValue::ofObject(model), false, env));
+
+    console.writeln("== fragment (layout skipped) ==");
+    console.writeln(e.renderNamed("links/index", JsonValue::ofObject(model), true, env));
+
+    console.writeln("== partial rendered directly as its own page ==");
+    console.writeln(e.renderNamed("links/_list", JsonValue::ofObject(model), false, env));
+
+    console.writeln("== ./myapp views ==");
+    int _ = runViewsCommand(buildEngine, empty());
+}
+main();
