@@ -523,3 +523,60 @@ the change only ADDS reachable statement kinds); a negative probe (`int y =
 "s";` nested in a top-level `for`) now correctly reports `cannot initialize`.
 `docs/reference.md` §4.3 top-level-statements paragraph updated to state that the
 script body admits the full statement grammar except `break`/`continue`/`return`.
+
+#106 [P2.2] fixed 2026-07-21 (quadratic `--mem-verify` sweep made the
+http_streaming churn gate time out and misread as a leak): ctest
+`http_streaming_integration` failed with `FAIL churn root set scales with N
+(N=40: 18 sites, N=400: 0 sites)` while every corpus sub-case printed ok. The
+"0 sites" was NOT a real root-set collapse (nor a leak, nor P0.3 corruption):
+the N=400 `--run --mem-verify` sweep blew the script's internal `timeout 120`,
+producing no `[mem]` report at all, and `grep -c` then counted the empty
+output as 0 — a false leak verdict fabricated by the harness's failure mode.
+Controlled unloaded reruns confirmed both halves: whenever the run completes,
+the root set is exactly 18 lines at N=40 AND N=400 (the invariant holds; no
+teardown leak), and the N=400 run took 58-189s on an IDLE machine — the
+timeout was not merely parallel-ctest load flake.
+
+Root cause (the real defect, engine-tooling side): `MemVerifier::sweep()`
+(`src/ir/MemVerify.hpp`) is called after EVERY interpreted op
+(`src/backend/IrInterp.cpp` memOn_ block) and iterated the ENTIRE `objs` map —
+every object ever allocated, dead entries included (they stay for the final
+report and were only skipped by a `continue`). Total verifier cost was
+O(ops x totalAllocs); in a churn loop both factors are linear in N, so the
+sweep was quadratic: measured tree-walk times 0.47s / 6.0s / 30.4s / 189s at
+N = 40 / 100 / 200 / 400 (16,819 allocations at N=400, peak live only 51).
+Output was correct on every engine whenever the run finished, so this is
+P2.2 (performance/resource-only, asymptotic complexity wrong) — explicitly
+NOT P0.3: no reference or resource was dropped; the roots were always there,
+the verifier was just too slow to report them inside the harness budget.
+
+Fix (two sites):
+1. `src/ir/MemVerify.hpp` — added a live index (`std::vector<const void*>
+   live_`): `onAlloc` pushes the key, `sweep()` walks ONLY the live index
+   (swap-and-pop on expiry) instead of all of `objs`. Per-op cost drops to
+   O(liveNow) (bounded, 51 here), total verifier cost linear in the op count.
+   Dead entries still stay in `objs`, so `report()` is byte-identical
+   (diff-verified at N=40 and N=400 pre/post fix).
+2. `tests/run_http_streaming.sh` — `rootset_at` can no longer launder a dead
+   run into a count: the run writes to a file, a nonzero exit (timeout/crash)
+   returns the sentinel `RUNFAIL`, and the gate reports `FAIL churn
+   --mem-verify run died or timed out (...)` distinctly from a genuine
+   root-set scaling failure.
+
+Regression floor: the churn gate's per-run timeout is tightened 120s -> 60s
+(matching `fuzz/churn_leak.py`'s `TIMEOUT_S = 60` convention). Post-fix the
+sweep runs in 0.34s / 0.54s / 0.76s / 1.34s at N = 40 / 100 / 200 / 400
+(~45x headroom at N=400); the old quadratic sweep needed 58s+ at N=400 even
+idle, so a complexity regression trips the floor and now reports as the
+distinct RUNFAIL message, not a phantom leak.
+
+Verified: `bash tests/run_http_streaming.sh build/leviathan .` fully green
+(all 10 corpus programs on oracle/IR/LLVM + `ok churn root set constant (18
+sites at N=40 and N=400)`); root-set count 18 = 18 across N with the fixed
+binary; `run_memverify.sh` lane (`corpus_mem_verify`) green — the only other
+consumer of the sweep — plus `corpus_treewalk`/`_ir` unaffected (memOn_ off).
+Side observation while reproducing: a SIBLING checkout running the same lane
+concurrently (another agent's worktree) holds the same loopback ports
+(18110 ...), which ctest's RESOURCE_LOCK cannot see across repos — that
+produced one spurious 120s hang at N=40 here. The new RUNFAIL message makes
+that failure mode diagnosable too, instead of reading as "0 sites".

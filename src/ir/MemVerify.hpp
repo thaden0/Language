@@ -39,6 +39,14 @@ struct MemVerifier {
 
     // Keyed by the underlying pointer so both engines agree on identity.
     std::unordered_map<const void*, Tracked> objs;
+    // Sweep working set: keys of cells not yet observed dead. sweep() runs
+    // after EVERY op, so it must only walk the (small, bounded) live set —
+    // walking all of `objs` (dead entries included) made the verifier
+    // O(ops x totalAllocs), i.e. quadratic in a churn loop's N (known_bugs
+    // #106: the http_streaming churn gate timed out at N=400 from exactly
+    // this). Dead entries stay in `objs` for the final report; they just
+    // leave this index the moment sweep() sees them expire.
+    std::vector<const void*> live_;
     long nextId = 1;
     long opClock = 0;                  // monotonic op counter (global schedule)
     long liveNow = 0, peakLive = 0;
@@ -86,6 +94,7 @@ struct MemVerifier {
         t.id = nextId++; t.fn = fn; t.pc = pc; t.kind = kindOf(v);
         t.weak = std::weak_ptr<void>(sp);
         objs[k] = t;
+        live_.push_back(k);   // enters the sweep working set (leaves when it expires)
         ++totalAllocs; ++liveNow;
         if (liveNow > peakLive) peakLive = liveNow;
     }
@@ -93,16 +102,32 @@ struct MemVerifier {
     // Detect cells that have just become unreachable (weak expired) and record
     // the op at which it happened. This is the free-schedule oracle.
     void sweep() {
-        for (auto& [k, t] : objs) {
-            if (t.gone) continue;
-            if (t.weak.expired()) {
-                t.gone = true; t.deadAtOp = opClock; --liveNow;
-                if (shadow && !t.shadowFreed)
-                    errors.push_back(siteStr(t) + " unreachable at op " +
-                                     std::to_string(opClock) +
-                                     " but the shadow ARC still holds it (refcount " +
-                                     std::to_string(t.shadowRc) + ") -> LEAK");
+        // Walk ONLY the live index (swap-and-pop on expiry): O(liveNow) per
+        // op, so total verifier cost is linear in the op count, not quadratic
+        // in total allocations. `objs` references are stable across inserts
+        // (unordered_map rehash never moves elements), but we re-find by key
+        // anyway — an address-reuse overwrite in onAlloc replaces the mapped
+        // Tracked in place, and the key is the one identity both paths share.
+        size_t i = 0;
+        while (i < live_.size()) {
+            auto it = objs.find(live_[i]);
+            if (it == objs.end()) {            // defensive: index out of sync
+                live_[i] = live_.back(); live_.pop_back(); continue;
             }
+            Tracked& t = it->second;
+            if (t.gone || t.weak.expired()) {
+                if (!t.gone) {
+                    t.gone = true; t.deadAtOp = opClock; --liveNow;
+                    if (shadow && !t.shadowFreed)
+                        errors.push_back(siteStr(t) + " unreachable at op " +
+                                         std::to_string(opClock) +
+                                         " but the shadow ARC still holds it (refcount " +
+                                         std::to_string(t.shadowRc) + ") -> LEAK");
+                }
+                live_[i] = live_.back(); live_.pop_back();
+                continue;
+            }
+            ++i;
         }
     }
 

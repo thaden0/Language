@@ -45,12 +45,22 @@ churn="$dir/churn.lev"
 rootset_at() {
   local n="$1"
   sed "s/run(40);/run($n);/" "$churn" > "$work/churn_$n.lev"
-  timeout 120 "$bin" --run --mem-verify "$work/churn_$n.lev" 2>&1 \
-    | grep -c "reachable at exit"
+  # The 60s budget doubles as the verifier-complexity regression floor
+  # (known_bugs #106): sweep() is O(live set) per op, so N=400 finishes in a
+  # couple of seconds; the old O(ops x totalAllocs) sweep took 60s+ here and
+  # the timeout used to surface as a bogus "0 sites" count. A dead or
+  # timed-out run must be reported as such, never counted.
+  if ! timeout 60 "$bin" --run --mem-verify "$work/churn_$n.lev" \
+       > "$work/churn_$n.mem" 2>&1; then
+    echo "RUNFAIL"; return
+  fi
+  grep -c "reachable at exit" "$work/churn_$n.mem"
 }
 r_small=$(rootset_at 40)
 r_large=$(rootset_at 400)
-if [ "$r_small" = "$r_large" ] && [ "$r_small" -gt 0 ]; then
+if [ "$r_small" = "RUNFAIL" ] || [ "$r_large" = "RUNFAIL" ]; then
+  echo "FAIL churn --mem-verify run died or timed out (N=40: $r_small, N=400: $r_large)"; fail=1
+elif [ "$r_small" = "$r_large" ] && [ "$r_small" -gt 0 ]; then
   echo "ok   churn root set constant ($r_small sites at N=40 and N=400)"
 else
   echo "FAIL churn root set scales with N (N=40: $r_small sites, N=400: $r_large sites)"; fail=1
