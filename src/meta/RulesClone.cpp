@@ -13,13 +13,34 @@
 // M22, static: is this token text a `$name` hole? Was a file-static in
 // Rules.cpp; every caller ended up here, so it stays a plain file-static.
 static bool isHole(std::string_view t) { return !t.empty() && t[0] == '$'; }
+// A composite identifier carries an embedded `$` but does NOT start with one
+// (`copy_$f`) — spliced at clone time, unlike a bare hole `$f` (techdesign-
+// splices-positions §2.2).
+static bool hasHole(std::string_view t) {
+    return t.find('$') != std::string_view::npos;
+}
+static bool isIdentContChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+// A concatenated/synthesized name is a legal identifier: non-empty, a non-digit
+// first char, ident-continue thereafter (matches the lexer's ident grammar).
+static bool isLegalIdent(std::string_view s) {
+    if (s.empty()) return false;
+    if (s[0] >= '0' && s[0] <= '9') return false;
+    for (char c : s) if (!isIdentContChar(c)) return false;
+    return true;
+}
 
 // Collect names the template declares as locals (Var statements), assigning
 // each a fresh gensym in renames_ — hygiene by alpha-renaming (§7.1).
 void RuleEngine::collectTemplateLocals(const Stmt* s) {
     if (!s) return;
+    // A composite identifier (`copy_$f`) carries a `$` but is not a bare hole —
+    // it is author-chosen and spliced at clone time, so it is NOT a renameable
+    // template local (techdesign-splices-positions §2.4).
     if (s->kind == StmtKind::Var && !s->name.empty() && !isHole(s->name) &&
-        !renames_.count(s->name)) {
+        !hasHole(s->name) && !renames_.count(s->name)) {
         synthNames_.push_back("__r" + std::to_string(gensymCounter_++) + "_" +
                               std::string(s->name));
         renames_[s->name] = synthNames_.back();
@@ -37,6 +58,136 @@ std::string_view RuleEngine::declRefName(const Binding& bnd) const {
     if (bnd.declStmt) return bnd.selectorText.empty() ? bnd.declStmt->name
                                                       : bnd.selectorText;
     return {};
+}
+
+// --- splice positions: identifier synthesis (techdesign-splices-positions §2.2/§3)
+bool RuleEngine::holeNameString(std::string_view hole, const Bindings& b,
+                                SourceSpan span, std::string& out, bool& err) {
+    auto it = b.find(hole.substr(1));
+    if (it == b.end()) {
+        sink_.error(span, "'" + std::string(hole) + "' is not bound by this rule");
+        err = true; return false;
+    }
+    const Binding& bn = it->second;
+    if (bn.declStmt) { out = std::string(declRefName(bn)); return true; }
+    if (bn.hasVal) {
+        const Value& v = bn.val;
+        if (v.kind == VKind::Object && v.obj) {
+            auto nit = v.obj->fields.find("name");
+            if (nit != v.obj->fields.end() && nit->second.kind == VKind::String) {
+                out = nit->second.s; return true;
+            }
+            sink_.error(span, "'" + std::string(hole) + "' has no 'name' field to "
+                        "form an identifier");
+            err = true; return false;
+        }
+        if (v.kind == VKind::String) { out = v.s; return true; }
+        out = valueToString(v);   // int/bool/float loop var -> `local_$idx`
+        return true;
+    }
+    sink_.error(span, "'" + std::string(hole) + "' is an attribute value, not "
+                "usable inside an identifier");
+    err = true; return false;
+}
+
+std::string_view RuleEngine::spliceCompositeName(std::string_view name,
+                                                 const Bindings& b, SourceSpan span,
+                                                 bool& err) {
+    std::string acc;
+    size_t i = 0;
+    while (i < name.size()) {
+        if (name[i] == '$') {
+            size_t j = i + 1;
+            while (j < name.size() && isIdentContChar(name[j])) ++j;
+            std::string piece;
+            if (!holeNameString(name.substr(i, j - i), b, span, piece, err))
+                return name;
+            acc += piece;
+            i = j;
+        } else {
+            size_t j = i;
+            while (j < name.size() && name[j] != '$') ++j;
+            acc.append(name.data() + i, j - i);
+            i = j;
+        }
+    }
+    if (!isLegalIdent(acc)) {
+        sink_.error(span, "composite name '" + std::string(name) + "' produced '" +
+                    acc + "', not a legal identifier");   // M38 shape
+        err = true; return name;
+    }
+    return own(std::move(acc));
+}
+
+std::string_view RuleEngine::synthIdentName(const Stmt* s, Bindings& b,
+                                            SourceSpan span, bool& err) {
+    std::unordered_map<std::string, Value> locals = materializeBindings(b);
+    std::string acc;
+    for (size_t k = 0; k < s->nameSynthArgs.size(); ++k) {
+        std::string evErr; bool failed = false;
+        Value v = evalComptimeAt(s->nameSynthArgs[k].get(), locals, evErr, failed);
+        if (failed) {
+            sink_.error(s->nameSynthArgs[k]->span, "$ident argument " +
+                        std::to_string(k + 1) + " failed to evaluate: " + evErr);  // M38
+            err = true; return {};
+        }
+        if (v.kind != VKind::String) {
+            sink_.error(s->nameSynthArgs[k]->span, "$ident argument " +
+                        std::to_string(k + 1) + " is not a comptime string (got '" +
+                        valueToString(v) + "')");   // M38
+            err = true; return {};
+        }
+        acc += v.s;
+    }
+    if (!isLegalIdent(acc)) {
+        sink_.error(span, "$ident produced '" + acc + "', not a legal identifier");  // M38
+        err = true; return {};
+    }
+    return own(std::move(acc));
+}
+
+std::string RuleEngine::qualRuleName(const OwnedRule& r) const {
+    return r.ns == "<root>" ? std::string(r.node->name)
+                            : r.ns + "::" + std::string(r.node->name);
+}
+
+std::string RuleEngine::declNamespace(const DeclInfo& di) const {
+    // ancestors run innermost -> outermost; namespaces reversed give the path.
+    std::vector<std::string_view> parts;
+    for (const Ancestor& a : di.ancestors)
+        if (a.kindWord == "namespace") parts.push_back(a.stmt->name);
+    if (parts.empty()) return "<root>";
+    std::string out;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+        if (!out.empty()) out += "::";
+        out += std::string(*it);
+    }
+    return out;
+}
+
+void RuleEngine::checkSynthCollision(Stmt* decl, const std::string& ns,
+                                     const OwnedRule& r) {
+    std::string simple(decl->name);
+    std::string key = ns + "::" + simple;
+    std::string rn = qualRuleName(r);
+    auto report = [&](SourceSpan other) {
+        LineCol lc = lineColAt(file_.text, other.offset);
+        sink_.error(decl->span, "rule '" + rn + "' synthesizes declaration '" + simple +
+                    "' but a declaration '" + simple + "' already exists at " +
+                    std::to_string(lc.line) + ":" + std::to_string(lc.col) +
+                    " — synthesized names must be unique");   // M37
+    };
+    auto sit = synthDeclNames_.find(key);
+    if (sit != synthDeclNames_.end()) { report(sit->second); return; }
+    for (const DeclInfo& di : decls_) {
+        if (di.decl == decl) continue;
+        if ((di.kindWord == "class" || di.kindWord == "struct" ||
+             di.kindWord == "interface") &&
+            di.decl->name == simple && declNamespace(di) == ns) {
+            report(di.decl->span); return;
+        }
+    }
+    synthDeclNames_[key] = decl->span;
 }
 
 // --- definition-site qualification (§10) -------------------------------------
@@ -427,6 +578,12 @@ ExprPtr RuleEngine::cloneExpr(const Expr* e, Bindings& b, bool& err) {
                         "' is an attribute value; splice a field (e.g. $" +
                         std::string(e->text.substr(1)) + ".name)"); err = true;
         }
+    } else if (e->kind == ExprKind::Name && hasHole(e->text)) {
+        // B1: a REFERENCE to a composite-named local (`copy_$f`) — resolve it the
+        // same way its declaration was (techdesign-splices-positions §2.2), so the
+        // two agree. Author-chosen, so rename-exempt (never routed through
+        // renames_/def-site qualification).
+        out->text = spliceCompositeName(e->text, b, e->span, err);
     } else if (e->kind == ExprKind::Name && !verbatimClone_) {
         // Hygiene: a reference to a template-declared local -> its fresh name.
         // Skipped under verbatimClone_ (§2.2): the original body being spliced
@@ -525,6 +682,31 @@ TypeRefPtr RuleEngine::cloneType(const TypeRef* t, Bindings& b, bool& err) {
     out->span = t->span;
     out->path = t->path;
     out->name = t->name;
+    // B1 dotted-hole type (techdesign-splices-positions §2): `$f.type` / `$p.name`
+    // in type position. Read the bound meta value's canonical-string field
+    // (`type` or `name`) and splice it as this type's name — rename-exempt
+    // (cloneType never renames), holeBind/holeField deliberately NOT carried onto
+    // the clone so it prints and resolves as an ordinary named type. Only
+    // `.type`/`.name` are legal.
+    if (!t->holeField.empty()) {
+        std::string_view field = t->holeField;
+        auto it = b.find(t->holeBind.substr(1));
+        if ((field == "type" || field == "name") && it != b.end() &&
+            it->second.hasVal && it->second.val.kind == VKind::Object &&
+            it->second.val.obj) {
+            auto fit = it->second.val.obj->fields.find(std::string(field));
+            if (fit != it->second.val.obj->fields.end() &&
+                fit->second.kind == VKind::String && !fit->second.s.empty()) {
+                out->name = own(fit->second.s);
+                return out;
+            }
+        }
+        sink_.error(t->span, "'" + std::string(t->holeBind) + "." +
+                    std::string(field) + "' has no reifiable type/name field "
+                    "usable as a type");   // M39
+        err = true;
+        return out;
+    }
     // Type-position hole: `$C` as a type name -> splice the bound decl's name,
     // AND retain its resolved symbol so pass-2 resolves to the class directly.
     // Without the symbol, a `$C t = ...` type inside an injection whose own
@@ -595,8 +777,18 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
     // "fix" this into copying a cross-node pointer that would dangle into
     // the template tree.
     out->label = s->label;
+    // C: `$ident(a, …)` decl name — synthesize now (techdesign-splices-positions
+    // §3). out->hasNameSynth stays set on the resolved clone so the
+    // namespace-scope collision check (M37) can find it; it is cleared once
+    // checked. Members funnel their M37 through injectMember's existing same-name
+    // collision.
+    if (s->hasNameSynth) {
+        out->name = synthIdentName(s, b, out->span, err);
+        out->selector.text = out->name;
+        out->hasNameSynth = true;
+    }
     // Member/field/method name may itself be a hole (`member of` templates).
-    if (isHole(out->name)) {
+    else if (isHole(out->name)) {
         auto it = b.find(out->name.substr(1));
         if (it != b.end() && it->second.declStmt) out->name = declRefName(it->second);
         // A `$for`-bound meta.* value (member/namespace-position `$for` that
@@ -610,6 +802,10 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
                 nit->second.kind == VKind::String)
                 out->name = own(nit->second.s);
         }
+    }
+    // B1: composite identifier `copy_$f` — author-chosen, rename-exempt.
+    else if (hasHole(out->name)) {
+        out->name = spliceCompositeName(out->name, b, out->span, err);
     } else if (s->kind == StmtKind::Var && !verbatimClone_) {
         // Hygiene: rename a template-declared local at its declaration site.
         // Skipped under verbatimClone_ (§2.2): the original body keeps its own
@@ -627,6 +823,8 @@ StmtPtr RuleEngine::cloneStmt(const Stmt* s, Bindings& b, bool& err) {
                 nit->second.kind == VKind::String)
                 out->selector.text = own(nit->second.s);
         }
+    } else if (hasHole(out->selector.text) && !s->hasNameSynth) {
+        out->selector.text = spliceCompositeName(out->selector.text, b, out->span, err);
     }
     out->type = cloneType(s->type.get(), b, err);
     cloneParamList(s->params, b, err, out->params);   // $_params (§6), member side

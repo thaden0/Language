@@ -91,7 +91,13 @@ Token Lexer::lexNumber(uint32_t start) {
 }
 
 Token Lexer::lexIdentifier(uint32_t start) {
-    while (isIdentCont(peek())) ++pos_;
+    // In fragment mode (§16.5), a `$` glued to an identifier with no separator is
+    // a COMPOSITE identifier: `copy_$f`, `local_$idx` (techdesign-splices-positions
+    // §2.2). We lex the whole contiguous run as one Identifier token — its text is
+    // a plain source slice — and the rule engine splices the embedded hole(s) at
+    // clone time. `keywordKind` never matches a `$`-bearing word, so a composite
+    // can't be mistaken for a keyword.
+    while (isIdentCont(peek()) || (allowHoles_ && peek() == '$')) ++pos_;
     std::string_view word = std::string_view(file_.text).substr(start, pos_ - start);
     return make(keywordKind(word), start);
 }
@@ -232,9 +238,11 @@ std::vector<Token> Lexer::tokenize() {
 
             case '$':
                 // Fragment mode only: `$name` is one Identifier (text includes
-                // the '$') — a quasiquote hole, resolved at expansion time.
+                // the '$') — a quasiquote hole, resolved at expansion time. A
+                // further glued `$` (e.g. `$a$b`) stays in the same token, the
+                // mirror of the composite run lexIdentifier absorbs.
                 if (allowHoles_ && isIdentStart(peek())) {
-                    while (isIdentCont(peek())) ++pos_;
+                    while (isIdentCont(peek()) || peek() == '$') ++pos_;
                     tokens.push_back(make(TokenKind::Identifier, start));
                 } else {
                     sink_.error({start, 1},
