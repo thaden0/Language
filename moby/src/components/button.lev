@@ -1,0 +1,100 @@
+namespace Moby {
+    class Button : Focusable, Styleable, ISingleLine {
+        string label = "";
+        // Display-only accelerator suffix, rendered "label [key]" when set;
+        // binding the actual shortcut is the app's/@Shortcut's job (T07).
+        string key = "";
+        bool enabled = true;
+
+        bool flashing_ = false;
+        Array<() => void> pressHandlers_ = [];
+        Array<int> pressTokens_ = [];
+
+        new Button() {
+            setTabStop(true);
+            // bug.md #53: a lambda that calls an instance method with a
+            // BARE (implicit-`this`) receiver silently loses the mutation
+            // on IR and segfaults on native once the lambda is stored and
+            // invoked from a different call frame than where it was
+            // created (any constructor-registered event handler). An
+            // EXPLICIT `this.` receiver on every such call is the
+            // workaround (see `this.firePress()` below and every other
+            // component's onKey/onMouse/onPaste/timer lambda in this
+            // track).
+            // bug.md #50: a single-quoted char literal fails to retype to
+            // `char` in call-argument position (works fine in declarations,
+            // comparisons, and returns) — bind to a local first.
+            char spaceKey = ' ';
+            this.onKey((e) => {
+                if (!enabled) return;
+                if ((e.code == KeyCode::Enter && e.mods == 0) || e.isChar(spaceKey)) {
+                    this.firePress();
+                    e.handled = true;
+                }
+            });
+            this.onMouse((e) => {
+                if (!enabled) return;
+                if (e.kind == MouseKind::Press && e.button == MouseButton::Left) {
+                    this.firePress();
+                    e.handled = true;
+                }
+            });
+        }
+
+        void setLabel(string value) { label = value; invalidateLayout(); }
+        void setKey(string value) { key = value; invalidateLayout(); }
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        int onPress(() => void h) {
+            int token = newHandlerToken();
+            pressHandlers_ = pressHandlers_.add(h);
+            pressTokens_ = pressTokens_.add(token);
+            return token;
+        }
+        void offPress(int token) {
+            Array<() => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..pressTokens_.length() - 1) if (pressTokens_[i] != token) {
+                hs = hs.add(pressHandlers_[i]);
+                ts = ts.add(pressTokens_[i]);
+            }
+            pressHandlers_ = hs;
+            pressTokens_ = ts;
+        }
+
+        // No App.every one-shot clear here: T09's App doesn't exist yet, and
+        // this component owns no timer registration for it. The flash is
+        // cleared the next time this component paints (see paintContent) —
+        // the exact "persists until next event" cosmetic degradation this
+        // track's design doc accepts and documents (§4, §10.3) rather than
+        // an approximation of it.
+        void firePress() {
+            if (!enabled) return;
+            flashing_ = true;
+            invalidate();
+            Array<() => void> snapshot = pressHandlers_;
+            for (() => void h in snapshot) h();
+        }
+
+        string displayText() => key.isEmpty() ? label : label + " [" + key + "]";
+
+        Size contentDesired(Size avail) => Size(stringCellWidth(displayText()) + 4, 1);
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            string themeKey = "button";
+            if (!enabled) themeKey = "button.disabled";
+            else if (focused) themeKey = "button.focused";
+            Style st = resolveOrDefault(this, themeKey);
+            if (flashing_) st = st.withAttrs(mergeAttrs(st.attrs, Attr::Reverse));
+            s.writeText(content.x(), content.y(), "[ " + displayText() + " ]", st);
+            flashing_ = false;
+        }
+    }
+}

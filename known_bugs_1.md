@@ -206,6 +206,31 @@ receiver `expr`. Sibling-looking identifiers tried and found NOT to trigger
 it: `stmt`, `node`, `value`, `type`, `s`. Oracle (`--run`) is correct in every
 case tried, on every receiver name.
 
+**Addendum (agent1, 2026-07-22, tooling-rename task):** `trim` joins the
+affected-natives list — confirmed via `moby/src/templates/expander.lev`'s
+`parseFor`/`parseIf` and `moby/src/dom/templates/dom_expander.lev`'s twin
+copies, both of which hold `string expr = this.parseBalanced("{"); ...
+node.forExpr = expr.trim();`. More importantly, this shows the bug's blast
+radius is wider than "runtime method calls on a bare `expr` binding": these
+`expr.trim()` sites run during **comptime procedural-macro expansion** (the
+`dom!`/template-literal expander), not at ordinary runtime. The oracle
+(`--run`) expands these templates correctly; expanding the SAME macro under
+`--ir` or `--build-native` throws `Uncaught RuntimeException: unknown native
+'trim'` (IR) / `native floor function 'trim'` (LLVM) partway through
+expansion, because comptime macro execution for those targets is going
+through the same buggy `expr`-receiver dispatch path as ordinary runtime
+calls. Practical effect: essentially every non-oracle-target test in Moby's
+own `dom-*`/`markup` golden corpus (`moby/tests/runtests.sh`) that exercises
+`$for`/`$if` template syntax is currently red on `--ir`/`--build-native`
+because of this, not because of any defect in the corpus, the expander's
+logic, or (checked explicitly) the Harpoon→Sonar/Sonar→Moby rename that was
+in flight when this was found — a minimal repro with a plain `raw.trim()` (no
+`expr` receiver) round-trips correctly on both oracle and IR. Renaming the
+two parser locals (`expr` -> e.g. `raw`) in both expander files would clear
+this class of failure the same way the workaround in
+`packages/atlantis/src/views/parser.lev` did, but that edit was left to this
+bug's eventual real fix rather than done piecemeal by an unrelated task.
+
 **Root-cause pointer (not fixed here — Leviathan source, Opus-tier, out of
 this track's scope):** a local/parameter named exactly `expr` appears to
 collide with an internal compiler symbol of the same spelling somewhere in

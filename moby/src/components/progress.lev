@@ -1,0 +1,99 @@
+namespace Moby {
+    char eighthGlyph(int eighths) {
+        if (eighths <= 1) return '▏';
+        if (eighths == 2) return '▎';
+        if (eighths == 3) return '▍';
+        if (eighths == 4) return '▌';
+        if (eighths == 5) return '▋';
+        if (eighths == 6) return '▊';
+        return '▉';
+    }
+
+    class ProgressBar : Component, Styleable, ISingleLine {
+        int value = 0;
+        int max = 100;
+        bool showPercent = false;
+        // Narrow-font fallback: skip partial-eighth boundary glyphs, use
+        // whole cells only.
+        bool coarse = false;
+
+        bool indeterminate_ = false;
+        int marqueePos_ = 0;
+
+        // Registered once; the pending-timer seam (Component/T01's
+        // ILifecycleHost) (re-)activates it on every attach and cancels it
+        // on every detach, so this needs no onAttach/onDetach override here.
+        // The tick itself is a no-op while indeterminate_ is false, so the
+        // timer can be registered unconditionally regardless of mode.
+        // bug.md #53: `invalidate()` is a bare (implicit-`this`) instance
+        // method call inside this lambda; an explicit `this.` receiver is
+        // the workaround (field writes like `marqueePos_ = ...` are
+        // unaffected — only the method call needed it).
+        new ProgressBar() {
+            __mobyRegisterTimer(80, () => {
+                if (indeterminate_) {
+                    marqueePos_ = marqueePos_ + 1;
+                    this.invalidate();
+                }
+            });
+        }
+
+        void setValue(int v) { value = v; invalidate(); }
+        void setMax(int v) { max = v; invalidate(); }
+        void setShowPercent(bool v) { showPercent = v; invalidate(); }
+        void setCoarse(bool v) { coarse = v; invalidate(); }
+        ProgressBar indeterminate(bool on) {
+            indeterminate_ = on;
+            invalidate();
+            return this;
+        }
+
+        Size contentDesired(Size avail) => Size(10, 1);
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            int w = content.w();
+            int ratioMax = max <= 0 ? 1 : max;
+            int ratioValue = value < 0 ? 0 : (value > ratioMax ? ratioMax : value);
+            Style fillStyle = resolveOrDefault(this, "progressbar.fill");
+            Style baseStyle = resolveOrDefault(this, "progressbar");
+            char full = '█';
+            char space = ' ';
+
+            if (indeterminate_) {
+                int marqueeW = w < 3 ? w : 3;
+                int span = w - marqueeW;
+                if (span < 1) span = 1;
+                int pos = marqueePos_ % span;
+                for (int i in 0..w - 1) {
+                    bool lit = i >= pos && i < pos + marqueeW;
+                    s.put(content.x() + i, content.y(), lit ? full : space, lit ? fillStyle : baseStyle);
+                }
+            } else if (coarse) {
+                int filledCells = w * ratioValue / ratioMax;
+                for (int i in 0..w - 1)
+                    s.put(content.x() + i, content.y(), i < filledCells ? full : space,
+                          i < filledCells ? fillStyle : baseStyle);
+            } else {
+                int totalEighths = w * 8 * ratioValue / ratioMax;
+                int fullCells = totalEighths / 8;
+                int remainder = totalEighths % 8;
+                for (int i in 0..w - 1) {
+                    char glyph = space;
+                    Style st = baseStyle;
+                    if (i < fullCells) { glyph = full; st = fillStyle; }
+                    else if (i == fullCells && remainder > 0) { glyph = eighthGlyph(remainder); st = fillStyle; }
+                    s.put(content.x() + i, content.y(), glyph, st);
+                }
+            }
+
+            if (showPercent && !indeterminate_) {
+                int pct = ratioValue * 100 / ratioMax;
+                string label = pct.toString() + "%";
+                int lw = stringCellWidth(label);
+                if (lw <= w) s.writeText(content.x() + w - lw, content.y(), label, baseStyle);
+            }
+        }
+    }
+}

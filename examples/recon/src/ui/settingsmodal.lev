@@ -3,7 +3,7 @@
 // before closing; Cancel restores. Accepted values persist via the existing
 // saveSettings (wired through onSave).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class SettingsModal {
     public Modal modal;
@@ -79,7 +79,7 @@ class SettingsModal {
         this.clearCookies.setChecked(s.clearSessionCookiesOnExit);
         this.lineNumbers.setChecked(s.editorLineNumbers);
         this.modal.open();
-        Sonar::app().focus(this.themeRadio);
+        Moby::app().focus(this.themeRadio);
     }
 
     void previewTheme(int i) {

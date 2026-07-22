@@ -4,7 +4,7 @@
 // fold/unfold, search, and build an assertion/extraction from the selected value
 // (§8.3). A leaf (paints via paintContent) with a full-width bg every row (#4 belt).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class JsonRow {
     public int    depth     = 0;
@@ -252,7 +252,7 @@ class JsonView : Focusable, Styleable {
     void openSearch() {
         PromptDialog dlg = PromptDialog("Search", "find:", this.search_);
         dlg.setOnAccept((v) => this.runSearch(v));
-        dlg.open(Sonar::app());
+        dlg.open(Moby::app());
     }
     void runSearch(string term) {
         this.search_ = term;

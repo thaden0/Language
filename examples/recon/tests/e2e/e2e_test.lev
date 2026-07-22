@@ -3,7 +3,7 @@
 // frames. Proves the whole rebuilt UI assembles and wires to AppState (no real
 // network — the send path is covered by the hermetic sender test).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class TR : IRenderer {
     int w; int h; Point? cursor = None; public int presents = 0;
@@ -134,7 +134,7 @@ void main() {
     console.writeln("export valid json=" + (redoc != None).toString());
 
     recon.teardown();
-    __sonarResetApp();
+    __mobyResetApp();
     console.writeln("done");
 }
 

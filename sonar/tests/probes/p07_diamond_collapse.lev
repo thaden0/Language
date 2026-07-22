@@ -1,5 +1,0 @@
-class Core { int value = 0; }
-class Left : Core { void left() { value = 4; } }
-class Right : Core { int right() => value; }
-class Diamond : Left, Right { int check() { left(); return right(); } }
-console.writeln(Diamond().check());

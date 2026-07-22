@@ -12,6 +12,6 @@ sources = [
 ]
 
 [[dep]]
-path    = "../../sonar"
-as      = "Sonar"
-version = "0.1.0"
+path    = "../../moby"
+as      = "Moby"
+version = "0.2.0"

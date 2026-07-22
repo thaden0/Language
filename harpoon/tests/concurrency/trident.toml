@@ -1,6 +1,0 @@
-name = "harpoon-tests-concurrency"
-sources = ["main.lev"]
-
-[[dep]]
-path = "../.."
-as = "harpoon"

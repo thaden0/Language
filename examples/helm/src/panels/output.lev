@@ -7,7 +7,7 @@
 // dependency — H11 translates `ProcEvent`s into `appendLine` calls; this model
 // only holds lines.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

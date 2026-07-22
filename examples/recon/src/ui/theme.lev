@@ -2,14 +2,14 @@
 // idiom folds themes/recon.toml to a comptime string at build time (import() only
 // folds in a comptime context — a runtime call throws, LA-20), so it is a
 // top-level `comptime` global per asset. `reconThemeFor` bases the recon theme on
-// a Sonar built-in (for the component-base keys) and overlays Recon's taxonomy.
+// a Moby built-in (for the component-base keys) and overlays Recon's taxonomy.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 comptime string reconThemeToml = import("themes/recon.toml");
 
 // The Theme for a settings theme name. "recon" (and any unknown name) = the Dark
-// component-base plus the recon.toml overlay; the other three are Sonar built-ins.
+// component-base plus the recon.toml overlay; the other three are Moby built-ins.
 Theme reconThemeFor(string name) {
     if (name == "dark")         { return Theme::Dark(); }
     if (name == "light")        { return Theme::Light(); }

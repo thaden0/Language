@@ -1,7 +1,7 @@
 // H03 unit/golden — the command registry: register/execute/enable, the palette
-// filter, and keymap binding firing a named command through a Sonar Keymap.
+// filter, and keymap binding firing a named command through a Moby Keymap.
 // Pure and hermetic (no subprocess); byte-identical on oracle + IR + LLVM.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

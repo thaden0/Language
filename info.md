@@ -34,17 +34,18 @@ as-implemented reference, and the git history):
   reference is an error suggesting the turbofish. The list is checker-only, preserved by
   rules/specialization/reifier clones and `--expand`, and adds no runtime or ABI payload.
   Tree-walk/IR/emit-C++/LLVM are covered (`docs/reference.md` §2.5/§3.3).
-- **Harpoon — the standard unit test library, COMPLETE** (`designs/complete/techdesign-unit-test-library.md`,
-  2026-07-15) — the assertion vocabulary (`assertEqual`/`assertNotEqual`/`assertSame`/
+- **Sonar (formerly Harpoon) — the standard unit test library, COMPLETE** (`designs/complete/techdesign-unit-test-library.md`,
+  2026-07-15; renamed Harpoon → Sonar 2026-07-22, `designs/complete/techdesign-tooling-renames-sonnet.md`) —
+  the assertion vocabulary (`assertEqual`/`assertNotEqual`/`assertSame`/
   `assertTrue`/`assertFalse`/`assertNone`/`assertSome`/`assertThrows`/`fail`, all
   overloads incl. the generic duck-typed fallback), the `TestCase` registry, the
   `runAll`/`main` runner+reporter, AND **rule-based `@Test` auto-discovery** (zero
-  manual registration — mark a method `@Test`, `uses harpoon`, done) all **landed and
+  manual registration — mark a method `@Test`, `uses sonar`, done) all **landed and
   pass on oracle/IR/LLVM**, consumable as an ordinary `[[dep]]`. Constructor-as-setup,
   `IDisposable`-as-teardown, zero special-casing for `await`/`spawn` in a test; the
   rule-discovered suite is byte-identical to a hand-seeded twin; inline and
   sibling-project examples produce identical reports (location-agnostic discovery).
-  `harpoon/`, `harpoon/README.md`. **This track was library-only per the design, but
+  `sonar/`, `sonar/README.md`. **This track was library-only per the design, but
   finishing discovery required fixing the compiler** (owner directive): global
   initialization was reworked so **every global auto-constructs before any initializer
   runs** (fixing the namespace-init-can't-see-globals family — was #75/#76/#79/#80,
@@ -125,6 +126,15 @@ as-implemented reference, and the git history):
   declared class/interface return (including `T` for required `T?`). The requirement
   remains slotless, so fluent concrete return types and interface dispatch share the
   implementing class's one method slot (reference.md §4.2).
+- **Note (2026-07-22):** the TUI framework below (T01–T11, "Sonar") was renamed
+  **Moby** and its two directories (`sonar/` v1, `sonar_v2/` v2) merged into one
+  `moby/` package built from v2's code (`designs/complete/techdesign-tooling-renames-sonnet.md`).
+  The "Sonar" name now belongs to the unit test library instead (see above). The
+  entries below are left as their original historical record — `sonar/` path
+  references, `Sonar::`/`__sonar*` identifiers, and the `sonar!` macro (since
+  independently renamed `dom!` as part of the DOM rework, unrelated to this
+  rename) describe the source tree as it was at the time each track landed, not
+  its current location under `moby/`.
 - **Sonar T01 core** — the retained terminal UI foundation now ships as the `sonar/`
   package: geometry/style values, frozen 8-byte cell surfaces with wide-glyph healing,
   component damage/lifecycle/handlers, collapse-based mixins, containers, and damage

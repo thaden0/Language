@@ -1,3 +1,0 @@
-class Box { (int) => int transform = (x) => x + 1; }
-Box b = Box();
-console.writeln(b.transform(4));

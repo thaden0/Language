@@ -5,7 +5,7 @@
 // child (/bin/sh printing our own text) standing in for `trident build`.
 //
 // Interpreter-only (Process): golden on oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

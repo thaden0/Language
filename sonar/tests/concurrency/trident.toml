@@ -1,0 +1,6 @@
+name = "sonar-tests-concurrency"
+sources = ["main.lev"]
+
+[[dep]]
+path = "../.."
+as = "sonar"

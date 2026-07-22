@@ -1,8 +1,0 @@
-name = "sonar-tableview-treeview"
-entry = "main"
-sources = ["tableview_treeview.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

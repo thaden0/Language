@@ -1,9 +1,9 @@
 // A styled single-line span leaf (DESIGN-2 §9.3, §11.2). Paints an Array<Span>,
-// each run in its theme style, over a full-width row background (the sonar-bugs #4
+// each run in its theme style, over a full-width row background (the moby-bugs #4
 // belt, N3). Reused by the status line, notice line, and URL variable-preview
 // strip. Composes shipped Surface primitives only.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class RichText : Component, Styleable {
     Array<Span> spans_ = [];

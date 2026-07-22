@@ -4,7 +4,7 @@
 // editor edits values (secrets masked). Every accepted mutation saves the env file
 // immediately (envs are settings-like, not document-like).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class EnvEditor {
     public Modal modal;
@@ -44,7 +44,7 @@ class EnvEditor {
         this.rebuildEnvs();
         this.loadValues();
         this.modal.open();
-        Sonar::app().focus(this.envList);
+        Moby::app().focus(this.envList);
     }
 
     void rebuildEnvs() {
@@ -96,7 +96,7 @@ class EnvEditor {
     void newEnv() {
         PromptDialog dlg = PromptDialog("New environment", "Name:", "");
         dlg.setOnAccept((v) => this.acceptNew(v));
-        dlg.open(Sonar::app());
+        dlg.open(Moby::app());
     }
     void acceptNew(string name) {
         if (name.isEmpty()) { return; }
@@ -112,7 +112,7 @@ class EnvEditor {
         Environment e = this.state.environments.at(this.selectedEnv_);
         PromptDialog dlg = PromptDialog("Rename environment", "Name:", e.name);
         dlg.setOnAccept((v) => this.acceptRename(v));
-        dlg.open(Sonar::app());
+        dlg.open(Moby::app());
     }
     void acceptRename(string name) {
         if (!this.hasSel() || name.isEmpty()) { return; }

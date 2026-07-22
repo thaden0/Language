@@ -8,7 +8,7 @@
 // It also proves the version-keyed drop (§6.2): a batch that completes for an
 // already-superseded buffer version is discarded before any sink sees it.
 // Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

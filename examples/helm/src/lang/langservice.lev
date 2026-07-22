@@ -37,7 +37,7 @@ namespace Helm {
         void requestDiagnostics(BufferSnapshot snap);       // debounced upstream
     }
 
-    // Shared subscriber registry (the Sonar R12 token pattern) — factored out so
+    // Shared subscriber registry (the Moby R12 token pattern) — factored out so
     // both service implementations share one correct copy. Parallel columns, no
     // `Array<struct>`.
     class DiagSubscribers {

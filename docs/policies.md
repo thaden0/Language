@@ -19,7 +19,7 @@ When you are done working with a document, and that document is fully implemente
 
 Language changes — anything in the Leviathan compiler/source — must pass the full ctest suite before push.
 
-Anything written in Leviathan itself — libraries (including the standard library), demo applications, frameworks, TUIs — must have Sonar unit tests written for it. Sonar is the unit-test framework (formerly Harpoon; currently in the `harpoon/` folder). The only exception is the Language code itself, which is covered by ctest rather than Sonar.
+Anything written in Leviathan itself — libraries (including the standard library), demo applications, frameworks, TUIs — must have Sonar unit tests written for it. Sonar is the unit-test framework, in the `sonar/` folder (renamed from Harpoon 2026-07-22). The only exception is the Language code itself, which is covered by ctest rather than Sonar.
 
 Before pushing code, pull master, then run the appropriate suite: ctest for the Language, or Sonar unit tests for anything else.
 

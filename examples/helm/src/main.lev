@@ -10,9 +10,9 @@
 // `main` composes the shell and, by default, prints its assembled surface (the
 // command list, menu bar, and a rendered chrome snapshot) — a deterministic,
 // non-blocking demonstration usable from `trident run`. Set HELM_RUN=1 to launch
-// the live event loop instead (a real terminal; `SonarApp.run()` blocks until
+// the live event loop instead (a real terminal; `MobyApp.run()` blocks until
 // quit — oracle+IR only, the §7.1 process/PTY floor).
-uses Sonar;
+uses Moby;
 uses Helm;
 
 // `Process` needs explicit binary paths (no PATH search — reference §6.6.59).

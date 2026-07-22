@@ -1,0 +1,291 @@
+namespace Moby { namespace Dom {
+
+    // ======================================================================
+    // Actions & Hotkeys (techdesign-04, contract D-C7). The command layer:
+    // ONE named verb, MANY triggers (menu item, button, hotkey, fire() from
+    // code), with enablement in one place.
+    //
+    // Closures are reference values (D-P4) held in parallel primitive/closure
+    // columns — never Array<struct> (#74). T01's handler arrays are the same
+    // shape and landed green, so this storage is on the green expectation.
+    // ======================================================================
+    class ActionRegistry {
+        // Owning component back-ref (a future responder chain / inspector reads
+        // it; the walk itself takes an IComponent `from` and needs no back-ref).
+        IComponent owner_;
+
+        // parallel columns — the named verbs
+        Array<string>     names_    = [];
+        Array<() => void> handlers_ = [];
+        Array<bool>       enabled_  = [];
+
+        // bound-items columns (§4): every markup MenuItem/Button whose key
+        // RESOLVES to this registry (walk once at bind time). `setEnabled` walks
+        // these to grey items the instant the command flips — the classic
+        // desktop contract with zero per-frame polling.
+        Array<IComponent> boundItems_ = [];
+        Array<string>     boundKeys_  = [];
+
+        new ActionRegistry(IComponent owner) { owner_ = owner; }
+
+        int indexOf(string name) {
+            int i = 0;
+            for (string n in names_) { if (n == name) return i; i = i + 1; }
+            return -1;
+        }
+
+        // Duplicate name in ONE registry throws (§1) — two `add`s of one verb is
+        // a wiring mistake (two ITEMS firing one verb is legal and wanted, §6.2).
+        ActionRegistry add(string name, () => void handler) {
+            if (this.indexOf(name) >= 0)
+                throw MobyException("action '" + name + "' already registered on this node");
+            names_    = names_.add(name);
+            handlers_ = handlers_.add(handler);
+            enabled_  = enabled_.add(true);
+            return this;
+        }
+
+        bool has(string name) => this.indexOf(name) >= 0;
+
+        void remove(string name) {
+            int at = this.indexOf(name);
+            if (at < 0) return;
+            Array<string> nn = []; Array<() => void> hh = []; Array<bool> ee = [];
+            int i = 0;
+            for (string n in names_) {
+                if (i != at) { nn = nn.add(n); hh = hh.add(handlers_[i]); ee = ee.add(enabled_[i]); }
+                i = i + 1;
+            }
+            names_ = nn; handlers_ = hh; enabled_ = ee;
+        }
+
+        bool isEnabled(string name) {              // false when absent
+            int at = this.indexOf(name);
+            return at >= 0 && enabled_[at];
+        }
+
+        // Flip enablement AND re-grey every bound item for this key (§4).
+        void setEnabled(string name, bool on) {
+            int at = this.indexOf(name);
+            if (at >= 0) enabled_ = enabled_.with(at, on);
+            int i = 0;
+            for (string k in boundKeys_) {
+                if (k == name) greyBoundItem(boundItems_[i], on);
+                i = i + 1;
+            }
+        }
+
+        // Register (item, key) so setEnabled can grey it. Called from the
+        // build-time action wiring once the item's resolving registry is known.
+        void bindItem(IComponent item, string key) {
+            boundItems_ = boundItems_.add(item);
+            boundKeys_  = boundKeys_.add(key);
+        }
+
+        // Run if present+enabled; true = handled (§1). The handler is bound to a
+        // local before the call (the #52 shape). Handler exceptions are contained
+        // at the fire site — logged + counted through the T03 dispatch-containment
+        // counter — so a broken handler never kills the key that triggered it.
+        bool fire(string name) {
+            int at = this.indexOf(name);
+            if (at < 0) return false;
+            if (!enabled_[at]) return false;
+            var h = handlers_[at];
+            try { h(); }
+            catch (IException e) { Moby::__noteHandlerError("action '" + name + "' handler threw: " + e.message); }
+            return true;
+        }
+    }
+
+    // Grey (or re-enable) a bound MenuItem/Button; both setters invalidate.
+    void greyBoundItem(IComponent item, bool on) {
+        if (item is MenuItem) { MenuItem mi = item; mi.enable(on); return; }
+        if (item is Button)   { Button b = item; b.setEnabled(on); return; }
+    }
+
+    // ----------------------------------------------------------------------
+    // The responder chain (§2, frozen). Resolve a node's registry WITHOUT
+    // creating one: DOM containers (FlexContainer/Bar) expose it as a real
+    // field; every other node keeps it in the Document meta row (MobyApp's
+    // root registry lives there too, keyed by the app component).
+    ActionRegistry? registryOf(Document doc, IComponent c) {
+        if (c is FlexContainer) { FlexContainer fc = c; return fc.actions; }
+        return doc.__actionsForOrNone(c);
+    }
+
+    // Moby::Dom::fireAction — walk `from` -> parent chain -> app root. At each
+    // node with a registry that has(name):
+    //   enabled  -> run it, return true (FIRST-HOLDER-WINS, even if an ancestor
+    //               also holds it);
+    //   disabled -> STOP and return false (a disabled nearer binding deliberately
+    //               shadows an enabled outer one — "Save is off here" must not
+    //               fall through to a different Save).
+    // Not found anywhere -> false (callers decide loudness).
+    bool fireAction(IComponent from, string name) {
+        Document doc = document();
+        IComponent? cur = from;
+        int guard = 0;
+        while (cur != None && guard < 100000) {
+            IComponent node = cur;
+            ActionRegistry? reg = registryOf(doc, node);
+            if (reg != None) {
+                ActionRegistry r = reg;
+                if (r.has(name)) {
+                    if (r.isEnabled(name)) return r.fire(name);
+                    return false;                       // nearer-disabled shadows
+                }
+            }
+            cur = node.parent();
+            guard = guard + 1;
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------------------------
+    // The `hotkey` attribute (§3). A friendlier DOM grammar normalized to
+    // parseChord-legal text — never a second runtime path; everything rides the
+    // landed Keymap. Leading `^` -> `C-`, `!` -> `M-`, `+` -> `S-` (any order),
+    // plus the canonical `C-`/`M-`/`S-` spellings; the remainder is one printable
+    // char or a KeyCode name (parseChord validates the rest, loud, at bind time).
+    string normalizeHotkey(string spec) {
+        bool ctrl = false; bool alt = false; bool shift = false;
+        string rem = spec;
+        bool scanning = true;
+        while (scanning && rem.length() > 0) {
+            if (rem.startsWith("^"))      { ctrl  = true; rem = rem.subStr(1, rem.length() - 1); }
+            else if (rem.startsWith("!")) { alt   = true; rem = rem.subStr(1, rem.length() - 1); }
+            else if (rem.startsWith("+")) { shift = true; rem = rem.subStr(1, rem.length() - 1); }
+            else if (rem.startsWith("C-")) { ctrl  = true; rem = rem.subStr(2, rem.length() - 2); }
+            else if (rem.startsWith("M-")) { alt   = true; rem = rem.subStr(2, rem.length() - 2); }
+            else if (rem.startsWith("S-")) { shift = true; rem = rem.subStr(2, rem.length() - 2); }
+            else scanning = false;
+        }
+        // canonical order C- M- S-, then the remainder verbatim (an empty or
+        // malformed remainder is caught by parseChord when Keymap.bind runs).
+        string out = "";
+        if (ctrl)  out = out + "C-";
+        if (alt)   out = out + "M-";
+        if (shift) out = out + "S-";
+        return out + rem;
+    }
+
+    // Moby::Dom::fireActivate — the `hotkey` attr means "trigger this control",
+    // not "run this closure" (closures belong to actions). MenuItem -> activate();
+    // Button -> press path; CheckBox -> toggle; anything else -> fire the node's
+    // `action` meta if present, else focus it.
+    void fireActivate(IComponent node) {
+        if (node is MenuItem) { MenuItem mi = node; mi.activate(); return; }
+        if (node is Button)   { Button b = node; b.firePress();  return; }
+        if (node is CheckBox) { CheckBox cb = node; cb.toggle(); return; }
+        Document doc = document();
+        string act = doc.attrOf(node, "action");
+        if (act != "") { fireAction(node, act); return; }
+        if (node is Focusable) { Focusable f = node; Moby::app().focus(f); }
+    }
+
+    // ----------------------------------------------------------------------
+    // Wiring markup to actions (§4). Run as a post-build pass once the local
+    // subtree is assembled under its container, so per-item registry resolution
+    // walks a connected chain. A MenuItem/Button with `action="name"` — or,
+    // absent that, a slug of its label — gets its select/press wired to
+    // fireAction, its effective key recorded in meta, and (for greying) itself
+    // bound to the registry that resolves the key.
+    void wireActionsInSubtree(IComponent root, Document doc) {
+        wireActionNode(root, doc);
+        for (IComponent kid in root.__mobyChildren()) wireActionsInSubtree(kid, doc);
+    }
+
+    void wireActionNode(IComponent node, Document doc) {
+        if (node is MenuItem) {
+            MenuItem mi = node;
+            string? key = effectiveActionKey(node, doc, mi.label);
+            if (key != None) {
+                string k = key;                                       // #53 explicit capture
+                mi.onSelect(() => Moby::Dom::fireAction(mi, k));
+                bindActionItem(mi, k);
+            }
+            return;
+        }
+        if (node is Button) {
+            Button b = node;
+            string? key = effectiveActionKey(node, doc, b.label);
+            if (key != None) {
+                string k = key;
+                b.onPress(() => Moby::Dom::fireAction(b, k));
+                bindActionItem(b, k);
+            }
+            return;
+        }
+    }
+
+    // The effective action key: an explicit `action=""` opts out (None,
+    // pure-handler item); an explicit non-empty `action` wins verbatim; absent,
+    // the slug of the label. An unlabelled node with no action attr opts out.
+    //
+    // The auto-slug is NOT written into the serialized attr table: the dom!
+    // comptime tier and the runtime tier must serialize byte-identical trees
+    // (the D02 drift invariant), and the comptime emitter records only explicit
+    // attrs. §4's "inspector/tests can see the effective key" is served instead
+    // by the on-demand `DomNode.action()` accessor (explicit attr, else the slug)
+    // — derivable, never stored, so the two tiers stay equivalent.
+    string? effectiveActionKey(IComponent node, Document doc, string label) {
+        if (doc.__hasAttrMeta(node, "action")) {
+            string v = doc.attrOf(node, "action");
+            if (v == "") return None;
+            return v;
+        }
+        string s = slug(label);
+        if (s == "") return None;
+        return s;
+    }
+
+    // slug(label): lowercase, runs of space/`_` -> `-`, strip everything but
+    // [a-z0-9-] ("Save As" -> save-as, "Open…" -> open). A deferred-dash flag
+    // collapses runs and drops leading/trailing separators.
+    string slug(string label) {
+        string lowered = label.toLower();
+        string out = "";
+        bool pendingDash = false;
+        for (char c in lowered.chars()) {
+            char underscore = '_';
+            char dash = '-';
+            if (c.isSpace() || c == underscore) {
+                if (out != "") pendingDash = true;
+            } else if (c.isAlpha() || c.isDigit() || c == dash) {
+                if (pendingDash) { out = out + "-"; pendingDash = false; }
+                out = out + c.toString();
+            }
+            // else: stripped
+        }
+        return out;
+    }
+
+    // Bind an item into the registry that RESOLVES its key at bind time (§4):
+    // the first registry up the chain that already HAS the key, else the nearest
+    // ancestor registry. A later nearer `add` re-resolves on the next attach
+    // (documented v1 simplification; §6.4).
+    void bindActionItem(IComponent item, string key) {
+        Document doc = document();
+        ActionRegistry? target = resolveBindRegistry(doc, item, key);
+        if (target != None) { ActionRegistry r = target; r.bindItem(item, key); }
+    }
+
+    ActionRegistry? resolveBindRegistry(Document doc, IComponent from, string key) {
+        ActionRegistry? nearest = None;
+        IComponent? cur = from;
+        int guard = 0;
+        while (cur != None && guard < 100000) {
+            IComponent node = cur;
+            ActionRegistry? reg = registryOf(doc, node);
+            if (reg != None) {
+                ActionRegistry r = reg;
+                if (r.has(key)) return r;
+                if (nearest == None) nearest = r;
+            }
+            cur = node.parent();
+            guard = guard + 1;
+        }
+        return nearest;
+    }
+
+}}

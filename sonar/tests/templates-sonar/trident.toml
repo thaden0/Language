@@ -1,9 +1,0 @@
-name = "sonar-templates-sonar-test"
-entry = "main"
-sources = ["main.lev"]
-assets = ["*.sonar"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

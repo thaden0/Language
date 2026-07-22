@@ -10,7 +10,7 @@
 // Keymap-reload scope (recorded, the H-C4/H-C2/H-C3 precedent): overrides are
 // applied to a `CommandRegistry`'s DISPLAY key text via `applyKeymap`, which
 // is only meaningful *before* `CommandRegistry.bindInto` installs the real
-// accelerators into the app `Keymap` — Sonar's `Keymap.bind` throws on a
+// accelerators into the app `Keymap` — Moby's `Keymap.bind` throws on a
 // re-bound chord (keymap.lev, anchor C9), and this package doesn't add
 // unbind/rebind token plumbing for a v1 nicety. So a `helm.toml` present at
 // startup takes effect correctly (loaded before `bindInto` in the shell

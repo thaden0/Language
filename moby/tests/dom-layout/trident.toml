@@ -1,0 +1,8 @@
+name = "moby-dom-layout-test"
+entry = "main"
+sources = ["layout.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Moby"

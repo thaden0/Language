@@ -3,7 +3,7 @@
 // fmtMs, fmtAgo), newest first (the model order). Enter re-opens the entry; d
 // deletes; D clears. Selection never auto-sends (P6).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class HistoryPane {
     public ListView list;

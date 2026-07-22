@@ -1,0 +1,6 @@
+sonar: 3 tests, 1 classes
+  ConcurrencyTests::threadedJoinAssert .. ok
+  ConcurrencyTests::asyncAssertionPasses ok
+  ConcurrencyTests::asyncAssertionFailsCorrectly FAIL
+      assertEqual: expected 999 but was 2
+3 run: 2 ok, 1 FAIL, 0 ERROR, 0 skip

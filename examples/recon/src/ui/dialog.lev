@@ -1,9 +1,9 @@
-// Dialogs (DESIGN §9.4). The design predates Sonar shipping Modal/alert/confirm
+// Dialogs (DESIGN §9.4). The design predates Moby shipping Modal/alert/confirm
 // (they landed after RESEARCH.md was written); we compose the now-shipped Modal
 // rather than hand-rolling a fragile custom Container-leaf over the raw overlay
 // stack. Same intent (dialogs over the overlay stack), far more robust.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 // A one-field prompt: label + Input; Enter accepts, Esc cancels.
 class PromptDialog {
@@ -37,11 +37,11 @@ class PromptDialog {
     }
 }
 
-// Yes/No confirm over Sonar::confirm (returns a Promise<bool>).
-Promise<bool> confirmDialog(string title, string message) => Sonar::confirm(title, message);
+// Yes/No confirm over Moby::confirm (returns a Promise<bool>).
+Promise<bool> confirmDialog(string title, string message) => Moby::confirm(title, message);
 
 // A transient notice.
-Modal alertDialog(string title, string message) => Sonar::alert(title, message);
+Modal alertDialog(string title, string message) => Moby::alert(title, message);
 
 // FormDialog (DESIGN-2 §7.3): the DESIGN §9.4 component finally built. A Modal
 // holding N labeled Inputs (label column + input column), Enter on any input or OK
@@ -111,7 +111,7 @@ class FormDialog {
 
     void open() {
         this.modal.open();
-        if (inputs_.length() > 0) { Sonar::app().focus(inputs_.at(0)); }
+        if (inputs_.length() > 0) { Moby::app().focus(inputs_.at(0)); }
     }
 
     void accept() {

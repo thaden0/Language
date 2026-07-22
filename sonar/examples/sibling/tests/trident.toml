@@ -1,0 +1,10 @@
+name = "calc-tests"
+sources = ["calc_tests.lev"]
+
+[[dep]]
+path = "../../.."
+as = "sonar"
+
+[[dep]]
+path = "../app"
+as = "calc"

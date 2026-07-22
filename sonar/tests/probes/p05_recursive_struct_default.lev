@@ -1,6 +1,0 @@
-struct Point { int x; int y; }
-struct Rect { Point origin; Point size; }
-class Component { Rect box; }
-Component c = Component();
-console.writeln(c.box.origin.x);
-console.writeln(c.box.size.y);

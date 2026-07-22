@@ -18,9 +18,9 @@
 // LLVM (reference §6.10), so this whole model is differential-testable.
 //
 // `Piece` is a **class**, not a struct: an Array<struct-with-int-fields> still
-// corrupts on LLVM after unrelated writes (footgun #5 / Sonar bug #66), and a
+// corrupts on LLVM after unrelated writes (footgun #5 / Moby bug #66), and a
 // class row is individually heap-allocated + refcounted rather than packed
-// inline in the array, so it is immune. Same ruling as Sonar TreeRow/TableColumn.
+// inline in the array, so it is immune. Same ruling as Moby TreeRow/TableColumn.
 
 namespace Helm {
 

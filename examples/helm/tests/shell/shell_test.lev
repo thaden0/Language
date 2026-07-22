@@ -10,7 +10,7 @@
 //     through a `TestRenderer` (§11), and a delivered diagnostic batch + a panel
 //     toggle flow through the wired panels/status into the next snapshot.
 // Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

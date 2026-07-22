@@ -1,7 +1,7 @@
-// Source adapters over Recon's model (DESIGN §9.2). Each implements a Sonar
+// Source adapters over Recon's model (DESIGN §9.2). Each implements a Moby
 // virtualization interface. Headless-testable (call the methods directly).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 // A tree source over a Collection. TreeNodeId.id indexes a flat registry the
 // source owns (§9.2). Rebuild via build(); nodes never move within a build.

@@ -1,0 +1,90 @@
+// Moby Track 10 §4 — the tiny assertion vocabulary + the test composition root.
+//
+// House corpus style: a test is a program whose stdout matches an .expected
+// file, exit code 0. `snap`'s output IS the golden's content (regen = re-run
+// with output redirected). `harness` binds TestRenderer + ScriptedInput + the
+// Default theme and constructs the single App (the composition root for tests);
+// the bound collaborators are reachable via renderer()/input(). `reset` tears
+// down the single-app global between cases (§5 issue 3).
+uses Moby;
+
+namespace MobyTest {
+    int failures_ = 0;
+    Moby::TestRenderer? lastRenderer_ = None;
+    ScriptedInput? lastInput_ = None;
+
+    // Prints "ok <label>" or "FAIL <label>" + a want/got diff, and flips the
+    // process exit code so a failing case fails the corpus lane.
+    void eq(string got, string want, string label) {
+        if (got == want) { console.writeln("ok " + label); return; }
+        console.writeln("FAIL " + label);
+        console.writeln("  want: [" + want + "]");
+        console.writeln("  got:  [" + got + "]");
+        failures_ = failures_ + 1;
+        env::setExitCode(1);
+    }
+    int failures() => failures_;
+
+    // Composition root: bind the recording renderer, the scripted input, and the
+    // Default theme, then construct the App. Renderer/input are stashed so the
+    // test reaches them via renderer()/input() (the single-App rule means there
+    // is exactly one live set at a time).
+    App harness(int w, int h) {
+        Moby::TestRenderer r = Moby::TestRenderer(w, h);
+        ScriptedInput si = ScriptedInput();
+        lastRenderer_ = r;
+        lastInput_ = si;
+        App a = App();
+        a.__useRenderer(r);
+        a.__useInput(si);
+        a.__useSignalResize(false);
+        Moby::installTheme(Moby::Theme::Default());   // free fn: sets the Moby global active theme
+        return a;
+    }
+
+    Moby::TestRenderer renderer() {
+        Moby::TestRenderer? r = lastRenderer_;
+        if (r != None) return r;
+        throw MobyException("no harness renderer (call MobyTest::harness first)");
+    }
+    ScriptedInput input() {
+        ScriptedInput? s = lastInput_;
+        if (s != None) return s;
+        throw MobyException("no harness input (call MobyTest::harness first)");
+    }
+
+    // Drive one full frame and print the two-channel snapshot under a banner.
+    // The first snap lazily starts the App session (registering the input sink),
+    // so a test's normal flow is: harness -> add widgets -> snap -> pump -> snap.
+    void snap(App app, Moby::TestRenderer r, string label) {
+        app.pumpOnce();
+        console.writeln("== " + label + " ==");
+        console.writeln(r.snapshot());
+    }
+    // Text channel only — survives theme/style tweaks (behavior assertions, §2).
+    void snapText(App app, Moby::TestRenderer r, string label) {
+        app.pumpOnce();
+        console.writeln("== " + label + " ==");
+        console.writeln(r.textOnly());
+    }
+
+    // Deliver one queued input chunk, then render the resulting frame (§3's
+    // one-chunk-per-pump model). Requires the session to be started (a prior
+    // snap/pumpOnce); otherwise the chunk stays queued.
+    void pump(App app, ScriptedInput si) {
+        si.deliverNext();
+        app.pumpOnce();
+    }
+
+    // §5 issue 3 — tear down the single-app global so the next case builds fresh.
+    // stopSession() first: it cancels the frame/esc/resize-poll/every timers, and
+    // a live repeating resize-poll timer would otherwise keep the runtime event
+    // loop alive past main() and hang a scripted (never-run()) test at exit.
+    void reset() {
+        App? cur = Moby::currentApp;
+        if (cur != None) { App a = cur; a.stopSession(); }
+        lastRenderer_ = None;
+        lastInput_ = None;
+        Moby::__mobyResetApp();
+    }
+}

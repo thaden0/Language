@@ -1,0 +1,169 @@
+namespace Moby { namespace Dom {
+
+    // ======================================================================
+    // Position (techdesign-03 §2, contract D-C5)
+    //
+    // A reference class hanging off every component (Component.position_, lazily
+    // created by Component.position()). The read/write asymmetry is the whole
+    // point (D-C5 ruling):
+    //   * READS are LIVE — `x`/`y` always return the live arranged `box` origin,
+    //     so `main.query('#file-menu').position.x` reports where the node ended
+    //     up on screen, which is exactly what the target sketch copies.
+    //   * WRITES are DESIRES — stored, consumed by DOM containers only when
+    //     `method == Absolute` (writing x/y on a Flow node is legal and inert;
+    //     the sketch sets method AFTER x/y, so writes are order-independent).
+    //
+    // Spelling: the design's `get x()`/`set x(int v)` accessor views (reference
+    // §4.6), so `.position.x` reads live and `.position.x = 7` stores a desire —
+    // full sketch fidelity. Probe D-P2 confirmed get/set accessors (incl. a
+    // COMPUTED getter with no backing slot, for the live reads) lower
+    // byte-identical on oracle/IR/LLVM, so the D-P2 fallback (plain setX/setY) is
+    // NOT needed. The owner back-edge is a `weak IComponent?` (F5; D-P9): it does
+    // not retain the component, so `position_` -> Position -> owner is not a
+    // cycle, and a Position outliving a freed owner reads `None` and no-ops every
+    // ping/resolve rather than crashing.
+    // ======================================================================
+    enum PositionMethod { Flow, Absolute }
+    enum AnchorEdge { Below, Above, LeftOf, RightOf, Over }
+
+    class Position {
+        weak IComponent? owner_ = None;
+
+        PositionMethod method_ = PositionMethod::Flow;
+        int desiredX_ = 0;                 // stored write; consumed when Absolute
+        int desiredY_ = 0;
+        int w_ = 0 - 1;                    // -1 = unset (owner keeps its constraint)
+        int h_ = 0 - 1;
+        int z_ = 0;                        // paint order among absolute siblings
+
+        // anchor state (anchorTo): a weak target + edge + offsets, re-resolved
+        // from the target's CURRENT box each arrange so anchored floats track
+        // resizes. A dead/detached target freezes at the last resolved coords.
+        weak IComponent? anchorTarget_ = None;
+        AnchorEdge anchorEdge_ = AnchorEdge::Over;
+        int anchorDx_ = 0;
+        int anchorDy_ = 0;
+        bool hasAnchor_ = false;
+        int lastX_ = 0;
+        int lastY_ = 0;
+
+        new Position(IComponent owner) { owner_ = owner; }
+
+        // ---- method: live field + ping-on-write ---------------------------
+        get method() => method_;
+        set method(PositionMethod m) { method_ = m; this.pingLayout(); }
+
+        // ---- x / y: live reads, stored writes -----------------------------
+        get x() => this.liveX();
+        set x(int v) { desiredX_ = v; this.pingLayout(); }
+        get y() => this.liveY();
+        set y(int v) { desiredY_ = v; this.pingLayout(); }
+
+        int liveX() {
+            IComponent? o = owner_;                  // weak read -> local (§4.3d)
+            if (o != None) return o.box.x();
+            return desiredX_;
+        }
+        int liveY() {
+            IComponent? o = owner_;
+            if (o != None) return o.box.y();
+            return desiredY_;
+        }
+
+        // ---- w / h: set-views map onto Constraint::Fixed on the owner -----
+        get w() => w_;
+        set w(int v) { w_ = v; this.applyFixedW(); }
+        get h() => h_;
+        set h(int v) { h_ = v; this.applyFixedH(); }
+
+        void applyFixedW() {
+            if (w_ < 0) return;                      // unset: leave the constraint
+            IComponent? o = owner_;
+            if (o != None) {
+                IComponent oc = o;
+                if (oc is Component) {
+                    Component c = oc;
+                    c.setWidth(Constraint::Fixed(w_));
+                }
+            }
+        }
+        void applyFixedH() {
+            if (h_ < 0) return;
+            IComponent? o = owner_;
+            if (o != None) {
+                IComponent oc = o;
+                if (oc is Component) {
+                    Component c = oc;
+                    c.setHeight(Constraint::Fixed(h_));
+                }
+            }
+        }
+
+        // ---- z: plain view + ping (repaint order among abs siblings) ------
+        get z() => z_;
+        set z(int v) { z_ = v; this.pingLayout(); }
+
+        // ---- anchoring (resize-proof over the sketch's manual y+1) --------
+        void anchorTo(IComponent target, AnchorEdge edge, int dx = 0, int dy = 0) {
+            anchorTarget_ = target;
+            anchorEdge_ = edge;
+            anchorDx_ = dx;
+            anchorDy_ = dy;
+            hasAnchor_ = true;
+            this.pingLayout();
+        }
+        void clearAnchor() {
+            anchorTarget_ = None;
+            hasAnchor_ = false;
+            this.pingLayout();
+        }
+        bool isAbsolute() => method_ == PositionMethod::Absolute;
+
+        // ---- engine-facing: origin+size for an Absolute child -------------
+        // `desired` is the child's measured size; w_/h_ overrides win. Anchors
+        // resolve from the target's live box; a dead anchor freezes at lastX_/Y_.
+        // Coordinates are SCREEN-space (the container arranges the child there
+        // directly — one coordinate system, no parent translation).
+        Rect __resolveAbsolute(Size desired) {
+            int ow = w_ >= 0 ? w_ : desired.w;
+            int oh = h_ >= 0 ? h_ : desired.h;
+            if (ow < 0) ow = 0;
+            if (oh < 0) oh = 0;
+
+            int px = desiredX_;
+            int py = desiredY_;
+            if (hasAnchor_) {
+                IComponent? t = anchorTarget_;
+                if (t != None) {
+                    Rect tb = t.box;
+                    px = this.anchorX(tb, ow);
+                    py = this.anchorY(tb, oh);
+                    lastX_ = px;
+                    lastY_ = py;
+                } else {
+                    // detached/freed anchor target: freeze (§2, §8.4).
+                    px = lastX_;
+                    py = lastY_;
+                }
+            }
+            return Rect(Point(px, py), Size(ow, oh));
+        }
+
+        int anchorX(Rect t, int ow) {
+            if (anchorEdge_ == AnchorEdge::LeftOf)  return t.x() - ow + anchorDx_;
+            if (anchorEdge_ == AnchorEdge::RightOf) return t.right() + anchorDx_;
+            return t.x() + anchorDx_;                // Below / Above / Over
+        }
+        int anchorY(Rect t, int oh) {
+            if (anchorEdge_ == AnchorEdge::Below) return t.bottom() + anchorDy_;
+            if (anchorEdge_ == AnchorEdge::Above) return t.y() - oh + anchorDy_;
+            return t.y() + anchorDy_;                // LeftOf / RightOf / Over
+        }
+
+        void pingLayout() {
+            IComponent? o = owner_;
+            if (o != None) o.invalidateLayout();
+        }
+    }
+
+}}

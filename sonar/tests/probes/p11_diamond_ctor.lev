@@ -1,5 +1,0 @@
-class Core { int value = 1; }
-class Left : Core { int left = 2; }
-class Right : Core { int right = 3; }
-class Diamond : Left, Right { int total() => value + left + right; }
-console.writeln(Diamond().total());

@@ -1,5 +1,5 @@
-// H10 — the VT/ANSI byte-stream parser (§8): "an `ansi` inverse of Sonar's
-// `ansi_renderer`". `AnsiRenderer` (sonar_v2/src/ansi_renderer.lev) diffs a
+// H10 — the VT/ANSI byte-stream parser (§8): "an `ansi` inverse of Moby's
+// `ansi_renderer`". `AnsiRenderer` (moby/src/ansi_renderer.lev) diffs a
 // `Surface` and EMITS escape sequences; `VtParser` consumes a child's output
 // bytes and MUTATES a `Surface` — the same cell format, the same escape
 // vocabulary (cursor.lev's `sgrFgNum`/`sgrBgNum` inverted here), running
@@ -7,18 +7,18 @@
 // literal in call/ternary position — toml.lev's own discipline, footgun
 // precedent bug #50/#62/#63).
 //
-// Bounded scope (§8, non-goal: not xterm-completeness, matching Sonar's own
+// Bounded scope (§8, non-goal: not xterm-completeness, matching Moby's own
 // stance): cursor motion (CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP), erase (ED/EL),
-// SGR (16-color + bold/underline/reverse — Sonar's own C6 cell format has no
+// SGR (16-color + bold/underline/reverse — Moby's own C6 cell format has no
 // 256-color/truecolor channel to feed anyway), scroll (LF-at-bottom + SU/SD),
 // and the alt screen (?1049/?47/?1047). NOT implemented: DECSTBM scroll
 // regions (always full-screen), cursor save/restore outside the alt-screen
 // pair, sixel/DEC line-drawing specials, single-char ESC ops other than RIS
 // ('c') and the charset-designator two-byte forms (consumed and discarded, so
 // they don't leak their trailing byte onto the screen as text) — an honest v1
-// gap alongside Sonar's own non-goals.
+// gap alongside Moby's own non-goals.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -328,7 +328,7 @@ namespace Helm {
             }
         }
 
-        // 16-color SGR (Sonar's own C6 cell format has no 256/truecolor
+        // 16-color SGR (Moby's own C6 cell format has no 256/truecolor
         // channel — mirrors cursor.lev's sgrFgNum/sgrBgNum, inverted).
         void sgr(Array<int> ps) {
             if (ps.isEmpty()) { curStyle_ = vtBlankStyle(); return; }

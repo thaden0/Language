@@ -1,6 +1,6 @@
 // H04b — EditorView, the frozen H-C2 component (§4.3).
 //
-// The one new low-level Sonar component Helm adds: a rope/piece-table-backed,
+// The one new low-level Moby component Helm adds: a rope/piece-table-backed,
 // gutter-bearing, virtualized code editor. It paints only the visible lines,
 // writes directly to the Surface (no per-frame allocation of a component tree),
 // and reports its caret through `cursorPos()` so the terminal hardware cursor
@@ -10,7 +10,7 @@
 // §4.3 froze the header as `EditorView : Container, Scrollable, Focusable,
 // Bordered` and made "redeclare every inherited Container/Scrollable method"
 // load-bearing because of the still-open multi-mixin children-loop paint bug.
-// The direct Sonar precedent — TreeView, an identically-shaped virtualized,
+// The direct Moby precedent — TreeView, an identically-shaped virtualized,
 // scrollable, focusable leaf that paints ROWS (not child components) — resolves
 // this more cleanly: it is deliberately **NOT a Container** (treeview.lev's own
 // note), because an editor has no child components to lay out; it paints text
@@ -29,7 +29,7 @@
 // reads one resolved text style today, with the per-span seam ready. Save is a
 // command (H03/H11), not a view key, so a focused editor never swallows ^S.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

@@ -2,16 +2,16 @@
 //
 // "Everything is a command." Menus, the palette, keymaps, and buttons all fire
 // *named actions*; one `CommandRegistry` is the single source of truth for what
-// Helm can do. This sits above Sonar's `Keymap`/`ActionRegistry`: the registry
+// Helm can do. This sits above Moby's `Keymap`/`ActionRegistry`: the registry
 // owns the id -> (title, category, handler, enabled, chord) mapping, and
 // `bindInto` installs its accelerators into an app `Keymap` so a chord fires
 // the same named command the palette and menu do.
 //
-// Storage mirrors Sonar's `ActionRegistry`: **parallel primitive/closure
+// Storage mirrors Moby's `ActionRegistry`: **parallel primitive/closure
 // columns**, never `Array<struct>` (footgun #5 / bug #74). `Command` is a
 // read-model value handed back by queries, built on demand.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -131,7 +131,7 @@ namespace Helm {
         }
 
         // Install every command that has an accelerator into an app Keymap, so
-        // the chord fires the named command at the capture phase (Sonar R11).
+        // the chord fires the named command at the capture phase (Moby R11).
         // Bound in a per-id helper so each closure captures its own `id` value,
         // never a shared loop variable.
         void bindInto(Keymap km) {

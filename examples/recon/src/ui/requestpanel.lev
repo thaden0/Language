@@ -3,7 +3,7 @@
 // the full five-tab set: Params · Headers · Auth · Body · Tests. Compose-only (no
 // Container subclassing). loadFrom/commitTo sync the widgets to RequestSpec.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class RequestPanel {
     public Container root;

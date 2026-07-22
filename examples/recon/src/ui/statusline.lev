@@ -4,7 +4,7 @@
 // §9.2 taxonomy line). Renders through a RichText leaf; the App.every ticker (armed
 // in beginInFlight) drives the spinner/elapsed refresh.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 Array<string> spinnerFrames() => ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

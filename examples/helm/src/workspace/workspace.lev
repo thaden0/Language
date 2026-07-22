@@ -7,7 +7,7 @@
 // (the piece-table `TextBuffer`), the open-set becomes editable buffers and
 // `OpenDoc` is superseded — kept deliberately minimal so that swap is clean.
 //
-// No Sonar dependency here: this is pure model + prelude file I/O, so it tests
+// No Moby dependency here: this is pure model + prelude file I/O, so it tests
 // headlessly on oracle + IR.
 
 namespace Helm {

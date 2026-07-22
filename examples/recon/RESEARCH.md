@@ -1,10 +1,10 @@
 # Recon — Research Dossier
 
-**A terminal REST API client (Postman-in-the-terminal), written in Leviathan on the Sonar TUI framework.**
+**A terminal REST API client (Postman-in-the-terminal), written in Leviathan on the Moby TUI framework.**
 
 **Status:** research only. No design yet. **Date:** 2026-07-14.
 **Audience:** the designer of `examples/recon`. You (the designer) will **not** have access to
-`info.md`, `docs/reference.md`, or the `designs/sonar/**` documents — so this dossier reproduces
+`info.md`, `docs/reference.md`, or the `designs/moby/**` documents — so this dossier reproduces
 **every** language fact, framework surface, library API, domain-model detail, and known-bug
 footgun you need to design Recon end-to-end. When this document quotes a signature, it was
 verified against the actual prelude / framework source this session (file:line where it matters).
@@ -13,7 +13,7 @@ The dossier is organized as:
 
 1. What Recon is (product scope & the honest constraints)
 2. The Leviathan language — everything you'll write in
-3. The Sonar framework — the UI substrate (what exists, what doesn't)
+3. The Moby framework — the UI substrate (what exists, what doesn't)
 4. The networking / JSON / crypto / file library surface (the engine under the hood)
 5. The Postman collection & environment formats (the data model to import)
 6. Cookies, sessions, auth, redirects, timing — the REST-client mechanics
@@ -64,7 +64,7 @@ up front because they change the product surface:
 5. **No gzip/deflate/br decompression exists in the language.** Servers that send
    `Content-Encoding: gzip` will hand you bytes you cannot inflate. **Mitigation: always send
    `Accept-Encoding: identity`** so servers return plaintext. Document this.
-6. **There is no multi-line text *editor* component in Sonar** (see §3). `Input` is single-line;
+6. **There is no multi-line text *editor* component in Moby** (see §3). `Input` is single-line;
    `Text` is a read-only multi-line label (word-wrap, scrolls inside a `ContentBox`). A request
    **body editor** and an editable-response surface must be designed around this — either build a
    new editor component, or edit bodies through an external-file / line-oriented workflow, or a
@@ -72,7 +72,7 @@ up front because they change the product surface:
 7. **The practical run lane is the tree-walk oracle and the IR interpreter** (`trident run` /
    `--ir`). The compiled LLVM lane currently segfaults when a *drawing* component paints through
    the container hierarchy (a P0 compiler bug, §7). Networking + the event loop themselves run on
-   the interpreters and LLVM; it's the Sonar *paint* path that is interpreter-only today. Design
+   the interpreters and LLVM; it's the Moby *paint* path that is interpreter-only today. Design
    for the interpreter lane; treat LLVM as a future target.
 
 Everything below gives you the tools to do all of this.
@@ -354,17 +354,17 @@ Toolkit: `lastIndexOf`, `indexOfFrom(s, from)`, `count(s)`, `split(sep) -> Array
 ### `console`
 
 `console.writeln(x)`, `console.write(x)` (stringify any value via generic `write<T>`), `console << x`.
-**But: R16 rule — no `console.write` while a Sonar app is running** (it corrupts the screen). Route
-diagnostics through `Sonar::log(string)` + the debug facility instead (§3).
+**But: R16 rule — no `console.write` while a Moby app is running** (it corrupts the screen). Route
+diagnostics through `Moby::log(string)` + the debug facility instead (§3).
 
 ---
 
-# 3. The Sonar framework (the UI substrate)
+# 3. The Moby framework (the UI substrate)
 
-Sonar is the enterprise TUI framework: a **retained-mode** component tree (build once, mutate in
+Moby is the enterprise TUI framework: a **retained-mode** component tree (build once, mutate in
 place, repaint by damage), flex/grid/dock/stack layout, a `Block`-backed cell surface, MI-mixin
-capability composition, DI theming, attribute rules, and a compile-time `sonar!` template layer.
-It ships as a **trident package** (`sonar/`, namespace `Sonar`) — Recon depends on it. It is
+capability composition, DI theming, attribute rules, and a compile-time `moby!` template layer.
+It ships as a **trident package** (`moby/`, namespace `Moby`) — Recon depends on it. It is
 **checked user code** (full checker coverage, narrowing, `T?` all work — the prelude's narrowing
 caveats do NOT apply to package code).
 
@@ -376,10 +376,10 @@ the event loop run on the interpreters fine.
 
 ## 3.1 What's implemented (you can use these today)
 
-All under `namespace Sonar`. The full contract signatures are in §3.4–§3.9; here's the inventory.
+All under `namespace Moby`. The full contract signatures are in §3.4–§3.9; here's the inventory.
 
 **Core (T01):** `Component` (base), `Container`, the mixins `Focusable`/`Scrollable`/`Styleable`/
-`Bordered`, `Surface` (cell buffer), geometry structs, damage sweep, `SonarException`.
+`Bordered`, `Surface` (cell buffer), geometry structs, damage sweep, `MobyException`.
 
 **Layout (T02):** `FlexLayout`, `GridLayout`, `DockLayout`, `StackLayout` (all `ILayoutStrategy`).
 Container default layout is `FlexLayout(Axis::Vertical)`.
@@ -396,7 +396,7 @@ Container default layout is `FlexLayout(Axis::Vertical)`.
 `GridBox`, `Tabs`, `ListView`, `TableView`, `TreeView` — all **virtualized** over source interfaces
 (`IListSource`/`ITableSource`/`ITreeSource`). These are your primary building blocks for Recon.
 
-**Templates (T06):** the `sonar!(\`<Tag .../>\`)` compile-time macro (expands to construction code;
+**Templates (T06):** the `moby!(\`<Tag .../>\`)` compile-time macro (expands to construction code;
 `--expand` shows it). Attribute-driven wiring. Optional — you can build the tree by hand instead.
 
 **Theming/DI (T08):** `Theme : ITheme`, in-language TOML theme files, `bind ITheme` DI,
@@ -404,10 +404,10 @@ runtime theme switching. Four built-in themes (Default/Dark/Light/HighContrast).
 
 **Run loop / terminal (T09):** `App` (the root container + run loop), `AnsiRenderer`,
 `TerminalSession`, `StdinSource`, timers (`App.every`), overlay stack, resize handling,
-`Sonar::log` + frame stats.
+`Moby::log` + frame stats.
 
-**Reactivity (T11):** `@Sonar::Reactive` field attribute → bare writes update bound widgets in a
-`sonar!` template (global fan-out). Optional.
+**Reactivity (T11):** `@Moby::Reactive` field attribute → bare writes update bound widgets in a
+`moby!` template (global fan-out). Optional.
 
 ## 3.2 What is NOT implemented (design around these)
 
@@ -424,7 +424,7 @@ runtime theme switching. Four built-in themes (Default/Dark/Light/HighContrast).
   substrate exists in `App` (`pushOverlay`/`popOverlay` — minimal), but there is no `Modal` class.
   If Recon wants dialogs (environment editor, save-as, confirm), you either build them over the
   raw overlay stack + a `Container`/`Bordered`/`Focusable` composition yourself, or design a
-  non-modal in-pane workflow. **Do not assume `Sonar::Modal` / `Sonar::alert` / `Sonar::confirm`
+  non-modal in-pane workflow. **Do not assume `Moby::Modal` / `Moby::alert` / `Moby::confirm`
   exist.**
 - **No `@Shortcut`/`@Timer`/`@Validator` attribute rules yet** (T07 designed, not implemented).
   Bind chords directly through `App.keymap().bind(...)` instead; register timers via `App.every`.
@@ -434,10 +434,10 @@ runtime theme switching. Four built-in themes (Default/Dark/Light/HighContrast).
 ## 3.3 Rulings & conventions you must follow (R-series)
 
 - **R1 — events are classes** (mutable `handled` flag). `KeyEvent`/`MouseEvent`/`PasteEvent`.
-- **R3 — no `App::Current()`.** The running app is a namespace global reached by `Sonar::app()`
-  (throws `SonarException` if none). Inside `namespace Sonar` it's written bare.
-- **R4 — bit-sets are namespace consts, not enums:** `Sonar::Attr::Bold`, `Sonar::Mod::Ctrl`
-  (OR-able ints). `Sonar::Unbounded` = the layout "no max" sentinel.
+- **R3 — no `App::Current()`.** The running app is a namespace global reached by `Moby::app()`
+  (throws `MobyException` if none). Inside `namespace Moby` it's written bare.
+- **R4 — bit-sets are namespace consts, not enums:** `Moby::Attr::Bold`, `Moby::Mod::Ctrl`
+  (OR-able ints). `Moby::Unbounded` = the layout "no max" sentinel.
 - **R5 — mixins derive from `Component`; diamonds collapse.** A leaf `class ContentBox : Container,
   Scrollable, Bordered` gets ONE collapsed `Component` core. **Base-list order is significant:
   core-most first, decorators last** (collapse keeps the later base's implementation).
@@ -454,9 +454,9 @@ runtime theme switching. Four built-in themes (Default/Dark/Light/HighContrast).
 - **R12 — handler registration returns an int token; removal by token** (`offKey(t)`). Method refs
   have no identity, so remove-by-value is impossible.
 - **R13 — overlays are an App-level stack**; the top overlay owns input exclusively (modal-ish).
-- **R15 — Sonar is a checked package** (full narrowing/`T?` — no prelude caveats).
-- **R16 — no `console.write` during a running app.** Use `Sonar::log(string)` (a 200-entry ring
-  buffer) + a debug facility. A `SONAR_LOG_STDERR=1` env tee exists for headless debugging.
+- **R15 — Moby is a checked package** (full narrowing/`T?` — no prelude caveats).
+- **R16 — no `console.write` during a running app.** Use `Moby::log(string)` (a 200-entry ring
+  buffer) + a debug facility. A `MOBY_LOG_STDERR=1` env tee exists for headless debugging.
 
 ## 3.4 Core value types & interfaces (contracts C2/C3/C5)
 
@@ -612,7 +612,7 @@ class Keymap {
   mutations from handlers take effect next frame. Idle app blocks on watches/timers, zero CPU.
 - **Chord grammar:** `[C-][M-][S-]key`, `^X` ≡ `C-X`; key = printable char or KeyCode name
   (`Enter`, `Tab`, `F5`). Examples: `"^S"`, `"M-x"`, `"C-M-Left"`, `"S-Tab"`.
-- **`Sonar::app()`** returns the running `App` (throws if none). `Sonar::log(string)` for diagnostics.
+- **`Moby::app()`** returns the running `App` (throws if none). `Moby::log(string)` for diagnostics.
 - **The run loop rides the language event loop.** `App.run()` awaits internally; your socket
   callbacks, timers, and `await`s all run on the same single-threaded dispatcher. This is exactly
   why Recon's HTTP-in-the-background model works: send a request, its response callback fires on
@@ -635,17 +635,17 @@ resolve theme styles via `Styleable.resolve(key, theme)`. **Note:** the landed T
 renderer/input via test setters (`__useRenderer`/`__useInput`) rather than pure DI in places —
 follow the running examples' pattern when you get to the composition root.
 
-## 3.9 The `sonar!` template layer (optional)
+## 3.9 The `moby!` template layer (optional)
 
 ```lev
-var view = sonar!(`<ContentBox title="Files" border={BorderStyle::Single}>
+var view = moby!(`<ContentBox title="Files" border={BorderStyle::Single}>
                        <ListView id="files" flex="1"/>
                    </ContentBox>`);
 ```
 Expands at compile time to construction code (`--expand` shows the exact `set*`/`add` chain).
 `id="name"` binds the node to the enclosing class's declared field `name`. `on:event={handler}`
 wires a handler. `$for`/`$if` for repetition/conditionals. External templates via
-`comptime string tpl = import("views/x.sonar");` + `assets = ["views/**"]` in the manifest.
+`comptime string tpl = import("views/x.moby");` + `assets = ["views/**"]` in the manifest.
 **You do not have to use templates** — building the tree with explicit `add()`/`set*()` calls is
 equally valid and often clearer for a data-driven app like Recon. If you use templates, note the
 `char`-literal-at-comptime bug (#58) and the imported-symbol-in-IIFE bug (#57) are worked around in
@@ -911,7 +911,7 @@ namespace datetime { DateTime? parseHttpDate(string); DateTime? parseIso8601(str
 - **`Promise<T>`**: `new Promise()` (pending) / `new Promise(v)` (resolved); `resolve(v)`,
   `isReady()`, `get()`, `then(cb)`.
 - **Timers:** `std::after(ms)` / `std::every(ms)` return a `Timer` (`ticks() -> InStream<int>`,
-  `subscribe`, `cancel`). In Sonar, use `App.every(ms, cb)` / `App.cancelEvery(token)`.
+  `subscribe`, `cancel`). In Moby, use `App.every(ms, cb)` / `App.cancelEvery(token)`.
 - **`awaitTimeout<T>(Promise<T> work, int ms) -> T?`** — `None` on timeout (your request-timeout
   primitive). **`TaskGroup`** (structured concurrency via `using`) and `CancelledException` exist if
   you parallelize (e.g. a "run folder" batch). **`std::spawn`/`Channel<T>`/`Worker<T>`** are true
@@ -955,7 +955,7 @@ namespace env { Array<string> args(); string name(); string? get(string key);
 - CLI args: `env::args()` (e.g. `recon collection.json` to open a collection on launch).
 - Config paths / editor: `env::get("HOME")`, `env::get("EDITOR")`, `env::get("NO_COLOR")`.
 - Exit codes: `env::exit(code)` (immediate) / `env::setExitCode(code)` (on normal drain). Uncaught
-  exception → exit 1. Sonar's `App` runs terminal teardown before exit via `using`.
+  exception → exit 1. Moby's `App` runs terminal teardown before exit via `using`.
 
 ---
 
@@ -1229,7 +1229,7 @@ variable extraction (script substitute); optional: curl/code export, request sea
 
 # 7. Footgun map — compiler & framework bugs you MUST design around
 
-These are real, currently-open defects (or hard language rules) that have bitten every Sonar track.
+These are real, currently-open defects (or hard language rules) that have bitten every Moby track.
 Design so Recon never hits them. Numbers are `bug.md` entries as of this research.
 
 **Language / codegen (affect any Recon code):**
@@ -1250,7 +1250,7 @@ Design so Recon never hits them. Numbers are `bug.md` entries as of this researc
   as a map value on a class field. Use a `class` value, or `Map<K,int>` indexing parallel arrays.
 - **#41 — `Array<struct-with-enum-field>` goes stale after unrelated heap activity** (emit-C++/LLVM).
   If you need an array of records whose fields include an enum, **make the element a `class`, not a
-  `struct`.** (Sonar's `Chord`/`TableColumn`/`TreeRow` are classes for exactly this reason.)
+  `struct`.** (Moby's `Chord`/`TableColumn`/`TreeRow` are classes for exactly this reason.)
 - **#34 — overload scoring: a lambda literal wrongly scores as applicable to a `string` param.**
   Within a class, **declare lambda-taking overloads before string-taking same-name overloads.**
 - **#30 — `Map<K, recursive-class>` corruption** was fixed for JSON on LLVM; still, keep Recon's
@@ -1263,20 +1263,20 @@ Design so Recon never hits them. Numbers are `bug.md` entries as of this researc
   reassign `box = box.shift(...)` instead); qualified namespace-global writes don't lower (write
   bare inside the namespace).
 
-**Sonar / paint (affect the LLVM lane only — Recon runs on interpreters, so these are "don't rely
+**Moby / paint (affect the LLVM lane only — Recon runs on interpreters, so these are "don't rely
 on LLVM for the UI" notes):**
 - **#67 (P0) — a drawing component painted through container→child interface dispatch segfaults on
   LLVM** (a nested `Size.w` read miscompiles). This is why **Recon's real run lane is the tree-walk
   oracle / IR interpreter.** Networking + the loop are LLVM-clean; the widget paint pipeline is not.
 - **`pushClip` + 2+ writes segfaults on LLVM;** char-literal-in-ternary misevaluates on native;
   `Container.paint`'s inherited children-loop paints nothing for a `Container`+second-mixin leaf on
-  oracle/IR too (Sonar's framework leaves already work around this by redeclaring `paint()` — you
+  oracle/IR too (Moby's framework leaves already work around this by redeclaring `paint()` — you
   inherit the fix by using the shipped components; only relevant if you build **custom** container
   subclasses, in which case redeclare `paint()`/`arrange()`/`contentRect()` on the leaf).
 - **#68 — `env::get` (sysEnv) fails LLVM codegen as a non-inlined package call.** Read env vars in
   Recon's own `main()` (where it inlines) and pass values down, rather than deep inside a package.
 - **#57/#58 — inside a comptime macro:** imported symbols don't resolve inside a bare IIFE; char
-  literals don't retype at comptime. Only relevant if you write your own `sonar!`-style macros
+  literals don't retype at comptime. Only relevant if you write your own `moby!`-style macros
   (you don't need to).
 
 **The meta-rule:** build and differential-test on the **oracle** (`trident run`) as you go; rebuild
@@ -1292,7 +1292,7 @@ every lambda.
 
 ## 8.1 Package layout & manifest
 
-Recon lives in `examples/recon/` as a **trident package** that depends on the Sonar package.
+Recon lives in `examples/recon/` as a **trident package** that depends on the Moby package.
 Model the manifest on the Atlantis example (verified format):
 
 ```toml
@@ -1300,21 +1300,21 @@ Model the manifest on the Atlantis example (verified format):
 name    = "recon"
 entry   = "main"                       # a function name, OR a file ("main.lev")
 sources = ["src/*.lev"]                # globs expand alphabetically
-# assets = ["views/**"]                # only if you use external .sonar templates / bundled files
+# assets = ["views/**"]                # only if you use external .moby templates / bundled files
 
 [[dep]]
-path    = "../../sonar"                # local-path dep: a directory with its own trident.toml
-as      = "Sonar"                      # reach it via `uses Sonar;`
-version = "0.1.0"
+path    = "../../moby"                # local-path dep: a directory with its own trident.toml
+as      = "Moby"                      # reach it via `uses Moby;`
+version = "0.2.0"
 ```
 - **`entry`** is either a function name (gather everything, call it) or a file whose top-level
   statements drive the program. `trident` records which; the compiler never sniffs.
 - **`sources`** are globs relative to the manifest; files reopening a namespace merge.
 - **`[[dep]] path`** is a local directory (recursively gathered into the same whole-program unit);
-  **`as`** aliases the dep's namespaces so `uses Sonar;` works. Phantom-dep prevention: a file may
+  **`as`** aliases the dep's namespaces so `uses Moby;` works. Phantom-dep prevention: a file may
   only `uses` a namespace from the project or a **direct** dep.
-- Sonar itself has `name = "sonar"`, so the dep `path` is `../../sonar`. Confirm Sonar's exported
-  namespace is `Sonar` (it is) and use `as = "Sonar"`.
+- Moby itself has `name = "moby"`, so the dep `path` is `../../moby`. Confirm Moby's exported
+  namespace is `Moby` (it is) and use `as = "Moby"`.
 
 ## 8.2 Build & run
 
@@ -1323,20 +1323,20 @@ trident run   [dir]     # resolve manifest → plan → compile → execute on t
 trident build [dir]     # → native executable (emit-C++ + g++)   [App.run() unavailable here]
 trident check [dir]     # parse + resolve + type-check only, no execution
 leviathan --ir file     # run the IR interpreter (the other reliable Recon lane)
-leviathan --expand file # show post-macro source (for sonar! debugging)
+leviathan --expand file # show post-macro source (for moby! debugging)
 ```
 - **`trident run` (oracle) is your primary lane.** The IR interpreter (`--ir`) is the second.
-  Both run the full Sonar paint path and the event loop + sockets.
+  Both run the full Moby paint path and the event loop + sockets.
 - **emit-C++/`trident build`** compiles the whole package **except `App.run()`** (no event loop) —
   so a compiled Recon binary can't run the interactive loop. Not a target for v1.
 - **LLVM** runs the loop and networking but currently segfaults on component paint (#67) — not a
   target until that's fixed.
 - **A single bare file** (no manifest) is a "project of one"; but Recon should be a real package
-  with a manifest + `[[dep]]` on Sonar.
+  with a manifest + `[[dep]]` on Moby.
 
 ## 8.3 Testing
 
-House style is **corpus tests**: a program whose stdout matches an `.expected` file, exit 0. Sonar
+House style is **corpus tests**: a program whose stdout matches an `.expected` file, exit 0. Moby
 provides testing seams you can reuse:
 - **`TestRenderer : IRenderer`** — records a cell grid; `snapshot() -> string` (two-channel text +
   style format), `textOnly()`. Bind it instead of `AnsiRenderer` for headless UI tests.
@@ -1427,7 +1427,7 @@ Illustrative Leviathan showing the shapes fit together (interpreter lane). This 
 pieces compose; the designer decides the actual structure.
 
 ```lev
-uses Sonar;
+uses Moby;
 
 // resolve URL -> (scheme, host, port, pathWithQuery) via Recon's own parser (§6.1)
 class Url { string scheme; string host; int port; string path; }   // class: identity, mutation
@@ -1471,19 +1471,19 @@ Promise<HttpResponse> sendReq(HttpClient client, string method, Url u,
 - **`datetime`**: `parseHttpDate`, `parseIso8601`; `DateTime`, `Duration` (top-level structs).
 - **`env`**: `args`, `name`, `get`, `exit`, `setExitCode`.
 - **`math`**: `pi`, `e`, `log`/`exp`/`sin`/... , `min`/`max`.
-- **`Sonar`** (the dep, via `uses Sonar;`): everything in §3 — `App`, `Component`, `Container`,
+- **`Moby`** (the dep, via `uses Moby;`): everything in §3 — `App`, `Component`, `Container`,
   `Text`/`Input`/`Button`/`CheckBox`/`RadioGroup`/`ProgressBar`/`Spinner`/`ContentBar`,
   `ContentBox`/`SplitBox`/`GridBox`/`Tabs`/`ListView`/`TableView`/`TreeView`, layout strategies,
-  `Theme`, `Keymap`, event classes, geometry structs, `Sonar::log`/`Sonar::app()`/`Sonar::Attr`/
-  `Sonar::Mod`. **Not present:** `TextBox`, `Modal`, `BarMenu`/`Menu`, `DebugOverlay`,
+  `Theme`, `Keymap`, event classes, geometry structs, `Moby::log`/`Moby::app()`/`Moby::Attr`/
+  `Moby::Mod`. **Not present:** `TextBox`, `Modal`, `BarMenu`/`Menu`, `DebugOverlay`,
   `@Shortcut`/`@Timer`/`@Validator`.
 
 ---
 
-## Migration note (Sonar DOM D06, 2026-07-19): framework `TextArea` now exists
+## Migration note (Moby DOM D06, 2026-07-19): framework `TextArea` now exists
 
-The framework gained a general `Sonar::TextArea` (`sonar_v2/src/components/textarea.lev`, tech design
-`designs/sonar_v2/dom/techdesign-06-textarea.md`). It closes every gap the local
+The framework gained a general `Moby::TextArea` (`moby/src/components/textarea.lev`, tech design
+`designs/moby/dom/techdesign-06-textarea.md`). It closes every gap the local
 `examples/recon/src/ui/textarea.lev` skeleton left open: cell-width cursor math (CJK/emoji-correct
 `cellAt`/`scalarAtCell`), auto-scroll on both axes, a sticky desired-column for vertical moves,
 PageUp/PageDown, word jumps, doc-home/end, an optional line-number gutter, readOnly gating, wide-glyph
@@ -1494,7 +1494,7 @@ tag/attr/`value`-channel integration.
 for the framework one. Blocking difference to reconcile first: Recon's editor carries `^F` JSON
 pretty-print (`formatJson`) and a `rawLanguage`/`dirtyFlag` protocol its request/response panes read.
 The framework component has neither by design (syntax/format concerns are Recon-domain). The clean path
-is a thin `Recon` subclass over `Sonar::TextArea` that re-adds `^F` + the dirty flag via `on:change`,
+is a thin `Recon` subclass over `Moby::TextArea` that re-adds `^F` + the dirty flag via `on:change`,
 rather than keeping the parallel skeleton. Left for a dedicated change.
 
 ---

@@ -1,8 +1,0 @@
-name = "sonar-core-test"
-entry = "main"
-sources = ["core.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

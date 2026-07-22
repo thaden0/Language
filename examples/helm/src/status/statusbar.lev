@@ -2,7 +2,7 @@
 //
 // Composes the bottom `contentbar`'s segments — mode, cursor Ln/Col, encoding,
 // language, diagnostics counts (`● 2  ▲ 5`), build state, Git branch — into the
-// three regions `Sonar::ContentBar` paints (left / center / right). Pure model:
+// three regions `Moby::ContentBar` paints (left / center / right). Pure model:
 // the shell (H01) binds `left()/center()/right()` into the real bar via
 // `query("#statusbar").setLeft(...)`. `applyBatch` folds a delivered
 // `DiagnosticBatch` into the counts, closing the status half of the

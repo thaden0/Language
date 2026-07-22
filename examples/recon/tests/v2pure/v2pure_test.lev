@@ -1,6 +1,6 @@
 // Corpus test for the DESIGN-2 pure additions: fmt.lev formatters, jsonhl
 // tokenizer, url query helpers, vars resolveReport, and auth authSourceLabel.
-// Headless, no Sonar. Every output byte is pinned in v2pure_test.expected.
+// Headless, no Moby. Every output byte is pinned in v2pure_test.expected.
 namespace Recon {
 
 void section(string s) { console.writeln("== " + s + " =="); }

@@ -1,0 +1,485 @@
+namespace Moby { namespace Dom {
+
+    // ======================================================================
+    // Document (techdesign-01 §2, contract D-C4)
+    //
+    // The component tree is the DOM; the Document annotates it. It owns no
+    // components — it holds a meta side-table (parallel columns keyed by the
+    // additive Component.domSlot_ int), a validated id index (the tree is
+    // truth; a stale hit re-walks), and the serializer. Every collection is a
+    // parallel primitive/string/ref-class column on THIS instance (never a
+    // namespace-global growing array — #73; never Array<Struct> — #74).
+    // ======================================================================
+    class Document {
+        // Optional (not a bare `App host_`): a bare class-typed field
+        // auto-constructs (§3), and App()'s single-app guard throws on the
+        // second construction. Set once in the ctor, narrowed on read.
+        App? host_ = None;
+
+        // meta side-table (per-slot columns, indexed by Component.domSlot_)
+        Array<IComponent>      nodes_   = [];
+        Array<bool>            alive_   = [];
+        Array<string>          tags_    = [];    // meta tag; "" = none recorded
+        Array<string>          nodeId_  = [];    // authoritative per-node id ("" = none)
+        Array<ActionRegistry?> actions_ = [];    // D04 rows, created lazily
+
+        // attribute rows (cross-node parallel arrays; attrs are read rarely and
+        // written once at build — §2.1). `id`/`class` are NOT stored here: they
+        // are synthesized from the id column / live class list (§5.1).
+        Array<int>    attrSlot_  = [];
+        Array<string> attrName_  = [];
+        Array<string> attrValue_ = [];
+
+        // id fast index (id -> slot). A validated cache over the tree (§2.2).
+        Array<string> idKey_  = [];
+        Array<int>    idSlot_ = [];
+
+        // recycled slots (free-list — D-P10 keeps churn flat without remapping).
+        Array<int> freeSlots_ = [];
+
+        // exposure + data store (D05 consumes; declared here per D-C4).
+        Array<string>        exposeKeys_    = [];
+        Array<() => string>  exposeGetters_ = [];
+        Array<string>        dataKeys_   = [];
+        Array<string>        dataValues_ = [];
+
+        new Document(App host) { host_ = host; }
+        App host() {
+            App? h = host_;
+            if (h != None) return h;
+            throw MobyException("Document has no host");
+        }
+        IComponent rootNode() {
+            App? h = host_;
+            if (h != None) return h;
+            throw MobyException("Document has no host");
+        }
+
+        // ---- identity / meta (the side-table) ------------------------------
+
+        // Assigns domSlot_ on first touch; validates a recycled slot before
+        // trusting a prior assignment (§7.3 — identity, not just the int).
+        int __slotFor(IComponent c) {
+            int prior = c.domSlot_;
+            if (prior >= 0 && prior < nodes_.length() && alive_[prior]) {
+                if (this.identityEq(nodes_[prior], c)) return prior;
+            }
+            int slot = this.claimSlot();
+            nodes_   = nodes_.with(slot, c);
+            alive_   = alive_.with(slot, true);
+            tags_    = tags_.with(slot, "");
+            nodeId_  = nodeId_.with(slot, "");
+            actions_ = actions_.with(slot, None);
+            c.domSlot_ = slot;
+            return slot;
+        }
+
+        int claimSlot() {
+            if (freeSlots_.length() > 0) {
+                int slot = freeSlots_.last();
+                freeSlots_ = freeSlots_.removeAt(freeSlots_.length() - 1);
+                return slot;
+            }
+            int slot = nodes_.length();
+            nodes_   = nodes_.add(this.rootNode());          // placeholder, overwritten by caller
+            alive_   = alive_.add(false);
+            tags_    = tags_.add("");
+            nodeId_  = nodeId_.add("");
+            actions_ = actions_.add(None);
+            return slot;
+        }
+
+        void __recordBuild(IComponent c, string tag, Array<string> attrNames, Array<string> attrValues) {
+            int slot = this.__slotFor(c);
+            tags_ = tags_.with(slot, tag);
+            int i = 0;
+            for (string name in attrNames) {
+                string value = attrValues[i];
+                this.applyMetaAttr(c, slot, name, value);
+                i = i + 1;
+            }
+        }
+
+        // Routes id/class to their synthesized homes, everything else to the
+        // attr table.
+        void applyMetaAttr(IComponent c, int slot, string name, string value) {
+            if (name == "id") { this.registerId(value, c); return; }
+            if (name == "class") {
+                for (string token in value.split(" ")) if (token != "") c.addClass(token);
+                return;
+            }
+            // replace an existing same-name row for this slot, else append
+            int at = this.attrRowFor(slot, name);
+            if (at >= 0) { attrValue_ = attrValue_.with(at, value); return; }
+            attrSlot_  = attrSlot_.add(slot);
+            attrName_  = attrName_.add(name);
+            attrValue_ = attrValue_.add(value);
+        }
+
+        int attrRowFor(int slot, string name) {
+            int i = 0;
+            for (int s in attrSlot_) {
+                if (s == slot && attrName_[i] == name) return i;
+                i = i + 1;
+            }
+            return -1;
+        }
+
+        void __setAttrMeta(IComponent c, string name, string value) {
+            int slot = this.__slotFor(c);
+            this.applyMetaAttr(c, slot, name, value);
+        }
+
+        // meta tag when markup-built; else "" (D02 registry reverse-match is a
+        // D02 dependency — absent here, documented: tag selectors on landed-class
+        // nodes need meta or a registered matcher, §4.2 / probe D-P8).
+        string tagOf(IComponent c) {
+            int slot = c.domSlot_;
+            if (slot >= 0 && slot < nodes_.length() && alive_[slot] && this.identityEq(nodes_[slot], c))
+                return tags_[slot];
+            return "";
+        }
+
+        // "" when absent; `id` reads the id column (synthesized, not a meta attr).
+        string attrOf(IComponent c, string name) {
+            if (name == "id") return this.idOf(c);
+            int slot = c.domSlot_;
+            if (slot < 0) return "";
+            int at = this.attrRowFor(slot, name);
+            if (at < 0) return "";
+            return attrValue_[at];
+        }
+
+        string idOf(IComponent c) {
+            int slot = c.domSlot_;
+            if (slot >= 0 && slot < nodes_.length() && alive_[slot] && this.identityEq(nodes_[slot], c))
+                return nodeId_[slot];
+            return "";
+        }
+
+        // ---- id index (validated cache; the tree is truth, §2.2) -----------
+
+        void registerId(string id, IComponent c) {
+            int slot = this.__slotFor(c);
+            int existing = this.lookupIdSlot(id);          // validates + evicts stale
+            if (existing >= 0 && !this.identityEq(nodes_[existing], c))
+                throw MobyException("duplicate id '" + id + "'");
+            // drop any prior fast-index entry for this key OR this slot, re-add fresh
+            Array<string> kk = []; Array<int> ss = [];
+            int i = 0;
+            for (string k in idKey_) {
+                int s = idSlot_[i];
+                if (k != id && s != slot) { kk = kk.add(k); ss = ss.add(s); }
+                i = i + 1;
+            }
+            kk = kk.add(id); ss = ss.add(slot);
+            idKey_ = kk; idSlot_ = ss;
+            nodeId_ = nodeId_.with(slot, id);
+        }
+
+        // Fast-index lookup with validation. Returns a live slot for `id`, or
+        // -1 (evicting a stale entry on the way).
+        int lookupIdSlot(string id) {
+            int i = 0;
+            for (string k in idKey_) {
+                if (k == id) {
+                    int slot = idSlot_[i];
+                    if (this.slotLive(slot)) return slot;
+                    this.evictIdRow(i);
+                    return -1;
+                }
+                i = i + 1;
+            }
+            return -1;
+        }
+
+        void evictIdRow(int row) {
+            Array<string> kk = []; Array<int> ss = [];
+            int i = 0;
+            for (string k in idKey_) {
+                if (i != row) { kk = kk.add(k); ss = ss.add(idSlot_[i]); }
+                i = i + 1;
+            }
+            idKey_ = kk; idSlot_ = ss;
+        }
+
+        // slot is alive AND its component reaches a live root (§2.2).
+        bool slotLive(int slot) {
+            if (slot < 0 || slot >= nodes_.length() || !alive_[slot]) return false;
+            return this.reachesRoot(nodes_[slot]);
+        }
+
+        IComponent? byId(string id) {
+            int slot = this.lookupIdSlot(id);
+            if (slot >= 0) return nodes_[slot];
+            // fall through to the full-tree walk, re-indexing on a hit
+            IComponent? hit = this.findIdWalk(this.rootNode(), id);
+            if (hit != None) { this.registerId(id, hit); return hit; }
+            return None;
+        }
+
+        IComponent? findIdWalk(IComponent root, string id) {
+            if (this.idOf(root) == id) return root;
+            for (IComponent kid in root.__mobyChildren()) {
+                IComponent? hit = this.findIdWalk(kid, id);
+                if (hit != None) return hit;
+            }
+            return None;
+        }
+
+        // ---- reachability + identity helpers -------------------------------
+
+        bool identityEq(IComponent a, IComponent b) => a == b;
+
+        bool reachesRoot(IComponent c) {
+            IComponent rootNode = this.rootNode();
+            IComponent cur = c;
+            int guard = 0;
+            while (guard < 100000) {
+                if (this.identityEq(cur, rootNode)) return true;
+                IComponent? p = cur.parent();
+                if (p != None) { cur = p; guard = guard + 1; }
+                else return false;
+            }
+            return false;
+        }
+
+        // Lazily creates and returns the node's D04 action registry row.
+        ActionRegistry __actionsFor(IComponent c) {
+            int slot = this.__slotFor(c);
+            ActionRegistry? existing = actions_[slot];
+            if (existing != None) return existing;
+            ActionRegistry reg = ActionRegistry(c);
+            actions_ = actions_.with(slot, reg);
+            return reg;
+        }
+
+        // The node's registry WITHOUT creating one (the D04 responder walk reads
+        // this at every ancestor — creating a row per hop would defeat the walk).
+        // None when the node has no meta row or none was created.
+        ActionRegistry? __actionsForOrNone(IComponent c) {
+            int slot = c.domSlot_;
+            if (slot >= 0 && slot < nodes_.length() && alive_[slot] && this.identityEq(nodes_[slot], c))
+                return actions_[slot];
+            return None;
+        }
+
+        // True when a serializable meta attr row exists for this node (distinct
+        // from attrOf returning "" — an explicit `action=""` is present-but-empty,
+        // which D04 reads as an opt-out).
+        bool __hasAttrMeta(IComponent c, string name) {
+            int slot = c.domSlot_;
+            if (slot < 0) return false;
+            return this.attrRowFor(slot, name) >= 0;
+        }
+
+        // ---- reap detached nodes (D-P10 churn flatness) --------------------
+        // No detach hook exists on plain components (§2.2), so staleness is
+        // collected here: every alive slot whose node no longer reaches the root
+        // is freed and its slot recycled. Called from the frame sweep and
+        // available to churn tests.
+        int __reap() {
+            int freed = 0;
+            int slot = 0;
+            for (IComponent node in nodes_) {
+                if (alive_[slot] && !this.reachesRoot(node)) {
+                    this.freeSlot(slot, node);
+                    freed = freed + 1;
+                }
+                slot = slot + 1;
+            }
+            return freed;
+        }
+
+        void freeSlot(int slot, IComponent node) {
+            alive_   = alive_.with(slot, false);
+            tags_    = tags_.with(slot, "");
+            nodeId_  = nodeId_.with(slot, "");
+            actions_ = actions_.with(slot, None);
+            nodes_   = nodes_.with(slot, this.rootNode());       // drop the ref
+            node.domSlot_ = -1;
+            // purge attr rows + id-index entries pointing at this slot
+            Array<int> as = []; Array<string> an = []; Array<string> av = [];
+            int i = 0;
+            for (int s in attrSlot_) {
+                if (s != slot) { as = as.add(s); an = an.add(attrName_[i]); av = av.add(attrValue_[i]); }
+                i = i + 1;
+            }
+            attrSlot_ = as; attrName_ = an; attrValue_ = av;
+            Array<string> kk = []; Array<int> ss = [];
+            int j = 0;
+            for (string k in idKey_) {
+                if (idSlot_[j] != slot) { kk = kk.add(k); ss = ss.add(idSlot_[j]); }
+                j = j + 1;
+            }
+            idKey_ = kk; idSlot_ = ss;
+            freeSlots_ = freeSlots_.add(slot);
+        }
+
+        int __liveNodeCount() {
+            int n = 0;
+            for (bool a in alive_) if (a) n = n + 1;
+            return n;
+        }
+        int __slotCapacity() => nodes_.length();
+
+        // ---- exposure + store (D05 spec's the sweep; storage lives here) ----
+
+        void expose(string key, () => string getter) {
+            int i = 0;
+            for (string k in exposeKeys_) {
+                if (k == key) { exposeGetters_ = exposeGetters_.with(i, getter); return; }
+                i = i + 1;
+            }
+            exposeKeys_ = exposeKeys_.add(key);
+            exposeGetters_ = exposeGetters_.add(getter);
+        }
+        // The dynamic route (§3(2)): a store write marks the sweep dirty and
+        // schedules a frame, so a `doc.set(...)` from anywhere is picked up by
+        // the frame it arms. __scheduleSweepFrame is a no-op until the session
+        // starts, so build-time seeding stays free.
+        void set(string key, string value) {
+            int i = 0;
+            for (string k in dataKeys_) {
+                if (k == key) { dataValues_ = dataValues_.with(i, value); this.__scheduleSweepFrame(); return; }
+                i = i + 1;
+            }
+            dataKeys_ = dataKeys_.add(key);
+            dataValues_ = dataValues_.add(value);
+            this.__scheduleSweepFrame();
+        }
+        string get(string key) {
+            int i = 0;
+            for (string k in dataKeys_) { if (k == key) return dataValues_[i]; i = i + 1; }
+            int j = 0;
+            for (string k in exposeKeys_) {
+                if (k == key) { () => string g = exposeGetters_[j]; return g(); }
+                j = j + 1;
+            }
+            return "";
+        }
+
+        // Runtime {{key}} resolution (D05 §3): expose() first, then the store;
+        // None on a miss so the caller can log-once and render "". (`get` is the
+        // store-first public reader; this is the tier's ordered, miss-aware form.)
+        string? __resolveKey(string key) {
+            int j = 0;
+            for (string k in exposeKeys_) {
+                if (k == key) { () => string g = exposeGetters_[j]; return g(); }
+                j = j + 1;
+            }
+            int i = 0;
+            for (string k in dataKeys_) { if (k == key) return dataValues_[i]; i = i + 1; }
+            return None;
+        }
+
+        // ---- binding table + sweep (D05 §2, §4) ----------------------------
+        // Instance field (#73); dead entries are compacted at D-P10's threshold
+        // (25% dead AND ≥64 dead), so a churny UI never grows the table
+        // unbounded. `lastSweepChanged_` feeds refresh()/the D-P6 trailing-frame
+        // fallback.
+        Array<Binding> bindings_          = [];
+        int            bindingsDead_      = 0;
+        bool           lastSweepChanged_  = false;
+
+        void __registerBinding(Binding b) { bindings_ = bindings_.add(b); }
+        int  __bindingCount()     => bindings_.length();
+        int  __liveBindingCount() {
+            int n = 0;
+            for (Binding b in bindings_) if (!b.dead) n = n + 1;
+            return n;
+        }
+
+        // The frozen sweep (§4): re-evaluate each live binding, diff, apply on
+        // change. A detached node is tombstoned lazily (validation = reachesRoot,
+        // the D01 helper); a throwing getter is contained (the T03 rule) and
+        // keeps its last good value.
+        void __sweepBindings() {
+            bool changed = false;
+            for (Binding b in bindings_) {
+                if (b.dead) continue;
+                if (!this.reachesRoot(b.node)) {
+                    b.dead = true; bindingsDead_ = bindingsDead_ + 1; continue;
+                }
+                string v = "";
+                try { v = b.getter(); }
+                catch (IException ex) {
+                    Moby::__noteHandlerError("binding getter threw (" + b.sourceText + "): " + ex.message);
+                    continue;                                 // renders last good value
+                }
+                if (v != b.last) { b.last = v; b.apply(v); changed = true; }
+            }
+            lastSweepChanged_ = changed;
+            this.__compactBindings();
+        }
+
+        // Whether the LAST sweep applied any change (§4: refresh + the D-P6
+        // trailing-frame fallback read this).
+        bool __sweepDirty() => lastSweepChanged_;
+
+        void __compactBindings() {
+            int total = bindings_.length();
+            if (bindingsDead_ < 64) return;
+            if (bindingsDead_ * 4 < total) return;
+            Array<Binding> live = [];
+            for (Binding b in bindings_) if (!b.dead) live = live.add(b);
+            bindings_ = live;
+            bindingsDead_ = 0;
+        }
+
+        // Ask the host to run a frame (which sweeps first, §4.2). A no-op before
+        // the session starts — requestFrame guards on started_ — so a build-time
+        // set() in a headless test arms nothing.
+        void __scheduleSweepFrame() { this.host().requestFrame(); }
+
+        // Public escape hatch (§4.3): sweep now, schedule a frame if anything
+        // changed. Covers exotic mutation paths that schedule no frame of their
+        // own (worker results marshalled in, etc.).
+        void refresh() {
+            this.__sweepBindings();
+            if (lastSweepChanged_) this.__scheduleSweepFrame();
+        }
+
+        // ---- serializer (§5.1) ---------------------------------------------
+        string outerMarkup(IComponent root) => this.markupOf(root);
+
+        string markupOf(IComponent c) {
+            string tag = this.tagOf(c);
+            if (tag == "") return "<!-- unmapped -->";
+            string open = "<" + tag;
+            string id = this.idOf(c);
+            if (id != "") open = open + " id=\"" + id + "\"";
+            Array<string> classes = c.classList();
+            if (classes.length() > 0) open = open + " class=\"" + classes.joinToString(" ") + "\"";
+            // recorded attrs in application order
+            int slot = c.domSlot_;
+            int i = 0;
+            for (int s in attrSlot_) {
+                if (s == slot) open = open + " " + attrName_[i] + "=\"" + attrValue_[i] + "\"";
+                i = i + 1;
+            }
+            open = open + ">";
+            // children, then text leaves
+            Array<IComponent> kids = c.__mobyChildren();
+            string body = "";
+            if (kids.length() > 0) {
+                for (IComponent kid in kids) body = body + this.markupOf(kid);
+            } else {
+                body = this.leafText(c);
+            }
+            return open + body + "</" + tag + ">";
+        }
+
+        // Current display text of a leaf (best-effort; the serializer is a
+        // debugging/testing tool, §5.1). The narrowing ladder mirrors DomNode.
+        string leafText(IComponent c) {
+            if (c is Text)       return c.text;
+            if (c is Button)     return c.label;
+            if (c is Input)      return c.value;
+            if (c is TextArea)   return c.text();
+            if (c is ContentBar) return c.left();
+            return "";
+        }
+    }
+
+}}

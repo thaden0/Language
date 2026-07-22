@@ -2,7 +2,7 @@
 // click-to-jump), Output (capped line buffer + IListSource), Test results, and
 // the PanelHost that routes a diagnostic batch and reveals Problems on errors.
 // Drives the model surfaces directly (deterministic, no layout). Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

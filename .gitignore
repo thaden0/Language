@@ -9,3 +9,8 @@ Testing/
 runtime/*/lvrt.link
 lvrt.link
 build-asan/
+
+# Stray trident-build output when run from repo root without --out
+/helm
+/recon
+/sandbox/

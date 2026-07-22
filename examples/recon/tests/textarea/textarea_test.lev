@@ -1,6 +1,6 @@
 // Corpus test: TextArea editing operations (headless).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 void type(TextArea ta, string s) {
     for (char c in s.chars()) { ta.onKeyDown(KeyEvent(KeyCode::Char, c, 0)); }

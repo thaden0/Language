@@ -3,7 +3,7 @@
 // chords, so a hint can never advertise an unbound chord (P1). Global chords are
 // Ctrl-letters and F-keys only (N4 — a bare printable would steal typing, R11).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 // Bind one command id to a chord. A dedicated helper so `id` is a distinct
 // parameter per call (no loop-capture aliasing).
