@@ -2064,7 +2064,10 @@ bool Evaluator::execTopLevel(Program& program) {
             }
         } else {
             if (item->kind == StmtKind::ExprStmt || item->kind == StmtKind::Var ||
-                item->kind == StmtKind::Try || item->kind == StmtKind::Throw)
+                item->kind == StmtKind::Try || item->kind == StmtKind::Throw ||
+                item->kind == StmtKind::If || item->kind == StmtKind::While ||
+                item->kind == StmtKind::For || item->kind == StmtKind::ForIn ||
+                item->kind == StmtKind::DoWhile)
                 exec(item.get());
             // bug.md #2: promote the just-bound top-level Var into globals_ — it
             // is shared program state (functions read/write it), not a top-level

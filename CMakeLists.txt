@@ -313,6 +313,14 @@ add_test(NAME corpus_target_uses_cpp
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev")
+# known_bugs_2.md #105: statement-form control flow (if/while/for/for-in/do/
+# labeled-break) in the top-level script body. The treewalk+ir engines are pinned
+# by the file's presence in the whole-corpus lanes above; this single-file lane
+# locks the emit-C++ leg too (the LLVM leg is corpus_toplevel_control_flow_llvm).
+add_test(NAME corpus_toplevel_control_flow_cpp
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/corpus/toplevel_control_flow.lev")
 # Metaprog Phase 4 §6: --expand emits recompilable source. This round-trips
 # every meta program (expand -> compile -> run) and asserts byte-identical run
 # output — the strong, mechanical proof the source printer is faithful.
@@ -1309,6 +1317,13 @@ if (LLVM_FOUND)
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
                    $<TARGET_FILE:leviathan>
                    "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev"
+                   ${LANG_LVRT_SOURCES})
+  # known_bugs_2.md #105: top-level script-body control flow on the LLVM leg
+  # (see corpus_toplevel_control_flow_cpp for the emit-C++ twin).
+  add_test(NAME corpus_toplevel_control_flow_llvm
+           COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"
+                   $<TARGET_FILE:leviathan>
+                   "${CMAKE_SOURCE_DIR}/tests/corpus/toplevel_control_flow.lev"
                    ${LANG_LVRT_SOURCES})
   # bug.md #10: div/mod-by-zero throw on the LLVM backend (see corpus_div_by_zero_*
   # above; no ELF lane since the frozen backend still returns 0).

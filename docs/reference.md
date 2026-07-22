@@ -655,6 +655,13 @@ The window per slot kind:
   top-level explicit value (that assignment is a body statement that runs after) —
   to seed a namespace global *from* a value, use another namespace-scoped
   global/`const` as the source or compute it in the initializer.
+
+  **Top-level statements are the program body** and admit the full statement
+  grammar — expression statements, declarations, `if`/`else`, `while`, `for`
+  (C-style and `for (T x in …)`), `do`-while, labeled loops, `match`, `try`/
+  `catch`, `throw` — exactly as a function body does. The forms a top-level
+  statement may **not** be are `break`, `continue`, and `return` (no enclosing
+  loop or function to target), and `using` (a resource binding is locals-only).
 - **Parameters** — the call binding; reassignment in the body is an error.
 - **`for (const T x in ...)`** — each iteration is a fresh binding.
 

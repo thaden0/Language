@@ -119,7 +119,10 @@ now ships.
 - **The current open register is exactly:** #72 [P2] (misleading TLS error text — the message
   fix landed `d994ab8`; the underlying "why did `sysTcpConnect` return −1 in that environment"
   question remains open), #73 [P2] (a **global** `Array<T>` grown by `xs = xs.add(...)` leaks
-  every intermediate on LLVM native — locals are clean; workaround: grow a local, assign once),
+  every intermediate on LLVM native — locals are clean; workaround: grow a local, assign once
+  — **CLOSED 2026-07-21**: `Op::StoreGlobal` release-old landed in
+  `src/backend/LlvmGenOps.cpp`; verified red/green, floor
+  `tests/corpus/churn/global_array_cow_growth.lev` — see `known_bugs_1.md` #73),
   and **#74 [P0.3, stop-the-line]** (repeated **`Array<Struct>`**.add on native corrupts the
   allocator — struct-element arrays only; class-element arrays are not the shape).
 - **Consequences bound into this design:** (a) no new code grows a *namespace-global* array
@@ -897,7 +900,7 @@ flips the text. Until U8 merges, the old rules stay in force for new code (no ch
 | Compose-don't-subclass `Container` | #65 family | fixed | **Keep as house pattern** (simpler, testable, no framework-internals coupling) — reworded from "workaround" to "style" |
 | Vertical children opt into `Flex(1)` | sonar #1 | framework behavior | **Keep** (N3): every child of a vertical flex that should fill declares it |
 | **N1 (new):** no repeated `Array<Struct>.add` loops in native-lane code until #74 closes | #74 open | — | Mandate |
-| **N2 (new):** never grow a namespace-global array element-wise; grow a local, assign once | #73 open | — | Mandate |
+| **N2 (new):** never grow a namespace-global array element-wise; grow a local, assign once | #73 fixed 2026-07-21 (`known_bugs_1.md` #73) | — | Retired as mandate — global COW growth is leak-free on LLVM native; keep as optional style |
 | **N3 (new):** Recon leaves paint full-width row backgrounds | sonar #4 open | — | Mandate |
 | **N4 (new):** global chords are Ctrl/F-keys only (R11 capture) | — | — | Mandate (§6.2) |
 | **N5 (new):** every user-facing failure produces exactly one notice (§9.2) | — | — | Mandate |

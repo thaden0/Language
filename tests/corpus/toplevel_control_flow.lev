@@ -1,0 +1,40 @@
+// Regression floor for known_bugs_2.md #105: statement-form control flow in the
+// TOP-LEVEL (script) body. Two independent lists gated this: the parser
+// (parseTopLevelItemInner routed only try/throw to parseStatement, so if/while/
+// for/do fell through to the expression path and failed "expected expression")
+// and the tree-walk oracle (execTopLevel's exec whitelist was ExprStmt|Var|Try|
+// Throw, so even a parsed top-level loop body silently never ran). The IR engine
+// already executed them, so the two engines diverged. This pins if/while/for/
+// for-in/do-while/labeled-break at the top level, byte-identical on --run and
+// --ir (and the native lanes via corpus_toplevel_control_flow_{cpp,llvm}).
+
+// (1) for-in accumulating into a top-level global — proves the loop body runs
+// AND its mutation of a script-body slot persists.
+Array<int> xs = [10, 20, 30];
+int total = 0;
+for (int x in xs) total = total + x;
+console.writeln("foreach total=" + total.toString());
+
+// (2) C-style for.
+for (int i = 0; i < 3; i = i + 1) console.writeln("cfor " + i.toString());
+
+// (3) while.
+int k = 0;
+while (k < 2) { console.writeln("while " + k.toString()); k = k + 1; }
+
+// (4) if / else (both arms exercised).
+if (total == 60) console.writeln("if-yes"); else console.writeln("if-no");
+if (total == 61) console.writeln("bad"); else console.writeln("else-branch");
+
+// (5) do-while.
+int d = 0;
+do { console.writeln("do " + d.toString()); d = d + 1; } while (d < 2);
+
+// (6) labeled break out of a nested loop at the top level.
+outer: for (int a = 0; a < 3; a = a + 1) {
+    for (int b = 0; b < 3; b = b + 1) {
+        if (a + b == 2) break outer;
+        console.writeln("pair " + a.toString() + "," + b.toString());
+    }
+}
+console.writeln("done");

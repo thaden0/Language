@@ -1226,6 +1226,32 @@ void Checker::walk(std::vector<StmtPtr>& items, Scope* scope) {
                 scope_ = lex;
                 typeOf(s->expr.get());
                 break;
+            case StmtKind::If:
+            case StmtKind::While:
+            case StmtKind::For:
+            case StmtKind::ForIn:
+            case StmtKind::DoWhile:
+            case StmtKind::Try:
+            case StmtKind::Throw: {
+                // known_bugs_2.md #105: statement-form control flow in the
+                // top-level (script) body must be type-checked with the same
+                // machinery a function body uses — otherwise a type error nested
+                // in a top-level `for`/`while`/`try` body slips through unchecked
+                // (this walk's plain switch never descended into these bodies;
+                // pre-#105 only try/throw could appear here, and even those were
+                // silently unchecked). Mirror checkFunction's fresh-body setup:
+                // an env frame for body locals, no enclosing return target, and
+                // clean loop/label nesting so break/continue/labels resolve
+                // exactly as inside a function.
+                scope_ = lex;
+                returnType_ = Type{}; returnTypeRef_ = nullptr;
+                loopDepth_ = 0;
+                labelStack_.clear();
+                env_.emplace_back();
+                check(s);
+                exitEnvScope();
+                break;
+            }
             default:
                 break;
         }
