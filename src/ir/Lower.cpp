@@ -1510,15 +1510,26 @@ int Lowerer::lowerCall(Expr* e) {
         }
         // unqualified FREE-function call in an unchecked prelude body: resolve
         // by name through the global scope (matches the oracle's fallback).
+        // Prefer the OVERLOAD whose parameter count matches this call's arity —
+        // not merely the first same-named function — so distinct-arity overloads
+        // of one prelude helper lower to the right function (same arity-aware
+        // intent as rtFindMethod for instance methods). Same-named prelude
+        // overloads must be arity-unique to resolve here (docs/gotchas.md).
         if (!e->resolved) {
             const Stmt* fnDecl = nullptr;
             for (const Scope* sc = sema_.global; sc && !fnDecl; sc = sc->parent)
-                if (const std::vector<Symbol*>* v = sc->localLookup(callee->text))
+                if (const std::vector<Symbol*>* v = sc->localLookup(callee->text)) {
+                    const Stmt* firstByName = nullptr;
                     for (Symbol* s : *v)
                         if (s->kind == SymbolKind::Function && s->decl) {
-                            fnDecl = s->decl;
-                            break;
+                            if (!firstByName) firstByName = s->decl;
+                            if (s->decl->params.size() == e->list.size()) {
+                                fnDecl = s->decl;
+                                break;
+                            }
                         }
+                    if (!fnDecl) fnDecl = firstByName;   // nearest scope's first same-named fn
+                }
             if (fnDecl && !(curClass_ && classHasMember(curClass_, callee->text))) {
                 std::vector<int> argRegs;
                 for (const ExprPtr& arg : e->list) argRegs.push_back(lowerExpr(arg.get()));
@@ -1661,13 +1672,24 @@ int Lowerer::lowerCall(Expr* e) {
             if (nsSym && nsSym->scope) {
                 const Stmt* fnDecl = e->resolved;
                 if (!fnDecl) {
+                    // Unchecked prelude body: no checker-resolved target. Prefer
+                    // the OVERLOAD whose parameter count matches this call's arity
+                    // (not merely the first same-named function), so distinct-arity
+                    // overloads of one namespaced helper (e.g. the DOM marshal
+                    // family) lower to the right function. Same-named prelude
+                    // overloads must be arity-unique (docs/gotchas.md).
+                    const Stmt* firstByName = nullptr;
                     if (const std::vector<Symbol*>* v =
                             nsSym->scope->localLookup(callee->text))
                         for (Symbol* s : *v)
                             if (s->kind == SymbolKind::Function && s->decl) {
-                                fnDecl = s->decl;
-                                break;
+                                if (!firstByName) firstByName = s->decl;
+                                if (s->decl->params.size() == e->list.size()) {
+                                    fnDecl = s->decl;
+                                    break;
+                                }
                             }
+                    if (!fnDecl) fnDecl = firstByName;
                 }
                 if (fnDecl) {
                     std::vector<int> argRegs;

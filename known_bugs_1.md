@@ -357,7 +357,7 @@ Nothing in the rule engine — `collectRules`/`indexDecls`/`walkAttrs`/`runRules
 ever walked the prelude's items, so a rule/attribute authored in a `prelude/*.lev`
 segment was dead code by construction (exit 0, no diagnostic, the annotated
 symbol ran its untouched placeholder body). Confirmed NOT a deliberate boundary:
-`designs/techdesign-bindgen-metaprog-scope.md` §6's fallback explicitly asked to
+`designs/complete/techdesign-bindgen-metaprog-scope.md` §6's fallback explicitly asked to
 "confirm-or-add rule-stage processing of the prelude segment", and its §13 spike
 1 was written precisely to discover this gap — an oversight, not a decision. Fix
 (`src/Rules.cpp`, `src/Rules.hpp`): the engine now stores the prelude program and,

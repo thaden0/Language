@@ -3086,16 +3086,19 @@ see it.
     bodies get a trap stub — the ELF-DNS `native-elf backend: …` precedent): filesystem,
     process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking sync reads, raw OS
     threads / shared-address `fork`. Select the branch at comptime with `target::os == "wasm"`.
-  - **The `@extern` / DOM surface.** DOM is reached through the hand-written `Dom` prelude
+  - **The `@extern` / DOM surface.** DOM is reached through the `Dom` prelude
     (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `prelude/wasm.lev`):
     opaque JS values wrapped in an `int` handle, marshaled by one reflective routine in
     `lv_host.js`, with DOM events surfaced as `InStream` endpoints and a closure trampoline
-    for handlers (which may `await`). Note the *rules-engine `@extern` bindgen* that would
-    generate these stubs is **not built** — it targeted a per-method `__import` seam that the
-    reflective single-`dom_call` bridge abandoned, and a faithful generator needs metaprog
-    scope (interface-member reflection + cross-class injection) outside the bounded P4 roadmap
-    (`designs/wasm-frontend/techdesign-06-bindgen-and-ship.md` §1). The hand-written `Dom`
-    surface is the as-built binding surface; `examples/wasm-client/` is the worked demo.
+    for handlers (which may `await`). The marshaling bodies are **rules-engine generated**:
+    each marshaled method carries a one-line `@extern(op, kind)` attribute and a placeholder
+    body that a `generates body of` rule (one per `kind`) overwrites in place; `$_args` forwards
+    the method's own parameters into a small hand-written overload family (`Dom::__new/__int/__str/__act/__child`)
+    whose overload signatures ARE the per-parameter slot-mapping table. The hand-written seam
+    reduces to that family plus the `@extern` annotations
+    (`designs/complete/techdesign-bindgen-metaprog-scope.md`; the `generates` primitive is documented above under "Body-generating rules (Layer D)").
+    `examples/wasm-client/` is the worked demo. (Signature-only DOM methods that carry closures
+    or pure-Leviathan logic — `on`/`off`/`events`/`exists`/`click` — stay hand-written.)
 - **Pure x86-64 / ELF** (`--emit-elf out`): the self-hosting-grade path — **our own machine-
   code emitter and ELF writer, no g++, no assembler, no linker, no libc.** It compiles the
   **whole language** (objects, collections, closures, exceptions, files, streams, event loop,

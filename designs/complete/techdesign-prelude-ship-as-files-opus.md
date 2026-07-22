@@ -490,7 +490,7 @@ STOP work and escalate to the owner — do not improvise — if any of these occ
 - `designs/wasm-frontend/techdesign-06-bindgen-and-ship.md` §2: mark **consumed /
   landed** (W-M4 §2 closes). The doc and track stay in `designs/wasm-frontend/` —
   §1's bindgen is still structurally blocked (its own scoping doc:
-  `designs/techdesign-bindgen-metaprog-scope.md`); the track cannot close on this
+  `designs/complete/techdesign-bindgen-metaprog-scope.md`); the track cannot close on this
   landing and this design does not move it.
 - Move this design to `designs/complete/`; the request stays in
   `designs/requests/accepted/`; the research doc is already in `docs/complete/`.
