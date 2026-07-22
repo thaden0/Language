@@ -1,0 +1,43 @@
+// Conformance: `using` cleanup on every loop-exit edge — normal iteration
+// end, break, and continue each close the iteration's resource exactly once
+// before control transfers.
+class R : IDisposable {
+    string name;
+    new R(string n) { name = n; }
+    void close() { console.writeln("close " + name); }
+}
+
+void run() {
+    // each iteration's resource closes at iteration end
+    for (int i in 1..3) {
+        using R a = R("iter" + i);
+        console.writeln("body " + i);
+    }
+
+    // continue closes the current iteration's resource first
+    for (int i in 1..4) {
+        using R c = R("c" + i);
+        if (i % 2 == 0) continue;
+        console.writeln("odd " + i);
+    }
+
+    // break closes before leaving the loop
+    int n = 0;
+    while (true) {
+        using R b = R("w" + n);
+        n = n + 1;
+        if (n == 2) break;
+        console.writeln("looping");
+    }
+    console.writeln("after while");
+
+    // return closes the live resources (LIFO), then the caller continues
+    console.writeln(compute());
+}
+
+int compute() {
+    using R a = R("f1");
+    using R b = R("f2");
+    return 99;
+}
+run();

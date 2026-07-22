@@ -1,0 +1,83 @@
+// Regression floor for known bug #95: replacing an Array<value struct> must
+// not let cleanup of an old element alias corrupt the allocator freelist.
+struct RouteLike {
+    string verb;
+    string path;
+    string controller;
+    string action;
+    Array<string> params;
+    string returnType;
+    int authMode;
+    string authRole;
+
+    new RouteLike(string verb, string path, string controller, string action,
+                  Array<string> params, string returnType, int authMode,
+                  string authRole) {
+        this.verb = verb;
+        this.path = path;
+        this.controller = controller;
+        this.action = action;
+        this.params = params;
+        this.returnType = returnType;
+        this.authMode = authMode;
+        this.authRole = authRole;
+    }
+
+    string key() => this.controller + "." + this.action;
+}
+
+class RouteTable {
+    Map<string, int> keyIndex = Map();
+    Array<RouteLike> routes = [];
+    Map<string, int> pendingAuthMode = Map();
+    Map<string, string> pendingAuthRole = Map();
+
+    void add(string path, string action) {
+        RouteLike rec = RouteLike("GET", path, "Home", action, [], "string", 0, "");
+        this.keyIndex[rec.key()] = this.routes.length();
+        this.routes = this.routes.add(rec);
+    }
+
+    void mark(string action, int mode, string role) {
+        string key = "Home." + action;
+        this.pendingAuthMode[key] = mode;
+        this.pendingAuthRole[key] = role;
+    }
+
+    void rebuild(string authDefault) {
+        for (string key in this.pendingAuthMode.keys()) {
+            if (!this.keyIndex.has(key)) {
+                console.writeln("bad marker");
+            }
+        }
+        int defaultMode = authDefault == "auth" ? 1 : 2;
+        Array<string> offenders = [];
+        Array<RouteLike> next = [];
+        for (RouteLike route in this.routes) {
+            string key = route.key();
+            int mode = route.authMode != 0
+                ? route.authMode : this.pendingAuthMode.atOr(key, 0);
+            string role = route.authRole != ""
+                ? route.authRole : this.pendingAuthRole.atOr(key, "");
+            if (mode == 0) { mode = defaultMode; }
+            RouteLike resolved = RouteLike(
+                route.verb, route.path, route.controller, route.action,
+                route.params, route.returnType, mode, role);
+            next = next.add(resolved);
+        }
+        this.routes = next;
+    }
+
+    RouteLike recOf(string key) => this.routes.at(this.keyIndex.at(key));
+    string pathAt(string action) => this.recOf("Home." + action).path;
+}
+
+RouteTable table = RouteTable();
+table.add("root", "root");
+table.add("users", "users");
+table.add("health", "health");
+table.add("assets", "assets");
+table.mark("users", 1, "admin");
+table.rebuild("auth");
+console.writeln(table.pathAt("root"));
+console.writeln(table.pathAt("assets"));

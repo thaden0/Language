@@ -1,0 +1,10 @@
+code=200!
+status: 200 OK
+no holes here
+3
+nested: 7
+escaped: ${not a hole}
+mixed: ${literal} and 2 real
+x is 5, x+1 is 6
+len=3
+nested with a } brace

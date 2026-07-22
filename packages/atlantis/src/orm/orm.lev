@@ -233,13 +233,6 @@ namespace Atlantis {
         int step(int x) => 0;
         int step<T>(T x) => 0;
 
-        // "<table>.<column>" for MappingException context. A helper because
-        // punctuation-only string literals ("." and "@Row ") get corrupted
-        // inside inject templates (quasiquote lexer defect — see the ORM
-        // implementation log; templates call this instead).
-        string ctx(string table, string col) => table + "." + col;
-        string ctxRow(string col) => "@Row " + col;
-
         // element equality over DbValue cells (dirtyCols, §1.3 Model).
         bool dbEq(string | int | float | bool | None a, string | int | float | bool | None b) {
             match (a) {
@@ -712,7 +705,7 @@ namespace Atlantis {
                 Array<int> _fx = [ $for f in C.fields.where((x) => !x.hasAttr("Ignore")
                                                 && !x.type.startsWith("Rel<")
                                                 && !x.type.startsWith("RelMany<")) :
-                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, Atlantis::Orm::ctx($t.name, $f.name))) ];
+                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, $t.name + "." + $f.name)) ];
                 this.__ormApplyMix(r, $t.name);
                 this.__ormSeal();
             }` at member of C
@@ -773,7 +766,7 @@ namespace Atlantis {
             match @Row on struct S
             inject `new FromRow(Atlantis::Data::Row r) {
                 Array<int> _fx = [ $for f in S.fields :
-                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, Atlantis::Orm::ctxRow($f.name))) ];
+                    Atlantis::Orm::step(this.$f = Atlantis::Orm::fromDb(r.byName($f.name), this.$f, "@Row " + $f.name)) ];
             }` at member of S
         }
     }

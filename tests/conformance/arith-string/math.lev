@@ -1,0 +1,68 @@
+// Track 06: stdlib math & numeric masks — the surface covered on all five
+// engines (oracle/IR/emit-C++/ELF/LLVM). The transcendental group
+// (math::log/log2/exp/sin/cos/tan/atan2, float.pow) is deliberately deferred
+// on the ELF/LLVM native backends (the zero-dep / best-effort boundary) and
+// lives in its own corpus dir, tested only on the three engines that cover it.
+//
+// Per the design's problem #6: never print a raw NaN/inf (formatter spelling
+// differs per engine) — print isNaN()/isInfinite() booleans instead.
+
+void main() {
+    // --- int mask ---------------------------------------------------------
+    console.writeln((2).pow(10));
+    console.writeln((2).pow(0 - 1));           // negative exponent -> 0
+    console.writeln((5).clamp(0, 10));
+    console.writeln((15).clamp(0, 10));
+    console.writeln((0 - 5).clamp(0, 10));
+    console.writeln((5).sign());
+    console.writeln((0 - 5).sign());
+    console.writeln((0).sign());
+    console.writeln((255).toHex());
+    console.writeln((0 - 255).toHex());
+    console.writeln((0).toHex());
+    console.writeln((1 << 63).toHex());        // INT64_MIN edge case
+    console.writeln((255).toString(16));
+    console.writeln((1 << 63).toString(2));    // INT64_MIN edge case, base 2
+    console.writeln((5).toFloat());
+    try {
+        console.writeln((5).clamp(10, 0));     // lo > hi -> throw
+    } catch (RuntimeException e) {
+        console.writeln("caught: " + e.message);
+    }
+    try {
+        console.writeln((0).toString(37));     // radix out of range -> throw
+    } catch (RuntimeException e) {
+        console.writeln("caught: " + e.message);
+    }
+
+    // --- float mask ---------------------------------------------------------
+    console.writeln((0.0 - 3.5).abs());
+    console.writeln((3.5).abs());
+    console.writeln((3.7).floor());
+    console.writeln((0.0 - 3.7).floor());
+    console.writeln((3.2).ceil());
+    console.writeln((2.5).round());
+    console.writeln((0.0 - 2.5).round());
+    console.writeln((0.5).round());
+    console.writeln((3.9).trunc());
+    console.writeln((16.0).sqrt());
+    console.writeln((42.9).toInt());
+    console.writeln((0.0 - 42.9).toInt());
+    console.writeln((1.5).isNaN());
+    console.writeln((1.5).isInfinite());
+    try {
+        float huge = 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0;
+        console.writeln((huge * 10.0).toInt());   // overflow -> throw
+    } catch (RuntimeException e) {
+        console.writeln("caught: " + e.message);
+    }
+
+    // --- math namespace -------------------------------------------------
+    console.writeln(math::pi);
+    console.writeln(math::e);
+    console.writeln(math::min(3, 5));
+    console.writeln(math::max(3, 5));
+    console.writeln(math::min(3.0, 5.0));
+    console.writeln(math::max(3.0, 5.0));
+}
+main();

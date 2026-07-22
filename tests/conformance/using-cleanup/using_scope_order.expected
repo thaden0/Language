@@ -1,0 +1,18 @@
+open outer
+open inner
+inner body
+close inner
+outer body
+close outer
+open x
+open y
+open z
+three live
+open block
+in block
+close block
+after block
+close z
+close y
+close x
+done

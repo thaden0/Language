@@ -1,0 +1,45 @@
+// Regression floor for #93 (resolved as a misdiagnosis, 2026-07-19/20): a
+// string literal inside an `inject` quasiquote template whose CONTENT is
+// punctuation-only (`"."`, `";"`, `"::"`, `"()"`) or starts with `@`
+// (`"@Row "`) is cloned/re-lexed with full fidelity — it stays a StringLit and
+// concatenates correctly with reified `$hole.name` operands. The original P1
+// filing read the `--ast-after-rules` dump, where `exprStr` renders every
+// StringLit's text BARE (a source literal is stored as an isRawSegment content
+// slice — `"."` -> text `.`), and mistook the bare `.`/`@Row ` for a degraded
+// punctuation/attribute token. `--expand` (source-faithful, srcString) and the
+// runtime always agreed: the concatenation is correct. This pins that.
+namespace Orm {
+    attribute Table { string name; }
+    attribute Column { }
+    rule buildCtx {
+        match @Table(t) on class C
+        inject `Array<string> __ctx() =>
+            [ $for f in C.fields.where((x) => x.hasAttr("Column")) : $t.name + "." + $f.name ];`
+               at member of C
+    }
+    rule buildRow {
+        match @Table(t) on class C
+        inject `Array<string> __row() =>
+            [ $for f in C.fields.where((x) => x.hasAttr("Column")) : "@Row " + $f.name ];`
+               at member of C
+    }
+    rule buildSweep {
+        match @Table(t) on class C
+        inject `string __sweep() =>
+            "[" + "." + "]" + "@" + ";" + "::" + "()" + "@Row " + "" + $t.name;`
+               at member of C
+    }
+}
+uses Orm;
+
+@Table("users")
+class User {
+    @Column int id;
+    @Column string name;
+    int internalCounter;
+}
+
+User u = User();
+console.writeln(u.__ctx().joinToString(","));
+console.writeln(u.__row().joinToString(","));
+console.writeln(u.__sweep());

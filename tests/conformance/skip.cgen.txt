@@ -1,0 +1,12 @@
+# Per-leg skips for the cgen (emit-C++, `leviathan --build`) leg.
+# Format: <relative/prog.lev>  <one-line reason>   (reason REQUIRED)
+# run.sh prints the reason and exits 77 (ctest counts it as Skipped, never silently).
+natives-fs/blocks_io.lev  emit-C++ backend has no Block-form sysWrite/sysOpen/sysRead/sysClose natives (build error: native 'sysWrite')
+natives-fs/files.lev  emit-C++ backend lacks the file natives behind File (build error: native 'sysStat'); File I/O cannot lower
+natives-fs/fs_roundtrip.lev  emit-C++ backend lacks sysStat/sysMkdir/sysRemove/sysRename natives (build error: native 'sysStat')
+natives-fs/sys_natives.lev  emit-C++ backend lacks sysStat/sysMonotonic/sysListDir/sysEnv natives (build error: native 'sysStat', 'sysMonotonic')
+tasks-async/async.lev  emit-C++ backend has no event-loop natives (build error: native 'sysTimerStart')
+tasks-async/nested_spawn_join.lev  emit-C++ backend has no worker threads (build error: native 'sysThreadStart')
+tasks-async/order_fifo_three.lev  emit-C++ backend has no task substrate (build error: native 'sysTaskRun')
+tasks-async/ready_no_yield.lev  emit-C++ backend does not lower await (build error: native backend does not yet cover this construct)
+using-cleanup/using.lev  emit-C++ by-name reachability (docs/footguns: by-name CallDyn over-marking) drags the unlowerable File native sysStat into this program via common prelude method names; the area keeps cgen coverage via its other three programs

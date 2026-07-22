@@ -1,0 +1,32 @@
+// §16.5 Layer C: comptime folding — vars, chained vars, stdlib at compile
+// time, comptime if, and the expression form. Everything below the fold line
+// is ordinary runtime code operating on baked-in literals.
+
+comptime int N = 5 + 5;
+comptime int M = N * 4;                      // later sites see earlier folds
+comptime string GREETING = "hello".toUpper() + "!";
+
+// The in-language stdlib runs on the comptime oracle: closures included.
+comptime Array<int> EVENS = [1, 2, 3, 4, 5, 6].where((x) => x % 2 == 0);
+
+// A user function evaluated at compile time (sieve-style: loops + arrays).
+int sumTo(int n) {
+    int acc = 0;
+    for (int i in 1..n) acc = acc + i;
+    return acc;
+}
+comptime int SUM = sumTo(100);
+
+console.writeln(N);
+console.writeln(M);
+console.writeln(GREETING);
+console.writeln(EVENS);
+console.writeln(SUM);
+
+// comptime if: the untaken branch is not compiled.
+comptime if (N == 10) console.writeln("ten"); else console.writeln("not ten");
+comptime if (N == 11) console.writeln("eleven"); else console.writeln("not eleven");
+
+// Expression position: everything right of `comptime` folds.
+int shifted = 1 + comptime sumTo(10);
+console.writeln(shifted);

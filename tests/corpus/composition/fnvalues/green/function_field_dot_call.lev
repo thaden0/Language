@@ -1,0 +1,24 @@
+// Regression floor for known bug #94: a function-valued field called through
+// receiver.field(args) must execute on LLVM, not silently return.
+// The unrelated same-named method is the essential collision: LLVM's legacy
+// by-name method candidate set used to suppress its closure-field fallback.
+class UnrelatedValidator {
+    int validate(int x) => -1;
+}
+
+class CallbackHolder {
+    (int) => int validate;
+
+    new CallbackHolder((int) => int validate) {
+        this.validate = validate;
+    }
+}
+
+int calls = 0;
+CallbackHolder h = CallbackHolder((x) => {
+    calls = calls + 1;
+    return x + 1;
+});
+
+console.writeln(h.validate(41));
+console.writeln(calls);

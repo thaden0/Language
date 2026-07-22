@@ -1,0 +1,54 @@
+// Dense arrays of value structs (§9 B1): an Array<Point> stores each Point's
+// fields inline in one contiguous buffer, not a pointer per element. Semantics
+// are identical to a boxed array — this test pins that equality down.
+
+struct Point {
+    int x;
+    int y;
+    int dot() { return x * x + y * y; }
+    mutating void shift(int d) { x = x + d; y = y + d; }
+}
+
+Array<Point> build(int n) {
+    Array<Point> a = [];
+    for (int i in 1..n) {
+        Point p = Point();
+        p.x = i; p.y = i * 2;
+        a = a.add(p);                 // grows the dense buffer
+    }
+    return a;
+}
+
+void run() {
+    Array<Point> pts = build(5);
+    console.writeln(pts.length());        // 5
+
+    int sum = 0;
+    for (Point p in pts) sum = sum + p.dot();
+    console.writeln(sum);                 // 5+20+45+80+125 = 275
+
+    console.writeln(pts[2].x);            // 3   — index + field, read from the buffer
+    console.writeln(pts[2].dot());        // 45  — method on an element
+
+    // reading an element copies it out (value identity): shifting the copy
+    // must not touch the array
+    Point c = pts[0];
+    c.shift(100);
+    console.writeln(c.x);                 // 101
+    console.writeln(pts[0].x);            // 1   — array element unchanged
+
+    // higher-order methods build fresh dense arrays
+    Array<Point> big = pts.where((p) => p.x >= 3);
+    console.writeln(big.length());        // 3
+    int t = 0;
+    for (Point p in big) t = t + p.dot();
+    console.writeln(t);                   // 45+80+125 = 250
+
+    // rebind an element (pure array => new array)
+    Point q = Point(); q.x = 9; q.y = 9;
+    Array<Point> pts2 = pts;
+    pts2[1] = q;
+    console.writeln(pts[1].x);            // 2   — original unchanged (COW)
+    console.writeln(pts2[1].x);           // 9
+}
+run();

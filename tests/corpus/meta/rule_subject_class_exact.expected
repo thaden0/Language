@@ -1,4 +1,4 @@
-/home/len/code/Language-agent1/tests/corpus/meta/rule_subject_class_exact.ext:20:1: warning: attribute '@Serializable' has a rule 'Marker::tagClass' that matches 'class' subjects, but this is a 'struct' — did you mean 'on type' / 'on struct'?
+rule_subject_class_exact.ext:20:1: warning: attribute '@Serializable' has a rule 'Marker::tagClass' that matches 'class' subjects, but this is a 'struct' — did you mean 'on type' / 'on struct'?
   @Serializable
   ^~~~~~~~~~~~~
 9

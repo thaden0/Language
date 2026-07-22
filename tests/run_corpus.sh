@@ -9,6 +9,10 @@ for f in "$dir"/*.ext "$dir"/*.lev; do
   stdin="${f%.*}.stdin"
   if [ -f "$stdin" ]; then got=$("$bin" "$mode" "$f" 2>&1 < "$stdin")
   else got=$("$bin" "$mode" "$f" 2>&1); fi
+  # known_bugs_2.md #103: diagnostics echo the source file's absolute path, which
+  # differs per checkout/worktree. Strip the corpus-dir prefix so goldens stay
+  # path-independent (goldens carry the bare filename).
+  got=${got//"$dir/"/}
   want=$(cat "$exp")
   if [ "$got" != "$want" ]; then
     echo "FAIL $f ($mode)"

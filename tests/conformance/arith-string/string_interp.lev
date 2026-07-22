@@ -1,0 +1,25 @@
+// Track 01 F4: string interpolation `"...${expr}..."`, desugared in the
+// parser to a `+`-chain of literal segments and `(hole).toString()` calls.
+// `\${` escapes a literal `${`; a bare `$` (no `{`) stays literal; a nested
+// string inside a hole may contain `}` without prematurely closing the hole
+// (as long as it uses the OPPOSITE quote style from the outer literal — the
+// lexer itself has no concept of interpolation, so a same-quote nested
+// string still ends the outer token at the lexer level, same as any
+// ordinary string literal would).
+class Resp {
+    int status = 200;
+    string reason = "OK";
+}
+Resp resp = Resp();
+console.writeln("code=${resp.status}!");
+console.writeln("status: ${resp.status} ${resp.reason}");
+console.writeln("no holes here");
+console.writeln("${1 + 2}");
+console.writeln("nested: ${1 + 2 * 3}");
+console.writeln("escaped: \${not a hole}");
+console.writeln("mixed: \${literal} and ${1+1} real");
+int x = 5;
+console.writeln("x is ${x}, x+1 is ${x + 1}");
+Array<int> arr = [1, 2, 3];
+console.writeln("len=${arr.length()}");
+console.writeln("${'nested with a } brace'}");

@@ -1,0 +1,34 @@
+// LA-18: callable-level type parameters may reach `::` members. Each generic
+// below is emitted only as concrete, deduplicated specializations.
+class RefNum {
+    public int value;
+    public new RefNum() { value = 0; }
+    public new FromInt(int n) { value = n + 10; }
+}
+
+struct ValNum {
+    public int value;
+    public new ValNum() { value = 0; }
+    public new FromInt(int n) { value = n + 20; }
+}
+
+A make<A>(A witness, int n) => A::FromInt(n);
+A apply<A>((int) => A fn, int n) => fn(n);
+A viaRef<A>(A witness, int n) => apply(A::FromInt, n);
+A inner<A>(A witness, int n) => A::FromInt(n);
+A outer<A>(A witness, int n) => inner(witness, n);
+
+class Factory {
+    public new Factory() {}
+    public A build<A>(A witness, int n) => A::FromInt(n);
+}
+
+RefNum r = RefNum();
+ValNum v = ValNum();
+Factory f = Factory();
+console.writeln(make(r, 1).value);
+console.writeln(make(v, 2).value);
+console.writeln(viaRef(r, 3).value);
+console.writeln(viaRef(v, 4).value);
+console.writeln(outer(r, 5).value);
+console.writeln(f.build(v, 6).value);

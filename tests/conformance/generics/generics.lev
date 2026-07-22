@@ -1,0 +1,19 @@
+// Class/method generics, inference, HKT container preservation.
+class BoxOf<T> {
+    T item;
+    new Of(T v) { item = v; }
+    T get2() => item;
+    U remap<U>(U v) => v;
+}
+R identity<R>(R x) => x;
+F<B> mapIt<F, A, B>(F<A> c, (A) => B fn) => c.map(fn);
+void run() {
+    console.writeln(identity(42));
+    console.writeln(identity("hi"));
+    BoxOf<int> b = BoxOf::Of(7);
+    console.writeln(b.get2());
+    console.writeln(b.remap("str"));
+    Array<int> doubled = mapIt([1, 2, 3], (n) => n * 2);
+    console.writeln(doubled.joinToString(","));
+}
+run();
