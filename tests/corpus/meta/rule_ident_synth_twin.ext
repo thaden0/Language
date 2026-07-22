@@ -1,0 +1,17 @@
+// Hand-written twin of rule_ident_synth.ext: the `UserCols` descriptor the
+// `$ident(C.name,"Cols")` synthesis produces, written out by hand. Byte-identical
+// --run / --ir output — the acceptance proof that `$ident` concatenates its
+// comptime-string args (C.name -> "User", "Cols") into the class name and the
+// per-field `$for` fills each column with its own name.
+namespace Gen {
+    class UserCols {
+        string fullName = "fullName";
+        string age = "age";
+    }
+    string probe() {
+        UserCols c = UserCols();
+        return c.fullName + "," + c.age;
+    }
+}
+
+console.writeln(Gen::probe());

@@ -131,14 +131,14 @@ int main() {
     // segments and `(hole).toString()` calls, built in the parser.
     CLEAN("void f() { console.writeln(\"code=${1}!\"); }");
     CONTAINS("void f() { console.writeln(\"code=${1}!\"); }",
-             "(code= + 1.toString())");
+             "(\"code=\" + 1.toString())");
     CONTAINS("void f() { console.writeln(\"a${x}b${y}c\"); }",
              "x.toString()");
     // A member/call expression works as a hole, not just a bare name.
     CONTAINS("void f() { console.writeln(\"${resp.status}\"); }",
              "resp.status.toString()");
     // Zero holes: unaffected (still an ordinary StringLit — no `+` at all).
-    CONTAINS("void f() { console.writeln(\"plain\"); }", "Expr console.writeln(plain)");
+    CONTAINS("void f() { console.writeln(\"plain\"); }", "Expr console.writeln(\"plain\")");
     // `\$` escapes a literal `$`, so `\${` never starts a hole.
     CLEAN("void f() { console.writeln(\"\\${not a hole}\"); }");
     // Empty and unterminated holes are compile errors (parser-level).
@@ -182,7 +182,7 @@ int main() {
     CONTAINS("void f() { identity::<(User) => bool>(pred); }",
              "identity::<(User) => bool>(pred)");
     CONTAINS("void f() { obj.remap::<string>(\"x\"); }",
-             "obj.remap::<string>(x)");
+             "obj.remap::<string>(\"x\")");
     CONTAINS("void f() { outer::<Array<Array<int>>>(); }",
              "outer::<Array<Array<int>>>()");
     // The deliberately ambiguous bare spelling remains comparison syntax.

@@ -391,6 +391,10 @@ void RuleEngine::matchAndExpandRule(const OwnedRule& r) {
 }
 
 void RuleEngine::runRulePasses(bool reentrantOnly) {
+    // C (M37): synthesized-name uniqueness is per rule-pass — a name recorded
+    // this pass catches a same-pass cross-firing clash, without a prior round's
+    // (now indexed) synth re-tripping the check on the reentrant re-run.
+    synthDeclNames_.clear();
     // §2.4 defined order: all additive `inject` rules apply first (in rule
     // order), THEN the `rewrites`/`replace` rewriters — so a rewriter's `$body`
     // captures "the method as written plus any additive prologue/epilogue".
@@ -485,16 +489,18 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
         // Hygiene (§7.1): alpha-rename any local this template declares, fresh
         // per firing, so it cannot collide with use-site names.
         renames_.clear();
-        if (act.tmplMember) collectTemplateLocals(act.tmplMember.get());
+        for (const StmtPtr& t : act.tmplMembers) collectTemplateLocals(t.get());
         for (const StmtPtr& t : act.tmplStmts) collectTemplateLocals(t.get());
 
         bool err = false;
         if (act.anchor == AnchorKind::MemberOf) {
-            if (!act.tmplMember) continue;
-            // The template is one member, or a `$for m ... : <member>` that
-            // repeats a member per iteration (item J, member position).
+            if (act.tmplMembers.empty()) continue;
+            // The template is one member, several members (techdesign-splices-
+            // positions §1.4), or a `$for m ... : <member>` that repeats a member
+            // per iteration (item J, member position).
             std::vector<StmtPtr> members;
-            cloneStmtInto(act.tmplMember.get(), b, err, members);
+            for (const StmtPtr& t : act.tmplMembers)
+                cloneStmtInto(t.get(), b, err, members);
             if (err) continue;
             expandMacrosInClone(members);
             Stmt* cls = boundClass(b, act.target);
@@ -693,6 +699,18 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
             ns->name = act.target;
             for (const StmtPtr& t : act.tmplStmts) cloneStmtInto(t.get(), b, err, ns->body);
             if (err) continue;
+            // C (techdesign-splices-positions §3.4): a `$ident`-synthesized
+            // top-level decl name must be unique in its target namespace — M37
+            // names both sites. Checked here, where the destination scope
+            // (act.target) is known; the marker is then cleared so downstream
+            // passes see an ordinary decl.
+            std::string nsName(act.target);
+            for (StmtPtr& item : ns->body) {
+                if (item && item->hasNameSynth) {
+                    checkSynthCollision(item.get(), nsName, r);
+                    item->hasNameSynth = false;
+                }
+            }
             expandMacrosInClone(ns->body);
             namespaceInjections_.push_back(std::move(ns));
         }

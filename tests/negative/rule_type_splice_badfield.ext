@@ -1,0 +1,16 @@
+// (B1) dotted-hole type (techdesign-splices-positions §2.2, M39): only `.type`
+// and `.name` are reifiable as a type in `$f.<field>` type position. Any other
+// field (here `.nonsense`) is a rule-stage error naming the offending dotted
+// hole — never a silently mistyped local.
+namespace Ser {
+    attribute Copyable { }
+    rule mkCopy {
+        match @Copyable(a) on class C
+        inject `$for f in C.fields : $f.nonsense x_$f = this.$f;` at member of C
+    }
+}
+uses Ser;
+
+@Copyable class Point { int x = 3; }
+
+console.writeln("unreached");

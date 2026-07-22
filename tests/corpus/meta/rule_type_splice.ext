@@ -1,0 +1,28 @@
+// (B1) type/identifier-position splicing (techdesign-splices-positions §2): a
+// bound field's canonical type stands in for a TYPE token (`$f.type`), and a
+// literal prefix glued to a hole forms a fresh IDENTIFIER (`copy_$f`). One
+// `$for` declares a typed local per field copied from `this.$f`; a second
+// references those composite-named locals — both resolve the hole the same way,
+// so `copy_$f` names the same local at its declaration and its use.
+namespace Ser {
+    attribute Copyable { }
+    rule mkCopy {
+        match @Copyable(a) on class C
+        inject `Array<string> dump() {
+            Array<string> out = [];
+            $for f in C.fields : $f.type copy_$f = this.$f;
+            $for f in C.fields : out = out.add($f.name + "=" + copy_$f.toString());
+            return out;
+        }` at member of C
+    }
+}
+uses Ser;
+
+@Copyable
+class Point {
+    int x = 3;
+    int y = 7;
+}
+
+Point p = Point();
+console.writeln(p.dump().joinToString(", "));
