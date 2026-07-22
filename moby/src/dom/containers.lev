@@ -1,0 +1,210 @@
+namespace Moby { namespace Dom {
+
+    // ======================================================================
+    // DOM containers (techdesign-03 §3)
+    //
+    // `FlexContainer` is the `<flex>` tag and the sketch's `main`; `Bar` is
+    // `<contentbar>` (horizontal, single-row default). Both are ordinary
+    // `Container` subclasses (single inheritance — the #65 multi-mixin hazard,
+    // probe D-P1, does not even arise) that add three things over Container:
+    //   1. markup constructors — delegate to D02's `buildMarkupFragment`,
+    //   2. query sugar rooted at the container,
+    //   3. ABSOLUTE-AWARE arrange/paint — children partition into a flow set
+    //      (laid out by the FlexLayout exactly as Container does) and an
+    //      absolute set (each placed at `position().__resolveAbsolute(desired)`
+    //      in SCREEN space, painted last, ordered by (z, child order)).
+    // Landed non-DOM containers ignore Position entirely (v1 boundary, D-C5).
+    //
+    // The partition + absolute arrange/paint are FREE FUNCTIONS so the MobyApp
+    // root (app.lev) reuses exactly this mechanism — one implementation, D-C5's
+    // "honored by DOM containers AND the app root".
+    // ======================================================================
+
+    bool isAbsComp(IComponent c) {
+        if (c is Component) { Component cc = c; return cc.__mobyAbsolute(); }
+        return false;
+    }
+    Array<IComponent> flowOf(Array<IComponent> kids) {
+        Array<IComponent> r = [];
+        for (IComponent c in kids) if (!isAbsComp(c)) r = r.add(c);
+        return r;
+    }
+    Array<IComponent> absOf(Array<IComponent> kids) {
+        Array<IComponent> r = [];
+        for (IComponent c in kids) if (isAbsComp(c)) r = r.add(c);
+        return r;
+    }
+    int zOfComp(IComponent c) {
+        if (c is Component) { Component cc = c; return cc.position().z; }
+        return 0;
+    }
+    // Stable insertion sort of the absolute set by z ascending (equal z keeps
+    // child order) — tiny sets, floats are few.
+    Array<IComponent> absByZOf(Array<IComponent> kids) {
+        Array<IComponent> abs = absOf(kids);
+        Array<IComponent> out = [];
+        for (IComponent c in abs) {
+            int cz = zOfComp(c);
+            Array<IComponent> next = [];
+            bool placed = false;
+            for (IComponent e in out) {
+                if (!placed && cz < zOfComp(e)) { next = next.add(c); placed = true; }
+                next = next.add(e);
+            }
+            if (!placed) next = next.add(c);
+            out = next;
+        }
+        return out;
+    }
+    // Measure each absolute child then arrange it at its resolved SCREEN-space
+    // rect (no parent translation — one coordinate system, D-C5).
+    void arrangeAbs(Array<IComponent> kids) {
+        for (IComponent c in absOf(kids)) {
+            if (c is Component) {
+                Component cc = c;
+                cc.measure(Size(Moby::Unbounded, Moby::Unbounded));
+                cc.arrange(cc.position().__resolveAbsolute(cc.desired()));
+            }
+        }
+    }
+
+    class FlexContainer : Container {
+        Axis axis_ = Axis::Vertical;
+        int gap_ = 0;
+        ActionRegistry? actions_ = None;               // D04; created at ctor
+
+        new FlexContainer()             { this.initFlex(); }
+        new FlexContainer(Axis a)       { axis_ = a; this.initFlex(); }
+        new FlexContainer(string markup){ this.initFlex(); this.buildInto(markup); }
+
+        void initFlex() {
+            actions_ = ActionRegistry(this);
+            this.applyLayout();
+        }
+        void applyLayout() { this.setLayout(FlexLayout(axis_).gap(gap_)); }
+
+        FlexContainer axis(Axis a) { axis_ = a; this.applyLayout(); return this; }
+        FlexContainer gap(int n)   { gap_ = n;  this.applyLayout(); return this; }
+
+        // The sketch spells `fileMenu.actions.add(...)`: a get-accessor view over
+        // the ctor-created registry (D04 wires the responder chain).
+        ActionRegistry actionsReg() {
+            ActionRegistry? a = actions_;
+            if (a != None) return a;
+            ActionRegistry created = ActionRegistry(this);
+            actions_ = created;
+            return created;
+        }
+        get actions() => this.actionsReg();
+
+        // ---- markup ctor delegation (D02) ----------------------------------
+        void buildInto(string markup) {
+            Document doc = document();                  // current Document (D-C4)
+            Array<IComponent> roots = buildMarkupFragment(markup, doc);
+            for (IComponent r in roots) this.add(r);
+            // Post-build action wiring: the roots now hang under this container,
+            // so a MenuItem/Button resolves its key up a connected chain to this
+            // container's `.actions` (D04 §4).
+            wireActionsInSubtree(this, doc);
+        }
+
+        // ---- query sugar rooted here ---------------------------------------
+        DomNode query(string sel) {
+            Document d = document();
+            return DomNode(queryStr(d, this, sel), d);
+        }
+        DomNodeList queryAll(string sel) {
+            Document d = document();
+            return DomNodeList(queryAllStr(d, this, sel), d);
+        }
+        DomNode? queryOrNone(string sel) {
+            Document d = document();
+            IComponent? hit = queryOrNoneStr(d, this, sel);
+            if (hit != None) return DomNode(hit, d);
+            return None;
+        }
+
+        // measure ignores absolute children (CSS position:absolute — they take
+        // no flow space); only the flow set feeds the FlexLayout's measure.
+        Size contentDesired(Size avail) {
+            Insets ch = this.chrome();
+            Size inner = Size(avail.w - ch.h(), avail.h - ch.v());
+            if (inner.w < 0) inner.w = 0;
+            if (inner.h < 0) inner.h = 0;
+            Size measured = this.layout().measure(flowOf(this.children()), inner);
+            return Size(measured.w + ch.h(), measured.h + ch.v());
+        }
+
+        // arrange: flow set through the FlexLayout in the content rect; absolute
+        // set each at its resolved SCREEN-space rect.
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            this.layout().arrange(flowOf(this.children()), this.contentRect());
+            arrangeAbs(this.children());
+            layoutDirty_ = false;
+        }
+
+        // paint: flow children first (landed order), then floats over them by
+        // (z, order). Both clip to the content rect (T01 clip rule stands — a
+        // float outside the content rect is clipped; floating UI belongs on the
+        // app root or the overlay stack, §5).
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            Rect content = this.contentRect();
+            s.pushClip(content);
+            for (IComponent child in flowOf(this.children()))  if (child.visible()) child.paint(s);
+            for (IComponent child in absByZOf(this.children())) if (child.visible()) child.paint(s);
+            s.popClip();
+        }
+    }
+
+    // `<contentbar>` — a horizontal FlexContainer, one row tall by default.
+    // The base FlexContainer() (vertical) auto-runs first; the body flips axis
+    // and pins the height, then (markup form) builds.
+    class Bar : FlexContainer {
+        // Explicit base ctor (reference §4.5 — no auto-run): FlexContainer()'s
+        // initFlex (actions_ + layout) must run before the body flips the axis.
+        new Bar() {
+            FlexContainer::FlexContainer();
+            this.axis(Axis::Horizontal);
+            this.setHeight(Constraint::Fixed(1));
+        }
+        new Bar(string markup) {
+            FlexContainer::FlexContainer();
+            this.axis(Axis::Horizontal);
+            this.setHeight(Constraint::Fixed(1));
+            this.buildInto(markup);
+        }
+    }
+
+    // ======================================================================
+    // PopoverHost (techdesign-03 §5) — the OverlayHost-less positioning overlay
+    // the `DomNode.popover` verb pushes. It wraps one child and, ignoring the
+    // full-screen rect App.paintOverlays hands it, self-arranges the child at
+    // `child.position().__resolveAbsolute(child.desired())` (the Menu
+    // stored-coordinate self-arrange precedent, generalized). Non-scrim: paints
+    // only the child, no box clear.
+    // ======================================================================
+    class PopoverHost : Container {
+        new PopoverHost(IComponent child) {
+            this.add(child);        // paint() is overridden; no paintBackground path
+        }
+        IComponent? child() {
+            Array<IComponent> kids = this.children();
+            return kids.isEmpty() ? None : kids[0];
+        }
+
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);              // full screen (overlay)
+            layoutDirty_ = false;
+            arrangeAbs(this.children());                // child is Absolute-anchored
+        }
+        void paint(Surface s) {
+            if (!visible()) return;
+            for (IComponent c in this.children()) if (c.visible()) c.paint(s);
+        }
+    }
+
+}}

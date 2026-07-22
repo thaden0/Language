@@ -1,0 +1,151 @@
+namespace Moby {
+    class Surface {
+        // These are mutable because resize() is part of the frozen surface API.
+        // Callers still observe them read-only by convention.
+        int width;
+        int height;
+        Block cells_;
+        Array<Rect> clips_ = [];
+
+        new Surface(int w, int h) {
+            if (w <= 0 || h <= 0) throw MobyException("Surface size must be positive");
+            width = w;
+            height = h;
+            cells_ = Block(w * h * 8);
+            clips_ = [Rect(Point(0, 0), Size(w, h))];
+        }
+
+        Block cells() => cells_;
+        int cellOffset(int x, int y) => (y * width + x) * 8;
+
+        bool inBounds(int x, int y) => x >= 0 && x < width && y >= 0 && y < height;
+        bool visibleCell(int x, int y) => inBounds(x, y) && clips_.last().contains(x, y);
+
+        int colorByte(Color c) => c == Color::Default ? 255 : c.code() & 255;
+
+        Color byteColor(int b) {
+            if (b == 255) return Color::Default;
+            Color? decoded = Color::fromCode(b);
+            return decoded == None ? Color::Default : decoded;
+        }
+
+        Style styleAt(int x, int y) {
+            int off = cellOffset(x, y);
+            return Style(byteColor(cells_.byteAt(off + 4)),
+                         byteColor(cells_.byteAt(off + 5)),
+                         cells_.byteAt(off + 6));
+        }
+
+        bool continuationAt(int x, int y) {
+            return inBounds(x, y) && (cells_.byteAt(cellOffset(x, y) + 7) & 1) != 0;
+        }
+
+        void writeCellDirect(int x, int y, char c, Style s, int flags) {
+            if (!inBounds(x, y)) return;
+            int off = cellOffset(x, y);
+            cells_.setInt32(off, c.code());
+            cells_.setByte(off + 4, colorByte(s.fg));
+            cells_.setByte(off + 5, colorByte(s.bg));
+            cells_.setByte(off + 6, s.attrs & 255);
+            cells_.setByte(off + 7, flags & 255);
+        }
+
+        void blankDirect(int x, int y) {
+            if (!inBounds(x, y)) return;
+            char space = ' ';
+            writeCellDirect(x, y, space, styleAt(x, y), 0);
+        }
+
+        void healAt(int x, int y) {
+            // Healing deliberately bypasses clipping: it repairs the storage
+            // invariant and is not a drawing operation.
+            if (continuationAt(x, y) && x > 0) blankDirect(x - 1, y);
+            if (x + 1 < width && continuationAt(x + 1, y)) blankDirect(x + 1, y);
+        }
+
+        void put(int x, int y, char c, Style s) {
+            if (!visibleCell(x, y)) return;
+            int scalar = c.code();
+            char stored = c;
+            if (scalar < 0x20 || scalar == 0x7f) {
+                char space = ' ';
+                stored = space;
+            }
+            healAt(x, y);
+            int cellsWide = glyphWidth(stored);
+            if (cellsWide == 2 && !visibleCell(x + 1, y)) {
+                char space = ' ';
+                writeCellDirect(x, y, space, s, 0);
+                return;
+            }
+            writeCellDirect(x, y, stored, s, 0);
+            if (cellsWide == 2) writeCellDirect(x + 1, y, stored, s, 1);
+        }
+
+        void writeText(int x, int y, string text, Style s) {
+            int column = x;
+            for (char c in text.chars()) {
+                put(column, y, c, s);
+                column = column + glyphWidth(c);
+            }
+        }
+
+        void fill(Rect r, char c, Style s) {
+            Rect clipped = normalizeRect(r).intersect(clips_.last())
+                                           .intersect(Rect(Point(0, 0), Size(width, height)));
+            if (clipped.isEmpty()) return;
+
+            int scalar = c.code();
+            char stored = c;
+            if (scalar < 0x20 || scalar == 0x7f) {
+                char space = ' ';
+                stored = space;
+            }
+            if (glyphWidth(stored) != 1) {
+                for (int y in clipped.y()..clipped.bottom() - 1) {
+                    int x = clipped.x();
+                    while (x < clipped.right()) {
+                        put(x, y, stored, s);
+                        x = x + 2;
+                    }
+                }
+                return;
+            }
+
+            int first = cellOffset(clipped.x(), clipped.y());
+            writeCellDirect(clipped.x(), clipped.y(), stored, s, 0);
+            int filled = 1;
+            int rowCells = clipped.w();
+            while (filled < rowCells) {
+                int count = filled < rowCells - filled ? filled : rowCells - filled;
+                cells_.blit(first + filled * 8, cells_, first, count * 8);
+                filled = filled + count;
+            }
+            int rowBytes = rowCells * 8;
+            for (int y in clipped.y() + 1..clipped.bottom() - 1)
+                cells_.blit(cellOffset(clipped.x(), y), cells_, first, rowBytes);
+        }
+
+        void clear(Style s) {
+            char space = ' ';
+            fill(Rect(Point(0, 0), Size(width, height)), space, s);
+        }
+
+        void pushClip(Rect r) {
+            clips_ = clips_.add(clips_.last().intersect(r));
+        }
+
+        void popClip() {
+            if (clips_.length() <= 1) throw MobyException("Surface clip stack underflow");
+            clips_ = clips_.removeAt(clips_.length() - 1);
+        }
+
+        void resize(int w, int h) {
+            if (w <= 0 || h <= 0) throw MobyException("Surface size must be positive");
+            width = w;
+            height = h;
+            cells_ = Block(w * h * 8);
+            clips_ = [Rect(Point(0, 0), Size(w, h))];
+        }
+    }
+}

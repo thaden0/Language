@@ -1,7 +1,7 @@
 // Recon entry point (DESIGN-2 §11). Top-level main() so `entry = "main"` resolves
 // it. Reads env at the top level (architecture guidance, ex-#68), builds the theme
 // from settings, composes the DI root, and launches.
-uses Sonar;
+uses Moby;
 uses Recon;
 
 void main() {

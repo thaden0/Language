@@ -184,7 +184,7 @@ namespace Helm {
             dirty_ = false;
         }
 
-        // ---- change notification (Sonar R12 token pattern) ------------------
+        // ---- change notification (Moby R12 token pattern) ------------------
 
         int onChange((ChangeEvent) => void h) {
             int token = nextToken_;

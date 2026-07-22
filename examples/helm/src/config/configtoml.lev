@@ -1,15 +1,15 @@
 // H12 — the settings/keymap TOML subset parser (§9 footgun #10: no JSON on
-// LLVM, TOML only). A small generalization of Sonar's own toml.lev
+// LLVM, TOML only). A small generalization of Moby's own toml.lev
 // (theme.lev's `parseThemeToml` is hardwired to a fixed fg/bg/attrs shape):
 // helm.toml's [keymap] table has one arbitrary command-id key per accelerator
 // and [theme] has a single `name` key, so this parses ANY `[section]` into
 // (key -> raw value string) pairs instead of folding straight into a fixed
 // struct. Same house style as toml.lev: line-oriented, `#` comments, no
 // arrays/inline tables/multiline strings/floats/quoted keys — a parse error
-// throws `SonarException` with a mandatory "source:line:col:" prefix, never a
+// throws `MobyException` with a mandatory "source:line:col:" prefix, never a
 // silent skip.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -56,7 +56,7 @@ namespace Helm {
     // 0-based index of the first non-space/non-tab char at or after `start`;
     // returns the length when the rest is all whitespace. (toml.lev's own
     // helper, duplicated rather than cross-package-imported — Helm never
-    // depends on Sonar internals below its public surface.)
+    // depends on Moby internals below its public surface.)
     int firstNonWsFromCfg(string line, int start) {
         Array<char> cs = line.chars();
         int i = start;
@@ -81,7 +81,7 @@ namespace Helm {
             string rest = v.subStr(1, v.length() - 1);
             int close = rest.indexOf("\"");
             if (close < 0)
-                throw SonarException(configPos(source, line, col) + "unterminated string value");
+                throw MobyException(configPos(source, line, col) + "unterminated string value");
             return rest.subStr(0, close);
         }
         int hash = v.indexOf("#");
@@ -104,23 +104,23 @@ namespace Helm {
 
             if (t.startsWith("[")) {
                 if (!lastCharIsCfg(t, "]"))
-                    throw SonarException(configPos(source, lineNo, lead) + "expected ']' to close table header");
+                    throw MobyException(configPos(source, lineNo, lead) + "expected ']' to close table header");
                 string inner = t.subStr(1, t.length() - 2).trim();
                 if (inner.isEmpty())
-                    throw SonarException(configPos(source, lineNo, lead) + "empty table header '[]'");
+                    throw MobyException(configPos(source, lineNo, lead) + "empty table header '[]'");
                 if (inner.contains("\""))
-                    throw SonarException(configPos(source, lineNo, lead) + "quoted keys are not supported");
+                    throw MobyException(configPos(source, lineNo, lead) + "quoted keys are not supported");
                 currentSection = inner;
                 hasCurrent = true;
             } else {
                 if (!hasCurrent)
-                    throw SonarException(configPos(source, lineNo, lead) + "key/value pair before any [table] header");
+                    throw MobyException(configPos(source, lineNo, lead) + "key/value pair before any [table] header");
                 int eqRaw = rawLine.indexOf("=");
                 if (eqRaw < 0)
-                    throw SonarException(configPos(source, lineNo, lead) + "expected '=' in key/value pair");
+                    throw MobyException(configPos(source, lineNo, lead) + "expected '=' in key/value pair");
                 string key = rawLine.subStr(0, eqRaw).trim();
                 if (key.isEmpty())
-                    throw SonarException(configPos(source, lineNo, lead) + "empty key");
+                    throw MobyException(configPos(source, lineNo, lead) + "empty key");
                 int valStart = firstNonWsFromCfg(rawLine, eqRaw + 1);
                 string valRaw = rawLine.subStr(valStart, rawLine.length() - valStart);
                 int vcol = valStart + 1;

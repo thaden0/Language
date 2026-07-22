@@ -5,7 +5,7 @@
 // FormDialog. Operates on its own Array<KVRow>; callers convert to/from their
 // model at load/commit boundaries (decoupled, and the model rows stay classes, N1).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class KVRow {
     public string name    = "";

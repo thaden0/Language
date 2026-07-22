@@ -2,7 +2,7 @@
 // MenuItem per command. Menus hold no state — they are a rendering of the registry
 // (P3), so they cannot drift from the chords/palette/help.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class MenuBar {
     public BarMenu bar;

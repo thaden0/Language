@@ -5,11 +5,11 @@
 // build→panels→status loop deterministically (the FakeProc doctrine, §11):
 //   • build job: stdout streams to Output; stderr diagnostics parse into
 //     Problems + the status counts; a non-zero exit sets ✗ build failed.
-//   • test job: harpoon stdout parses into the Test panel; the panel is revealed;
+//   • test job: sonar stdout parses into the Test panel; the panel is revealed;
 //     a zero exit sets ✓ build ok.
 //   • the pure argv builders + engine selection (the "Choose engine" affordance).
 // Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -53,9 +53,9 @@ namespace Helm {
         Diagnostic? d0 = host.problems.diagnosticAt(0);
         if (d0 != None) { Diagnostic d = d0; console.writeln("  problem[0]=" + d.render()); }
 
-        section("test job — harpoon report, exit 0");
+        section("test job — sonar report, exit 0");
         drv.begin(JobTest);
-        drv.onEvent(ProcEvent::Stdout("harpoon: 3 tests, 1 classes"));
+        drv.onEvent(ProcEvent::Stdout("sonar: 3 tests, 1 classes"));
         drv.onEvent(ProcEvent::Stdout("  Calc::adds ............................. ok"));
         drv.onEvent(ProcEvent::Stdout("  Calc::divides ......................... FAIL"));
         drv.onEvent(ProcEvent::Stdout("      expected 2 but got 3"));

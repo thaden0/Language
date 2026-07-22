@@ -1,0 +1,58 @@
+// Sonar M2: registry + runner, HAND-SEEDED (`__seed` called explicitly,
+// no rule involved) — proves the runner/report/exit-code end-to-end
+// independent of discovery, per the design's M2 sequencing. It is also the
+// BYTE-IDENTICAL TWIN of the rule-discovered `tests/discovery/main.lev`
+// (the rule_orm twin discipline, §5.2): the two produce the same report, so
+// the discovery rules are proven to generate exactly these entries. Every
+// entry closure here — `() => { C t = C(); t.m(); }`, and the `using`
+// variant for the IDisposable class — is what discover.lev's `$for` templates
+// emit. Consumed via `[[dep]]` (design §8's sibling-test-project shape).
+uses sonar;
+
+class MathTests {
+    void addsNumbers() { sonar::assertEqual(4, 2 + 2); }
+    void subtractsNumbers() { sonar::assertEqual(0, 2 - 2); }
+}
+
+class StringTests {
+    void concatenates() { sonar::assertEqual("ab", "a" + "b"); }
+    void rejectsEmptyName() { sonar::assertEqual("", "bob"); }   // deliberately FAILs
+    void explodes() { throw RuntimeException("boom"); }             // deliberately ERRORs
+    void flaky() { }                                                // never run — seeded as skipped
+}
+
+// IDisposable test class — the constructor-as-setup / close()-as-teardown
+// lifecycle (design §5.2). Both a passing and a failing method prove
+// teardown runs on EVERY exit edge, not just the happy path (M4 acceptance
+// criterion 2).
+class LifecycleTests : IDisposable {
+    void close() { console.writeln("      (LifecycleTests torn down)"); }
+    void passes() { sonar::assertTrue(true); }
+    void fails() { sonar::assertTrue(false, "deliberate lifecycle failure"); }
+}
+
+void seedAll() {
+    sonar::__seed("MathTests", [
+        sonar::__entry("addsNumbers", () => { MathTests t = MathTests(); t.addsNumbers(); }),
+        sonar::__entry("subtractsNumbers", () => { MathTests t = MathTests(); t.subtractsNumbers(); })
+    ], [], []);
+
+    sonar::__seed("StringTests", [
+        sonar::__entry("concatenates", () => { StringTests t = StringTests(); t.concatenates(); }),
+        sonar::__entry("rejectsEmptyName", () => { StringTests t = StringTests(); t.rejectsEmptyName(); }),
+        sonar::__entry("explodes", () => { StringTests t = StringTests(); t.explodes(); })
+    ], ["flaky"], []);
+
+    sonar::__seed("LifecycleTests", [
+        sonar::__entry("passes", () => { using LifecycleTests t = LifecycleTests(); t.passes(); }),
+        sonar::__entry("fails", () => { using LifecycleTests t = LifecycleTests(); t.fails(); })
+    ], [], []);
+
+    // A misdeclared @Test would be reported as an ERROR by the runner,
+    // never silently dropped (design §5.4) — hand-seeded here since there
+    // is no rule to generate it from a real non-void/parameterized method.
+    sonar::__seed("BadTests", [], [], ["badSignature"]);
+}
+
+seedAll();
+sonar::main();

@@ -3,7 +3,7 @@
 // entries, so they cannot drift apart (P1/P3). Commands are reference classes, so
 // `.add` on the backing array is lane-safe (§13 N1 — no struct-element arrays).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class Command {
     public string id       = "";      // "request.send" — dotted, category prefix

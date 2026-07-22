@@ -1,4 +1,4 @@
-// H10 — `TerminalView`, the embedded-terminal Sonar component (§8). Owns a
+// H10 — `TerminalView`, the embedded-terminal Moby component (§8). Owns a
 // `VtParser` (a cell grid it paints from) and, once a shell is spawned, a
 // `PtyBridge` (§9's stored-handler discipline: bug #53 explicit `this.`
 // receivers throughout).
@@ -13,7 +13,7 @@
 // EditorView's own copy is the template) plus its overrides
 // (`contentDesired`, `paintContent`, `cursorPos`).
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -99,7 +99,7 @@ namespace Helm {
             }
         }
 
-        // Reverse of Sonar's own input.lev CSI decode: KeyEvent -> the bytes a
+        // Reverse of Moby's own input.lev CSI decode: KeyEvent -> the bytes a
         // real terminal would have sent for that keystroke.
         string encodeKey(KeyEvent e) {
             if (e.code == KeyCode::Char && (e.mods == 0 || e.mods == Mod::Shift)) return e.ch.toString();

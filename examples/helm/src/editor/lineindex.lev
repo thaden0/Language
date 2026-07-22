@@ -13,7 +13,7 @@
 // Newlines are found by scanning BYTES for 0x0A. That is correct for UTF-8:
 // every byte of a multi-byte sequence is >= 0x80, so 0x0A only ever appears as
 // a genuine '\n' (never mid-sequence). Scanning bytes (not string.at(i), which
-// throws mid-sequence — Sonar bug #59) sidesteps the decode hazard entirely.
+// throws mid-sequence — Moby bug #59) sidesteps the decode hazard entirely.
 
 namespace Helm {
 

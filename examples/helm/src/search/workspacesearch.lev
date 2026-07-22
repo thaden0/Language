@@ -11,7 +11,7 @@
 // guard, the §K1 precedent) — `truncated()` tells the caller whether the cap
 // actually bit, so a result view can say so rather than silently under-report.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

@@ -1,0 +1,455 @@
+namespace Moby { namespace DevTools {
+
+    // ======================================================================
+    // DOM Inspector (techdesign-08 §1, M3)
+    //
+    // Moby::DevTools::inspector(MobyApp app, string hotkey) installs a
+    // toggle binding on the app; the overlay is built lazily on first open.
+    //
+    // Panel structure:
+    //   ContentBox "Inspector — <hotkey> to close"
+    //     FlexContainer (vertical, flex=1)
+    //       FlexContainer (horizontal, flex=1)
+    //         TreeView (40 cols, left: the DOM tree)
+    //         Text (flex=1, right: detail pane, rebuilt on selection)
+    //       Bar (bottom, 1 row)
+    //         Text "query> "
+    //         Input (query bar)
+    //         Text (match count)
+    //
+    // Pushed via pushOverlay(popoverHost, false, false, group) — input-
+    // exclusive while open (the F12/Esc close path is the deliberate exit).
+    // Highlight: adds "inspector-highlight" class to the selected node,
+    // removes it from the previously-selected one; closing clears the class.
+    // Self-exclusion: the inspector's overlay component is excluded from the
+    // tree source (filtered by component identity).
+    // Query bar: Enter runs queryAll from the app root; repeated Enter
+    // cycles through matches; Esc closes (via the panel's key handler).
+    // ======================================================================
+
+    // ---- DomTreeSource (ITreeSource adapter over the Document tree) --------
+
+    // A class (not struct) whose `ids_`/`comps_` parallel arrays hold the
+    // component registry for reverse lookup by TreeNodeId.id (the domSlot_
+    // assigned by Document.__slotFor). Side-table growth is bounded by the
+    // live component tree size (#73-safe: lives on the instance).
+    class DomTreeSource : ITreeSource {
+        Dom::Document     doc_;
+        IComponent        appRoot_;
+        IComponent?       excluded_;    // inspector's overlay — never shown
+        Array<int>        ids_   = [];
+        Array<IComponent> comps_ = [];
+
+        new DomTreeSource(Dom::Document doc, IComponent root, IComponent? excl) {
+            doc_ = doc; appRoot_ = root; excluded_ = excl;
+        }
+
+        // ---- internal slot/comp registry ------------------------------------
+
+        int findSlot(int slot) {
+            int i = 0;
+            for (int s in ids_) { if (s == slot) return i; i = i + 1; }
+            return -1;
+        }
+
+        // Assign a DOM slot to `c` (side-effect: creates a meta row if absent,
+        // per the design: "nodes without a slot get one on first inspection —
+        // the side-table absorbs hand-built trees"). Register in our cache.
+        TreeNodeId idFor(IComponent c) {
+            int slot = doc_.__slotFor(c);
+            if (this.findSlot(slot) < 0) {
+                ids_   = ids_.add(slot);
+                comps_ = comps_.add(c);
+            }
+            return TreeNodeId(slot);
+        }
+
+        IComponent? compForId(int id) {
+            int i = 0;
+            for (int s in ids_) { if (s == id) return comps_[i]; i = i + 1; }
+            return None;
+        }
+
+        // Excluded: the inspector's overlay subtree (identity, not slot).
+        bool isExcluded(IComponent c) {
+            IComponent? ex = excluded_;
+            return ex != None && ex == c;
+        }
+
+        Array<IComponent> filteredChildren(IComponent c) {
+            Array<IComponent> result = [];
+            for (IComponent kid in c.__mobyChildren()) {
+                if (!this.isExcluded(kid)) result = result.add(kid);
+            }
+            return result;
+        }
+
+        // ---- ITreeSource ---------------------------------------------------
+
+        int rootCount() => this.filteredChildren(appRoot_).length();
+
+        TreeNodeId rootAt(int i) {
+            Array<IComponent> roots = this.filteredChildren(appRoot_);
+            return this.idFor(roots[i]);
+        }
+
+        int childCount(TreeNodeId n) {
+            IComponent? c = this.compForId(n.id);
+            if (c != None) return this.filteredChildren(c).length();
+            return 0;
+        }
+
+        TreeNodeId childAt(TreeNodeId n, int i) {
+            IComponent? c = this.compForId(n.id);
+            if (c != None) {
+                Array<IComponent> kids = this.filteredChildren(c);
+                if (i >= 0 && i < kids.length()) return this.idFor(kids[i]);
+            }
+            return TreeNodeId(-1);
+        }
+
+        bool hasChildren(TreeNodeId n) {
+            IComponent? c = this.compForId(n.id);
+            if (c != None) return this.filteredChildren(c).length() > 0;
+            return false;
+        }
+
+        // Label format: tag#id.class… (inspector-highlight class suppressed
+        // so the highlight itself doesn't clutter the label).
+        string labelAt(TreeNodeId n) {
+            IComponent? maybeC = this.compForId(n.id);
+            if (maybeC == None) return "(detached)";
+            string label = "";
+            if (maybeC != None) {
+                IComponent c = maybeC;
+                string tag = doc_.tagOf(c);
+                if (tag == "") tag = Dom::registry().tagMatch(c);
+                if (tag == "") tag = "?";
+                string id = doc_.idOf(c);
+                label = tag;
+                if (id != "") label = label + "#" + id;
+                for (string cls in c.classList()) {
+                    if (cls != "inspector-highlight") label = label + "." + cls;
+                }
+            }
+            return label;
+        }
+    }
+
+    // ---- detailText — build the Text content for a selected node -----------
+
+    // Format (v1): opening tag line, box/position, classes.
+    // Attrs and style-key trail are v1.1 (want the Document `attrsOf` method,
+    // added only when the inspector's full detail channel is complete — D08 §9.2).
+    string detailText(IComponent c, Dom::Document doc) {
+        string tag = doc.tagOf(c);
+        if (tag == "") tag = Dom::registry().tagMatch(c);
+        if (tag == "") tag = "?";
+        string id = doc.idOf(c);
+
+        string line = "<" + tag;
+        if (id != "") line = line + " id=\"" + id + "\"";
+        line = line + ">\n";
+
+        // Live arranged box (the D-C5 "reads are live" guarantee).
+        Rect b = c.box;
+        line = line + "box: " + b.x().toString() + "," + b.y().toString()
+             + " " + b.w().toString() + "x" + b.h().toString() + "\n";
+
+        // Position method (Absolute or Flow — D-C5).
+        if (c is Component) {
+            Component cc = c;
+            Dom::Position pos = cc.position();
+            string meth = pos.method == Dom::PositionMethod::Absolute ? "Absolute" : "Flow";
+            line = line + "position: " + meth + "\n";
+        }
+
+        // Class list (the D-C6 semantic-class table, excluding the highlight
+        // marker which is transient inspector state, not user-authored).
+        Array<string> classes = c.classList();
+        bool anyClass = false;
+        Array<string> visible = [];
+        for (string cls in classes) {
+            if (cls != "inspector-highlight") { visible = visible.add(cls); anyClass = true; }
+        }
+        if (!anyClass) {
+            line = line + "classes: (none)\n";
+        } else {
+            line = line + "classes: " + visible.joinToString(" ") + "\n";
+        }
+
+        // Effective action key (D-C7 on-demand derivation — slug if no explicit attr).
+        string action = doc.attrOf(c, "action");
+        if (action != "") line = line + "action: " + action + "\n";
+        else {
+            if (c is Button) { Button b2 = c; string s = Dom::slug(b2.label); if (s != "") line = line + "action: " + s + " (slug)\n"; }
+            else if (c is MenuItem) { MenuItem mi = c; string s = Dom::slug(mi.label); if (s != "") line = line + "action: " + s + " (slug)\n"; }
+        }
+
+        return line;
+    }
+
+    // ---- Inspector class ----------------------------------------------------
+
+    class Inspector {
+        Dom::MobyApp    app_;
+        string           hotkey_;
+        bool             open_  = false;
+        int              group_ = 0 - 1;
+
+        // UI (built lazily on first open, never rebuilt)
+        bool             built_ = false;
+        Container        panel_    = Container();  // placeholder until built
+        Container        popHost_  = Container();  // PopoverHost wrapping panel_
+        TreeView         tree_     = TreeView();
+        Text             detail_   = Text();
+        Input            queryBar_ = Input();
+        Text             matchInfo_ = Text();
+        DomTreeSource?   treeSource_ = None;
+
+        // Selection / highlight / query state
+        IComponent?       highlighted_ = None;
+        Array<IComponent> matches_     = [];
+        int               matchIdx_    = 0 - 1;  // -1 = no cycle active
+
+        new Inspector(Dom::MobyApp app, string hotkey) {
+            app_ = app;
+            hotkey_ = hotkey;
+        }
+
+        // ---- lazy build (first open) ----------------------------------------
+
+        void ensureBuilt() {
+            if (built_) return;
+            built_ = true;
+
+            Dom::Document doc = app_.document();
+
+            // Build the tree source — exclude the popHost_ once it exists.
+            // We pass popHost_ as the excluded component; it is set in the
+            // final pushOverlay call. Since ensureBuilt runs before the first
+            // open, popHost_ is not yet on the overlay stack, so the source
+            // is safe to build now. We re-assign excluded_ after building the
+            // host below.
+            DomTreeSource src = DomTreeSource(doc, app_, None);
+            treeSource_ = src;
+
+            // Tree (left pane)
+            tree_.setSource(src);
+            tree_.setWidth(Constraint::Fixed(40));
+            TreeView tv = tree_;
+            tree_.onSelect((n) => { this.onNodeSelect(n); });
+
+            // Detail pane (right pane, rebuilt on each selection)
+            Text dt = detail_;
+            dt.setWidth(Constraint::Flex(1));
+            dt.align(Align::Start);
+            dt.wrap(Overflow::Wrap);
+
+            // Horizontal split holding tree + detail
+            Container splitRow = Container();
+            splitRow.setLayout(FlexLayout(Axis::Horizontal));
+            splitRow.setHeight(Constraint::Flex(1));
+            splitRow.add(tree_);
+            splitRow.add(detail_);
+
+            // Query bar row
+            Text qLabel = Text();
+            qLabel.text("query> ");
+            qLabel.setWidth(Constraint::Fixed(8));
+
+            Input qb = queryBar_;
+            qb.setWidth(Constraint::Flex(1));
+            qb.setPlaceholder("CSS selector…");
+            qb.onSubmit((v) => { this.onQuerySubmit(); });
+
+            Text mi = matchInfo_;
+            mi.text("");
+            mi.setWidth(Constraint::Fixed(20));
+            mi.align(Align::End);
+
+            Container queryRow = Container();
+            queryRow.setLayout(FlexLayout(Axis::Horizontal));
+            queryRow.setHeight(Constraint::Fixed(1));
+            queryRow.add(qLabel);
+            queryRow.add(queryBar_);
+            queryRow.add(matchInfo_);
+
+            // Outer panel (ContentBox bordered with title)
+            ContentBox outer = ContentBox();
+            outer.setTitle("Inspector — " + hotkey_ + " to close");
+            outer.setLayout(FlexLayout(Axis::Vertical));
+            outer.add(splitRow);
+            outer.add(queryRow);
+
+            // Key handler: F12 and Esc close; 'r' refreshes the tree.
+            char rKey = 'r';
+            outer.onKey((e) => {
+                if (e.code == KeyCode::Escape && e.mods == 0) {
+                    this.close(); e.handled = true;
+                } else if (e.isChar(rKey) && e.mods == 0) {
+                    this.refreshTree(); e.handled = true;
+                }
+            });
+
+            // Also install F12 handler inside the panel (mirrors the toggle).
+            outer.onKey((e) => {
+                // encodeNamed("F12") produces CSI 24~ — matches the toggle key.
+                // Simpler: re-check via the normalized hotkey comparison.
+                // The App's keymap handles the toggle outside the overlay;
+                // this inner handler catches F12 WHILE the overlay is focused.
+                if (e.code == KeyCode::F12 && e.mods == 0) {
+                    this.close(); e.handled = true;
+                }
+            });
+
+            panel_ = outer;
+
+            // Wrap in a PopoverHost so the panel can be positioned Absolutely
+            // in screen space within the overlay (covers the full screen, i.e.
+            // the inspector IS the task while open).
+            Dom::PopoverHost ph = Dom::PopoverHost(outer);
+            popHost_ = ph;
+
+            // Now wire the tree source's exclusion to the popHost_:
+            // When the inspector overlay is pushed, its popHost_ component
+            // subtree must not appear in the tree. Update the source's
+            // excluded_ field (the DomTreeSource is a reference class, so
+            // the existing reference in tree_.source_ is the same object).
+            src.excluded_ = ph;
+        }
+
+        // ---- open / close --------------------------------------------------
+
+        void open() {
+            if (open_) return;
+            this.ensureBuilt();
+            int g = app_.newOverlayGroup();
+            group_ = g;
+            app_.pushOverlay(popHost_, false, false, g);
+            this.refreshTree();
+            open_ = true;
+        }
+
+        void close() {
+            if (!open_) return;
+            app_.popOverlayComponent(popHost_);
+            this.setHighlight(None);   // clear highlight on close
+            matches_ = [];
+            matchIdx_ = 0 - 1;
+            matchInfo_.text("");
+            open_ = false;
+        }
+
+        void toggle() {
+            if (open_) this.close();
+            else this.open();
+        }
+
+        // ---- tree ops -------------------------------------------------------
+
+        void refreshTree() {
+            DomTreeSource? src = treeSource_;
+            if (src != None) {
+                DomTreeSource s = src;
+                s.ids_ = [];
+                s.comps_ = [];
+                tree_.setSource(s);         // resets expansion + re-flattens
+            }
+        }
+
+        void onNodeSelect(TreeNodeId n) {
+            DomTreeSource? src = treeSource_;
+            if (src != None) {
+                DomTreeSource s = src;
+                IComponent? c = s.compForId(n.id);
+                if (c != None) {
+                    IComponent node = c;
+                    this.setHighlight(node);
+                    Dom::Document doc = app_.document();
+                    detail_.text(detailText(node, doc));
+                }
+            }
+        }
+
+        // ---- highlight ------------------------------------------------------
+
+        void setHighlight(IComponent? next) {
+            IComponent? prev = highlighted_;
+            if (prev != None) {
+                IComponent p = prev;
+                p.removeClass("inspector-highlight");
+            }
+            highlighted_ = next;
+            if (next != None) {
+                IComponent n = next;
+                n.addClass("inspector-highlight");
+            }
+        }
+
+        // ---- query bar ------------------------------------------------------
+
+        void onQuerySubmit() {
+            Dom::Document doc = app_.document();
+            string sel = queryBar_.value;
+            if (sel.isEmpty()) {
+                matches_ = [];
+                matchIdx_ = 0 - 1;
+                matchInfo_.text("");
+                return;
+            }
+            // Try the query; if it throws (bad selector / E-D10), show the error.
+            Array<IComponent> results = [];
+            bool ok = true;
+            try { results = Dom::queryAllStr(doc, app_, sel); }
+            catch (IException e) {
+                matchInfo_.text(e.message);
+                ok = false;
+            }
+            if (!ok) return;
+
+            matches_  = results;
+            matchIdx_ = 0 - 1;
+
+            int n = results.length();
+            if (n == 0) {
+                matchInfo_.text("0 matches");
+                return;
+            }
+            matchInfo_.text(n.toString() + " match" + (n == 1 ? "" : "es") + " — Enter cycles");
+            this.cycleMatch();
+        }
+
+        void cycleMatch() {
+            if (matches_.isEmpty()) return;
+            int next = matchIdx_ + 1;
+            if (next >= matches_.length()) next = 0;
+            matchIdx_ = next;
+            IComponent c = matches_[next];
+            this.setHighlight(c);
+            // Navigate the tree to the matched node (find its flat index by id).
+            int slot = c.domSlot_;
+            if (slot >= 0) {
+                int flatIdx = tree_.indexOfNodeId(slot);
+                if (flatIdx >= 0) tree_.selectRow(flatIdx);
+            }
+        }
+    }
+
+    // ---- inspector() free function — the public API ------------------------
+
+    // Installs a toggle binding for the inspector overlay on `app`. The hotkey
+    // uses the DOM grammar: `^`, `!`, `+`, `C-`/`M-`/`S-` prefixes, so
+    // `"^F12"` = Ctrl-F12 and `"F12"` = bare F12 (the default).
+    // The binding is registered via App.keymap().bind(), which is the same
+    // seam the `hotkey` attribute uses (D04 §3 / R7). The Inspector object is
+    // kept alive as long as the App is alive (it is stored in the closure).
+    void inspector(Dom::MobyApp app, string hotkey = "F12") {
+        Inspector insp = Inspector(app, hotkey);
+        string chord = Dom::normalizeHotkey(hotkey);
+        // Use the App keymap to bind the toggle. The Inspector reference is
+        // captured explicitly in the closure (#53 discipline).
+        app.keymap().bind(chord, () => { insp.toggle(); });
+    }
+
+}}

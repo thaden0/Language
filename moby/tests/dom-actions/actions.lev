@@ -1,0 +1,244 @@
+uses Moby;
+uses Moby::Dom;
+
+// Moby DOM — techdesign-04 corpus: ActionRegistry, the responder chain,
+// normalizeHotkey, slugs, markup wiring, greying, and the hotkey trio. A pure
+// logic/console test (no run loop): hotkeys are driven straight through
+// `app.keymap().handle(KeyEvent(...))`, which — unlike the terminal byte encoder
+// — can distinguish ^s (C-s) from ^+s (C-S-s).
+
+void section(string name) { console.writeln("== " + name + " =="); }
+
+// A ref class so closures observe their mutations (D00 §7 house rule).
+class Ctr { int n = 0; }
+
+// Deliver a Ctrl/Shift/Alt-modified char straight to the keymap. `ch` is a param
+// (not a literal), so it dodges the char-literal-in-arg retype gap (#50).
+bool press(App app, char ch, int mods) {
+    return app.keymap().handle(KeyEvent(KeyCode::Char, ch, mods));
+}
+
+void reportNormalizeThenParse(string spec) {
+    try {
+        string norm = normalizeHotkey(spec);
+        parseChord(norm);                        // loud validation at bind time
+        console.writeln("NO THROW: " + spec + " -> " + norm);
+    } catch (MobyException e) {
+        console.writeln(e.message);
+    }
+}
+
+void main() {
+    MobyApp app = MobyApp();
+    Document doc = app.document();
+    char upS = 'S';                              // reused; bound once (#50)
+    char upO = 'O';
+
+    // ======================================================================
+    section("registry-unit");
+    Button owner = Button();
+    ActionRegistry reg = ActionRegistry(owner);
+    Ctr a = Ctr();
+    reg.add("alpha", () => { a.n = a.n + 1; });
+    reg.add("beta",  () => { });
+    console.writeln(reg.has("alpha"));           // true
+    console.writeln(reg.has("gamma"));           // false
+    console.writeln(reg.isEnabled("alpha"));     // true
+    console.writeln(reg.isEnabled("gamma"));     // false (absent)
+    console.writeln(reg.fire("alpha"));          // true
+    console.writeln(a.n);                        // 1
+
+    // duplicate name in ONE registry throws
+    try { reg.add("alpha", () => { }); console.writeln("NO THROW"); }
+    catch (MobyException e) { console.writeln(e.message); }
+
+    // disable -> fire is a no-op, returns false
+    reg.setEnabled("alpha", false);
+    console.writeln(reg.fire("alpha"));          // false
+    console.writeln(reg.isEnabled("alpha"));     // false
+    console.writeln(a.n);                        // still 1
+    reg.setEnabled("alpha", true);
+
+    // remove
+    reg.remove("beta");
+    console.writeln(reg.has("beta"));            // false
+
+    // handler-exception containment: fire returns true (handled), the throw is
+    // logged + counted, never propagated.
+    int faultsBefore = Moby::handlerErrorCount();
+    reg.add("boom", () => { throw MobyException("kaboom"); });
+    console.writeln(reg.fire("boom"));           // true (contained)
+    console.writeln(Moby::handlerErrorCount() - faultsBefore);  // 1
+
+    // ======================================================================
+    section("normalize-hotkey");
+    console.writeln(normalizeHotkey("^s"));      // C-s
+    console.writeln(normalizeHotkey("^+s"));     // C-S-s
+    console.writeln(normalizeHotkey("!x"));      // M-x
+    console.writeln(normalizeHotkey("M-x"));     // M-x
+    console.writeln(normalizeHotkey("^!t"));     // C-M-t
+    console.writeln(normalizeHotkey("F5"));      // F5
+    console.writeln(normalizeHotkey("Enter"));   // Enter
+    console.writeln(normalizeHotkey("Tab"));     // Tab
+    console.writeln(normalizeHotkey("+F5"));     // S-F5
+    console.writeln(normalizeHotkey("^!+k"));    // C-M-S-k
+    // error cases surface through parseChord (loud, at bind time)
+    reportNormalizeThenParse("^");               // -> C- : Empty key
+    reportNormalizeThenParse("Zzz");             // -> Zzz : Unknown key
+
+    // ======================================================================
+    section("slug");
+    console.writeln(slug("Save"));               // save
+    console.writeln(slug("Save As"));            // save-as
+    console.writeln(slug("Open..."));            // open
+    console.writeln(slug("New   File"));         // new-file
+    console.writeln(slug("  Padded  "));         // padded
+    console.writeln(slug("A_B"));                // a-b
+    console.writeln(slug("File-Menu"));          // file-menu
+    console.writeln("[" + slug("...") + "]");    // [] (nothing survives)
+
+    // ======================================================================
+    // Responder chain over a 3-deep tree: app root -> outer -> inner -> leaf.
+    section("responder-chain");
+    FlexContainer outer = FlexContainer();
+    FlexContainer inner = FlexContainer();
+    Button leaf = Button();
+    app.add(outer); outer.add(inner); inner.add(leaf);
+    Ctr innerHit = Ctr(); Ctr outerHit = Ctr();
+    outer.actions.add("save", () => { outerHit.n = outerHit.n + 1; });
+    inner.actions.add("save", () => { innerHit.n = innerHit.n + 1; });
+
+    // first-holder-wins: inner (nearer) fires, outer does not
+    console.writeln(fireAction(leaf, "save"));   // true
+    console.writeln(innerHit.n);                 // 1
+    console.writeln(outerHit.n);                 // 0
+
+    // nearer-disabled shadows an enabled outer (STOP, do not fall through)
+    inner.actions.setEnabled("save", false);
+    console.writeln(fireAction(leaf, "save"));   // false
+    console.writeln(innerHit.n);                 // 1 (unchanged)
+    console.writeln(outerHit.n);                 // 0 (NOT fired)
+    inner.actions.setEnabled("save", true);
+    console.writeln(fireAction(leaf, "save"));   // true (nearer wins again)
+    console.writeln(innerHit.n);                 // 2
+
+    // miss anywhere -> false
+    console.writeln(fireAction(leaf, "nope"));   // false
+
+    // app-root participation: a verb only the MobyApp root holds, fired from a
+    // deep leaf; plus the pre-registered `quit`.
+    Ctr rootHit = Ctr();
+    doc.__actionsFor(app).add("ping", () => { rootHit.n = rootHit.n + 1; });
+    console.writeln(fireAction(leaf, "ping"));   // true
+    console.writeln(rootHit.n);                  // 1
+    console.writeln(doc.__actionsFor(app).has("quit"));  // true (pre-registered)
+
+    // ======================================================================
+    // Markup wiring: explicit action, slugged label, and an opt-out.
+    section("markup-wiring");
+    FlexContainer form = FlexContainer(
+        "<button action=\"save\">Save</button>"
+        + "<button>Open File</button>"
+        + "<button action=\"\">Raw</button>");
+    app.add(form);
+    Ctr saveHit = Ctr();
+    form.actions.add("save", () => { saveHit.n = saveHit.n + 1; });
+
+    Ctr openHit0 = Ctr();
+    form.actions.add("open-file", () => { openHit0.n = openHit0.n + 1; });
+
+    DomNodeList btns = form.queryAll("button");
+    console.writeln(btns.length());              // 3
+    DomNode saveBtn = btns.at(0);
+    DomNode openBtn = btns.at(1);
+    DomNode rawBtn  = btns.at(2);
+    // effective key: explicit verbatim, slug of label, or "" for the opt-out
+    console.writeln(saveBtn.action());           // save (explicit)
+    console.writeln(openBtn.action());           // open-file (computed slug)
+    console.writeln("[" + rawBtn.action() + "]");// [] (action="" opt-out)
+    // explicit action stays in serialized meta; the slug is NOT stored
+    console.writeln(saveBtn.attr("action"));            // save
+    console.writeln("[" + openBtn.attr("action") + "]"); // [] (slug not stored)
+
+    // firing the wired buttons walks to form.actions
+    IComponent saveRaw = saveBtn.raw();
+    if (saveRaw is Button) { Button sb = saveRaw; sb.firePress(); }
+    console.writeln(saveHit.n);                   // 1
+    IComponent openRaw = openBtn.raw();
+    if (openRaw is Button) { Button ob = openRaw; ob.firePress(); }
+    console.writeln(openHit0.n);                  // 1 (slug-wired)
+    // the opt-out button has no wiring: pressing it fires nothing
+    IComponent rawRaw = rawBtn.raw();
+    if (rawRaw is Button) { Button rb = rawRaw; rb.firePress(); }
+    console.writeln(openHit0.n + saveHit.n);      // 2 (unchanged by the opt-out press)
+
+    // ======================================================================
+    // Greying: disabling the command greys every bound item, no polling.
+    section("greying");
+    FlexContainer edit = FlexContainer(
+        "<menu>"
+        + "<menuitem action=\"cut\">Cut</menuitem>"
+        + "<menuitem action=\"copy\">Copy</menuitem>"
+        + "</menu>");
+    app.add(edit);
+    edit.actions.add("cut", () => { });
+    edit.actions.add("copy", () => { });
+    DomNode cutItem = edit.query("menuitem[action=cut]");
+    IComponent cutRaw = cutItem.raw();
+    bool cutEnabledBefore = enabledOf(cutRaw);   // true
+    console.writeln(cutEnabledBefore);           // true
+    edit.actions.setEnabled("cut", false);       // greys the bound Cut item
+    console.writeln(enabledOf(cutRaw));          // false
+    // copy is untouched
+    DomNode copyItem = edit.query("menuitem[action=copy]");
+    console.writeln(enabledOf(copyItem.raw()));  // true
+    edit.actions.setEnabled("cut", true);        // re-enables
+    console.writeln(enabledOf(cutRaw));          // true
+
+    // ======================================================================
+    // The target-feel hotkey trio, end-to-end through the keymap. The menu is
+    // hidden but attached, so its hotkeys are LIVE (R7).
+    section("hotkey-trio");
+    FlexContainer fileMenu = FlexContainer(
+        "<menu class=\"hidden\">"
+        + "<menuitem hotkey=\"^o\">Open</menuitem>"
+        + "<menuitem hotkey=\"^s\">Save</menuitem>"
+        + "<menuitem hotkey=\"^+s\">Save As</menuitem>"
+        + "</menu>");
+    app.add(fileMenu);
+    Ctr openHit = Ctr(); Ctr saveHit2 = Ctr(); Ctr saveAsHit = Ctr();
+    fileMenu.actions.add("open",    () => { openHit.n = openHit.n + 1; });
+    fileMenu.actions.add("save",    () => { saveHit2.n = saveHit2.n + 1; });
+    fileMenu.actions.add("save-as", () => { saveAsHit.n = saveAsHit.n + 1; });
+
+    // the `hotkey` attr serializes as recorded (MenuItem labels are not a
+    // serialized leaf-text channel, matching the drift corpus)
+    console.writeln(fileMenu.query("menuitem").outerMarkup());  // <menuitem hotkey="^o"></menuitem>
+
+    // the menu is hidden yet its hotkeys fire (attached-but-hidden = live)
+    console.writeln(fileMenu.query("menu").visible());   // false
+    console.writeln(press(app, upO, Mod::Ctrl));         // true  (^o)
+    console.writeln(openHit.n);                          // 1
+    console.writeln(press(app, upS, Mod::Ctrl));         // true  (^s)
+    console.writeln(saveHit2.n);                         // 1
+    console.writeln(press(app, upS, Mod::Ctrl + Mod::Shift));  // true (^+s, distinct)
+    console.writeln(saveAsHit.n);                        // 1
+    // ^s did NOT also trigger save-as, and ^+s did NOT trigger save
+    console.writeln(saveHit2.n);                         // 1
+    console.writeln(saveAsHit.n);                        // 1
+
+    // detach the whole subtree -> hotkeys unbind (R7); the keys go dead.
+    Moby::__mobyDetachTree(fileMenu);
+    console.writeln(press(app, upO, Mod::Ctrl));         // false (unbound)
+    console.writeln(openHit.n);                          // 1 (unchanged)
+
+    console.writeln("done");
+}
+
+// Small helper: a node's effective enabled state (MenuItem/Button/…); mirrors
+// DomNode.enabled but takes a raw IComponent.
+bool enabledOf(IComponent c) {
+    if (c is MenuItem) { MenuItem mi = c; return mi.enabled; }
+    if (c is Button)   { Button b = c; return b.enabled; }
+    return true;
+}

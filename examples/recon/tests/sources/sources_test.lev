@@ -1,6 +1,6 @@
 // Corpus test: source adapters over the model (headless).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 void walkTree(ReconTreeSource src, TreeNodeId n, int depth) {
     console.writeln("  ".repeat(depth) + src.labelAt(n) + (src.hasChildren(n) ? " [+]" : ""));

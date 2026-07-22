@@ -3,7 +3,7 @@
 // source-snippet / caret / summary noise it must skip) and prints the parsed
 // diagnostics. This is the format-drift guard: if the compiler's human format
 // changes, this golden goes red instead of the parser silently mis-reading.
-// No Sonar dependency — pure model, oracle + IR.
+// No Moby dependency — pure model, oracle + IR.
 
 namespace Helm {
 

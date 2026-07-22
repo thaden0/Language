@@ -1,8 +1,0 @@
-name = "sonar-dom-expand-test"
-entry = "main"
-sources = ["dom-expand.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.2.0"
-as = "Sonar"

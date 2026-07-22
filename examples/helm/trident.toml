@@ -1,4 +1,4 @@
-# examples/helm/trident.toml — Helm, a terminal IDE for Leviathan, built on Sonar 2.
+# examples/helm/trident.toml — Helm, a terminal IDE for Leviathan, built on Moby 2.
 # (designs/helm/techdesign-00-overview.md). Helm is a trident package: checked
 # user code, never touching src/** or runtime/**.
 name    = "helm"
@@ -20,6 +20,6 @@ sources = [
 ]
 
 [[dep]]
-path    = "../../sonar_v2"
-as      = "Sonar"
+path    = "../../moby"
+as      = "Moby"
 version = "0.2.0"

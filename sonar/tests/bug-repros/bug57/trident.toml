@@ -1,8 +1,0 @@
-name = "bug57"
-entry = "main"
-sources = ["main.lev"]
-
-[[dep]]
-path = "../../.."
-version = "0.1.0"
-as = "Sonar"

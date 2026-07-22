@@ -2,7 +2,7 @@
 // overrides), and helm.toml load/save against a scratch workspace dir the
 // test makes and cleans up (the filetree_test.lev scratch-dir precedent).
 // Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 
@@ -42,7 +42,7 @@ namespace Helm {
             try {
                 parseConfigToml(b, "bad.toml");
                 console.writeln("  (no throw — unexpected)");
-            } catch (SonarException e) {
+            } catch (MobyException e) {
                 console.writeln("  threw: " + e.message);
             }
         }

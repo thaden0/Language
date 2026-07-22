@@ -1,0 +1,24 @@
+namespace Moby {
+    // The `dom!` procedural macro (F4) — techdesign-02 §4. One line of
+    // ordinary comptime Leviathan: run the D02 markup engine over the raw
+    // payload and splice the generated construction source at the call site.
+    // The macro carries no logic of its own — everything lives in
+    // `expandDom`, which is why the whole tier is testable at runtime
+    // without F4 (the T06 de-risking shape; tests/dom-expand goldens).
+    //
+    // Declared in `namespace Moby` (NOT Moby::Dom): the rule engine
+    // records a nested namespace's rules under the INNER name only, so a
+    // macro inside `namespace Moby { namespace Dom { } }` is invisible to
+    // `uses Moby::Dom` call sites. At the package root it resolves exactly
+    // like the landed `moby!` (templates/macro.lev precedent).
+    //
+    // The engine call MUST be namespace-qualified: bare sibling free-function
+    // calls do not resolve inside a comptime-reachable macro body (the
+    // verified F4 rule). Markup errors thrown by the engine surface as the
+    // F4 "macro 'dom' body threw: <message>" compile error with the
+    // call-site span — the message already carries the payload-relative
+    // `markup:line:col` + caret (the shared E-D catalog).
+    macro dom(string payload) comptime {
+        return meta::parseExpr(Moby::Dom::expandDom(payload));
+    }
+}

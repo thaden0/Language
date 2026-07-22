@@ -1,0 +1,6 @@
+name = "sonar-tests-assertions"
+sources = ["main.lev"]
+
+[[dep]]
+path = "../.."
+as = "sonar"

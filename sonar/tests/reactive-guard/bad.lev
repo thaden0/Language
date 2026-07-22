@@ -1,8 +1,0 @@
-uses Sonar;
-// @Sonar::Reactive on a non-scalar field must be a LOUD compile error
-// (reactive.lev __reactiveGuard), never a silent no-op.
-class Bad : Container {
-    @Sonar::Reactive Array<int> xs = [];
-    new Bad() { }
-}
-void main() { Bad b = Bad(); console.writeln("built"); }

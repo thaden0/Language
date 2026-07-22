@@ -3,7 +3,7 @@
 // the seven methods; arrows cycle directly without opening (the fast path). A
 // Focusable leaf so it owns its `box` (needed to position the dropdown).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class MethodSelector : Focusable, Styleable {
     Array<string> methods_ = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -50,7 +50,7 @@ class MethodSelector : Focusable, Styleable {
     void openMenu() {
         Menu m = Menu();
         for (string meth in methods_) { this.addItem(m, meth); }
-        int g = Sonar::app().newOverlayGroup();
+        int g = Moby::app().newOverlayGroup();
         m.openAt(box.x(), box.bottom(), g);
     }
 

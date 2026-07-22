@@ -1,8 +1,0 @@
-name = "sonar-components-basic"
-entry = "main"
-sources = ["basic.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

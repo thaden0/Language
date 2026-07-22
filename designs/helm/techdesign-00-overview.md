@@ -1,32 +1,32 @@
-# Helm — Tech Design 00: A Full IDE on Sonar 2
+# Helm — Tech Design 00: A Full IDE on Moby
 
 **Status:** design, pre-implementation. **Date:** 2026-07-15.
-**Scope:** an application built on the `sonar_v2` DOM framework ("Sonar 2") and the
+**Scope:** an application built on the `moby` DOM framework ("Moby") and the
 `leviathan`/`trident` toolchain. Helm is a **trident package** (checked user code); it never
 touches `src/**` or `runtime/**`. Where this doc and any future track doc disagree, this
 document wins until amended here.
 
-Ground-truth inputs: `designs/sonar_v2/techdesign-00-overview.md` (Sonar contracts/rulings),
-`sonar_v2/src/dom/*.lev` (the actual DOM API — `SonarApp`, `DomNode`, `query`, actions),
-`sonar_v2/src/components/*.lev`, `docs/reference.md` (language facts),
+Ground-truth inputs: `designs/sonar_v2/techdesign-00-overview.md` (Moby contracts/rulings),
+`moby/src/dom/*.lev` (the actual DOM API — `MobyApp`, `DomNode`, `query`, actions),
+`moby/src/components/*.lev`, `docs/reference.md` (language facts),
 `known_bugs_1.md`/`known_bugs_2.md` (live compiler bugs and their workarounds to design around).
 
 ---
 
 ## 0. What Helm is
 
-**Helm** is a terminal IDE for the Leviathan language, written in Leviathan, rendered by Sonar 2.
+**Helm** is a terminal IDE for the Leviathan language, written in Leviathan, rendered by Moby.
 It is the developer's cockpit for a `trident` workspace: a project tree, a multi-buffer text
 editor with syntax highlighting and diagnostics, build/run/test integration through `trident`
 and `leviathan`, an integrated terminal, a command palette, and a quick-open switcher — the
 familiar VS-Code-shaped surface, but retained-mode TUI and self-hosted.
 
-Naming follows the house nautical set (`leviathan`, `trident`, `harpoon`, `sonar`, `atlantis`):
+Naming follows the house nautical set (`leviathan`, `trident`, `sonar`, `moby`, `atlantis`):
 **Helm** is where you steer the ship.
 
-**Design position (mirrors Sonar's own, because it inherits Sonar's cost model):**
+**Design position (mirrors Moby's own, because it inherits Moby's cost model):**
 
-1. **Retained UI, owned document model.** The Sonar tree is persistent and mutated in place; the
+1. **Retained UI, owned document model.** The Moby tree is persistent and mutated in place; the
    editor's text is *not* stored in the component tree — it lives in a purpose-built buffer model
    (§4) that the `EditorView` component paints from. Leviathan's pure arrays + ARC punish
    per-keystroke tree rebuilds and reward stable identity and localized damage.
@@ -35,20 +35,20 @@ Naming follows the house nautical set (`leviathan`, `trident`, `harpoon`, `sonar
    boundary and the compiler/package-manager separation are frozen contracts — §9, STOP protocol).
    All "language intelligence" is a thin bridge over those processes (§6).
 3. **Everything is a command.** Menus, the palette, keymaps, and buttons all fire *named actions*
-   through Sonar's `ActionRegistry` responder chain (`sonar_v2/src/dom/actions.lev`). One command
+   through Moby's `ActionRegistry` responder chain (`moby/src/dom/actions.lev`). One command
    registry is the single source of truth for "what Helm can do."
 4. **DOM markup for chrome, imperative for the hot path.** Panels, bars, dialogs, and menus are
-   authored as Sonar backtick markup and wired with `query(...).on(...)` / `.actions()`. The
+   authored as Moby backtick markup and wired with `query(...).on(...)` / `.actions()`. The
    editor's per-frame paint is hand-written `paintContent` — no markup, no allocation.
 5. **Engine lanes:** oracle + IR + **LLVM** are the run lanes (LLVM is the shipping build);
    emit-C++ is compile-only for anything touching `App.run()` (no event loop in that lane), same
-   as Sonar. ELF/X64Gen is frozen and is never a Helm target and never a gate.
+   as Moby. ELF/X64Gen is frozen and is never a Helm target and never a gate.
 
 **Explicit non-goals for v1** (recorded so nobody silently re-opens them): a graphical debugger
 (step/breakpoints — deferred to v2, gated on a compiler debug protocol that does not exist),
 remote/SSH workspaces, multi-root workspaces, a plugin/extension API, collaborative editing,
-Git UI beyond a status readout, truecolor theming (inherits Sonar's 16-color cell format, C6),
-grapheme-cluster/RTL text (inherits Sonar's scalar cell math), and Language Server Protocol
+Git UI beyond a status readout, truecolor theming (inherits Moby's 16-color cell format, C6),
+grapheme-cluster/RTL text (inherits Moby's scalar cell math), and Language Server Protocol
 wire-compatibility (Helm's language bridge is process-local and bespoke — §6.4 notes the LSP
 adapter as a v2 possibility, not a v1 shape).
 
@@ -56,33 +56,33 @@ adapter as a v2 possibility, not a v1 shape).
 
 ## 1. The ground Helm stands on
 
-### 1.1 Sonar 2 surface Helm consumes (verified against `sonar_v2/src/`)
+### 1.1 Moby surface Helm consumes (verified against `moby/src/`)
 
-- **`SonarApp`** (`dom/app.lev`): `start()`/`run()`, `add(...)`, `query(sel) -> DomNode`,
+- **`MobyApp`** (`dom/app.lev`): `start()`/`run()`, `add(...)`, `query(sel) -> DomNode`,
   `queryAll -> DomNodeList`, `queryOrNone`, per-frame binding sweep, overlay stack (inherited
-  from Sonar `App`: `pushOverlay`/`popOverlay`, `keymap()`, `focus()`, `every(ms, cb)`,
+  from Moby `App`: `pushOverlay`/`popOverlay`, `keymap()`, `focus()`, `every(ms, cb)`,
   `pumpOnce()` test hook).
 - **Backtick markup** (`dom/markup.lev`): `<tag attr="v">…</tag>`, `{{expr}}` binding holes,
   `id="…"`, `class="…"`. Runtime tier only; the comptime `dom!` tier (`$for`/`$if`/`on:`/`{expr}`)
-  is a Sonar D02 feature Helm **may** use once it lands but does not gate on.
+  is a Moby D02 feature Helm **may** use once it lands but does not gate on.
 - **`DomNode`** (`dom/node.lev`): jQuery-style — `.on(event, () => void)` (events: `key mouse
   paste press change submit toggle select dismiss`), `.actions()` (the `ActionRegistry`),
   `.value()/.text()/.checked()/.enabled()`, class ops (`addClass/removeClass/toggleClass`,
   `.hide()/.show()` via the semantic `hidden` class), `.position()`, `.query/.queryAll`,
   `.children()/.parent()`.
-- **Components** (`sonar_v2/src/components/`): `text`, `input`, `button`, `checkbox`, `radio`,
+- **Components** (`moby/src/components/`): `text`, `input`, `button`, `checkbox`, `radio`,
   `contentbar` (status/tool bars), `contentbox` (scroll+border frame), `splitbox` (resizable
   panes), `gridbox`, `tabs`, `listview`, `tableview`, `treeview` (virtualized — paint viewport
   only), `menu`/`menuitem`, `modal`, `progress`, `spinner`, `debugoverlay`.
-- **Layout** (`sonar_v2/src/layout/`): flex, grid, dock, stack.
-- **Theming** (`sonar_v2/src/theme.lev` + `themes/*.toml`): dotted keys, TOML parsed in-language
+- **Layout** (`moby/src/layout/`): flex, grid, dock, stack.
+- **Theming** (`moby/src/theme.lev` + `themes/*.toml`): dotted keys, TOML parsed in-language
   (no JSON on LLVM — bug #30), runtime `setTheme` swap + full invalidate.
 
 Helm adds exactly **one new low-level component** — `EditorView` (§4.3) — because no existing
-Sonar component is a rope-backed, syntax-highlighted, gutter-bearing code editor. `treeview`,
+Moby component is a rope-backed, syntax-highlighted, gutter-bearing code editor. `treeview`,
 `tableview`, `listview`, `tabs`, `contentbox`, `splitbox`, `modal`, `contentbar`, `input`,
-`menu` are consumed as-is. If `EditorView` needs a capability the Sonar core lacks, that is a
-STOP (escalate to a Sonar track), not a fork of Sonar.
+`menu` are consumed as-is. If `EditorView` needs a capability the Moby core lacks, that is a
+STOP (escalate to a Moby track), not a fork of Moby.
 
 ### 1.2 Toolchain surface Helm drives (verified against project overview)
 
@@ -91,9 +91,9 @@ STOP (escalate to a Sonar track), not a fork of Sonar.
   to it; does not read the manifest.
 - **`trident`** — build driver / package manager. Reads `trident.toml`, builds the dependency
   graph, invokes `leviathan`. This is the front door: `trident build`, `trident run`,
-  `trident test` (drives `harpoon`), and the frozen build-plan contract
+  `trident test` (drives `sonar`), and the frozen build-plan contract
   (`designs/complete/techdesign-toolchain.md`).
-- **`harpoon`** — the unit-test library (`@Test` auto-discovery); Helm's test panel reads its
+- **`sonar`** — the unit-test library (`@Test` auto-discovery); Helm's test panel reads its
   output.
 
 **Language-side dependency (a gate, not an improvisation):** machine-readable diagnostics. Today
@@ -109,7 +109,7 @@ tracked here as gate **G-LANG-1** (§7) and owned by a language design doc, not 
 
 ```
                     ┌──────────────────────────────────────────────┐
-                    │  SonarApp  (retained UI tree, frame loop)     │
+                    │  MobyApp  (retained UI tree, frame loop)     │
                     │  ┌────────┬───────────────────┬────────────┐  │
                     │  │Activity│  Editor group     │  Panels    │  │
                     │  │ + Tree │  (tabs + Editor-   │ (terminal/ │  │
@@ -139,10 +139,10 @@ as **child processes** driven through a subprocess bridge (H09). All blocking I/
 stdout/stderr, file reads of large files, the PTY) runs on `spawn`ed tasks and communicates back
 to the UI task over **`Channel`s** — never a bare global `Promise` awaited across `spawn`
 (bug #35; Channels are the portal, cheat-sheet §15). The UI task drains channels at frame start
-(a `renderFrame` hook, exactly where `SonarApp.__sweepBindings` already runs) and mutates the
-document + Sonar tree; Sonar's damage model repaints only what changed.
+(a `renderFrame` hook, exactly where `MobyApp.__sweepBindings` already runs) and mutates the
+document + Moby tree; Moby's damage model repaints only what changed.
 
-**Threading rule (frozen H-R1):** only the UI task mutates the Sonar tree, the `Workspace`, and
+**Threading rule (frozen H-R1):** only the UI task mutates the Moby tree, the `Workspace`, and
 buffers. Worker tasks produce **immutable messages** (diagnostics batches, process-output chunks,
 completion results) onto channels; the UI task applies them. This keeps the retained tree
 single-writer and sidesteps the multi-mixin dispatch and array-staleness bug families that bite
@@ -152,15 +152,15 @@ under concurrent mutation.
 
 ## 3. Screen layout (the shell)
 
-The root is a `dock` layout. Authored once as Sonar markup at boot (`H01`), then driven
+The root is a `dock` layout. Authored once as Moby markup at boot (`H01`), then driven
 imperatively:
 
 ```
-uses Sonar;
-uses Sonar::Dom;
+uses Moby;
+uses Moby::Dom;
 
-// H01 — shell.lev (abbreviated; real attrs per each component's Sonar table)
-SonarApp app = SonarApp();
+// H01 — shell.lev (abbreviated; real attrs per each component's Moby table)
+MobyApp app = MobyApp();
 app.add(FlexContainer(`
   <contentbar id="menubar" dock="top">…</contentbar>          <!-- H01 menu bar -->
   <splitbox id="hsplit" dock="fill" axis="horizontal" split="24">
@@ -186,7 +186,7 @@ app.add(FlexContainer(`
 
 - **Menu bar** (top `contentbar` + `menu`): File / Edit / View / Run / Help. Every item fires a
   named command (H03). Accelerators (`^S`, `^P`, `^`\`) are bound in `app.keymap()` and win at the
-  capture phase (Sonar R11) so a focused editor never swallows `^S`.
+  capture phase (Moby R11) so a focused editor never swallows `^S`.
 - **Sidebar** (`contentbox` + `tabs`): the file **`treeview`** (H05) and a search pane (H12).
   Collapsible via a View command that toggles the `hidden` class on `#sidebar` and re-splits.
 - **Editor group** (`tabs` of `EditorView`s, H04): the center. Tabs carry the buffer's short name
@@ -195,14 +195,14 @@ app.add(FlexContainer(`
 - **Status bar** (bottom `contentbar`, H08): mode indicator, cursor `Ln,Col`, file encoding,
   language (`Leviathan`), diagnostics counts (`● 2  ▲ 5`), build state (spinner while building),
   Git branch. Segments are named regions updated by `query("#statusbar")…setLeft/…`.
-- **Overlays** (Sonar overlay stack, R13): the **command palette** and **quick-open** are
+- **Overlays** (Moby overlay stack, R13): the **command palette** and **quick-open** are
   `modal`-hosted overlays that own input exclusively while open; **Escape** pops them.
 
 ---
 
 ## 4. The buffer/editor model (H04 — the hard part)
 
-No Sonar component edits code; this is where Helm earns its keep. Split into a headless model
+No Moby component edits code; this is where Helm earns its keep. Split into a headless model
 (`H04a` buffers) and the view (`H04b` `EditorView`).
 
 ### 4.1 Why not store text in the component tree
@@ -221,8 +221,8 @@ therefore uses a **piece table** (a.k.a. piece chain) over two immutable byte sp
   persistent-sharing).
 
 `Piece` and every parallel-column struct that lands in an array is declared **`class`, not
-`struct`** — the Sonar tracks hit `Array<struct-with-...-field>` staleness/corruption repeatedly
-(bug #41 / #74 precedent; sonar T03/T07 logs). Where columns must be primitives+closures, use
+`struct`** — the Moby tracks hit `Array<struct-with-...-field>` staleness/corruption repeatedly
+(bug #41 / #74 precedent; moby T03/T07 logs). Where columns must be primitives+closures, use
 **parallel arrays**, never `Array<struct>` (the `ActionRegistry` pattern, `dom/actions.lev`).
 
 **Line index.** A `LineIndex` maps line → byte offset, rebuilt incrementally on edit within the
@@ -245,22 +245,22 @@ class TextBuffer {
     int     version();                    // monotonic; the reparse/highlight/diagnostics key
     void    undo();   void redo();
     void    save();                       // writes bytes; clears dirty; keeps piece table
-    int     onChange((ChangeEvent) => void h);   // token; offChange(t) — Sonar R12 token pattern
+    int     onChange((ChangeEvent) => void h);   // token; offChange(t) — Moby R12 token pattern
 }
 ```
 
-`col` is measured in **Unicode scalars** and rendered through `Sonar::glyphWidth` for wide-cell
-math (cheat-sheet §10), matching Sonar's Surface contract. `ChangeEvent` carries the dirtied
+`col` is measured in **Unicode scalars** and rendered through `Moby::glyphWidth` for wide-cell
+math (cheat-sheet §10), matching Moby's Surface contract. `ChangeEvent` carries the dirtied
 line range so highlighting and the diagnostics debounce only touch what moved.
 
 ### 4.3 `EditorView` component (frozen H-C2)
 
-`EditorView : Container, Scrollable, Focusable, Bordered` — composed exactly like a Sonar
+`EditorView : Container, Scrollable, Focusable, Bordered` — composed exactly like a Moby
 composite leaf, and it **redeclares** every `Container`/`Scrollable` method it relies on
-(`paint`, `arrange`, `contentDesired`, `__sonarChildren`, `contentRect`, `scrollTo`) forwarding to
+(`paint`, `arrange`, `contentDesired`, `__mobyChildren`, `contentRect`, `scrollTo`) forwarding to
 the working accessors. This is not optional politeness: the still-open multi-mixin bugs (the
 `Container.paint()` children-loop that renders nothing for a multi-mixin leaf; the intermediate-
-mixin dispatch family) documented in the Sonar T05/T07 logs make the redeclaration **load-
+mixin dispatch family) documented in the Moby T05/T07 logs make the redeclaration **load-
 bearing**. `TableColumn`/tree-row precedent: declare row/column carriers as `class`.
 
 Responsibilities:
@@ -270,16 +270,16 @@ Responsibilities:
   spans colored by the highlight cache (§6.1). Gutter (line numbers, diagnostic squiggles/marks,
   Git change bar) is a fixed-width left inset. Zero allocation in the hot loop — write directly to
   the Surface via `writeText`; reuse a scratch style. Wide glyphs use `glyphWidth`.
-- Cursor: `cursorPos()` (the `Focusable` hook Sonar's App reads post-paint) returns the caret cell
+- Cursor: `cursorPos()` (the `Focusable` hook Moby's App reads post-paint) returns the caret cell
   so the terminal hardware cursor lands correctly; multi-cursor secondary carets are painted as
   reverse-video cells.
 - Input: `onKey` handles motion, editing, selection (Shift+motion), clipboard, indent, comment-
   toggle; printable keys insert. Bound editor commands (`^D` duplicate line, `^/` comment, `Alt-↑`
-  move line, etc.) are registered as **scoped keymap** entries (Sonar R11 scoping) so they beat
+  move line, etc.) are registered as **scoped keymap** entries (Moby R11 scoping) so they beat
   focus routing only while the editor is focused, without stealing global accelerators.
 - Mouse: click-to-place, drag-to-select, wheel-scroll, click-in-gutter to select line.
 
-**Editing correctness discipline (from the Sonar bug corpus):** every stored handler spells its
+**Editing correctness discipline (from the Moby bug corpus):** every stored handler spells its
 receiver explicitly (`this.insertChar(e)`, never a bare implicit-`this` call from a lambda stored
 in a field — bug #53 segfaults on LLVM otherwise). Timer/handler registration structs use
 explicit constructors, never positional auto-construction (bug #38).
@@ -295,23 +295,23 @@ view; edits apply per-cursor lowest-offset-last so offsets don't shift under eac
 
 ## 5. Module / track map
 
-Disjoint file ownership is normative (Sonar house convention): a track writes only its own files.
+Disjoint file ownership is normative (Moby house convention): a track writes only its own files.
 `helm/src/` is the package root; namespace `Helm`.
 
 | ID | files | owns | difficulty | gates on |
 |----|-------|------|-----------|----------|
-| H01 | `helm/src/shell.lev`, `main.lev` | boot, root markup, dock layout, menu bar, DI composition root | M | Sonar v1 |
+| H01 | `helm/src/shell.lev`, `main.lev` | boot, root markup, dock layout, menu bar, DI composition root | M | Moby v1 |
 | H02 | `helm/src/workspace/*.lev` | `Workspace`, project root, open-buffer set, file watching hooks | M | H09 |
-| H03 | `helm/src/command/*.lev` | `CommandRegistry`, `Command`, keymap binding, menu/palette wiring | M | Sonar keymap/actions |
-| H04 | `helm/src/editor/*.lev` | `TextBuffer` (piece table), `LineIndex`, `Cursor`, `EditorView`, undo, clipboard | **XL** | Sonar core; F1 Block ops |
-| H05 | `helm/src/explorer/*.lev` | file `treeview` model + `IListSource`-style adapter, file ops (new/rename/delete) | M | Sonar treeview, H09 |
+| H03 | `helm/src/command/*.lev` | `CommandRegistry`, `Command`, keymap binding, menu/palette wiring | M | Moby keymap/actions |
+| H04 | `helm/src/editor/*.lev` | `TextBuffer` (piece table), `LineIndex`, `Cursor`, `EditorView`, undo, clipboard | **XL** | Moby core; F1 Block ops |
+| H05 | `helm/src/explorer/*.lev` | file `treeview` model + `IListSource`-style adapter, file ops (new/rename/delete) | M | Moby treeview, H09 |
 | H06 | `helm/src/lang/*.lev` | language-service bridge: diagnostics, highlight token stream, (later) hover/goto/complete | **L** | H09; **G-LANG-1** |
 | H07 | `helm/src/panels/*.lev` | Problems table, Output view, Test-results table, panel host | M | H06, H10 |
 | H08 | `helm/src/status/*.lev` | status bar segments, build-state indicator | S | H03, H06, H11 |
 | H09 | `helm/src/proc/*.lev` | subprocess bridge (spawn+Channel), line framing, cancellation | **L** | language `spawn`/`Channel`, process floor |
 | H10 | `helm/src/terminal/*.lev` | integrated terminal: PTY host + a minimal VT parser + `TerminalView` | **XL** | H09; **G-LANG-2** (PTY floor) |
 | H11 | `helm/src/build/*.lev` | trident driver: build/run/test commands, build-plan parse, error routing to Problems | M | H09, H06 |
-| H12 | `helm/src/config/*.lev`, `search/*.lev` | settings/keymap TOML, theme selection, workspace search (grep) | M | Sonar theming, H09 |
+| H12 | `helm/src/config/*.lev`, `search/*.lev` | settings/keymap TOML, theme selection, workspace search (grep) | M | Moby theming, H09 |
 | H13 | `helm/tests/**`, `helm/trident.toml`, `helm/examples/**` | golden/scripted/differential harness, packaging | M | all |
 
 Recommended landing order: **H09 → H03 → H02 → H05 → H04 → H06 → H11 → H07 → H08 → H01 (assemble)
@@ -335,7 +335,7 @@ a *highlighter*, not the real compiler lexer, deliberately lossy and resilient t
 It runs **per changed line range** (the `ChangeEvent` from H-C1), producing a per-line token span
 cache keyed by `buffer.version()`. `EditorView.paintContent` reads the cache; a cache miss paints
 the raw line uncolored and schedules the re-lex. Token → theme-key mapping (`syntax.keyword`,
-`syntax.string`, …) resolves through Sonar theming (R10), so highlight colors are themeable TOML.
+`syntax.string`, …) resolves through Moby theming (R10), so highlight colors are themeable TOML.
 
 Keeping a *second, smaller* lexer (rather than shelling to `leviathan --emit-ir` for tokens) is a
 deliberate cost/robustness call, explicitly logged: it must tolerate the half-typed code the real
@@ -400,7 +400,7 @@ class Proc {
     new Proc(string exe, Array<string> args, string cwd);
     Channel<ProcEvent> start();      // spawns a reader task; events: Stdout(line)|Stderr(line)|Exit(code)
     void write(string bytes);        // stdin (terminal / stdin-source compiler mode)
-    void signal(int sig);            // cancellation (SIGINT/SIGTERM) — reuses Sonar F2 signal consts
+    void signal(int sig);            // cancellation (SIGINT/SIGTERM) — reuses Moby F2 signal consts
     bool running();
 }
 ```
@@ -421,8 +421,8 @@ Commands (all registered in H03, so they're on the palette, menu, and keymap):
   spinner during, then ✓/✗.
 - **Run** (`F5`): `trident run`. Stdout/stderr stream to a dedicated Output/Terminal tab. `Shift-F5`
   stops (signal).
-- **Test** (`^;` or a Run submenu): `trident test` (drives `harpoon`); the Test panel is a
-  `tableview` of `@Test` results (name / pass-fail / time / message), parsed from harpoon's output;
+- **Test** (`^;` or a Run submenu): `trident test` (drives `sonar`); the Test panel is a
+  `tableview` of `@Test` results (name / pass-fail / time / message), parsed from sonar's output;
   click-to-jump to the failing assertion's source line.
 - **Choose engine** (a command + status-bar affordance): pass through `--run`/`--ir`/`--emit-llvm`
   so a developer can differential-run the same program across engines — a first-class Leviathan
@@ -437,18 +437,18 @@ dependency resolution (the compiler/PM separation is frozen — §9).
 
 The riskiest track, deliberately last. A real terminal needs a **PTY** (allocate, set winsize,
 read/write, reap) and a **VT parser** (a subset: cursor moves, SGR colors, erase, scroll region,
-the alt screen) driving a `TerminalView` backed by a Sonar `Surface`-like cell grid. Two hard
+the alt screen) driving a `TerminalView` backed by a Moby `Surface`-like cell grid. Two hard
 dependencies:
 
 - **PTY floor (G-LANG-2, language-side):** openpty/forkpty-equivalent + winsize. If absent, v1
   ships **no embedded terminal** and instead offers "Run in external terminal" + the streaming
   Output panel (which covers 90% of the build/run/test need). This keeps a red PTY floor from
   sinking the IDE.
-- **VT parsing** is in-package Leviathan work (an `ansi` inverse of Sonar's `ansi_renderer`).
-  Bounded scope: enough to host a shell and the project's own Sonar TUIs, not xterm-completeness
-  (sixel/DEC specials are out, matching Sonar's own non-goals).
+- **VT parsing** is in-package Leviathan work (an `ansi` inverse of Moby's `ansi_renderer`).
+  Bounded scope: enough to host a shell and the project's own Moby TUIs, not xterm-completeness
+  (sixel/DEC specials are out, matching Moby's own non-goals).
 
-Because the terminal *is* itself a Sonar surface, a fun consequence: Helm can host a Sonar app
+Because the terminal *is* itself a Moby surface, a fun consequence: Helm can host a Moby app
 (including Helm-built TUIs, or `recon`) inside its own terminal panel. Nice-to-have, not a v1 gate.
 
 ---
@@ -461,7 +461,7 @@ repro; implementers escalate, design agents record in §14 only. Never merge com
 manager concerns; never re-implement dependency resolution in Helm. X64Gen/ELF frozen; nothing
 gates on ELF. Completed designs move to `designs/complete/`.
 
-**Footgun discipline baked into every track** (from `known_bugs_1.md`/`known_bugs_2.md` + the Sonar bug corpus):
+**Footgun discipline baked into every track** (from `known_bugs_1.md`/`known_bugs_2.md` + the Moby bug corpus):
 
 1. No truthiness — conditions are `bool`; `x == None`/`!= None` with narrowing; `?.`/`??`.
 2. No `static` — namespace consts/functions + labeled constructors (`TextBuffer::FromFile`).
@@ -470,15 +470,15 @@ gates on ELF. Completed designs move to `designs/complete/`.
 4. **Arrays are pure** — never store a per-frame-mutated `Array<struct>`; the piece table mutates a
    small persistent array, hot state is `class`-typed or parallel columns.
 5. `Array<struct-with-nested-field>` corrupts on LLVM after unrelated writes — row/column carriers
-   are **`class`** (Sonar `Chord`/`TableColumn`/`TreeRow` precedent).
+   are **`class`** (Moby `Chord`/`TableColumn`/`TreeRow` precedent).
 6. Stored handlers spell the receiver explicitly (`this.method(...)`) — bare implicit-`this` from a
    field-stored lambda segfaults on LLVM (bug #53).
 7. Registration structs use explicit constructors, never positional auto-construction (bug #38).
 8. Multi-mixin leaves (`EditorView`) redeclare inherited `Container`/`Scrollable` methods they rely
    on (children-loop paint bug still open).
 9. Inside `namespace Helm`, write globals bare (never `Helm::x = v` — lowering hazard).
-10. No JSON on LLVM (bug #30) — settings/keymap/themes are in-language TOML (Sonar's `toml.lev`).
-11. No `console.write` during a running app — diagnostics via `Sonar::log` + `DebugOverlay`.
+10. No JSON on LLVM (bug #30) — settings/keymap/themes are in-language TOML (Moby's `toml.lev`).
+11. No `console.write` during a running app — diagnostics via `Moby::log` + `DebugOverlay`.
 12. Don't `await` a bare global `Promise` across `spawn` (bug #35) — `Channel` only.
 13. Declare lambda-taking overloads before same-name string-taking overloads (bug #34).
 
@@ -491,9 +491,9 @@ not to route around silently.
 
 | gate | contents | depends |
 |------|----------|---------|
-| G-H0 | H09 proc bridge + H03 command registry; a "run trident build, stream to Output" spike works | Sonar v1, process floor |
+| G-H0 | H09 proc bridge + H03 command registry; a "run trident build, stream to Output" spike works | Moby v1, process floor |
 | G-H1 | H02 workspace + H05 file tree; open/close/switch files (read-only viewer) | G-H0 |
-| G-H2 | H04 editor: piece-table buffer + `EditorView` edit/save/undo/highlight; the editor is usable | Sonar core, F1 |
+| G-H2 | H04 editor: piece-table buffer + `EditorView` edit/save/undo/highlight; the editor is usable | Moby core, F1 |
 | G-H3 | H06 diagnostics (stderr parse) + H07 Problems/Output + H08 status bar; edit→diagnostics loop closes | G-H2 |
 | G-H4 | H11 build/run/test wired to commands + palette + menu; H01 shell fully assembled | G-H3 |
 | G-H5 | H12 settings/keymap/theme + workspace search; self-host milestone: **edit Helm's own source in Helm** | G-H4 |
@@ -509,7 +509,7 @@ edit, build, and test Helm inside Helm.
 
 ## 11. Testing doctrine (H13)
 
-Inherits Sonar's, because it renders through Sonar:
+Inherits Moby's, because it renders through Moby:
 
 - **Snapshot** — `TestRenderer` goldens of the shell, editor viewport (incl. highlight color
   channel), Problems table, palette overlay. Two-channel format (text grid + style annotations) so
@@ -521,7 +521,7 @@ Inherits Sonar's, because it renders through Sonar:
   emit-C++ is compile-only for anything touching `run()`.
 - **Unit** — piece-table edit algebra (insert/remove/undo/redo invariants: bytes reconstructed ==
   expected), `LineIndex` incremental correctness, diagnostic-parse corpus, highlighter token
-  tables — all `harpoon` `@Test`, table-driven.
+  tables — all `sonar` `@Test`, table-driven.
 - **Fake services** — `FakeLanguageService` + `FakeProc` (bind via DI) make the whole edit→
   diagnostics→Problems loop testable with zero subprocesses. The subprocess bridge itself gets a
   small live integration test against a real `leviathan`/`trident`, isolated so it can be skipped
@@ -536,8 +536,8 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
 | # | risk | mitigation / fallback |
 |---|------|----------------------|
 | K1 | Piece-table edit perf under pure-array cost model | pieces are small + persistent-sharing; undo coalesced; big files open read-only/no-highlight; bench under `bench/` before G-H2 |
-| K2 | Multi-mixin `EditorView` renders nothing (open Sonar children-loop bug) | redeclare inherited paint/arrange/children (§4.3); probe first, single-inheritance-chain fallback like Sonar P7 |
-| K3 | `Array<struct>` staleness/corruption in hot editor state | `class` rows + parallel columns everywhere (§9.4-5); grep the corpus like Sonar T04 did |
+| K2 | Multi-mixin `EditorView` renders nothing (open Moby children-loop bug) | redeclare inherited paint/arrange/children (§4.3); probe first, single-inheritance-chain fallback like Moby P7 |
+| K3 | `Array<struct>` staleness/corruption in hot editor state | `class` rows + parallel columns everywhere (§9.4-5); grep the corpus like Moby T04 did |
 | K4 | Diagnostic stderr-format drift breaks the parser | golden diag-corpus test; DI seam to swap to G-LANG-1 machine format |
 | K5 | No process/PTY floor (G-LANG-2 red) | external-terminal + Output-panel fallback; terminal is the *last* gate, not a blocker |
 | K6 | `spawn`/`Channel` async correctness (bug #35 family) | single-writer UI task (H-R1); Channels only; a focused async harness before H09 lands |
@@ -564,11 +564,11 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   H-R1, gates G-H0..G-v1 + language gates G-LANG-1/2 set. Two escalations pre-recorded as
   language-side gates rather than improvised: machine-readable compiler diagnostics (G-LANG-1) and
   a process/PTY floor for the subprocess bridge and integrated terminal (G-LANG-2). Grounded
-  against `sonar_v2/src/dom/*` (verified `SonarApp`/`DomNode`/`query`/actions API) and the live
+  against `moby/src/dom/*` (verified `MobyApp`/`DomNode`/`query`/actions API) and the live
   compiler-bug corpus (piece table + `EditorView` designed around bugs #18/#30/#34/#35/#38/#41/
   #53/#74 and the open multi-mixin children-loop defect).
 - 2026-07-15 — **G-H0 landed.** Package created at `examples/helm/` (a trident package depending on
-  `sonar_v2` as `Sonar`; sibling of `examples/recon`). Implemented H09 (`src/proc/proc.lev`) and
+  `moby` as `Moby`; sibling of `examples/recon`). Implemented H09 (`src/proc/proc.lev`) and
   H03 (`src/command/command.lev`), plus a headless entry `src/main.lev`. Golden tests green on
   **oracle + IR** (`tests/{command,proc,spike}`, driven by `tests/run-tests.sh`): the spike fires a
   named command via a `^B` keymap → spawns a child → streams `ProcEvent`s into an Output sink →
@@ -593,13 +593,13 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     correctness fix, not a frozen-contract/architecture change, so not a STOP). A `namespace`
     reopened across files saw only the **first block's** file-level `uses` (the shared namespace
     scope was re-parented once, to the first block's import overlay). Order-dependent: because
-    `proc.lev` (no `uses Sonar`) globbed as Helm's first block, every unqualified Sonar type in the
+    `proc.lev` (no `uses Moby`) globbed as Helm's first block, every unqualified Moby type in the
     namespace (e.g. `Keymap` in `command.lev`) failed to resolve — even in files that *did*
-    `uses Sonar`. Fix in `src/Resolver.cpp`: give each reopened namespace its own aggregate import
+    `uses Moby`. Fix in `src/Resolver.cpp`: give each reopened namespace its own aggregate import
     overlay folding in **every** block's file overlay (order-independent). Regression floor:
     `tests/corpus/project/reopen_ns_uses_order`. Verified green: 26 multi-file projects, all
-    composition corpora, `sonar_v2` differential suite. With the resolver fixed, Helm standardized
-    on the idiomatic `uses Sonar;` + unqualified names (matching Sonar/recon); the corpus test is
+    composition corpora, `moby` differential suite. With the resolver fixed, Helm standardized
+    on the idiomatic `uses Moby;` + unqualified names (matching Moby/recon); the corpus test is
     the regression guard.
 - 2026-07-16 — **G-H1 landed.** H02 (`src/workspace/{workspace,paths}.lev`) and H05
   (`src/explorer/filetree.lev`) — the read-only file viewer. Two new golden tests
@@ -609,8 +609,8 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     idempotent re-open, `openPaths`) + a v1 file-watch hook (`isStale`/`reload` by mtime, the
     §13.4 poll-on-focus stance). An open doc is a minimal immutable `OpenDoc` (path + content +
     mtime); when H04's piece-table `TextBuffer` lands it supersedes `OpenDoc` in the open-set (kept
-    deliberately small so the swap is clean). Pure model + prelude `File` I/O — no Sonar dep.
-  - **H05 FileTree** — implements `Sonar::ITreeSource` (listview.lev) so the virtualized `TreeView`
+    deliberately small so the swap is clean). Pure model + prelude `File` I/O — no Moby dep.
+  - **H05 FileTree** — implements `Moby::ITreeSource` (listview.lev) so the virtualized `TreeView`
     can paint the viewport without the whole tree resident. Lazy per-directory listing via
     `std::sysListDir`, dirs-first + alphabetical; `TreeNodeId` wraps a stable append-only node id
     (`class FileNode` rows, never `Array<struct>`). File ops (create/rename/delete via
@@ -641,18 +641,18 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
 
 - 2026-07-17 — **G-H2 landed.** H04, the editor — the XL long pole. Five new `.lev` files under
   `examples/helm/src/editor/` and two golden tests (`tests/{buffer,editor}`); 7 Helm tests total,
-  all green on **oracle + IR** (byte-identical). Split headless-model (H04a) / Sonar-view (H04b),
+  all green on **oracle + IR** (byte-identical). Split headless-model (H04a) / Moby-view (H04b),
   exactly per §4.
-  - **H04a — the buffer/edit algebra (headless, no Sonar).**
+  - **H04a — the buffer/edit algebra (headless, no Moby).**
     - `piece.lev` — `PieceTable` over two immutable **`Block`** byte stores (`original` +
       append-only `added`, doubled on growth so repeated inserts amortise O(1)). Byte-offset
       splice API: `insert` splits ≤1 piece (3 out), `remove` trims the two boundary pieces + drops
       the middle, `textRange` materialises via `Block.toString`. `Piece`/`PieceLoc` are **class**
-      rows (footgun #5 / Sonar #66). Undo/redo = snapshots of the small persistent pieces array
+      rows (footgun #5 / Moby #66). Undo/redo = snapshots of the small persistent pieces array
       (the shared `added` store only grows, so old offsets stay valid forever).
     - `lineindex.lev` — `LineIndex`: line→byte-start, found by scanning **bytes** for 0x0A
       (correct for UTF-8 — multibyte bytes are all ≥0x80 — and dodges the `string.at` mid-sequence
-      throw, Sonar #59). v1 rebuilds fully on edit (O(n) scan); incremental is a noted perf rider
+      throw, Moby #59). v1 rebuilds fully on edit (O(n) scan); incremental is a noted perf rider
       (K1), slots behind the same interface. Big files still open read-only per §4.1.
     - `cursor.lev` — `Pos`/`Range`/`Cursor` **class** carriers (col in **scalars**); Cursor holds
       a selection anchor + sticky `goalCol` for vertical motion.
@@ -663,7 +663,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
       newline inserts, remove, slice, a **wide-glyph** (世) column, undo/redo byte reconstruction,
       and change-event fan-out. (Test-side footgun logged: a closure that reassigns a captured
       *local* array doesn't write back — accumulate through a reference-type field instead.)
-  - **H04b — `EditorView`, the Sonar component (frozen H-C2).** Virtualized (paints only
+  - **H04b — `EditorView`, the Moby component (frozen H-C2).** Virtualized (paints only
     `scrollY..scrollY+h` lines), gutter with right-aligned 1-based line numbers, wide-glyph-aware
     caret + horizontal/vertical auto-scroll, selection painting (Shift+motion), full editing
     (insert/enter/backspace/delete, selection-delete, Ctrl+Z/Y undo/redo, in-process
@@ -674,7 +674,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     - **H-C2 refinement (design vs language reality — the H-C4 precedent).** §4.3 froze the header
       as `EditorView : Container, Scrollable, Focusable, Bordered` and made "redeclare inherited
       Container/Scrollable methods" load-bearing against the open multi-mixin children-loop paint
-      bug. The direct Sonar precedent resolves this more cleanly: **TreeView** — an
+      bug. The direct Moby precedent resolves this more cleanly: **TreeView** — an
       identically-shaped virtualized/scrollable/focusable leaf that paints rows, not children — is
       deliberately **NOT a Container**. An editor has no child components (it paints text spans), so
       being a Container would only re-expose the children-loop bug for zero benefit. `EditorView`
@@ -683,7 +683,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
       plus its overrides (`contentDesired`, `paintContent`, `cursorPos`). H-C2's "Container" line is
       amended to match; the redeclaration discipline it mandated is honoured against the
       non-Container base the codebase's own precedent proves safe. No new escalation.
-  - **Floor / lane note.** Nothing in H04 is process-pinned (pure `Block` + Sonar `TestRenderer`,
+  - **Floor / lane note.** Nothing in H04 is process-pinned (pure `Block` + Moby `TestRenderer`,
     both LLVM-supported), so the §11 three-lane oracle=IR=**LLVM** byte-identity is *expected*
     green; wiring the native lane (`tests/run_native.sh` + the runtime `.S` context-switch objects)
     is deferred to H13's harness rather than the Helm test runner (which stays oracle+IR because the
@@ -729,13 +729,13 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     errors→warnings→notes then path/line/col via a zero-padded composite `sortBy` key,
     `diagnosticAt` for click-to-jump), `output.lev` (`OutputModel` — a capped append-only line
     buffer + `IListSource`; `Proc`-free, H11 feeds it), `testresults.lev` (`TestResult` rows +
-    `TestResultsModel : ITableSource`; harpoon-output parsing deferred to H11), and `panelhost.lev`
+    `TestResultsModel : ITableSource`; sonar-output parsing deferred to H11), and `panelhost.lev`
     (`PanelHost` owns the three models; `applyBatch` refreshes Problems and reveals its tab when a
     batch carries errors, never stealing focus on a clean batch).
   - **H08 — the status bar (`src/status/statusbar.lev`).** `StatusModel` composes mode / branch /
     diagnostics counts (`● 2  ▲ 5`) / build-state on the left and cursor `Ln,Col` / encoding /
-    language on the right into `ContentBar`'s three regions (pure model — no Sonar dep; the golden
-    renders it through a **real** `Sonar::ContentBar` + `TestRenderer`). Build-state int consts
+    language on the right into `ContentBar`'s three regions (pure model — no Moby dep; the golden
+    renders it through a **real** `Moby::ContentBar` + `TestRenderer`). Build-state int consts
     (idle/running/ok/failed); `applyBatch` folds a delivered batch into the counts — the status half
     of the loop.
   - **`langloop` golden** drives the whole loop with zero subprocesses: `FakeLanguageService` +
@@ -752,7 +752,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     diagnostics path; `PanelHost.appendOutput` and the status build-state consts are the seams H11
     streams build output and ✓/✗ into.
 - 2026-07-17 — **G-H4 landed.** H11 build/run/test driver + the H01 shell assembled. Four new
-  `.lev` files (`src/build/{harpoon,builddriver}.lev`, `src/command/menu.lev`, `src/shell.lev`),
+  `.lev` files (`src/build/{sonar,builddriver}.lev`, `src/command/menu.lev`, `src/shell.lev`),
   `main.lev` rewritten to compose the shell, the package `trident.toml` sources widened to every
   `src/**` dir, and two golden tests (`tests/{build,shell}`); **13 Helm tests total, all green on
   oracle + IR** (byte-identical). No `src/**`/`runtime/**` touched; no compiler bugs hit.
@@ -767,35 +767,35 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
       (bug #40/#41). Build/test stderr parses into Problems + status counts (`applyBatch`); test
       stdout parses into the Test panel and reveals it; a plain `run`'s stderr is program output,
       **not** parsed as diagnostics. Exit code → `BuildOk`/`BuildFailed`. `stop()` = SIGTERM (§7.1).
-    - `harpoon.lev` — `parseHarpoon(stdout)` → `Array<TestResult>`, matching
-      `harpoon/src/runner.lev`'s exact report (`  Class::method … ok|FAIL|ERROR|skip`, six-space
+    - `sonar.lev` — `parseSonar(stdout)` → `Array<TestResult>`, matching
+      `sonar/src/runner.lev`'s exact report (`  Class::method … ok|FAIL|ERROR|skip`, six-space
       detail lines, `N run:` summary). Tolerant by construction (K4); the `tests/build` golden is
-      the drift guard. harpoon reports no per-test timing/location in v1, so `ms`/`path`/`line` are 0.
+      the drift guard. sonar reports no per-test timing/location in v1, so `ms`/`path`/`line` are 0.
     - **Design-vs-reality refinements (the H-C4/H-C2/H-C3 precedent; no new escalation).**
       (1) `trident` exposes **no `test` subcommand** (verified: `build|run|check|emit-llvm|plan`), so
-      Helm's Test command runs a harpoon project via `trident run <testsDir>` and parses stdout.
+      Helm's Test command runs a sonar project via `trident run <testsDir>` and parses stdout.
       (2) "Choose engine" (§7.2) drives a differential run of the already-built plan through
       `leviathan --plan <ws>/build/plan.lvplan <flag>` — the exact invocation the project's own test
       runners use — surfaced as a status-bar affordance (`StatusModel.setEngine`, a new right-side
       `⚙ <engine>` segment that stays empty by default so H08's golden is unchanged).
   - **H01 — the shell assembled (`src/shell.lev`).** `HelmShell` is the single wiring point (the
-    ReconApp precedent): it owns the `SonarApp`, the one `CommandRegistry` (12 commands — build/run/
+    ReconApp precedent): it owns the `MobyApp`, the one `CommandRegistry` (12 commands — build/run/
     stop/test/engine×4/runEngine/togglePanel/palette/save/quit, each with its accelerator), the
     `MenuModel` (File/Edit/View/Run/Help), the `PanelHost`, `StatusModel`, and `BuildDriver`, and
     assembles them into the dock chrome (menu bar / body / panel-tab strip / status bar as real
     `ContentBar`/`ContentBox` widgets `app.add`-ed to the tree). Everything is wired in the ctor
     (accelerators `bindInto` the app keymap) so the shell is testable without `run()`. Two drivers:
-    `run()` (the live `SonarApp.run()` loop) and **`renderShell(w,h)`** — a headless `TestRenderer`
+    `run()` (the live `MobyApp.run()` loop) and **`renderShell(w,h)`** — a headless `TestRenderer`
     snapshot of the assembled chrome. `main.lev` composes the shell and prints its surface + a
     rendered snapshot by default (deterministic, non-blocking); `HELM_RUN=1` launches the live loop.
     - **Shell-snapshot refinement.** `renderShell` paints the top/panel/status bars directly onto one
       `Surface` (priming the default background with `surface.clear`, which the live App's root fill
-      supplies) rather than driving `SonarApp.pumpOnce()` — matching the editor/status golden idiom
+      supplies) rather than driving `MobyApp.pumpOnce()` — matching the editor/status golden idiom
       and keeping the oracle+IR lane free of the frame-timer the event loop would start. The live
       EditorView/TreeView body mount, the command-palette overlay, and dropdown menus are H04/H05/H12
       riders on the live shell; the body is their (blank) mount region in the assembled snapshot.
   - **`tests/build`** drives the driver with synthetic `ProcEvent`s (build with 2 diagnostics→exit 1,
-    a harpoon test report→exit 0, a run whose stderr is program output) and checks the panels/status
+    a sonar test report→exit 0, a run whose stderr is program output) and checks the panels/status
     routing + argv builders + engine choice. **`tests/shell`** constructs the shell and prints the
     command surface, the menu structure, a palette filter, and three `renderShell` snapshots (initial;
     after a diagnostic batch reveals Problems + folds the counts; after a `^`\`-style panel toggle).
@@ -812,10 +812,10 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
   `examples/helm/src/{config,search,terminal}/` and 3 new golden tests (`tests/{config,search,
   terminal}`); **16 Helm tests total, all green on oracle + IR** (byte-identical). No
   `src/**`/`runtime/**` touched; no compiler bugs hit.
-  - **H12 — settings (`src/config/`).** `configtoml.lev` generalizes Sonar's own `toml.lev`
+  - **H12 — settings (`src/config/`).** `configtoml.lev` generalizes Moby's own `toml.lev`
     (`parseThemeToml` is hardwired to a fixed fg/bg/attrs shape) into a `[section]`/`key = "value"`
     -> `ConfigDoc` parser or arbitrary sections/keys, same house style (line-oriented, `#`
-    comments, throws `SonarException` with a `source:line:col:` prefix on anything unsupported) —
+    comments, throws `MobyException` with a `source:line:col:` prefix on anything unsupported) —
     `writeConfigToml` is its exact inverse (a save round-trips byte-for-byte through a reparse).
     `settings.lev`'s `Settings` holds a theme name + parallel keymap-override columns (footgun
     #4/#5), with `FromDoc`/`toDoc` conversion, `applyKeymap`/`captureKeymap` against a
@@ -830,7 +830,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     - **Keymap-reload scope (design-vs-reality, the H-C4/H-C2/H-C3 precedent).** A `helm.toml`
       present at startup works correctly (`Settings.applyKeymap` runs before `CommandRegistry.
       bindInto` installs accelerators into the app `Keymap`). A keymap change made while Helm is
-      running does NOT take live effect — Sonar's `Keymap.bind` throws on a re-bound chord (anchor
+      running does NOT take live effect — Moby's `Keymap.bind` throws on a re-bound chord (anchor
       C9), and this package doesn't add unbind/rebind token plumbing for a v1 nicety; `settings.
       reload` re-applies the theme live but documents the keymap limit in `Settings`' own class
       comment. Decided with the task's owner before implementation, not discovered mid-build.
@@ -863,7 +863,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     row-by-row `Block.blit` so no call ever touches an overlapping range), and the alt screen
     (`?1049`/`?47`/`?1047`, with a saved-cursor pair) — DECSTBM regions, cursor save/restore outside
     the alt pair, and single-char ESC ops other than RIS/charset-designator-consumption are an
-    honest v1 gap, matching Sonar's own non-goals. `ptybridge.lev`'s `PtyBridge`/`PtyEventQueue`/
+    honest v1 gap, matching Moby's own non-goals. `ptybridge.lev`'s `PtyBridge`/`PtyEventQueue`/
     `PtyStreamer` are `proc.lev`'s `Proc`/`ProcEventQueue`/`ProcStreamer` applied to `Pty` verbatim —
     same H-C4 reasoning (`Pty` is fd-/loop-bound, cannot cross `spawn`, so `onData`/`exitCode()`
     enqueue onto a UI-drained queue, no worker task, H-R1 holds trivially) — with a `Deterministic`
@@ -875,7 +875,7 @@ Every track ships its own test plan in its track doc; H13 owns the harness.
     `EditorView`/`TreeView` copies) and overrides `contentDesired`/`paintContent`/`cursorPos`, the
     latter two backed by a row-by-row cross-`Block` blit of the vt screen onto the outer `Surface`
     (the same cross-`Block` blit `AnsiRenderer.presentDiff` already does between a `Surface`'s cells
-    and its own `prev_` shadow). `encodeKey` is the reverse of Sonar's own `input.lev` CSI decode
+    and its own `prev_` shadow). `encodeKey` is the reverse of Moby's own `input.lev` CSI decode
     (`KeyEvent` -> the bytes a real terminal would have sent).
     - **`tests/terminal`** covers `VtParser` directly (plain text, autowrap, CR-overwrite, SGR,
       CUP/CUD, EL/ED, scroll, alt-screen-preserves-primary) via `TestRenderer` on `vt.screen()`

@@ -1,0 +1,8 @@
+name = "moby-dom-actions-test"
+entry = "main"
+sources = ["actions.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Moby"

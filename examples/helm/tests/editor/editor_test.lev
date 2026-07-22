@@ -3,7 +3,7 @@
 // to a Surface, and prints the two-channel snapshot (text grid + style letters
 // + @cursor). A reverse-video selection style makes selections visible in the
 // style channel. Oracle + IR (byte-identical differential).
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

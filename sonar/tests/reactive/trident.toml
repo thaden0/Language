@@ -1,8 +1,0 @@
-name = "sonar-reactive-test"
-entry = "main"
-sources = ["m3_handwritten.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

@@ -1,6 +1,0 @@
-name = "harpoon-tests-discovery"
-sources = ["main.lev"]
-
-[[dep]]
-path = "../.."
-as = "harpoon"

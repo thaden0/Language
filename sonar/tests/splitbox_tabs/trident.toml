@@ -1,8 +1,0 @@
-name = "sonar-splitbox-tabs"
-entry = "main"
-sources = ["splitbox_tabs.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

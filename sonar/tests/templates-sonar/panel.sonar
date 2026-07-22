@@ -1,5 +1,0 @@
-<Container>
-    <Text text="Settings" align="Center"/>
-    <CheckBox label="Enable telemetry" checked="false"/>
-    <Button label="Close"/>
-</Container>

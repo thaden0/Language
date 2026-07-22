@@ -4,7 +4,7 @@
 // ready for when the editor mounts live (an H04 rider, same status Problems'
 // `diagnosticAt` is in today).
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

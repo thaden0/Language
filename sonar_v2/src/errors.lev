@@ -1,7 +1,0 @@
-namespace Sonar {
-    interface ISonarException : IException { }
-
-    class SonarException : Exception, ISonarException {
-        new SonarException(string message) { this.message = message; }
-    }
-}

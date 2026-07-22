@@ -2,7 +2,7 @@ name    = "helm-build-test"
 entry   = "Helm::main"
 sources = [
     "build_test.lev",
-    "../../src/build/harpoon.lev",
+    "../../src/build/sonar.lev",
     "../../src/build/builddriver.lev",
     "../../src/lang/diagnostic.lev",
     "../../src/lang/diagparse.lev",
@@ -21,6 +21,6 @@ sources = [
 ]
 
 [[dep]]
-path    = "../../../../sonar_v2"
+path    = "../../../../moby"
 version = "0.2.0"
-as      = "Sonar"
+as      = "Moby"

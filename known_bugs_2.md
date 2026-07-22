@@ -20,7 +20,7 @@ Current standings for this file (within a tier, ordered by bug number):
 |----------|---------------|
 | P0       | — |
 | P1       | — |
-| P2       | — |
+| P2       | agent1-101 |
 | P3       | — |
 
 Each entry's Workaround note (inline, above) carries its own debt sites — there is no
@@ -28,6 +28,50 @@ separate `docs/footguns.md` registry (retired 2026-07-19, merged into these two 
 Once the composition corpus lands, a fixed bug also gets a red-lane repro promoted to
 green under `tests/corpus/composition/` (`designs/techdesign-composition-corpus.md`).
 Fixing #N means: fix, delete the entry here, promote red→green — one commit.
+
+---
+
+#agent1-101 [P2] found 2026-07-22 (Harpoon->Sonar / Sonar->Moby tooling-rename
+task, verifying the Moby TUI/DOM package's own examples still build after the
+merge — build rebuilt fresh from HEAD before filing, per the rebuild-first
+policy). Confirmed unrelated to the rename itself: reproduces identically
+whether the package/types are named Sonar or Moby.
+
+**Repro:** `moby/examples/editor-dom` (the Track-09/10 "flagship" DOM example)
+fails to even compile on the oracle: `./main.lev:50:25: error: procedural
+macro 'dom' body threw:` (message body empty) immediately followed by
+`./main.lev:50:25: error: unknown function 'dom'`. The `dom!(...)` call in
+question is a `<flex>` tree containing a `<menuitem id="file-menu"
+hotkey="^f">Open</menuitem>` — i.e. an element using the `hotkey` attribute.
+
+**Expected:** `dom!` expands cleanly, matching every other `dom!(...)` use in
+the corpus.
+
+**Isolation done:** the two other files in the tree that use `dom!(` —
+`moby/tests/dom-drift/drift.lev` and `moby/tests/dom-bindings/bindings.lev` —
+both expand fine on oracle (they fail later, on `--ir`, for the unrelated
+reason in [[#105]] above). Neither uses a `hotkey=` attribute in its markup;
+editor-dom's is the only `dom!` template in the tree that does, which is the
+leading suspect. Removing `uses Moby::Dialogs;` (the only import editor-dom
+has that the two passing files don't) does NOT clear the `dom!` error — it
+only adds the expected new "unknown type FileDialog/PromptDialog" errors for
+the now-unimported types — so the Dialogs import is not the trigger; scope
+this to the `hotkey` attribute (`attributes.lev`'s
+`__sonarBindShortcut`-injection path, now `__mobyBindShortcut`) until proven
+otherwise.
+
+**Root-cause pointer (not investigated further — procedural-macro/comptime
+internals, Opus-tier, out of scope for a Sonnet-tier rename task):** the
+macro body "threw" with an empty message, meaning whatever exception the
+`hotkey`-attribute rule-injection raises during `dom!`'s comptime expansion is
+being swallowed before it reaches the top-level diagnostic. Whoever picks this
+up should start by getting the real exception text out of the procedural-
+macro-body execution path (`Rules.hpp`/`RulesExpand.cpp`) rather than the
+generic "unknown function" fallback.
+
+**Priority:** P2 — blocks one example program from compiling, no workaround
+needed by consumers (it doesn't block `helm` or any golden-corpus test), but
+it does mean editor-dom cannot currently serve as a working flagship demo.
 
 ---
 

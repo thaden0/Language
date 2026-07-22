@@ -1,0 +1,32 @@
+namespace Moby { namespace Dom {
+
+    // ======================================================================
+    // Class-qualified theming keys (techdesign-03 §4.2)
+    //
+    // The class list itself + the semantic-`hidden` coupling live on Component
+    // (component.lev: classes_, hasClass/addClass/removeClass/toggleClass — the
+    // `hidden` add/remove drives setVisible, one-way). This file owns the small
+    // pure helpers that Styleable.resolve (mixins.lev) folds in to give classes
+    // theming power: the class segment inserts right AFTER the component segment.
+    //
+    //   classBaseKey("input",            "error") -> "input.error"       (step 4)
+    //   classFullKey("input.focused.text","error") -> "input.error.focused.text" (step 7)
+    //
+    // A theme that declares no class keys resolves BYTE-IDENTICAL: theme.style()
+    // misses return a transparent Style(), a no-op `.over` layer.
+    // ======================================================================
+
+    // Component base + "." + class (design §4.2 step 4).
+    string classBaseKey(string key, string cls) => componentBase(key) + "." + cls;
+
+    // The full key with the class inserted after the first (component) segment
+    // (design §4.2 step 7). Single-segment keys collapse to classBaseKey.
+    string classFullKey(string key, string cls) {
+        Array<string> parts = key.split(".");
+        if (parts.length() <= 1) return key + "." + cls;
+        string result = parts[0] + "." + cls;
+        for (int i in 1..parts.length() - 1) result = result + "." + parts[i];
+        return result;
+    }
+
+}}

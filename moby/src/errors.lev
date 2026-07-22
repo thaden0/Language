@@ -1,0 +1,7 @@
+namespace Moby {
+    interface IMobyException : IException { }
+
+    class MobyException : Exception, IMobyException {
+        new MobyException(string message) { this.message = message; }
+    }
+}

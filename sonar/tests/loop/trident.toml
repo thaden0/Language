@@ -1,8 +1,0 @@
-name = "sonar-loop-test"
-entry = "main"
-sources = ["loop.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

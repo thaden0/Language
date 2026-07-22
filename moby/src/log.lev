@@ -1,0 +1,32 @@
+namespace Moby {
+    // T09 §6 — frame stats + the diagnostics tee. The R16 log ring itself
+    // (log/logHistory/handlerErrorCount) already lives in events.lev, declared
+    // there because dispatch was the first consumer; this file adds only the
+    // frame-timing surface DebugOverlay (T05) reads and the renderer's
+    // cells-changed counter, kept as free globals so App and AnsiRenderer share
+    // them without an `is`-narrow (bug.md #36 avoidance) or an IRenderer widening.
+
+    struct FrameStats {
+        int frameMs;
+        int dirtyComponents;
+        int cellsChanged;
+        int frames;
+        new FrameStats(int ms, int dirty, int changed, int f) {
+            frameMs = ms; dirtyComponents = dirty; cellsChanged = changed; frames = f;
+        }
+    }
+
+    FrameStats lastStats_ = FrameStats(0, 0, 0, 0);
+    void recordFrameStats(FrameStats s) { lastStats_ = s; }
+    FrameStats frameStats() => lastStats_;
+
+    // Set by AnsiRenderer.present() each frame; read by App when it assembles
+    // FrameStats. A free global rather than an IRenderer method keeps C5's
+    // renderer contract frozen and the stat degrades to 0 under a TestRenderer
+    // that never writes it — cosmetic, never a correctness fact.
+    int cellsChanged_ = 0;
+    void recordCellsChanged(int n) { cellsChanged_ = n; }
+    int cellsChanged() => cellsChanged_;
+
+    string version() => "0.1.0";
+}

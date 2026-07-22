@@ -3,7 +3,7 @@
 // Mutations persist the active session immediately; the top bar's cookie count
 // reads the active jar each refresh (P2).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class SessionsModal {
     public Modal modal;
@@ -34,7 +34,7 @@ class SessionsModal {
     void open() {
         this.rebuild();
         this.modal.open();
-        Sonar::app().focus(this.list);
+        Moby::app().focus(this.list);
     }
 
     void rebuild() {
@@ -69,7 +69,7 @@ class SessionsModal {
     void newSession() {
         PromptDialog dlg = PromptDialog("New session", "Name:", "");
         dlg.setOnAccept((v) => this.acceptNew(v));
-        dlg.open(Sonar::app());
+        dlg.open(Moby::app());
     }
     void acceptNew(string name) {
         if (name.isEmpty()) { return; }
@@ -122,7 +122,7 @@ class CookieManager {
     void open() {
         this.rebuild();
         this.modal.open();
-        Sonar::app().focus(this.list);
+        Moby::app().focus(this.list);
     }
 
     void rebuild() {

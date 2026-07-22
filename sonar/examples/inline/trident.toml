@@ -1,0 +1,6 @@
+name = "calc-inline"
+sources = ["calc.lev"]
+
+[[dep]]
+path = "../.."
+as = "sonar"

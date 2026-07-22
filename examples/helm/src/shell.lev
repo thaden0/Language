@@ -1,7 +1,7 @@
 // H01 — the shell / composition root (§2, §3), assembled at G-H4.
 //
 // `HelmShell` is Helm's single wiring point (the ReconApp precedent): it owns the
-// `SonarApp`, the one `CommandRegistry` (every accelerator, menu item, and
+// `MobyApp`, the one `CommandRegistry` (every accelerator, menu item, and
 // palette row derives from it — §0.3), the `MenuModel`, the `PanelHost`, the
 // `StatusModel`, and the `BuildDriver` (H11), and it assembles them into the dock
 // chrome — a menu bar on top, the editor/panel body in the middle, the panel-tab
@@ -9,7 +9,7 @@
 //
 // Everything is assembled in the constructor (so the shell is fully wired on
 // construction, testable without `run()`), and two entry points drive it:
-//   • `run()`      — the live event loop (`SonarApp.run()`; oracle+IR — the
+//   • `run()`      — the live event loop (`MobyApp.run()`; oracle+IR — the
 //                    subprocess/PTY floor is interpreter-only in v1, §7.1).
 //   • `renderShell(w,h)` — a headless snapshot of the assembled chrome through a
 //                    `TestRenderer`, the §11 doctrine, so the golden lane proves
@@ -21,13 +21,13 @@
 // palette overlay, and the dropdown menus are H04/H05/H12 riders on the live
 // shell — the body area is the mount point, blank in the assembled snapshot.
 
-uses Sonar;
-uses Sonar::Dom;
+uses Moby;
+uses Moby::Dom;
 
 namespace Helm {
 
     class HelmShell {
-        SonarApp        app_      = SonarApp();
+        MobyApp        app_      = MobyApp();
         CommandRegistry commands_ = CommandRegistry();
         MenuModel       menu_     = MenuModel();
         PanelHost       panels_   = PanelHost();
@@ -39,7 +39,7 @@ namespace Helm {
         WorkspaceSearch?   search_        = None;
         SearchResultsModel searchResults_ = SearchResultsModel();
 
-        // Chrome components (real Sonar widgets, added to the app tree).
+        // Chrome components (real Moby widgets, added to the app tree).
         ContentBar menuBar_   = ContentBar();
         ContentBox body_      = ContentBox();
         ContentBar panelBar_  = ContentBar();
@@ -85,7 +85,7 @@ namespace Helm {
             commands_.bindInto(app_.keymap());
         }
 
-        // Lazily-narrowed driver accessor (the Sonar renderer()/inputSource()
+        // Lazily-narrowed driver accessor (the Moby renderer()/inputSource()
         // lazy-init pattern; the ctor always sets it, so this never rebuilds).
         BuildDriver driver() {
             BuildDriver? d = driver_;
@@ -95,7 +95,7 @@ namespace Helm {
             return made;
         }
 
-        SonarApp        app()      => app_;
+        MobyApp        app()      => app_;
         CommandRegistry commands() => commands_;
         MenuModel       menu()     => menu_;
         PanelHost       panels()   => panels_;

@@ -1,6 +1,0 @@
-name = "harpoon-tests-registry-runner"
-sources = ["main.lev"]
-
-[[dep]]
-path = "../.."
-as = "harpoon"

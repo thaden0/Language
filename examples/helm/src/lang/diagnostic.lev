@@ -10,7 +10,7 @@
 namespace Helm {
 
     // Severity tags. Plain int consts (never a user enum in a Map/Array — the
-    // Sonar corpus hit bug #40/#41 there); read through the Diagnostic
+    // Moby corpus hit bug #40/#41 there); read through the Diagnostic
     // accessors. Ordered most-severe-first so a sort by `severity` groups
     // errors above warnings above notes.
     const int SevError   = 0;

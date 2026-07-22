@@ -1,5 +1,5 @@
 // Corpus test: AppState.buildPrepared (resolve/auth/body/cookies) + onOutcome
-// (tests + extraction writeback + history). Headless, no Sonar.
+// (tests + extraction writeback + history). Headless, no Moby.
 namespace Recon {
 
 void main() {
