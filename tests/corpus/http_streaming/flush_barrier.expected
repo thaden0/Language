@@ -1,0 +1,4 @@
+fast=true
+drainA=true
+drainB=true
+afterclose=false

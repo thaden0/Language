@@ -94,6 +94,13 @@ else
   pty_one "winsize pty run"  winsize 31 101 -- "$bin" --run "$d/winsize.lev"
   pty_one "winsize pty ir"   winsize 31 101 -- "$bin" --ir  "$d/winsize.lev"
   [ $have_llvm -eq 1 ] && { "$bin" --build-native "$work/win2_llvm" "$d/winsize.lev" 2>/dev/null && pty_one "winsize pty llvm" winsize 31 101 -- "$work/win2_llvm"; }
+  # cursor-report (CPR) fallback on a 0x0 pty: TIOCGWINSZ fails, raw mode is on,
+  # so term::size() runs the \x1b[999C\x1b[999B\x1b[6n probe and parses the reply.
+  # The ONLY automated exercise of that path (known-bugs #96 was found by hand
+  # because nothing covered it); LLVM is the lane that regressed.
+  pty_one "cpr pty run"  cpr 31 101 -- "$bin" --run "$d/winsize_cpr.lev"
+  pty_one "cpr pty ir"   cpr 31 101 -- "$bin" --ir  "$d/winsize_cpr.lev"
+  [ $have_llvm -eq 1 ] && { "$bin" --build-native "$work/cpr_llvm" "$d/winsize_cpr.lev" 2>/dev/null && pty_one "cpr pty llvm" cpr 31 101 -- "$work/cpr_llvm"; }
   # signal delivery (plain pipe; SIGUSR1 == 10)
   pty_one "signal usr1 run"  signal 10 got=10 -- "$bin" --run "$d/usr1.lev"
   pty_one "signal usr1 ir"   signal 10 got=10 -- "$bin" --ir  "$d/usr1.lev"

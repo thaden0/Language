@@ -1,7 +1,21 @@
 # Tech Design: DOM `@extern` Bindgen via Body-Generating Rules
 
-**Status:** design for review — no implementation yet. Closes
-`designs/requests/accepted/request-bindgen-metaprog-scope.md`; grounded on
+**Status:** PARTIALLY IMPLEMENTED (2026-07-19). The new primitive (§4,
+`generates body of` / M36) is landed, tested, and merged: `AnchorKind::BodyGenerate`
+(`Ast.hpp`), grammar (`Parser.cpp`), M36 + the per-anchor M32 branch and expand()
+path (`Rules.cpp`), `--expand` support (`AstPrinter.cpp`), corpus
+(`tests/corpus/meta/rule_body_generate.ext`,
+`tests/corpus/meta/rule_generate_overload_slots.ext`) and unit tests
+(`tests/test_meta.cpp`) — all green. §3/§5/§6 (the DOM surface rewrite itself,
+File-level change map item 5 onward) is **BLOCKED, not done**: §13 spike 1 was run
+for real (not just reasoned about) and the rule stage does not process the prelude
+at all — regardless of the ship-as-files migration landing (it changed where the
+prelude's TEXT comes from, not whether its AST reaches the rule engine). Filed as
+known-bugs #98 (`known_bugs_1.md`); the DOM rewrite is parked on that bug (or on
+moving the Dom surface out of the prelude to an ordinary project file) rather than
+attempted as a workaround, since neither was in this session's authorized scope.
+Closes `designs/requests/accepted/request-bindgen-metaprog-scope.md` for the
+primitive only; the DOM consumer story stays open. Grounded on
 `docs/research-bindgen-metaprog-scope.md` (2026-07-19). Companion to
 `designs/complete/techdesign-metaprog-phase4.md` (Layer D, landed) and
 `designs/wasm-frontend/techdesign-06-bindgen-and-ship.md` §1 (the consumer).

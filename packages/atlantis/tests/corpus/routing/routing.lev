@@ -141,7 +141,7 @@ void main() {
     Router explicitRouter = Router();
     var noopHandler = (c) => okStatus(200);
     Array<ParamDesc> noParams = [];
-    explicitRouter.record(RouteRec("GET", "/needs-marker", "Demo", "needsMarker", noParams, "", 0, ""), noopHandler);
+    explicitRouter.record(RouteRec("GET", "/needs-marker", "Demo", "needsMarker", noParams, "", 0, "", None, ""), noopHandler);
     bool threw = false;
     string msg = "";
     try {
@@ -157,7 +157,7 @@ void main() {
     Router er = Router();
     var healthHandler = (c) => okStatus(200);
     Array<ParamDesc> noParams2 = [];
-    er.record(RouteRec("GET", "/healthz", "Manual", "healthz", noParams2, "", 2, ""), healthHandler);
+    er.record(RouteRec("GET", "/healthz", "Manual", "healthz", noParams2, "", 2, "", None, ""), healthHandler);
     er.finalize("auth");
     MatchResult mr = er.resolve("GET", "/healthz");
     console.writeln("escape-hatch status=" + mr.status.toString() + " key=" + mr.key);

@@ -1,0 +1,8 @@
+name = "atlantis-mcp-core-corpus"
+entry = "main"
+sources = ["mcp_core.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

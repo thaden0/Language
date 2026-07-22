@@ -1,0 +1,7 @@
+te=chunked
+te-count=1
+cl=absent
+conn=close
+ct=text/plain
+wire=1\r\na\r\n2\r\nbc\r\n0\r\n\r\n
+decoded=abc

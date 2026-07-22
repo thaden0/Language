@@ -1,0 +1,41 @@
+// T7-P4: `[ $for p in m.params : F($p.name, $p.type) ]` in a method-match
+// rule — proves $for iterates m.params (docs show fields; params are the
+// same Array shape), needed by the mcpTool rule (design §3.3).
+//
+// NOTE: holes are BARE ($p.name), never quoted ("$p.name") — a quoted hole
+// is a literal string, not interpolation (already found+documented by
+// Track 06's ORM P2: "string reification is the BARE hole, never a quoted
+// one"). The design's own §3.3 sketch uses quoted holes
+// (`ParamSpec("$p.name", "$p.type")`) — that spelling is wrong per the same
+// established correction; this probe (and the real mcpTool rule) use bare
+// holes.
+namespace ProbeP4 {
+    struct PSpec {
+        string name;
+        string type;
+        new PSpec(string name, string type) {
+            this.name = name;
+            this.type = type;
+        }
+    }
+    attribute ParamProbe {}
+    rule paramProbeRule {
+        match @ParamProbe on method m in class C
+        inject `Array<PSpec> __probeParams() => [ $for p in m.params : PSpec($p.name, $p.type) ];`
+            at member of C
+    }
+}
+uses ProbeP4;
+
+class Calc {
+    @ParamProbe
+    int add(int a, int b) => a + b;
+}
+
+void main() {
+    Calc c = Calc();
+    for (PSpec p in c.__probeParams()) {
+        console.writeln(p.name + ":" + p.type);
+    }
+}
+main();

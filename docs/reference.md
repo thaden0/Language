@@ -1182,8 +1182,16 @@ std::sum(Array<float>)` overload by argument type instead. `std::min`/`std::max`
 return `T?` (`None` on empty); `std::average` always returns `float`.
 
 ### 6.4 `Pair<A, B>`
-Fields `first`, `second`; constructor `Pair::Of(a, b)`. The element type of relational joins
-and of Map iteration.
+Fields `first`, `second`; constructor `Pair::Of(a, b)`. A value type (`struct`, §9):
+copied not aliased, field-wise `==`, and `toString()` returns `(first, second)`. The
+element type of relational joins and of Map iteration. Its arrays store densely (no
+per-element boxing).
+
+### 6.4a `Triple<A, B, C>`
+Fields `first`, `second`, `third`; constructor `Triple::Of(a, b, c)`. The three-field
+sibling of `Pair`, same value-struct conventions. Use it wherever three values travel
+together (a coordinate + a label, a key + two related values) instead of a
+purpose-built struct or nested `Pair<A, Pair<B, C>>`.
 
 ### 6.3.5 `StringBuilder` — a mutable accumulator (Track 04 M4)
 ```
@@ -1784,7 +1792,11 @@ On the event loop, driven by fd read- and write-watches. `TcpStream` — `(<<)`/
 string?` (`None` = peer closed). **`send` never silently short-writes** (Track 08 F5.6):
 the fd is non-blocking, so a large payload's unsent tail is buffered and a write-watch
 drains it as the kernel makes room; a fatal send (peer gone) drops the buffer and the read
-side delivers the close. `TcpListener` — a **stream of connections**:
+side delivers the close. **`flush() -> bool`** (LA-HTTP-STREAM) parks until every queued
+byte has reached the transport — `true` once the tail drains, `false` on local/peer close
+or a fatal write. It is a queue barrier (not a peer-ack), the fact a caller needs before
+reusing or locally closing the descriptor; ordinary `send` stays queueing and only callers
+that opt into `flush` see backpressure. `TcpListener` — a **stream of connections**:
 `connections((TcpStream) => void)`, `stop()`.
 
 **Connect with a deadline (Track 08 F5):** `std::connectTimeout(host, port, ms, (int) =>
@@ -1817,14 +1829,33 @@ HTTP (in-language, over TCP streams; Track 09 F4 — framework-grade, zero new n
   `feed(chunk) -> bool` state machine (head then body by `Content-Length`; returns true when
   complete; v1 does not pipeline).
 - **`HttpResponse(status, body)`** — `headers` (`HeaderMap`), `withHeader(name, value)`,
-  `reason()`, `render()` (computes `Content-Length` + `Connection`), and `parse(raw)` which
-  **decodes a `Transfer-Encoding: chunked` body transparently**.
+  `reason()`, `render()` (computes `Content-Length` + `Connection`; drops a caller
+  `Content-Length`/`Transfer-Encoding`/`Connection` so the wire copy stays authoritative),
+  and `parse(raw)` which **decodes a `Transfer-Encoding: chunked` body transparently**.
+- **`HttpResponse::ofStream(status, HeaderMap, (ChunkedSink) => void writer)`**
+  (LA-HTTP-STREAM) — the **streaming body mode**: the server sends an authoritative head
+  with `Transfer-Encoding: chunked` (dropping any caller `Content-Length`/`Transfer-Encoding`/
+  `Connection`), then invokes `writer` with a live `ChunkedSink`. The writer may return while
+  the sink stays open — a later timer/subscription callback can keep writing and eventually
+  `end()` (the SSE shape). `isStreaming()` distinguishes the two modes; `render()` throws on a
+  streaming response (only `HttpServer` may drive it). A HEAD request or a 1xx/204/304 status
+  sends the head only and never invokes the writer; a non-`HTTP/1.1` request gets `505` and
+  close instead.
+- **`ChunkedSink`** — the live body handle: **`write(data)`** frames exactly one
+  `chunkEncode(data)` and **parks until it drains** (transport backpressure), `write("")` is a
+  no-op, **`end()`** emits exactly one terminal `0\r\n\r\n`, **`onClose(() => void)`** fires
+  once on a *premature* transport close/abort only (not a clean `end()`), and `isClosed()` is
+  ended-or-aborted. Overlapping callbacks are serialized in arrival order so chunk frames never
+  interleave; `write`/`end` after end or abort are no-ops.
 - **`ChunkedDecoder`** — a fragmentation-proof chunked-transfer decoder (`feed(chunk)`,
   `isDone`); `std::chunkEncode(data)` / `std::chunkEnd()` are the encoder side.
 - **`HttpServer(port)`** — `handle((HttpRequest) => HttpResponse)`. Server-side **keep-alive**
   (a connection with neither side sending `Connection: close` is re-armed for the next
-  request, bounded by 100/connection) and a **500 error path** (an uncaught throw in a handler
-  becomes `500` + `Connection: close`, and the loop survives).
+  request, bounded by 100/connection; a finite streamed response re-arms only after its
+  terminal chunk drains) and a **500 error path** (an uncaught throw in a handler becomes
+  `500` + `Connection: close`, and the loop survives). No request pipelining in v1: bytes
+  arriving while a response is in flight close the connection. Streaming works unchanged over
+  an HTTPS `HttpServer(port, cert, key)`.
 - **`HttpClient`** — `request(method, host, port, path, HeaderMap, body, cb)`, `get`/`post`
   sugar, and the await-able `fetch(host, port, path) -> Promise<HttpResponse>`.
 
@@ -2173,6 +2204,13 @@ Array<User> list() => ...;
   `use NS::x` opts the file into `NS` at namespace grain, exactly as it does for
   phantom-dep purposes — §4.1.) Ambiguity across imports is an error; qualify
   (`@Web::Route`).
+- **Grouped attributes:** `@attr(Name1, Name2, …);` in statement/member
+  position is sugar for `@Name1 @Name2 …` decorating the **next declaration**
+  in the same body — `@attr(PrimaryKey, AutoIncrement); int id;` ==
+  `@PrimaryKey @AutoIncrement int id;`. `attr` is a contextual keyword only in
+  this exact `@attr(` shape; a real attribute named `attr` is unaffected. A
+  trailing `@attr(…);` with no following declaration is a parse error, never
+  silently dropped. `--expand` canonicalizes to the stacked-decorator spelling.
 
 ### Rules (Layer B) — match a shape, inject quasiquoted code
 ```
@@ -2193,10 +2231,24 @@ every rule that can touch it.
 
 - **Match** binds by structural shape: `@Attr(bind)` (an attribute on the decl,
   binding its evaluated value), `on <kind> m` (the decl: `method`/`function`/
-  `class`/`struct`/`field`/`constructor`/`interface`/`namespace`), and
+  `class`/`struct`/`field`/`constructor`/`interface`/`namespace`/`type`), and
   `in <kind> C : IFace` enclosers (an enclosing decl, optionally constrained to
   implement/extend a type — checked against the resolved base chain). `match one`
   requires at most one matching attribute.
+  - **Subject `class`/`struct`/`type` symmetry:** `on class C` and
+    `on struct C` are exact — each matches only its own kind, so a contract
+    that must cover both value structs and reference classes needs a
+    `class`/`struct` pair. `on type C` is additive: it matches `class`
+    **or** `struct` **or** `interface` in one rule (the subject-position
+    analogue of the encloser clause's existing `in class C`-also-matches-
+    struct/interface leniency), without changing what `on class`/`on struct`
+    match. The subject still binds as its actual declaration, so `$C`/
+    `C.fields`/etc. reflect the real kind regardless of which subject
+    kind-word matched. A `@Attr` whose only in-scope rule has a subject kind
+    that can't match the decorated declaration's kind gets a kind-aware
+    diagnostic (`... has a rule 'K::r' that matches 'class' subjects, but
+    this is a 'struct' — did you mean 'on type' / 'on struct'?`) instead of
+    the generic "missing `uses`" warning.
 - **Inject** splices a quasiquote template at a named anchor. **Holes** are
   `$name`: `$r.method` reifies a field of a bound attribute value to a literal;
   `$m` / `$C` splice a bound declaration's name (e.g. `this.$m` → the method's
@@ -2213,10 +2265,45 @@ every rule that can touch it.
   C.constructor` (a nullary constructor is synthesized if the class has none;
   `top` inserts after base constructor calls) and `member of C` (adds a member,
   erroring on a same-name same-type collision). `top`/`bottom of body`,
-  `marker`, and `namespace N` anchors, plus `where` predicates, `$for` list
-  splices, and expression macros (`macro name(e) => \`…\`;` / `name!(arg)`),
-  all ship. **Body-replacing rules (Layer D, `rewrites` / `replace` / `$body`)
-  also ship** — see below.
+  `marker`, `splice Name [multi]`, and `namespace N` anchors, plus `where`
+  predicates, `$for` list splices, and expression macros (`macro name(e) =>
+  \`…\`;` / `name!(arg)`), all ship. **Body-replacing rules (Layer D,
+  `rewrites` / `replace` / `$body`) also ship** — see below.
+- **`splice Name` — a program-global, user-placed named anchor.** A statement
+  `@Name();` in a function/method body (where `Name` is a declared `attribute`)
+  is a **named splice site**; a rule's `inject … at splice Name` lands its
+  statements at that point, **in the site's surrounding lexical scope** — so a
+  spliced `bind`/`AddRoute` sees the site function's parameters and locals like
+  hand-written code, and collision/duplicate checks fire there. Unlike `marker`
+  (which resolves inside the *matched* declaration's own body), `splice` is
+  cross-declaration: a rule matched on one class registers statements at a
+  `@Name();` site in a *different* function. The site stays visible in
+  `--expand`. A site with no firing rule is silent (an intentional extension
+  point); a rule with no site is an error (M42), as is `at splice Name` with two
+  sites unless the rule opts into `at splice Name multi` to fan out into every
+  site. A `@Name();` whose `Name` is not a declared attribute is M43 (the
+  typo-safety the attribute spelling buys over string-named markers).
+- **`$if` / `$else` / `$else if` — the expansion-time template conditional.**
+  Inside any template `$if (<comptime-pred>) { <frag> } $else if (<pred>) {
+  <frag> } $else { <frag> }` selects **one branch at expansion time**, per rule
+  firing: the predicate is an ordinary comptime expression evaluated against the
+  firing's bindings (the same environment `where` and `comptime if` use — e.g.
+  `f.hasAttr("Param")`, `f.attr("Param")?.argStr(0) == "path"`, `C.name == "P"`),
+  and only the **taken** branch's fragment is spliced in — the untaken branch is
+  never emitted (the template stays a template; `--expand` shows only the taken
+  branch). A `{ <frag> }` is a brace group of the **same fragment kind** as its
+  position (statements in a body/ctor template, members in `member of`, items in
+  `namespace N`, or a single expression in array-element position, e.g.
+  `[ … $if (p) { a } $else { b } … ]`); the `$else if` chain is sugar for nested
+  `$if`. It composes with `$for` and sibling splices — one binding rule can emit
+  per-source variants (`$for p … : $if (path) {…} $else if (query) {…} $else
+  {…}`) instead of one rule per combination. This is the template-time analogue
+  of `comptime if` (below); the `$` marks "fold at expansion," so a bare
+  `comptime if` inside a template still means a runtime `if` in the *generated*
+  code. A `$if` whose condition is not a comptime `bool` is a rule-stage error
+  (naming the rule, mirroring the `where`-clause bool check); a `$else` with no
+  preceding `$if`, or a branch whose contents don't fit its fragment kind, is a
+  parse error.
 - **Additive + hygienic (by default):** ordinary rules only add code (no silent
   rewrites); the loud, explicitly-marked exception is a `rewrites` rule (below).
   A local a template declares is alpha-renamed to a fresh symbol, so injected
@@ -2234,6 +2321,8 @@ comptime int TABLE = nextPrime(1000);      // var: init folds to a literal
 comptime Array<int> EVENS = [1,2,3,4].where((x) => x % 2 == 0);
 int y = 1 + comptime sumTo(10);            // expression form (folds rightward)
 comptime if (TABLE > 100) { ... } else { ... }   // untaken branch not compiled
+// (inside a rule TEMPLATE, `$if (...) { ... } $else { ... }` is the expansion-
+//  time analogue — selects a template fragment per firing; see Inject above)
 comptime console.writeln("[build] ...");   // compile-time log (real console)
 ```
 - Evaluation runs on the tree-walk oracle, **hermetic**: the `std::sys*` floor
@@ -2343,6 +2432,52 @@ is **additive (`inject`) XOR a rewriter (`replace`), never both** (M30).
   rule-generated code, re-run to a fixpoint (or M34 if it doesn't converge in
   the round budget, default 8, `--reentrant-budget` overrides). Only `reentrant`
   rules re-trigger — the safe majority still sees the tree exactly once.
+
+### Body-generating rules (Layer D) — `generates` / `replace` / M36
+```
+namespace Bindgen {
+    attribute Extern { string op; }
+    rule bindStr generates body of m {
+        match @Extern(e) on method m
+        replace `return Host::str($e.op, $_args);`
+    }
+}
+class Widget {
+    @Extern("getAttribute")
+    string attr(string name) => "";     // placeholder; discarded, never runs
+}
+```
+The sibling of `rewrites`/`replace`/`$body`: `generates body of <bind>` overwrites
+the target's body wholesale and **discards** the original outright, for a rule
+whose whole point is that there is no meaningful original to compose with — a
+bindgen stub, an FFI shim, a codec, any "declare the signature, machine-fill the
+body" generator. Signature and generation data (an `@Extern`-shaped attribute,
+say) live on the same hand-written declaration; only the body is generated, so
+this never collides with M33's declare-vs-inject check (nothing is injected).
+
+- **`$body` is unavailable** in a `generates` template — referencing it is
+  **M36** ("the original body is discarded, so `$body` is unavailable; use
+  `rewrites` to keep it"). This is the sanctioned, opt-in counterpart to M32's
+  "a `replace` that drops the body is silent obliteration": `generates` makes
+  the drop explicit at the rule header instead of forbidding it.
+- **The target still needs a body to overwrite** — `generates` cannot declare a
+  bodyless method; give it a type-valid placeholder (`=> this`, `=> ""`, `{ }`,
+  …). The placeholder never runs; it exists only so the declaration parses and
+  (where the file is checked) type-checks before the rule stage replaces it.
+- **`$_args`** (§ Rules, `$_params`/`$_args`) forwards the matched method's own
+  parameters verbatim; overload resolution over a hand-written helper family can
+  then place each argument in whatever downstream slot its type/position implies
+  — a `generates` template stays branch-free even when different call shapes
+  need different marshaling, because the type system, not template `$for`/`$if`,
+  does the dispatching.
+- Everything else about `rewrites` — M35 (target must be a callable match bind),
+  M33 (two whole-body rewrites, `rewrites` or `generates`, on one body do not
+  compose), `reentrant`, pass-2 ordering (rewriters/generators run after all
+  additive `inject`s) — applies identically.
+- **Caveat:** rules and attributes declared inside the compiler's own prelude
+  (`prelude/*.lev`) never fire — the rule stage only ever walks the file(s)
+  being compiled, never the prelude's own tree. `generates`/`rewrites`/macros
+  work as documented in ordinary project files only. See known-bugs #98.
 
 Expression macros (Layer D-lite) also ship (see Rules, above).
 
@@ -2825,6 +2960,12 @@ with zero violations — §15's claim, measured.
 Three native backends consume the same IR; only entry-reachable functions are emitted, and
 out-of-coverage constructs fail with a diagnostic:
 
+The stdlib prelude ships as `prelude/*.lev` files (eight segments), resolved `--prelude <dir>`
+→ `LV_PRELUDE_DIR` → next-to-binary `prelude/` → source-tree `../prelude`, with a
+build-generated embedded fallback baked into the compiler when no directory resolves;
+`wasm.lev` (the `Dom` surface) is loaded only for `wasm32*` targets, so native builds never
+see it.
+
 - **LLVM** (when built against LLVM ≥ 18) — **the primary, portable AOT backend**
   (`designs/complete/techdesign-portable-backend.md`): `--emit-llvm` / `--native-obj out.o` (direct
   object emission via `TargetMachine`, no external `llc`), linking the portable runtime v2
@@ -2857,7 +2998,7 @@ out-of-coverage constructs fail with a diagnostic:
     process spawn, raw TCP/UDP + DNS, argv/env, tty, signals, blocking sync reads, raw OS
     threads / shared-address `fork`. Select the branch at comptime with `target::os == "wasm"`.
   - **The `@extern` / DOM surface.** DOM is reached through the hand-written `Dom` prelude
-    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `runtime/../Resolver.cpp` `kPreludeWasm`):
+    (`DomNode`/`DomEvent`/`Dom::body/create/byId/…`, `prelude/wasm.lev`):
     opaque JS values wrapped in an `int` handle, marshaled by one reflective routine in
     `lv_host.js`, with DOM events surfaced as `InStream` endpoints and a closure trampoline
     for handlers (which may `await`). Note the *rules-engine `@extern` bindgen* that would

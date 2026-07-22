@@ -1,0 +1,12 @@
+// Named splice anchor §4 (M43), the rule-free case: a malformed `@Undeclared();`
+// site must be rejected even when the program contains NO rules at all — M43 is a
+// property of the site (a name that is not a declared attribute), not of any
+// targeting rule. Regression guard for the splice-index validation running
+// unconditionally, not only inside the rules path.
+string addRoutes() {
+    string sink = "x";
+    @Undeclared();
+    return sink;
+}
+
+console.writeln(addRoutes());

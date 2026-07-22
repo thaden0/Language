@@ -64,15 +64,10 @@ void main() {
     HttpResponse r7 = app(Context(req("GET", "/nope.txt", "")));
     console.writeln("  status=" + r7.status.toString() + " body=" + r7.body);
 
-    // SSE formatting (finite batch).
-    console.writeln("== SSE ==");
-    ChunkedBody body = ChunkedBody();
-    SseStream sse = SseStream(body);
-    sse.event("hello");
-    sse.namedEvent("tick", "one\ntwo");
-    sse.close();
-    console.writeln("  ended=" + body.isEnded().toString());
-    for (string ln in body.collected().split("\n")) { console.writeln("  |" + ln); }
+    // SSE formatting over a real wire now lives in the `stream` loopback case
+    // (LA-HTTP-STREAM §5.1): a live ChunkedSink cannot be constructed without
+    // its owning response connection, so the old disconnected-ChunkedBody
+    // inspection was rewritten as a streaming loopback assertion.
 
     // Facade + IActionResponse.
     console.writeln("== facade + IActionResponse ==");

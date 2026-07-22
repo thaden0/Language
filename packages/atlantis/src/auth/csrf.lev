@@ -1,0 +1,71 @@
+// Atlantis Track 08 — CSRF (design §7). Layer 1 (SameSite=Lax) is the cookie
+// attribute set in session.lev; this is layer 2 (synchronizer token for form
+// posts) + layer 3 (JSON custom-header stance).
+namespace Atlantis {
+    namespace Auth {
+
+        string csrfToken(Http::Context ctx) => ctx.items.atOr("auth.csrfToken", "");
+
+        struct CsrfConfig {
+            string fieldName;         // default "_csrf"
+            string ajaxHeaderName;    // default "X-Requested-With"
+            string ajaxHeaderValue;   // default "XMLHttpRequest"
+            Array<string> exemptRouteKeys;   // opt-out list (webhooks) — "controller.action"/route keys
+            new CsrfConfig(string fieldName, string ajaxHeaderName, string ajaxHeaderValue, Array<string> exemptRouteKeys) {
+                this.fieldName = fieldName;
+                this.ajaxHeaderName = ajaxHeaderName;
+                this.ajaxHeaderValue = ajaxHeaderValue;
+                this.exemptRouteKeys = exemptRouteKeys;
+            }
+        }
+        CsrfConfig defaultCsrfConfig() => CsrfConfig("_csrf", "X-Requested-With", "XMLHttpRequest", []);
+
+        bool isSafeMethod(string m) => m == "GET" || m == "HEAD" || m == "OPTIONS";
+
+        // Minimal x-www-form-urlencoded field extraction (percent-decoded value).
+        string? formField(string body, string name) {
+            // Bind to a local before iterating: an early `return` from inside a
+            // `for` loop whose iterable is a direct call expression corrupts
+            // later heap-touching calls on the LLVM backend (filed, see
+            // docs/bug.md; cookie.lev's cookieValue hit the same shape).
+            Array<string> pairs = body.split("&");
+            for (string pair in pairs) {
+                int eq = pair.indexOf("=");
+                string k = eq >= 0 ? pair.subStr(0, eq) : pair;
+                if (k == name) {
+                    string v = eq >= 0 ? pair.subStr(eq + 1, pair.length() - (eq + 1)) : "";
+                    return encoding::percentDecode(v) ?? v;
+                }
+            }
+            return None;
+        }
+
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse csrfMiddleware(CsrfConfig cfg) =>
+            (ctx, next) => {
+                if (isSafeMethod(ctx.request.method)) { return next(ctx); }
+                string routeKey = ctx.items.atOr("atlantis.route", "");
+                if (cfg.exemptRouteKeys.contains(routeKey)) { return next(ctx); }
+
+                // Bearer-authenticated requests are exempt entirely: the browser
+                // never attaches Authorization cross-site, so there is no
+                // ambient credential to ride (§7 item 3).
+                if ((Http::reqHeader(ctx.request, "Authorization") ?? "") != "") { return next(ctx); }
+
+                string contentType = Http::reqHeader(ctx.request, "Content-Type") ?? "";
+                if (contentType.startsWith("application/json")) {
+                    string ajax = Http::reqHeader(ctx.request, cfg.ajaxHeaderName) ?? "";
+                    if (ajax == cfg.ajaxHeaderValue) { return next(ctx); }
+                    throw Http::ForbiddenException();
+                }
+                if (contentType.startsWith("application/x-www-form-urlencoded")) {
+                    string submitted = formField(ctx.request.body, cfg.fieldName) ?? "";
+                    string want = csrfToken(ctx);
+                    if (submitted == "" || want == "" || !constantTimeEquals(submitted, want)) {   // CS-4
+                        throw Http::ForbiddenException();
+                    }
+                    return next(ctx);
+                }
+                return next(ctx);   // other content-types: not a browser-form/JSON CSRF vector in v1
+            };
+    }
+}

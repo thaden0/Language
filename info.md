@@ -1607,8 +1607,10 @@ loop stays dumb ("this fd is ready, run that"); all protocol logic is in the lan
 
 - **`TcpStream`** — a connected socket wearing the stream surface: `(<<)`/`send` (write),
   `onData((string) => void)` (a read-watch that recvs and delivers chunks), `onClose`,
-  `close`. `sysRecv` returns `string?` — `None` = peer closed — so the three states
-  (data / nothing-now / EOF) are the ones union narrowing was built for.
+  `close`, and **`flush() -> bool`** (LA-HTTP-STREAM) — park until the queued tail drains
+  (`true`) or the stream closes/fails (`false`), the queue barrier a caller needs before
+  reusing or closing the fd. `sysRecv` returns `string?` — `None` = peer closed — so the three
+  states (data / nothing-now / EOF) are the ones union narrowing was built for.
 - **`TcpListener`** — a listening socket presented as a **stream of connections**:
   `connections((TcpStream) => void)` accepts each client as a new stream.
 - **HTTP** is a pure Layer-2 reshaping over TCP streams, written entirely in the language,
@@ -1617,10 +1619,16 @@ loop stays dumb ("this fd is ready, run that"); all protocol logic is in the lan
   **chunked transfer both directions** (a fragmentation-proof `ChunkedDecoder` +
   `chunkEncode`), incremental request/response `parse(feed)` state machines,
   **server-side keep-alive** (re-arm per connection, bounded at 100), a **500 error path**
-  (an uncaught handler throw becomes `500` + `Connection: close`, loop survives), and a real
-  **`HttpClient`** (`request`/`get`/`post` + await-able `fetch`). Text bodies until `Block`.
-  One-process loopback tests (server + client in one event loop) stay the hermetic corpus,
-  identical across engines; the existing programs remain green on the frozen ELF backend too.
+  (an uncaught handler throw becomes `500` + `Connection: close`, loop survives), a real
+  **`HttpClient`** (`request`/`get`/`post` + await-able `fetch`), and **server-side streaming
+  responses** (LA-HTTP-STREAM): `HttpResponse::ofStream(status, headers, (ChunkedSink) =>
+  void)` commits a `Transfer-Encoding: chunked` head now and streams the body incrementally
+  through a live `ChunkedSink` — each `write` frames one chunk and parks on transport
+  backpressure (a serial file producer can't run ahead of the socket), the writer may return
+  while the sink stays open for later timer/subscription callbacks (SSE), and a premature peer
+  close fires the sink's `onClose` exactly once. Text bodies until `Block`. One-process
+  loopback tests (server + client in one event loop) stay the hermetic corpus, identical
+  across engines; the existing buffered programs remain green on the frozen ELF backend too.
   Deferred: client redirects, URL-string parsing, request timeout, pipelining, client-side
   chunk-send, connection pooling.
 - **TLS is an fd property under the stream boundary** (LA-2,
@@ -2214,7 +2222,10 @@ are also implemented and share this same front end.
     Moving the prelude to shipped source files is the goal — `parsePrelude()` gains a real
     file-reading seam; per-target selection (e.g. a wasm-only `kPreludeWasm`) is a packaging
     detail *within* that model (which files get shipped/loaded per target), not an alternative
-    to it. See §18.
+    to it. See §18. **SHIPPED 2026-07-19** (`designs/complete/techdesign-prelude-ship-as-files-opus.md`):
+    the eight segments ship as `prelude/*.lev`; `parsePrelude()` reads them from a resolved
+    directory (`--prelude` → `LV_PRELUDE_DIR` → next-to-binary → source tree) with a
+    build-generated embedded fallback; `wasm.lev` loads only for `wasm32*` targets.
 
 ---
 
@@ -2247,10 +2258,13 @@ closure trampoline).
   `examples/wasm-client/`. The `@extern` rules-engine bindgen (doc 06 §1) is **not built** — it
   targeted a per-method `__import` seam the reflective single-`dom_call` bridge abandoned, and a
   faithful generator needs metaprog scope beyond the bounded P4 roadmap; the hand-written `Dom`
-  prelude is the as-built binding surface. Per-target **stdlib packaging** now rides the §19 #18
-  ruling (ship as `.lev` files with a real `parsePrelude()` file-reading seam) — this track is
-  the *consumer* of that upstream refactor, which is not yet built; dev/wasm builds ride the
-  existing in-binary concat until it lands.
+  prelude is the as-built binding surface. Per-target **stdlib packaging** is now built (§19 #18,
+  `designs/complete/techdesign-prelude-ship-as-files-opus.md`): the prelude ships as `prelude/*.lev`
+  through a real `parsePrelude()` file-reading seam, and `wasm.lev` — the `Dom` surface — is
+  absent from native preludes **by selection** (only `wasm32*` targets load it). The OS-only
+  native **capability gate is unchanged**: it still traps/diagnoses the gated natives that remain
+  interleaved in the shared `std`/`rest` segments on wasm builds (R3 deliberately kept those in
+  the shared prelude rather than re-partitioning them).
 
 ---
 

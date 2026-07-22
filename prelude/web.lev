@@ -1,0 +1,991 @@
+
+// === Track 09 F3: encoding =================================================
+// Byte-true text encodings over the string byte surface (byteAt/length are
+// byte-indexed; std::byteToString rebuilds a 1-byte string). Every decoder is
+// TOTAL: malformed input is a value (None), never a throw (§12.6 — data errors
+// are Results). Helpers carry DISTINCT names (no overloads) so prelude-body
+// resolution is unambiguous without the checker (Track 04 problem #5).
+namespace encoding {
+    // hex nibble 0..15 for a '0'..'9'/'a'..'f'/'A'..'F' byte, else -1.
+    int hexNibble(int c) {
+        if (c >= 48 && c <= 57)  return c - 48;
+        if (c >= 97 && c <= 102) return c - 97 + 10;
+        if (c >= 65 && c <= 70)  return c - 65 + 10;
+        return 0 - 1;
+    }
+    // standard base64 alphabet value 0..63, else -1 ('=' is handled by caller).
+    int b64Val(int c) {
+        if (c >= 65 && c <= 90)  return c - 65;         // A-Z -> 0..25
+        if (c >= 97 && c <= 122) return c - 97 + 26;    // a-z -> 26..51
+        if (c >= 48 && c <= 57)  return c - 48 + 52;    // 0-9 -> 52..61
+        if (c == 43) return 62;                         // '+'
+        if (c == 47) return 63;                         // '/'
+        return 0 - 1;
+    }
+    bool pctUnreserved(int c) {
+        if (c >= 65 && c <= 90)  return true;           // A-Z
+        if (c >= 97 && c <= 122) return true;           // a-z
+        if (c >= 48 && c <= 57)  return true;           // 0-9
+        return c == 45 || c == 95 || c == 46 || c == 126;   // - _ . ~
+    }
+
+    string hexEncode(string bytes) {
+        string digits = "0123456789abcdef";
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < bytes.length()) {
+            int b = bytes.byteAt(i);
+            sb.add(digits.charAt((b >> 4) & 15));
+            sb.add(digits.charAt(b & 15));
+            i = i + 1;
+        }
+        return sb.toString();
+    }
+    string? hexDecode(string s) {
+        int n = s.length();
+        if (n % 2 != 0) return None;
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < n) {
+            int hi = encoding::hexNibble(s.byteAt(i));
+            int lo = encoding::hexNibble(s.byteAt(i + 1));
+            if (hi < 0 || lo < 0) return None;
+            sb.add(std::byteToString((hi << 4) | lo));
+            i = i + 2;
+        }
+        return sb.toString();
+    }
+
+    string base64Encode(string bytes) {
+        string alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        StringBuilder sb = StringBuilder();
+        int n = bytes.length();
+        int i = 0;
+        while (i + 3 <= n) {
+            int t = (bytes.byteAt(i) << 16) | (bytes.byteAt(i + 1) << 8) | bytes.byteAt(i + 2);
+            sb.add(alpha.charAt((t >> 18) & 63));
+            sb.add(alpha.charAt((t >> 12) & 63));
+            sb.add(alpha.charAt((t >> 6) & 63));
+            sb.add(alpha.charAt(t & 63));
+            i = i + 3;
+        }
+        int rem = n - i;
+        if (rem == 1) {
+            int t = bytes.byteAt(i) << 16;
+            sb.add(alpha.charAt((t >> 18) & 63));
+            sb.add(alpha.charAt((t >> 12) & 63));
+            sb.add("==");
+        } else if (rem == 2) {
+            int t = (bytes.byteAt(i) << 16) | (bytes.byteAt(i + 1) << 8);
+            sb.add(alpha.charAt((t >> 18) & 63));
+            sb.add(alpha.charAt((t >> 12) & 63));
+            sb.add(alpha.charAt((t >> 6) & 63));
+            sb.add("=");
+        }
+        return sb.toString();
+    }
+    // Strict: length must be a multiple of 4; '=' padding only in the final
+    // group; any non-alphabet byte -> None.
+    string? base64Decode(string b64) {
+        int n = b64.length();
+        if (n % 4 != 0) return None;
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < n) {
+            int c0 = b64.byteAt(i);
+            int c1 = b64.byteAt(i + 1);
+            int c2 = b64.byteAt(i + 2);
+            int c3 = b64.byteAt(i + 3);
+            int v0 = encoding::b64Val(c0);
+            int v1 = encoding::b64Val(c1);
+            if (v0 < 0 || v1 < 0) return None;
+            bool last = i + 4 == n;
+            if (c2 == 61) {                              // "xx=="
+                if (!last || c3 != 61) return None;
+                int t = (v0 << 18) | (v1 << 12);
+                sb.add(std::byteToString((t >> 16) & 255));
+            } else {
+                int v2 = encoding::b64Val(c2);
+                if (v2 < 0) return None;
+                if (c3 == 61) {                          // "xxx="
+                    if (!last) return None;
+                    int t = (v0 << 18) | (v1 << 12) | (v2 << 6);
+                    sb.add(std::byteToString((t >> 16) & 255));
+                    sb.add(std::byteToString((t >> 8) & 255));
+                } else {
+                    int v3 = encoding::b64Val(c3);
+                    if (v3 < 0) return None;
+                    int t = (v0 << 18) | (v1 << 12) | (v2 << 6) | v3;
+                    sb.add(std::byteToString((t >> 16) & 255));
+                    sb.add(std::byteToString((t >> 8) & 255));
+                    sb.add(std::byteToString(t & 255));
+                }
+            }
+            i = i + 4;
+        }
+        return sb.toString();
+    }
+    // URL-safe base64 (JWT-adjacent): +/ -> -_ and no '=' padding. Decode
+    // reverses the substitution and re-pads to a 4-multiple before delegating.
+    string base64UrlEncode(string bytes) {
+        string s = encoding::base64Encode(bytes);
+        return s.replace("+", "-").replace("/", "_").removeSuffix("=").removeSuffix("=");
+    }
+    string? base64UrlDecode(string s) {
+        string t = s.replace("-", "+").replace("_", "/");
+        int r = t.length() % 4;
+        if (r == 1) return None;                         // impossible base64 length
+        if (r == 2) t = t + "==";
+        if (r == 3) t = t + "=";
+        return encoding::base64Decode(t);
+    }
+
+    string percentEncode(string s) {
+        string HEX = "0123456789ABCDEF";
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < s.length()) {
+            int b = s.byteAt(i);
+            if (encoding::pctUnreserved(b)) {
+                sb.add(std::byteToString(b));
+            } else {
+                sb.add("%");
+                sb.add(HEX.charAt((b >> 4) & 15));
+                sb.add(HEX.charAt(b & 15));
+            }
+            i = i + 1;
+        }
+        return sb.toString();
+    }
+    string? percentDecode(string s) {
+        int n = s.length();
+        StringBuilder sb = StringBuilder();
+        int i = 0;
+        while (i < n) {
+            int b = s.byteAt(i);
+            if (b == 37) {                               // '%'
+                if (i + 2 >= n) return None;
+                int hi = encoding::hexNibble(s.byteAt(i + 1));
+                int lo = encoding::hexNibble(s.byteAt(i + 2));
+                if (hi < 0 || lo < 0) return None;
+                sb.add(std::byteToString((hi << 4) | lo));
+                i = i + 3;
+            } else {
+                sb.add(std::byteToString(b));
+                i = i + 1;
+            }
+        }
+        return sb.toString();
+    }
+}
+
+// === Track 09 F2: DateTime & Duration ======================================
+// UTC-only value types (data, no identity — exactly what `struct` is for).
+// Civil<->days is the public-domain Howard Hinnant integer algorithm (pure
+// int64, no tables, leap seconds ignored per the Unix convention). The
+// "static" surface splits by whether it can fail: infallible factories are
+// labeled constructors (DateTime::now(), DateTime::ofEpochMs(x) — §2), and the
+// fallible parsers are `datetime::` free functions returning DateTime? (the
+// no-`static`-keyword fallback the design's P2 pre-registered).
+namespace datetime {
+    // floor(epochMs / 86400000): the epoch day number, correct for negatives.
+    int epochDays(int epochMs) {
+        int d = epochMs / 86400000;
+        int r = epochMs % 86400000;
+        if (r < 0) d = d - 1;
+        return d;
+    }
+    // ms since midnight, always [0, 86399999] even for pre-1970 instants.
+    int dayMs(int epochMs) {
+        int r = epochMs % 86400000;
+        if (r < 0) r = r + 86400000;
+        return r;
+    }
+    // Hinnant civil_from_days: z = days since 1970-01-01 -> [year, month, day].
+    Array<int> civilFromDays(int z) {
+        int zz = z + 719468;
+        int era = (zz >= 0 ? zz : zz - 146096) / 146097;
+        int doe = zz - era * 146097;                                    // [0, 146096]
+        int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+        int y = yoe + era * 400;
+        int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);              // [0, 365]
+        int mp = (5 * doy + 2) / 153;                                    // [0, 11]
+        int d = doy - (153 * mp + 2) / 5 + 1;                            // [1, 31]
+        int m = mp < 10 ? mp + 3 : mp - 9;                               // [1, 12]
+        int year = m <= 2 ? y + 1 : y;
+        return [year, m, d];
+    }
+    // Hinnant days_from_civil: (year, month, day) -> days since 1970-01-01.
+    int daysFromCivil(int y, int m, int d) {
+        int yy = m <= 2 ? y - 1 : y;
+        int era = (yy >= 0 ? yy : yy - 399) / 400;
+        int yoe = yy - era * 400;                                        // [0, 399]
+        int mp = m > 2 ? m - 3 : m + 9;
+        int doy = (153 * mp + 2) / 5 + d - 1;                            // [0, 365]
+        int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;                 // [0, 146096]
+        return era * 146097 + doe - 719468;
+    }
+    int epochFromCivil(int y, int mo, int d, int h, int mi, int s, int ms) {
+        return datetime::daysFromCivil(y, mo, d) * 86400000 +
+               (h * 3600 + mi * 60 + s) * 1000 + ms;
+    }
+    // 0=Sunday .. 6=Saturday (anchor: 1970-01-01 = Thursday = 4).
+    int weekday(int z) {
+        int w = (z + 4) % 7;
+        if (w < 0) w = w + 7;
+        return w;
+    }
+    string weekdayName(int w) {
+        Array<string> names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        return names.at(w);
+    }
+    string monthName(int m) {
+        Array<string> names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return names.at(m);
+    }
+    int monthIndex(string mon) {
+        Array<string> names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        int i = 1;
+        while (i <= 12) {
+            if (names.at(i) == mon) return i;
+            i = i + 1;
+        }
+        return 0;
+    }
+    string pad2(int n) => n.toString().padStart(2, "0");
+
+    // Plain-int digit parsers (return -1 on any non-digit / empty / OOB). The
+    // parsers below use THESE, never string.toInt() + int? narrowing: prelude
+    // bodies are unchecked, so flow-narrowing annotations the static backends
+    // rely on to unwrap `int?` are absent (they'd misread the union) — a plain
+    // int with a -1 sentinel is backend-robust. (Learned M2, this track's log.)
+    int parseUInt(string s) {
+        if (s.isEmpty()) return 0 - 1;
+        int v = 0;
+        int i = 0;
+        while (i < s.length()) {
+            int c = s.byteAt(i);
+            if (c < 48 || c > 57) return 0 - 1;
+            v = v * 10 + (c - 48);
+            i = i + 1;
+        }
+        return v;
+    }
+    int parseDigitsAt(string s, int off, int len) {
+        if (off < 0 || off + len > s.length()) return 0 - 1;
+        return datetime::parseUInt(s.subStr(off, len));
+    }
+
+    // Fallible "static" parsers (see header). IMF-fixdate required; obsolete
+    // RFC 850 / asctime forms -> None in v1 (documented).
+    DateTime? parseHttpDate(string s) {
+        Array<string> parts = s.split(" ");
+        if (parts.length() != 6) return None;
+        if (!parts.at(0).endsWith(",")) return None;   // IMF-fixdate: "Wdy," required
+        if (parts.at(5) != "GMT") return None;
+        int mo = datetime::monthIndex(parts.at(2));
+        if (mo == 0) return None;
+        int d = datetime::parseUInt(parts.at(1));
+        int y = datetime::parseUInt(parts.at(3));
+        Array<string> hms = parts.at(4).split(":");
+        if (hms.length() != 3) return None;
+        int h  = datetime::parseUInt(hms.at(0));
+        int mi = datetime::parseUInt(hms.at(1));
+        int se = datetime::parseUInt(hms.at(2));
+        if (d < 0 || y < 0 || h < 0 || mi < 0 || se < 0) return None;
+        return DateTime::ofEpochMs(datetime::epochFromCivil(y, mo, d, h, mi, se, 0));
+    }
+    // "YYYY-MM-DDTHH:MM:SS" with optional ".fff" and a "Z" or "+hh:mm"/"-hh:mm"
+    // offset (normalized to UTC). Fixed-width date/time positions; offset math
+    // subtracts the zone so the stored epoch is always UTC.
+    DateTime? parseIso8601(string s) {
+        if (s.length() < 19) return None;
+        if (s.charAt(4) != "-" || s.charAt(7) != "-" || s.charAt(10) != "T") return None;
+        if (s.charAt(13) != ":" || s.charAt(16) != ":") return None;
+        int y  = datetime::parseDigitsAt(s, 0, 4);
+        int mo = datetime::parseDigitsAt(s, 5, 2);
+        int d  = datetime::parseDigitsAt(s, 8, 2);
+        int h  = datetime::parseDigitsAt(s, 11, 2);
+        int mi = datetime::parseDigitsAt(s, 14, 2);
+        int se = datetime::parseDigitsAt(s, 17, 2);
+        if (y < 0 || mo < 0 || d < 0 || h < 0 || mi < 0 || se < 0) return None;
+        int i = 19;
+        int frac = 0;
+        if (i < s.length() && s.charAt(i) == ".") {
+            i = i + 1;
+            int digits = 0;
+            int scale = 100;
+            while (i < s.length() && s.byteAt(i) >= 48 && s.byteAt(i) <= 57 && digits < 3) {
+                frac = frac + (s.byteAt(i) - 48) * scale;
+                scale = scale / 10;
+                i = i + 1;
+                digits = digits + 1;
+            }
+            // skip any excess fractional digits (sub-ms precision dropped)
+            while (i < s.length() && s.byteAt(i) >= 48 && s.byteAt(i) <= 57) i = i + 1;
+        }
+        int offsetMs = 0;
+        if (i < s.length()) {
+            string zc = s.charAt(i);
+            if (zc == "Z") {
+                i = i + 1;
+            } else if (zc == "+" || zc == "-") {
+                if (i + 6 > s.length()) return None;
+                if (s.charAt(i + 3) != ":") return None;
+                int oh = datetime::parseDigitsAt(s, i + 1, 2);
+                int om = datetime::parseDigitsAt(s, i + 4, 2);
+                if (oh < 0 || om < 0) return None;
+                offsetMs = (oh * 3600 + om * 60) * 1000;
+                if (zc == "-") offsetMs = 0 - offsetMs;
+                i = i + 6;
+            } else {
+                return None;
+            }
+        }
+        if (i != s.length()) return None;    // trailing garbage -> None (strict)
+        return DateTime::ofEpochMs(datetime::epochFromCivil(y, mo, d, h, mi, se, frac) - offsetMs);
+    }
+}
+
+struct Duration {
+    int ms;
+    new ofMillis(int m)  { ms = m; }
+    new ofSeconds(int s) { ms = s * 1000; }
+    new ofMinutes(int m) { ms = m * 60000; }
+    new ofHours(int h)   { ms = h * 3600000; }
+    new ofDays(int d)    { ms = d * 86400000; }
+    int toMillis()  => ms;
+    int toSeconds() => ms / 1000;
+    Duration plus(Duration o)  { Duration r; r.ms = ms + o.ms; return r; }
+    Duration minus(Duration o) { Duration r; r.ms = ms - o.ms; return r; }
+    // "1h02m03s" (higher units suppress leading zeros; sub-second -> "Nms").
+    string toString() {
+        int t = ms < 0 ? 0 - ms : ms;
+        string sign = ms < 0 ? "-" : "";
+        int sec = t / 1000;
+        int h = sec / 3600;
+        int m = (sec / 60) % 60;
+        int s = sec % 60;
+        if (h > 0) return sign + h.toString() + "h" + datetime::pad2(m) + "m" + datetime::pad2(s) + "s";
+        if (m > 0) return sign + m.toString() + "m" + datetime::pad2(s) + "s";
+        if (sec > 0) return sign + s.toString() + "s";
+        return sign + t.toString() + "ms";
+    }
+}
+
+struct DateTime {
+    int epochMs;
+    new ofEpochMs(int e) { epochMs = e; }
+    new now()            { epochMs = std::sysNow(); }
+
+    int year()   => datetime::civilFromDays(datetime::epochDays(epochMs)).at(0);
+    int month()  => datetime::civilFromDays(datetime::epochDays(epochMs)).at(1);
+    int day()    => datetime::civilFromDays(datetime::epochDays(epochMs)).at(2);
+    int hour()   => (datetime::dayMs(epochMs) / 3600000) % 24;
+    int minute() => (datetime::dayMs(epochMs) / 60000) % 60;
+    int second() => (datetime::dayMs(epochMs) / 1000) % 60;
+    int milli()  => datetime::dayMs(epochMs) % 1000;
+    int weekday() => datetime::weekday(datetime::epochDays(epochMs));
+
+    DateTime plus(Duration d)   { DateTime r; r.epochMs = epochMs + d.ms; return r; }
+    Duration minus(DateTime o)  { Duration r; r.ms = epochMs - o.epochMs; return r; }
+
+    // RFC 7231 IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT".
+    string httpDate() {
+        int z = datetime::epochDays(epochMs);
+        Array<int> c = datetime::civilFromDays(z);
+        return datetime::weekdayName(datetime::weekday(z)) + ", " +
+               datetime::pad2(c.at(2)) + " " + datetime::monthName(c.at(1)) + " " +
+               c.at(0).toString().padStart(4, "0") + " " +
+               datetime::pad2(hour()) + ":" + datetime::pad2(minute()) + ":" +
+               datetime::pad2(second()) + " GMT";
+    }
+    // ISO 8601 UTC: "2026-07-05T12:00:00Z" (second precision; ".mmm" if nonzero).
+    string iso8601() {
+        int z = datetime::epochDays(epochMs);
+        Array<int> c = datetime::civilFromDays(z);
+        string base = c.at(0).toString().padStart(4, "0") + "-" +
+                      datetime::pad2(c.at(1)) + "-" + datetime::pad2(c.at(2)) + "T" +
+                      datetime::pad2(hour()) + ":" + datetime::pad2(minute()) + ":" +
+                      datetime::pad2(second());
+        int frac = datetime::dayMs(epochMs) % 1000;
+        if (frac != 0) base = base + "." + frac.toString().padStart(3, "0");
+        return base + "Z";
+    }
+}
+
+// === Track 09 F3: digests ==================================================
+// md5/sha1/sha256/hmacSha256 return RAW BYTES (compose with encoding::hexEncode
+// / base64Encode). In-language over int64 with the C7 mask idiom: every word is
+// kept in an int64 and masked to 32 bits (& 0xFFFFFFFF) after each add/xor/rot,
+// so it stays non-negative and `>>` (arithmetic) equals a logical shift — the
+// correctness linchpin (never right-shift an unmasked value). `~x` is written
+// `(x ^ 0xFFFFFFFF)`. Verified against RFC 1321 / RFC 3174 / FIPS 180-4 /
+// RFC 4231 vectors, incl. the 55/56/63/64/65-byte padding-boundary trap set.
+namespace digest {
+    int rotl32(int x, int n) => ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF;
+    int rotr32(int x, int n) => ((x >> n) | (x << (32 - n))) & 0xFFFFFFFF;
+
+    // Pad to the SHA/MD5 block: append 0x80, zero-fill to 56 mod 64, then the
+    // 64-bit BIT length (big-endian for sha1/sha256, little-endian for md5).
+    Array<int> pad(string msg, bool bigEndianLen) {
+        Array<int> b = [];
+        int n = msg.length();
+        int i = 0;
+        while (i < n) { b = b.add(msg.byteAt(i)); i = i + 1; }
+        b = b.add(128);
+        while (b.length() % 64 != 56) b = b.add(0);
+        int bits = n * 8;
+        int j = 0;
+        while (j < 8) {
+            int shift = bigEndianLen ? (56 - j * 8) : (j * 8);
+            b = b.add((bits >> shift) & 255);
+            j = j + 1;
+        }
+        return b;
+    }
+    int wordBE(Array<int> b, int off) =>
+        ((b.at(off) << 24) | (b.at(off + 1) << 16) | (b.at(off + 2) << 8) | b.at(off + 3)) & 0xFFFFFFFF;
+    int wordLE(Array<int> b, int off) =>
+        (b.at(off) | (b.at(off + 1) << 8) | (b.at(off + 2) << 16) | (b.at(off + 3) << 24)) & 0xFFFFFFFF;
+    // 4 bytes of a 32-bit word, big-endian, appended to sb.
+    void emitBE(StringBuilder sb, int w) {
+        sb.add(std::byteToString((w >> 24) & 255));
+        sb.add(std::byteToString((w >> 16) & 255));
+        sb.add(std::byteToString((w >> 8) & 255));
+        sb.add(std::byteToString(w & 255));
+    }
+    void emitLE(StringBuilder sb, int w) {
+        sb.add(std::byteToString(w & 255));
+        sb.add(std::byteToString((w >> 8) & 255));
+        sb.add(std::byteToString((w >> 16) & 255));
+        sb.add(std::byteToString((w >> 24) & 255));
+    }
+
+    string sha256(string msg) {
+        Array<int> b = digest::pad(msg, true);
+        Array<int> K = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 ];
+        int h0 = 0x6a09e667; int h1 = 0xbb67ae85; int h2 = 0x3c6ef372; int h3 = 0xa54ff53a;
+        int h4 = 0x510e527f; int h5 = 0x9b05688c; int h6 = 0x1f83d9ab; int h7 = 0x5be0cd19;
+        int blocks = b.length() / 64;
+        int blk = 0;
+        while (blk < blocks) {
+            int base = blk * 64;
+            Array<int> w = [];
+            int t = 0;
+            while (t < 16) { w = w.add(digest::wordBE(b, base + t * 4)); t = t + 1; }
+            while (t < 64) {
+                int w15 = w.at(t - 15); int w2 = w.at(t - 2);
+                int s0 = (digest::rotr32(w15, 7) ^ digest::rotr32(w15, 18) ^ (w15 >> 3)) & 0xFFFFFFFF;
+                int s1 = (digest::rotr32(w2, 17) ^ digest::rotr32(w2, 19) ^ (w2 >> 10)) & 0xFFFFFFFF;
+                w = w.add((w.at(t - 16) + s0 + w.at(t - 7) + s1) & 0xFFFFFFFF);
+                t = t + 1;
+            }
+            int a = h0; int bb = h1; int c = h2; int d = h3;
+            int e = h4; int f = h5; int g = h6; int hh = h7;
+            int r = 0;
+            while (r < 64) {
+                int S1 = (digest::rotr32(e, 6) ^ digest::rotr32(e, 11) ^ digest::rotr32(e, 25)) & 0xFFFFFFFF;
+                int ch = (e & f) ^ ((e ^ 0xFFFFFFFF) & g);
+                int temp1 = (hh + S1 + ch + K.at(r) + w.at(r)) & 0xFFFFFFFF;
+                int S0 = (digest::rotr32(a, 2) ^ digest::rotr32(a, 13) ^ digest::rotr32(a, 22)) & 0xFFFFFFFF;
+                int maj = (a & bb) ^ (a & c) ^ (bb & c);
+                int temp2 = (S0 + maj) & 0xFFFFFFFF;
+                hh = g; g = f; f = e; e = (d + temp1) & 0xFFFFFFFF;
+                d = c; c = bb; bb = a; a = (temp1 + temp2) & 0xFFFFFFFF;
+                r = r + 1;
+            }
+            h0 = (h0 + a) & 0xFFFFFFFF; h1 = (h1 + bb) & 0xFFFFFFFF; h2 = (h2 + c) & 0xFFFFFFFF; h3 = (h3 + d) & 0xFFFFFFFF;
+            h4 = (h4 + e) & 0xFFFFFFFF; h5 = (h5 + f) & 0xFFFFFFFF; h6 = (h6 + g) & 0xFFFFFFFF; h7 = (h7 + hh) & 0xFFFFFFFF;
+            blk = blk + 1;
+        }
+        StringBuilder sb = StringBuilder();
+        digest::emitBE(sb, h0); digest::emitBE(sb, h1); digest::emitBE(sb, h2); digest::emitBE(sb, h3);
+        digest::emitBE(sb, h4); digest::emitBE(sb, h5); digest::emitBE(sb, h6); digest::emitBE(sb, h7);
+        return sb.toString();
+    }
+
+    string sha1(string msg) {
+        Array<int> data = digest::pad(msg, true);
+        int h0 = 0x67452301; int h1 = 0xefcdab89; int h2 = 0x98badcfe; int h3 = 0x10325476; int h4 = 0xc3d2e1f0;
+        int blocks = data.length() / 64;
+        int blk = 0;
+        while (blk < blocks) {
+            int base = blk * 64;
+            Array<int> w = [];
+            int t = 0;
+            while (t < 16) { w = w.add(digest::wordBE(data, base + t * 4)); t = t + 1; }
+            while (t < 80) {
+                int x = w.at(t - 3) ^ w.at(t - 8) ^ w.at(t - 14) ^ w.at(t - 16);
+                w = w.add(digest::rotl32(x, 1));
+                t = t + 1;
+            }
+            int a = h0; int b = h1; int c = h2; int d = h3; int e = h4;
+            int r = 0;
+            while (r < 80) {
+                int f = 0; int k = 0;
+                if (r < 20)      { f = (b & c) | ((b ^ 0xFFFFFFFF) & d); k = 0x5A827999; }
+                else if (r < 40) { f = b ^ c ^ d;                       k = 0x6ED9EBA1; }
+                else if (r < 60) { f = (b & c) | (b & d) | (c & d);     k = 0x8F1BBCDC; }
+                else             { f = b ^ c ^ d;                       k = 0xCA62C1D6; }
+                int temp = (digest::rotl32(a, 5) + f + e + k + w.at(r)) & 0xFFFFFFFF;
+                e = d; d = c; c = digest::rotl32(b, 30); b = a; a = temp;
+                r = r + 1;
+            }
+            h0 = (h0 + a) & 0xFFFFFFFF; h1 = (h1 + b) & 0xFFFFFFFF; h2 = (h2 + c) & 0xFFFFFFFF;
+            h3 = (h3 + d) & 0xFFFFFFFF; h4 = (h4 + e) & 0xFFFFFFFF;
+            blk = blk + 1;
+        }
+        StringBuilder sb = StringBuilder();
+        digest::emitBE(sb, h0); digest::emitBE(sb, h1); digest::emitBE(sb, h2);
+        digest::emitBE(sb, h3); digest::emitBE(sb, h4);
+        return sb.toString();
+    }
+
+    string md5(string msg) {
+        Array<int> data = digest::pad(msg, false);
+        Array<int> K = [
+            0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+            0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+            0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+            0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+            0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+            0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+            0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+            0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391 ];
+        Array<int> S = [
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+            5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+            4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+            6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21 ];
+        int a0 = 0x67452301; int b0 = 0xefcdab89; int c0 = 0x98badcfe; int d0 = 0x10325476;
+        int blocks = data.length() / 64;
+        int blk = 0;
+        while (blk < blocks) {
+            int base = blk * 64;
+            Array<int> M = [];
+            int t = 0;
+            while (t < 16) { M = M.add(digest::wordLE(data, base + t * 4)); t = t + 1; }
+            int A = a0; int B = b0; int C = c0; int D = d0;
+            int i = 0;
+            while (i < 64) {
+                int F = 0; int g = 0;
+                if (i < 16)      { F = (B & C) | ((B ^ 0xFFFFFFFF) & D); g = i; }
+                else if (i < 32) { F = (D & B) | ((D ^ 0xFFFFFFFF) & C); g = (5 * i + 1) % 16; }
+                else if (i < 48) { F = B ^ C ^ D;                       g = (3 * i + 5) % 16; }
+                else             { F = C ^ (B | (D ^ 0xFFFFFFFF));      g = (7 * i) % 16; }
+                F = (F + A + K.at(i) + M.at(g)) & 0xFFFFFFFF;
+                A = D; D = C; C = B;
+                B = (B + digest::rotl32(F, S.at(i))) & 0xFFFFFFFF;
+                i = i + 1;
+            }
+            a0 = (a0 + A) & 0xFFFFFFFF; b0 = (b0 + B) & 0xFFFFFFFF; c0 = (c0 + C) & 0xFFFFFFFF; d0 = (d0 + D) & 0xFFFFFFFF;
+            blk = blk + 1;
+        }
+        StringBuilder sb = StringBuilder();
+        digest::emitLE(sb, a0); digest::emitLE(sb, b0); digest::emitLE(sb, c0); digest::emitLE(sb, d0);
+        return sb.toString();
+    }
+
+    // HMAC (RFC 2104): H((K' ^ opad) || H((K' ^ ipad) || msg)); K' = key padded
+    // to the 64-byte block (hashed first when longer). Returns raw bytes.
+    string hmacSha256(string key, string msg) {
+        string k = key;
+        if (k.length() > 64) k = digest::sha256(k);
+        Array<int> kb = [];
+        int i = 0;
+        while (i < k.length()) { kb = kb.add(k.byteAt(i)); i = i + 1; }
+        while (kb.length() < 64) kb = kb.add(0);
+        StringBuilder inner = StringBuilder();
+        StringBuilder outerKey = StringBuilder();
+        int j = 0;
+        while (j < 64) {
+            inner.add(std::byteToString(kb.at(j) ^ 0x36));
+            outerKey.add(std::byteToString(kb.at(j) ^ 0x5c));
+            j = j + 1;
+        }
+        string innerHash = digest::sha256(inner.toString() + msg);
+        return digest::sha256(outerKey.toString() + innerHash);
+    }
+}
+
+// === Track 09 F1: JSON =====================================================
+// The value model is a CLASS (v1 §1.1): no type aliases, so a recursive named
+// union can't be declared. `kind` is an int tag (0 null,1 bool,2 number,3
+// string,4 array,5 object) — a mechanical upgrade to `enum JsonKind` is a
+// non-blocking cross-track rider. The "static" ctors are labeled constructors
+// (JsonValue::ofStr(x) etc., §2); parse is a json:: free function returning
+// JsonValue? (None on malformed — parse is total, §12.6, NOT exceptions).
+class JsonValue {
+    int kind = 0;
+    bool b = false;
+    float num = 0.0;
+    string str = "";
+    Array<JsonValue> items = [];
+    Map<string, JsonValue> fields;
+
+    new ofNull()                       { kind = 0; }
+    new ofBool(bool v)                 { kind = 1; b = v; }
+    new ofNum(float v)                 { kind = 2; num = v; }
+    new ofStr(string v)                { kind = 3; str = v; }
+    new ofArray(Array<JsonValue> v)    { kind = 4; items = v; }
+    new ofObject(Map<string, JsonValue> v) { kind = 5; fields = v; }
+
+    bool isNull()   => kind == 0;
+    bool isBool()   => kind == 1;
+    bool isNum()    => kind == 2;
+    bool isStr()    => kind == 3;
+    bool isArray()  => kind == 4;
+    bool isObject() => kind == 5;
+
+    // Typed accessors: None on a kind mismatch (a value, not a throw).
+    bool?                   asBool()   => kind == 1 ? b : None;
+    float?                  asNum()    => kind == 2 ? num : None;
+    string?                 asStr()    => kind == 3 ? str : None;
+    Array<JsonValue>?       asArray()  => kind == 4 ? items : None;
+    Map<string, JsonValue>? asObject() => kind == 5 ? fields : None;
+
+    // Loud navigation: at() throws on kind/bounds/missing (the runtime-failures-
+    // are-loud rule, §12.6); atOrNone is the None-returning object lookup.
+    JsonValue at(int i) {
+        if (kind != 4) throw RuntimeException("JsonValue.at(int): not an array");
+        return items.at(i);
+    }
+    JsonValue at(string key) {
+        if (kind != 5) throw RuntimeException("JsonValue.at(string): not an object");
+        return fields.at(key);
+    }
+    JsonValue? atOrNone(string key) =>
+        (kind == 5 && fields.has(key)) ? fields.at(key) : None;
+    int size() => kind == 4 ? items.length() : (kind == 5 ? fields.length() : 0);
+
+    string render() {
+        if (kind == 0) return "null";
+        if (kind == 1) return b ? "true" : "false";
+        if (kind == 2) return num.toString();
+        if (kind == 3) return json::renderStr(str);
+        if (kind == 4) {
+            StringBuilder sb = StringBuilder();
+            sb.add("[");
+            int n = items.length();
+            int i = 0;
+            while (i < n) {
+                if (i > 0) sb.add(",");
+                sb.add(items.at(i).render());
+                i = i + 1;
+            }
+            sb.add("]");
+            return sb.toString();
+        }
+        StringBuilder sb = StringBuilder();
+        sb.add("{");
+        Array<string> ks = fields.keys();
+        int n = ks.length();
+        int i = 0;
+        while (i < n) {
+            if (i > 0) sb.add(",");
+            string k = ks.at(i);
+            sb.add(json::renderStr(k));
+            sb.add(":");
+            sb.add(fields.at(k).render());
+            i = i + 1;
+        }
+        sb.add("}");
+        return sb.toString();
+    }
+    string renderPretty(int indent) => this.renderPrettyLevel(indent, 0);
+    string renderPrettyLevel(int indent, int level) {
+        if (kind == 4) {
+            if (items.length() == 0) return "[]";
+            StringBuilder sb = StringBuilder();
+            sb.add("[\n");
+            string inner = " ".repeat(indent * (level + 1));
+            int n = items.length();
+            int i = 0;
+            while (i < n) {
+                sb.add(inner);
+                sb.add(items.at(i).renderPrettyLevel(indent, level + 1));
+                if (i < n - 1) sb.add(",");
+                sb.add("\n");
+                i = i + 1;
+            }
+            sb.add(" ".repeat(indent * level));
+            sb.add("]");
+            return sb.toString();
+        }
+        if (kind == 5) {
+            if (fields.length() == 0) return "{}";
+            StringBuilder sb = StringBuilder();
+            sb.add("{\n");
+            string inner = " ".repeat(indent * (level + 1));
+            Array<string> ks = fields.keys();
+            int n = ks.length();
+            int i = 0;
+            while (i < n) {
+                sb.add(inner);
+                string k = ks.at(i);
+                sb.add(json::renderStr(k));
+                sb.add(": ");
+                sb.add(fields.at(k).renderPrettyLevel(indent, level + 1));
+                if (i < n - 1) sb.add(",");
+                sb.add("\n");
+                i = i + 1;
+            }
+            sb.add(" ".repeat(indent * level));
+            sb.add("}");
+            return sb.toString();
+        }
+        return this.render();
+    }
+}
+
+// Recursive-descent parser with an index cursor and a `failed` flag: every
+// method returns a concrete JsonValue and signals malformation by setting
+// `failed` (checked once by json::parse), so the descent NEVER consumes a
+// JsonValue? via narrowing — prelude bodies are unchecked, so union narrowing
+// misreads on the static backends ([[leviathan-prelude-no-narrowing]]).
+class JsonParser {
+    string s = "";
+    int i = 0;
+    bool failed = false;
+    new JsonParser(string src) { s = src; }
+
+    void fail() { failed = true; }
+    int cur() => i < s.length() ? s.byteAt(i) : 0 - 1;
+    void skipWs() {
+        bool go = true;
+        while (go && i < s.length()) {
+            int c = s.byteAt(i);
+            if (c == 32 || c == 9 || c == 10 || c == 13) i = i + 1;
+            else go = false;
+        }
+    }
+
+    JsonValue parseValue(int depth) {
+        if (depth > 128) { this.fail(); return JsonValue::ofNull(); }
+        this.skipWs();
+        int c = this.cur();
+        if (c == 123) return this.parseObject(depth);
+        if (c == 91)  return this.parseArray(depth);
+        if (c == 34)  return JsonValue::ofStr(this.parseRawString());
+        if (c == 116) return this.parseLit("true", JsonValue::ofBool(true));
+        if (c == 102) return this.parseLit("false", JsonValue::ofBool(false));
+        if (c == 110) return this.parseLit("null", JsonValue::ofNull());
+        if (c == 45 || (c >= 48 && c <= 57)) return this.parseNumber();
+        this.fail();
+        return JsonValue::ofNull();
+    }
+    JsonValue parseLit(string lit, JsonValue v) {
+        int n = lit.length();
+        if (i + n > s.length() || s.subStr(i, n) != lit) { this.fail(); return JsonValue::ofNull(); }
+        i = i + n;
+        return v;
+    }
+    JsonValue parseNumber() {
+        int start = i;
+        if (this.cur() == 45) i = i + 1;
+        if (this.cur() == 48) { i = i + 1; }
+        else if (this.cur() >= 49 && this.cur() <= 57) {
+            while (this.cur() >= 48 && this.cur() <= 57) i = i + 1;
+        } else { this.fail(); return JsonValue::ofNull(); }
+        if (this.cur() == 46) {
+            i = i + 1;
+            if (!(this.cur() >= 48 && this.cur() <= 57)) { this.fail(); return JsonValue::ofNull(); }
+            while (this.cur() >= 48 && this.cur() <= 57) i = i + 1;
+        }
+        if (this.cur() == 101 || this.cur() == 69) {
+            i = i + 1;
+            if (this.cur() == 43 || this.cur() == 45) i = i + 1;
+            if (!(this.cur() >= 48 && this.cur() <= 57)) { this.fail(); return JsonValue::ofNull(); }
+            while (this.cur() >= 48 && this.cur() <= 57) i = i + 1;
+        }
+        float f = json::toNum(s.subStr(start, i - start));
+        JsonValue v = JsonValue::ofNum(f);
+        return v;
+    }
+    JsonValue parseArray(int depth) {
+        i = i + 1;                                   // '['
+        Array<JsonValue> arr = [];
+        this.skipWs();
+        if (this.cur() == 93) { i = i + 1; return JsonValue::ofArray(arr); }
+        while (!failed) {
+            JsonValue v = this.parseValue(depth + 1);
+            if (failed) return JsonValue::ofNull();
+            arr = arr.add(v);
+            this.skipWs();
+            int c = this.cur();
+            if (c == 93) { i = i + 1; return JsonValue::ofArray(arr); }
+            if (c != 44) { this.fail(); return JsonValue::ofNull(); }
+            i = i + 1;
+        }
+        return JsonValue::ofNull();
+    }
+    JsonValue parseObject(int depth) {
+        i = i + 1;                                   // '{'
+        Map<string, JsonValue> m;
+        this.skipWs();
+        if (this.cur() == 125) { i = i + 1; return JsonValue::ofObject(m); }
+        while (!failed) {
+            this.skipWs();
+            if (this.cur() != 34) { this.fail(); return JsonValue::ofNull(); }
+            string key = this.parseRawString();
+            if (failed) return JsonValue::ofNull();
+            this.skipWs();
+            if (this.cur() != 58) { this.fail(); return JsonValue::ofNull(); }   // ':'
+            i = i + 1;
+            JsonValue val = this.parseValue(depth + 1);
+            if (failed) return JsonValue::ofNull();
+            m = m.with(key, val);
+            this.skipWs();
+            int c = this.cur();
+            if (c == 125) { i = i + 1; return JsonValue::ofObject(m); }
+            if (c != 44) { this.fail(); return JsonValue::ofNull(); }
+            i = i + 1;
+        }
+        return JsonValue::ofNull();
+    }
+    // cur() is the opening quote. Returns the decoded string; sets failed on an
+    // unterminated string or bad escape. Full escape set incl. \uXXXX (surrogate
+    // pairs combined; a lone/unpaired surrogate -> U+FFFD, Track-03 rule).
+    string parseRawString() {
+        i = i + 1;
+        StringBuilder sb = StringBuilder();
+        while (i < s.length()) {
+            int c = s.byteAt(i);
+            if (c == 34) { i = i + 1; return sb.toString(); }
+            if (c == 92) {
+                i = i + 1;
+                if (i >= s.length()) { this.fail(); return ""; }
+                int e = s.byteAt(i);
+                if (e == 34)       { sb.add("\""); i = i + 1; }
+                else if (e == 92)  { sb.add("\\"); i = i + 1; }
+                else if (e == 47)  { sb.add("/"); i = i + 1; }
+                else if (e == 98)  { sb.add(std::byteToString(8));  i = i + 1; }
+                else if (e == 102) { sb.add(std::byteToString(12)); i = i + 1; }
+                else if (e == 110) { sb.add(std::byteToString(10)); i = i + 1; }
+                else if (e == 114) { sb.add(std::byteToString(13)); i = i + 1; }
+                else if (e == 116) { sb.add(std::byteToString(9));  i = i + 1; }
+                else if (e == 117) { sb.add(this.parseUnicode()); }
+                else { this.fail(); return ""; }
+            } else {
+                sb.add(std::byteToString(c));
+                i = i + 1;
+            }
+        }
+        this.fail();
+        return "";
+    }
+    // i points at 'u'. Reads \uXXXX (already past the backslash). Returns the
+    // UTF-8 bytes of the scalar (charFromCode(cp).toString()).
+    string parseUnicode() {
+        i = i + 1;                                   // past 'u'
+        int cp = this.hex4();
+        if (cp < 0) { this.fail(); return ""; }
+        if (cp >= 55296 && cp <= 56319) {            // high surrogate D800..DBFF
+            int save = i;
+            if (i + 1 < s.length() && s.byteAt(i) == 92 && s.byteAt(i + 1) == 117) {
+                i = i + 2;
+                int lo = this.hex4();
+                if (lo >= 56320 && lo <= 57343) {    // low surrogate DC00..DFFF
+                    int combined = 65536 + ((cp - 55296) << 10) + (lo - 56320);
+                    return json::utf8(combined);
+                }
+                i = save;                            // not a valid pair; rewind
+            }
+            return json::utf8(65533);                // U+FFFD
+        }
+        if (cp >= 56320 && cp <= 57343) return json::utf8(65533);
+        return json::utf8(cp);
+    }
+    int hex4() {
+        if (i + 4 > s.length()) return 0 - 1;
+        int v = 0;
+        int k = 0;
+        while (k < 4) {
+            int d = encoding::hexNibble(s.byteAt(i));
+            if (d < 0) return 0 - 1;
+            v = v * 16 + d;
+            i = i + 1;
+            k = k + 1;
+        }
+        return v;
+    }
+}
+
+namespace json {
+    JsonValue? parse(string s) {
+        JsonParser p = JsonParser(s);
+        JsonValue v = p.parseValue(0);
+        if (p.failed) return None;
+        p.skipWs();
+        if (p.i != s.length()) return None;          // trailing garbage (strict)
+        return v;
+    }
+    string render(JsonValue v) => v.render();
+
+    // string escaping: " \ and \b \f \n \r \t as short escapes, other control
+    // bytes as \u00XX; non-ASCII passes through raw (UTF-8 in, UTF-8 out).
+    string renderStr(string v) {
+        StringBuilder sb = StringBuilder();
+        sb.add("\"");
+        string hex = "0123456789abcdef";
+        int i = 0;
+        while (i < v.length()) {
+            int c = v.byteAt(i);
+            if (c == 34)      sb.add("\\\"");
+            else if (c == 92) sb.add("\\\\");
+            else if (c == 8)  sb.add("\\b");
+            else if (c == 12) sb.add("\\f");
+            else if (c == 10) sb.add("\\n");
+            else if (c == 13) sb.add("\\r");
+            else if (c == 9)  sb.add("\\t");
+            else if (c < 32) {
+                sb.add("\\u00");
+                sb.add(hex.charAt((c >> 4) & 15));
+                sb.add(hex.charAt(c & 15));
+            } else {
+                sb.add(std::byteToString(c));
+            }
+            i = i + 1;
+        }
+        sb.add("\"");
+        return sb.toString();
+    }
+    // string -> float for the parser. The number syntax is already validated by
+    // JsonParser.parseNumber, so toFloat() succeeds; the ?? keeps this free of a
+    // narrowed int?/float? crossing an argument boundary in the prelude.
+    float toNum(string s) => s.toFloat() ?? 0.0;
+
+    // UTF-8 encode a scalar to its bytes — done by hand over std::byteToString
+    // (not char.toString(): `char` is LLVM-excluded, Track 03), so it lowers on
+    // every active engine. Caller guarantees cp is a non-surrogate scalar.
+    string utf8(int cp) {
+        StringBuilder sb = StringBuilder();
+        if (cp < 128) {
+            sb.add(std::byteToString(cp));
+        } else if (cp < 2048) {
+            sb.add(std::byteToString(192 | (cp >> 6)));
+            sb.add(std::byteToString(128 | (cp & 63)));
+        } else if (cp < 65536) {
+            sb.add(std::byteToString(224 | (cp >> 12)));
+            sb.add(std::byteToString(128 | ((cp >> 6) & 63)));
+            sb.add(std::byteToString(128 | (cp & 63)));
+        } else {
+            sb.add(std::byteToString(240 | (cp >> 18)));
+            sb.add(std::byteToString(128 | ((cp >> 12) & 63)));
+            sb.add(std::byteToString(128 | ((cp >> 6) & 63)));
+            sb.add(std::byteToString(128 | (cp & 63)));
+        }
+        return sb.toString();
+    }
+}

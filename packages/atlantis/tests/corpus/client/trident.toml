@@ -1,0 +1,8 @@
+name = "atlantis-client-corpus"
+entry = "main"
+sources = ["client.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

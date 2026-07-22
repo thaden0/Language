@@ -1,0 +1,35 @@
+// T7-P6: two independent rules match the SAME attribute on one struct —
+// mirrors the real shape (Track 03's serializableKeys* rules match
+// `@Serializable`, declared in flat `Atlantis`; Track 07's schemaJson rule,
+// declared in the NESTED `Atlantis::OpenApi`, must ALSO match it). Nested
+// namespace sees the enclosing namespace's attribute bare (no `uses` needed
+// for name resolution, only for rule firing) — same shape ORM's P1 found
+// broken (bug #91, nested-ns rules never fired) and which was fixed at
+// source the same day; this probe is also the regression floor for that fix
+// as it applies to Track 07's own layout.
+namespace ProbeP6 {
+    attribute SerialProbe {}
+    rule ruleOuter {
+        match @SerialProbe on struct S
+        inject `string __fromOuter() => "outer";` at member of S
+    }
+    namespace Inner {
+        rule ruleInner {
+            match @SerialProbe on struct S
+            inject `string __fromInner() => "inner";` at member of S
+        }
+    }
+}
+uses ProbeP6;
+uses ProbeP6::Inner;
+
+@SerialProbe
+struct Both {
+    int x;
+}
+
+void main() {
+    Both b = Both();
+    console.writeln(b.__fromOuter() + "," + b.__fromInner());
+}
+main();

@@ -1,0 +1,74 @@
+// Atlantis Track 08 — CORS (design §8). Placed before the auth strategies and
+// guard (§10 canonical order): a preflight OPTIONS carries no credentials and
+// must short-circuit rather than 401.
+namespace Atlantis {
+    namespace Auth {
+
+        struct CorsConfig {
+            Array<string> origins;         // exact-match allowlist; ["*"] only w/o credentials
+            Array<string> methods;
+            Array<string> allowHeaders;
+            Array<string> exposeHeaders;
+            bool credentials;
+            int maxAgeSec;
+            new CorsConfig(Array<string> origins, Array<string> methods, Array<string> allowHeaders,
+                           Array<string> exposeHeaders, bool credentials, int maxAgeSec) {
+                this.origins = origins;
+                this.methods = methods;
+                this.allowHeaders = allowHeaders;
+                this.exposeHeaders = exposeHeaders;
+                this.credentials = credentials;
+                this.maxAgeSec = maxAgeSec;
+            }
+        }
+        CorsConfig defaultCorsConfig() => CorsConfig([],
+            ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            ["Content-Type", "Authorization", "X-Requested-With"], [], false, 600);
+
+        // Boot validation: origins==["*"] && credentials is a hard error — never
+        // wildcard-with-credentials (the spec forbids it; browsers enforce it).
+        void validateCorsConfig(CorsConfig cfg) {
+            bool wildcard = cfg.origins.length() == 1 && cfg.origins.at(0) == "*";
+            if (wildcard && cfg.credentials) {
+                throw RuntimeException("CorsConfig: origins==[\"*\"] with credentials=true is forbidden " +
+                    "(design §8) — scope the allowlist or drop credentials");
+            }
+        }
+
+        bool originAllowed(CorsConfig cfg, string origin) {
+            if (cfg.origins.length() == 1 && cfg.origins.at(0) == "*") { return true; }
+            return cfg.origins.contains(origin);
+        }
+
+        (Http::Context, (Http::Context) => HttpResponse) => HttpResponse corsMiddleware(CorsConfig cfg) =>
+            (ctx, next) => {
+                string origin = Http::reqHeader(ctx.request, "Origin") ?? "";
+                if (origin == "") { return next(ctx); }   // same-origin/non-browser: pass through untouched
+
+                bool isPreflight = ctx.request.method == "OPTIONS" &&
+                    (Http::reqHeader(ctx.request, "Access-Control-Request-Method") ?? "") != "";
+                if (isPreflight) {
+                    HttpResponse r = HttpResponse(204, "");
+                    if (originAllowed(cfg, origin)) {
+                        r.withHeader("Access-Control-Allow-Origin", origin);   // echoed, never "*" w/ creds
+                        if (cfg.credentials) { r.withHeader("Access-Control-Allow-Credentials", "true"); }
+                        r.withHeader("Access-Control-Allow-Methods", cfg.methods.joinToString(", "));
+                        r.withHeader("Access-Control-Allow-Headers", cfg.allowHeaders.joinToString(", "));
+                        r.withHeader("Access-Control-Max-Age", cfg.maxAgeSec.toString());
+                    }
+                    return r;   // short-circuit either way — no next(), no leaking the allowlist
+                }
+
+                HttpResponse r = next(ctx);
+                if (originAllowed(cfg, origin)) {
+                    r.withHeader("Access-Control-Allow-Origin", origin);
+                    if (cfg.credentials) { r.withHeader("Access-Control-Allow-Credentials", "true"); }
+                    if (!cfg.exposeHeaders.isEmpty()) {
+                        r.withHeader("Access-Control-Expose-Headers", cfg.exposeHeaders.joinToString(", "));
+                    }
+                }
+                r.withHeader("Vary", "Origin");
+                return r;
+            };
+    }
+}

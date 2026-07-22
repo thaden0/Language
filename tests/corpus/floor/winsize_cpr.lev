@@ -1,0 +1,21 @@
+// term::size()'s cursor-report (CPR) fallback, end-to-end on a real pty
+// (designs/techdesign-terminal-floor.md §2; known-bugs #96 regression floor).
+//
+// The driver hands us a pty left at its default 0x0 winsize — a failure per the
+// §2/§5 ruling — so sysWinSize returns -1 and, because raw mode is on,
+// term::size() drops to the ANSI probe: write \x1b[999C\x1b[999B\x1b[6n, read
+// the \x1b[<row>;<col>R reply back off fd 0, parse it. The driver answers the
+// probe like a real terminal and expects those exact numbers back.
+//
+// This is the one lane that exercises the probe at all: every other winsize
+// test either has a real TIOCGWINSZ answer (no fallback) or no tty (fallback
+// guarded off by isRaw(), giving the 24x80 default). It ran only by hand
+// before, which is how #96 went a whole release of the floor unnoticed.
+void main() {
+    bool ok = term::enableRaw();
+    if (!ok) { console.writeln("NOTTY\r"); return; }
+    term::WinSize s = term::size();
+    term::restore();
+    console.writeln(s.rows.toString() + "x" + s.cols.toString() + "\r");
+}
+main();

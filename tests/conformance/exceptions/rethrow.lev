@@ -1,0 +1,53 @@
+// Conformance: user-defined exception classes, catch-by-base, catch-and-
+// rethrow, and that a handled catch fully clears the throw state (code after
+// the try/catch keeps running normally).
+class AppError : RuntimeException {
+    int code;
+    new AppError(string m, int c) {
+        RuntimeException::RuntimeException(m);
+        code = c;
+    }
+}
+
+void inner() {
+    throw AppError("inner failed", 42);
+}
+
+void middle() {
+    try {
+        inner();
+    } catch (AppError e) {
+        console.writeln("middle saw: " + e.message + " code=" + e.code);
+        throw e;                          // rethrow the same object
+    }
+}
+
+void run() {
+    // rethrow propagates to an outer handler, caught by BASE class
+    try {
+        middle();
+    } catch (RuntimeException e) {
+        console.writeln("outer caught: " + e.message);
+    }
+
+    // throw state is cleared: normal execution continues
+    console.writeln("still running");
+
+    // catch by interface after a subclass handler that does NOT match
+    try {
+        throw AppError("typed", 7);
+    } catch (ILogicException e) {
+        console.writeln("wrong handler");
+    } catch (IException e) {
+        console.writeln("iface caught: " + e.message);
+    }
+
+    // a caught exception is an ordinary object: fields stay readable
+    AppError kept = AppError("kept", 9);
+    try {
+        throw kept;
+    } catch (AppError e) {
+        console.writeln(e.code == kept.code);
+    }
+}
+run();

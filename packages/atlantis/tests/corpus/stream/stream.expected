@@ -1,0 +1,8 @@
+te=chunked ctype=text/event-stream
+  |data: hello
+  |
+  |event: tick
+  |data: one
+  |data: two
+  |
+  |

@@ -1,0 +1,106 @@
+// LA-25 (designs/complete/techdesign-method-references.md): method, function,
+// and constructor references as values. A `::`-reached callable member in
+// value position is the eta-expansion lambda it denotes — same typing, same
+// dispatch, same engines (§4.2/§8.8).
+//
+// Invocation of a reference STORED IN A FIELD goes through a local binding
+// (`var h = obj.field; h(args)`) throughout — direct `obj.field(args)` is
+// bug.md #2 (pre-existing, independent of LA-25; pinned there, not here).
+
+namespace M {
+    int dbl(int x) => x * 2;
+}
+
+class Animal {
+    string speak() => "...";
+}
+class Dog : Animal {
+    string speak() => "Woof";
+}
+interface IAnimal {
+    string speak();
+}
+class Cat : IAnimal {
+    string speak() => "Meow";
+}
+
+class Greeter {
+    string hi(string name) => "Hi " + name;
+    string hi(int n) => "Number " + n.toString();
+    int get(int x) => x + 100;          // keyword selector after '::' (§8.3)
+}
+
+class User {
+    string name;
+    new User() { name = "anon"; }
+    new FromName(string n) { name = n; }
+}
+
+class Handlers {
+    (int)=>int nsRef;
+    (Animal)=>string classRef;
+    (IAnimal)=>string ifaceRef;
+    (Greeter, string)=>string overloadedRef;
+    (Greeter, int)=>int kwRef;
+    (string)=>User ctorRef;
+}
+
+// the R10 route-table shape: an overloaded reference as a constructor argument,
+// disambiguated by the ctor's declared parameter type
+class Route {
+    (Greeter, string)=>string handler;
+    new Route((Greeter, string)=>string h) { handler = h; }
+}
+
+void run() {
+    Handlers h = Handlers();
+
+    // namespace function reference
+    h.nsRef = M::dbl;
+    var nsCall = h.nsRef;
+    console.writeln(nsCall(21));
+
+    // §8.8 ruling flipped by designs/complete/techdesign-class-method-dispatch.md
+    // (landed 2026-07-11): a concrete-class unbound reference now dispatches
+    // on the runtime object's class, same as an interface-typed reference —
+    // Dog overrides speak(), so classCall(a) runs Dog::speak() ("Woof"), not
+    // the statically-named Animal::speak().
+    h.classRef = Animal::speak;
+    var classCall = h.classRef;
+    Animal a = Dog();
+    console.writeln(classCall(a));
+
+    // ... while an interface unbound reference dispatches on the runtime object
+    h.ifaceRef = IAnimal::speak;
+    var ifaceCall = h.ifaceRef;
+    IAnimal c = Cat();
+    console.writeln(ifaceCall(c));
+
+    // overloaded method disambiguated by the declared FIELD type (assignment)
+    h.overloadedRef = Greeter::hi;
+    var ovCall = h.overloadedRef;
+    console.writeln(ovCall(Greeter(), "world"));
+
+    // keyword selector after '::'
+    h.kwRef = Greeter::get;
+    var kwCall = h.kwRef;
+    console.writeln(kwCall(Greeter(), 5));
+
+    // labeled constructor reference
+    h.ctorRef = User::FromName;
+    var ctorCall = h.ctorRef;
+    User u = ctorCall("Ada");
+    console.writeln(u.name);
+
+    // overloaded reference in constructor-argument position (route-table shape)
+    Route r = Route(Greeter::hi);
+    var routeCall = r.handler;
+    console.writeln(routeCall(Greeter(), "route"));
+
+    // a reference passed directly as a call argument and invoked via the param
+    console.writeln(apply(M::dbl, 50));
+}
+
+int apply((int)=>int f, int v) => f(v);
+
+run();

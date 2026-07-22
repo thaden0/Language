@@ -1,0 +1,162 @@
+// Labeled break/continue crossing `using` cleanup (techdesign-labeled-
+// break-continue.md F5 — the hard part). A labeled break/continue out of N
+// nested using-blocks must close exactly the resources declared inside the
+// TARGET loop (in reverse declaration order), and none declared outside it.
+// close() prints its id so cleanup ORDER is directly observable.
+
+class Res : IDisposable {
+    int id = 0;
+    new Res(int i) { id = i; }
+    void close() { console.writeln("close " + id.toString()); }
+}
+
+class ThrowingRes : IDisposable {
+    int id = 0;
+    new ThrowingRes(int i) { id = i; }
+    void close() {
+        console.writeln("closing " + id.toString());
+        throw RuntimeException("close-fail " + id.toString());
+    }
+}
+
+// (a) `break outer` crossing ONE using.
+void caseA() {
+    console.writeln("--- a ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res r = Res(1);
+        for (int j = 0; j < 2; j = j + 1) {
+            if (i == 1 && j == 0) break outer;
+            console.writeln("a " + i.toString() + " " + j.toString());
+        }
+    }
+    console.writeln("a-done");
+}
+
+// (b) crossing TWO usings declared in the SAME block (reverse order: 2, 1).
+void caseB() {
+    console.writeln("--- b ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res r1 = Res(1);
+        using Res r2 = Res(2);
+        if (i == 1) break outer;
+        console.writeln("b " + i.toString());
+    }
+    console.writeln("b-done");
+}
+
+// (c) crossing usings in DIFFERENT blocks — one inside the inner loop, one
+// declared between the two loops (in the outer's own block).
+void caseC() {
+    console.writeln("--- c ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res rOuter = Res(10);
+        for (int j = 0; j < 2; j = j + 1) {
+            using Res rInner = Res(20);
+            if (i == 1 && j == 0) break outer;
+            console.writeln("c " + i.toString() + " " + j.toString());
+        }
+    }
+    console.writeln("c-done");
+}
+
+// (d) the `continue outer` versions of (a)-(c): the target's step/cond runs
+// next, and the skipped tail (never printed) proves the abandonment.
+void caseD1() {
+    console.writeln("--- d1 ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res r = Res(1);
+        for (int j = 0; j < 3; j = j + 1) {
+            if (j == 1) continue outer;
+            console.writeln("d1 " + i.toString() + " " + j.toString());
+        }
+        console.writeln("d1-unreached " + i.toString());
+    }
+    console.writeln("d1-done");
+}
+
+void caseD2() {
+    console.writeln("--- d2 ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res r1 = Res(1);
+        using Res r2 = Res(2);
+        if (i == 0) continue outer;
+        console.writeln("d2 " + i.toString());
+    }
+    console.writeln("d2-done");
+}
+
+void caseD3() {
+    console.writeln("--- d3 ---");
+    outer: for (int i = 0; i < 2; i = i + 1) {
+        using Res rOuter = Res(10);
+        for (int j = 0; j < 2; j = j + 1) {
+            using Res rInner = Res(20);
+            if (i == 0 && j == 0) continue outer;
+            console.writeln("d3 " + i.toString() + " " + j.toString());
+        }
+    }
+    console.writeln("d3-done");
+}
+
+// (e) the SAME using (one declaration site, inside both loops) crossed by
+// `break inner` on one path and `break outer` on another — two separate
+// exit chains through one resource, each with its own stub.
+void caseE() {
+    console.writeln("--- e ---");
+    outer: for (int i = 0; i < 3; i = i + 1) {
+        inner: for (int j = 0; j < 3; j = j + 1) {
+            using Res r = Res(1);
+            if (i == 0 && j == 1) break inner;
+            if (i == 1 && j == 1) break outer;
+            console.writeln("e " + i.toString() + " " + j.toString());
+        }
+        console.writeln("e-after-inner " + i.toString());
+    }
+    console.writeln("e-done");
+}
+
+// (f) close() throwing during a labeled-break unwind, with an enclosing
+// catch: the close-throw REPLACES the in-flight labeled break (the uniform
+// "close-throw wins" rule, unchanged by labels) — the exception wins, the
+// break's target is never reached, and nothing after the throw site runs.
+void caseF() {
+    console.writeln("--- f ---");
+    try {
+        outer: for (int i = 0; i < 2; i = i + 1) {
+            using ThrowingRes r = ThrowingRes(i);
+            if (i == 0) break outer;
+            console.writeln("f " + i.toString());
+        }
+        console.writeln("f-unreached");
+    } catch (RuntimeException e) {
+        console.writeln("caught: " + e.message);
+    }
+    console.writeln("f-done");
+}
+
+// (g) chain coexistence: the SAME using crossed by an UNLABELED break
+// (resolves to the nearest loop, same as `break inner` would) on one path
+// and a LABELED break (targeting the outer loop) on another.
+void caseG() {
+    console.writeln("--- g ---");
+    outer: for (int i = 0; i < 3; i = i + 1) {
+        for (int j = 0; j < 3; j = j + 1) {
+            using Res r = Res(9);
+            if (i == 0 && j == 1) break;           // unlabeled: nearest (inner)
+            if (i == 1 && j == 1) break outer;      // labeled: outer
+            console.writeln("g " + i.toString() + " " + j.toString());
+        }
+        console.writeln("g-after-inner " + i.toString());
+    }
+    console.writeln("g-done");
+}
+
+caseA();
+caseB();
+caseC();
+caseD1();
+caseD2();
+caseD3();
+caseE();
+caseF();
+caseG();

@@ -40,36 +40,31 @@ namespace Atlantis {
             return p;
         }
 
-        // The streaming body (design §8.1). A STANDALONE class carrying the C2
-        // "body writes an OutStream<string>" surface (the sanctioned fallback to
-        // subclassing OutStream<string>, P-probe P5). v1 buffers chunks and the
-        // Server flushes them as one wire body (collect-then-send) — correct
-        // output for FINITE producers (static files, §5.4). True incremental
-        // server-push (unbounded SSE) awaits a Track 09 server-side
-        // streaming-response hook — filed as
-        // designs/requests/request-http-streaming-response.md (design §3.4).
+        // The streaming body (design §8.1). Now a thin adapter over the landed
+        // Track 09 server-side streaming hook (std::ChunkedSink) — LA-HTTP-STREAM
+        // §5.1. The C2 "body writes an OutStream<string>" surface is preserved so
+        // no route, middleware, SseStream, or handler call site changes; what
+        // changed is that writes now go on the wire incrementally (transport
+        // backpressure per write) instead of being collected and flushed once.
         class ChunkedBody {
-            string buffer = "";
-            bool ended = false;
-            () => void onCloseCb;
-            bool hasClose = false;
+            ChunkedSink sink;
+            new ChunkedBody(ChunkedSink s) { this.sink = s; }
 
-            ChunkedBody write(string chunk) { this.buffer = this.buffer + chunk; return this; }
-            ChunkedBody (<<)(string chunk) { this.buffer = this.buffer + chunk; return this; }
-            void end() { this.ended = true; }
-            void onClose(() => void cb) { this.onCloseCb = cb; this.hasClose = true; }
-            string collected() => this.buffer;
-            bool isEnded() => this.ended;
+            ChunkedBody write(string chunk) { this.sink.write(chunk); return this; }
+            ChunkedBody (<<)(string chunk) { this.sink.write(chunk); return this; }
+            void end() { this.sink.end(); }
+            void onClose(() => void cb) { this.sink.onClose(cb); }
+            bool isClosed() => this.sink.isClosed();
         }
 
         HttpResponse mkStreaming(int status, Array<Pair<string, string>> headers,
                                  (ChunkedBody) => void writer) {
-            ChunkedBody out = ChunkedBody();
+            HeaderMap hm = HeaderMap();
+            for (Pair p in headers) { hm.add(p.first, p.second); }
             var w = writer;
-            w(out);                                   // finite producer runs to end()
-            HttpResponse r = HttpResponse(status, out.collected());
-            for (Pair p in headers) { r.withHeader(p.first, p.second); }
-            return r;
+            return HttpResponse::ofStream(status, hm, (sink) => {
+                w(ChunkedBody(sink));
+            });
         }
 
         // The server (design §3.3). Wraps Track 09's hardened HttpServer:

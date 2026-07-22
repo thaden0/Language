@@ -1,0 +1,44 @@
+// LA-HTTP-STREAM S1: TcpStream.flush() backpressure barrier.
+//  - fast path: nothing pending -> true immediately.
+//  - short-write drain: a large payload the peer reads late must PARK the
+//    flush, then settle true once the tail leaves TcpStream.pending.
+//  - after close: flush is false on an invalid stream.
+//  - multiple waiters: two parked flushes both settle exactly once.
+string bigBlob(int n) {
+    string s = "abcdefgh";
+    while (s.length() < n) { s = s + s; }
+    return s;
+}
+
+void run() {
+    TcpListener srv = TcpListener(8096);
+    srv.connections((c) => {
+        // Read late: a one-shot timer arms the drain so the client's big write
+        // is forced to short-write and PARK its flush before we consume it.
+        std::after(30).subscribe((t) => {
+            c.onData((chunk) => { });               // drain and discard
+        });
+    });
+
+    int fd = std::sysTcpConnect("127.0.0.1", 8096);
+    TcpStream cli = TcpStream(fd);
+
+    console.writeln(cli.flush() ? "fast=true" : "fast=false");
+
+    string blob = bigBlob(8000000);                 // ~8 MiB: exceeds the socket buffer
+    cli << blob;
+    // Two concurrent parked flushes: both must settle true exactly once.
+    Promise<bool> a = Promise();
+    Promise<bool> b = Promise();
+    std::sysTimerStart(0, 0, (n) => { a.resolve(cli.flush()); });
+    std::sysTimerStart(0, 0, (n) => { b.resolve(cli.flush()); });
+    bool ra = await a;
+    bool rb = await b;
+    console.writeln(ra ? "drainA=true" : "drainA=false");
+    console.writeln(rb ? "drainB=true" : "drainB=false");
+
+    cli.close();
+    console.writeln(cli.flush() ? "afterclose=true" : "afterclose=false");
+    srv.stop();
+}
+run();

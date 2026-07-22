@@ -1,5 +1,16 @@
 # Request: narrow the Windows task-native reject (and, at maximum, the win32 fiber leg)
 
+> **Status (2026-07-21): §4 MINIMUM implementation LANDED** (`known_bugs_2.md`
+> #97 fixed writeup; `src/LlvmGen.cpp` two-tier gate + `tests/run_sysnatives.sh`
+> §12 coverage). Sockets (`TcpListener`/`TcpStream`), `Pty`, and plain non-task
+> programs now compile for `*windows*` triples; genuine `spawn`/`Channel`/
+> `TaskGroup`/`Process` still reject with the frozen diagnostic. The open
+> question was settled by experiment: the over-marking also drags
+> `sysChannel*` and `sysPidfdOpen` in — `sysPidfdOpen` now lowers to its win32
+> `-1` sentinel floor, `sysSpawn` keeps the two-tier reject. **§5 MAXIMUM (the
+> win32 Fiber task leg) is NOT done** and remains future work tied to LA-30 G5 /
+> the wine-lane audit — this doc stays open for that reason.
+
 **From:** the pty floor's Windows lane (`designs/complete/techdesign-03-pty-windows-conpty.md`,
 S3 / gate G-PTY3), on behalf of Helm H10 (the integrated terminal, gate G-H6).
 **Date:** 2026-07-19.

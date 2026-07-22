@@ -1,0 +1,80 @@
+// Track 07 M3 — the lazy Seq<T> pipeline (techdesign-07 §3).
+// Pins the laziness contract: nothing runs until a terminal pulls; each
+// combinator's fn runs at most once per pulled element; firstOrNone short-
+// circuits. Also pins the composition-class decision (design problem #3): a
+// stateful iterator's cursor advances across pulls (a snapshot closure would
+// freeze it), and take-of-many pulls only what it needs.
+
+// A mutable box so a lambda can COUNT how many times it actually runs — the
+// side-effect counter that proves at-most-once-per-pull.
+class Counter {
+    int n = 0;
+    new Counter() {}
+    void bump() { n = n + 1; }
+    int get() => n;
+}
+
+void run() {
+    Array<int> a = [1, 2, 3, 4, 5, 6];
+
+    // 1. Eager vs lazy: building a pipeline runs NOTHING until a terminal.
+    Counter built = Counter();
+    Seq<int> pipe = a.asSeq().map((x) => { built.bump(); return x * 2; });
+    console.writeln(built.get());          // 0 — map's fn has not run yet
+
+    // 2. firstOrNone short-circuits: with where() downstream, only as many
+    //    elements are pulled (and mapped) as needed to find the first match.
+    Counter c1 = Counter();
+    int? first = a.asSeq()
+        .map((x) => { c1.bump(); return x * 2; })
+        .where((x) => x > 4)
+        .firstOrNone();
+    console.writeln(first);                // 6  (x=3 -> 6 is the first > 4)
+    console.writeln(c1.get());             // 3  (mapped 1,2,3 only; 4,5,6 untouched)
+
+    // 3. take-of-many: take(2) pulls exactly two elements from an upstream that
+    //    could yield six.
+    Counter c2 = Counter();
+    int taken = a.asSeq().map((x) => { c2.bump(); return x; }).take(2).count();
+    console.writeln(taken);                // 2
+    console.writeln(c2.get());             // 2
+
+    // 4. takeWhile stops at the first failing element (and pulls no further).
+    Counter c3 = Counter();
+    Array<int> tw = a.asSeq()
+        .map((x) => { c3.bump(); return x; })
+        .takeWhile((x) => x < 4)
+        .toArray();
+    console.writeln(tw.joinToString(","));  // 1,2,3
+    console.writeln(c3.get());              // 4 (pulled 1,2,3 and 4 to see it stop)
+
+    // 5. Full chain: map + where + skip + toArray, and reduce.
+    Array<int> chained = a.asSeq()
+        .map((x) => x * x)
+        .where((x) => x % 2 == 1)
+        .skip(1)
+        .toArray();
+    console.writeln(chained.joinToString(","));   // squares 1,9,25 (odd), skip 1 -> 9,25
+    int sum = a.asSeq().map((x) => x + 1).reduce(0, (acc, x) => acc + x);
+    console.writeln(sum);                          // (2+3+4+5+6+7) = 27
+
+    // 6. Composition-class pin (design problem #3): an iterator holds honest
+    //    mutable cursor state, so successive pulls ADVANCE. Under snapshot-
+    //    capture closure semantics the cursor would freeze and both pulls would
+    //    return the same element.
+    IIterable<int> it_src = a.asSeq();
+    IIterator<int> cur = it_src.iterator();
+    int p1 = cur.next();
+    int p2 = cur.next();
+    int p3 = cur.next();
+    console.writeln(p1.toString() + "," + p2.toString() + "," + p3.toString());  // 1,2,3
+
+    // 7. count() consumes the whole (finite) source.
+    console.writeln(a.asSeq().where((x) => x % 2 == 0).count());   // 3 (2,4,6)
+
+    // 8. forEach drives side effects in order.
+    Counter c4 = Counter();
+    a.asSeq().where((x) => x > 3).forEach((x) => c4.bump());
+    console.writeln(c4.get());             // 3 (4,5,6)
+}
+run();

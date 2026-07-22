@@ -1,0 +1,23 @@
+// techdesign-splices-desugars-sonnet.md §2.2/§2.3(3): `on class C` stays
+// exact — it does NOT fire on a struct (no `on type`/`on struct` twin here,
+// unlike rule_subject_type.ext) — and the misleading "missing uses" warning
+// is replaced by a kind-aware note pointing at 'on type' / 'on struct'.
+// @no-roundtrip: the warning is a property of the ORIGINAL source's rule
+// declaration, which --expand does not print back (rule decls are
+// compile-time-only, gone from the expanded artifact) — the round-tripped
+// file has no rule left to mismatch against, so the warning doesn't re-fire.
+namespace Marker {
+    attribute Serializable { }
+    rule tagClass {
+        match @Serializable(x) on class C
+        inject `int kindTag() => 1;` at member of C
+    }
+}
+uses Marker;
+
+class Widget { }
+
+@Serializable
+struct Point { int x; int y; }
+
+console.writeln(9);

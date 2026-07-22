@@ -78,6 +78,14 @@ namespace Atlantis {
         // Pure data (§1.1) — frozen for Track 07's OpenAPI/MCP consumption.
         // authMode: 0 = unset, 1 = auth, 2 = noauth (int until an enum carrier
         // is worth the churn — LA-8, matches the design's own interim note).
+        //
+        // `bodySchema`/`summary` (Track 07 addition, techdesign-07-mcp-openapi.md
+        // §5.1, pre-authorized additively by the overview's 2026-07-07 coordinator
+        // log: "RouteRec canonical = Track 02 §... extended additively with the
+        // bodySchema + summary fields Track 07 needs"). `bodySchema` is `None` for
+        // routes with no typed request body (or until a future rule captures it,
+        // §5.1's own TODO note); `summary` is `""` until the `@Summary` rule
+        // (Track 07, openapi/summary.lev) joins it.
         struct RouteRec {
             string verb;
             string path;
@@ -87,8 +95,11 @@ namespace Atlantis {
             string returnType;
             int authMode;
             string authRole;
+            JsonValue? bodySchema;
+            string summary;
             new RouteRec(string verb, string path, string controller, string action,
-                         Array<ParamDesc> params, string returnType, int authMode, string authRole) {
+                         Array<ParamDesc> params, string returnType, int authMode, string authRole,
+                         JsonValue? bodySchema, string summary) {
                 this.verb = verb;
                 this.path = path;
                 this.controller = controller;
@@ -97,6 +108,8 @@ namespace Atlantis {
                 this.returnType = returnType;
                 this.authMode = authMode;
                 this.authRole = authRole;
+                this.bodySchema = bodySchema;
+                this.summary = summary;
             }
             string key() => this.controller + "." + this.action;
         }

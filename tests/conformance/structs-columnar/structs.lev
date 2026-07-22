@@ -1,0 +1,56 @@
+// Value structs (§9, the object mask generalized): copied by value, no identity,
+// mutating methods write `this`. Compare with reference `class` (aliased).
+
+struct Point {
+    int x;
+    int y;
+    int dot() { return x * x + y * y; }
+    mutating void translate(int dx, int dy) { x = x + dx; y = y + dy; }
+}
+
+struct Line {
+    Point a;                       // a struct field is stored/copied by value
+    Point b;
+}
+
+// The parameter is a copy: mutating it must not touch the caller's value.
+void mutateCopy(Point p) {
+    p.translate(100, 100);
+    console.writeln("inside call: " + p.x);
+}
+
+// A reference class, for contrast — aliased, so mutation is shared.
+class RefBox {
+    int n;
+    void bump() { n = n + 1; }
+}
+
+void run() {
+    Point a = Point();
+    a.x = 3; a.y = 4;
+    console.writeln(a.dot());          // 25
+
+    Point b = a;                       // copy
+    b.translate(1, 1);                 // mutates b only
+    console.writeln(a.dot());          // 25  — a unchanged
+    console.writeln(b.dot());          // 41  — (4,5)
+
+    mutateCopy(a);                     // pass-by-value
+    console.writeln(a.x);              // 3   — call did not mutate a
+
+    // nested struct: copying the Line deep-copies its Point fields
+    Line ln = Line();
+    ln.a = a; ln.b = b;
+    Line ln2 = ln;                     // deep copy
+    ln2.a.translate(10, 0);            // mutate ln2's copy of a
+    console.writeln(ln.a.x);           // 3   — ln.a independent of ln2.a
+    console.writeln(ln2.a.x);          // 13
+
+    // reference class stays aliased (the contrast)
+    RefBox r = RefBox();
+    r.n = 1;
+    RefBox alias = r;                  // shares identity
+    alias.bump();
+    console.writeln(r.n);              // 2   — mutation is shared
+}
+run();

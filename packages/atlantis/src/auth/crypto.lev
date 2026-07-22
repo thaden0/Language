@@ -1,0 +1,35 @@
+// Atlantis Track 08 — constant-time compare (§6.2) + the random-bytes choke point
+// (§6.4).
+namespace Atlantis {
+    namespace Auth {
+
+        // NORMATIVE — copied verbatim from the design (§6.2, the comparison-site
+        // registry CS-1..5). No early-exit comparison on secret material anywhere
+        // in this track: `==` on strings short-circuits at the first differing
+        // byte, a timing oracle. This branches only on *lengths* (public for all
+        // our uses — MACs and hashes are fixed-size) and accumulates differences
+        // bitwise over the full length of `a`. Never "optimize" this (P3/S-5).
+        bool constantTimeEquals(string a, string b) {
+            int la = a.length();
+            int lb = b.length();
+            int diff = la ^ lb;                 // nonzero if lengths differ
+            int i = 0;
+            while (i < la) {                     // always walk ALL of a
+                int ba = a.byteAt(i);
+                int bb = 0;
+                if (lb > 0) { bb = b.byteAt(i % lb); }   // index math, not data, decides
+                diff = diff | (ba ^ bb);
+                i = i + 1;
+            }
+            return diff == 0;
+        }
+
+        // §6.4: the single choke point for sids (cookie.lev), CSRF tokens
+        // (session.lev), and PBKDF2 salts (pbkdf2.lev). The design's R-4
+        // dependency and its gated NOT-FOR-PRODUCTION interim are moot here:
+        // `std::sysRandom(n)` (the crypto ticket's R-4, landed under that name —
+        // `designs/complete/techdesign-tls-crypto.md` §8) already IS a guaranteed
+        // getrandom(2) CSPRNG, so this is a direct pass-through, not an interim.
+        string randomBytes(int n) => std::sysRandom(n);
+    }
+}

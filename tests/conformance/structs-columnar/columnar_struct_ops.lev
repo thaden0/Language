@@ -1,0 +1,32 @@
+// techdesign-columnar §3.1: struct MAP-KEY equality (contract C3, field-wise
+// recursive — a struct IS its fields) must hold for keys GATHERED out of a
+// columnar array, independent of physical layout. (Note: the bare `==` operator
+// is not auto-derived field-wise for structs in the language today, so this
+// probes the C3 key path — lvrt_keyeq / RuntimeValue keyEquals — which IS.)
+struct Key { int a; int b; }
+void run() {
+    Array<Key> a;
+    for (int i in 0..4) { Key k; k.a = i; k.b = i * i; a = a.add(k); }
+
+    // build a map keyed by structs gathered from the columnar array
+    Map<Key, int> m = Map();
+    for (int i in 0..4) { m[a[i]] = i * 1000; }
+
+    // look up with a FRESH struct that is field-equal to a gathered element
+    Key probe; probe.a = 3; probe.b = 9;
+    console.writeln(m[probe]);       // 3000 (field-wise key hit)
+
+    // look up with a key gathered again out of the columnar array
+    Key g2 = a[2];
+    console.writeln(m[g2]);          // 2000
+
+    // a field-DIFFERENT key misses
+    Key miss; miss.a = 3; miss.b = 8;
+    console.writeln(m.has(miss));    // false
+
+    // update through a re-gathered equal key stays in place (no dup entry)
+    m[a[1]] = 111;
+    console.writeln(m[a[1]]);        // 111
+    console.writeln(m.length());     // 5 (updated in place, not appended)
+}
+run();

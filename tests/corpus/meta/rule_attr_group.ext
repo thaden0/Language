@@ -1,0 +1,27 @@
+// techdesign-splices-desugars-sonnet.md §1 (F): `@attr(A, B);` in statement/
+// member position desugars to `@A @B` on the next declaration. Adapted from
+// rule_orm.ext's ORM shape — same rule, same expected output — but each
+// field's `@Column` marker is spelled with the grouped-attribute sugar
+// instead of the ordinary stacked decorator (rule_attr_group_twin.ext is the
+// hand-written stacked-decorator twin; both must produce identical output).
+namespace Orm {
+    attribute Table { string name; }
+    attribute Column { }
+    rule buildSchema {
+        match @Table(t) on class C
+        inject `Array<string> schema() =>
+            [ $t.name, $for f in C.fields.where((x) => x.hasAttr("Column")) : $f.name ];`
+               at member of C
+    }
+}
+uses Orm;
+
+@Table("users")
+class User {
+    @attr(Column); int id;
+    @attr(Column); string name;
+    int internalCounter;
+}
+
+User u = User();
+console.write(u.schema().joinToString(","));

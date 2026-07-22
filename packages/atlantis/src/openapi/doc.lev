@@ -1,0 +1,166 @@
+// Atlantis Track 07 — OpenAPI 3.1 assembly (design §5). Boot-time, plain
+// code over `Array<RouteRec>` — the SAME schemaJson()/SchemaMap values §4
+// generates feed both this and MCP's inputSchema (design risk #1: schema
+// drift is structurally impossible).
+namespace Atlantis {
+    namespace OpenApi {
+
+        struct AppInfo {
+            string name;
+            string version;
+            new AppInfo(string name, string version) {
+                this.name = name;
+                this.version = version;
+            }
+        }
+
+        // §5.2 path templating: router `:id`/`*rest` -> OpenAPI `{id}`/`{rest}`.
+        string toOpenApiPath(string routerPath) {
+            Array<string> segs = routerPath.split("/");
+            Array<string> out = [];
+            for (string seg in segs) {
+                if (seg.startsWith(":") || seg.startsWith("*")) {
+                    out = out.add("{" + seg.subStr(1, seg.length() - 1) + "}");
+                } else {
+                    out = out.add(seg);
+                }
+            }
+            return out.joinToString("/");
+        }
+
+        JsonValue problemSchema() {
+            Map<string, JsonValue> props = Map();
+            props["type"] = scalarSchema("string");
+            props["title"] = scalarSchema("string");
+            props["status"] = scalarSchema("integer");
+            props["detail"] = scalarSchema("string");
+            props["instance"] = scalarSchema("string");
+            Map<string, JsonValue> m = Map();
+            m["type"] = JsonValue::ofStr("object");
+            m["properties"] = JsonValue::ofObject(props);
+            return JsonValue::ofObject(m);
+        }
+
+        // §5.2 parameters + requestBody + responses (every operation also gets
+        // the `default` -> Problem ref) + security (`noauth` -> `security: []`).
+        // `authSchemeName`: "" until Track 08's GuardSpec securitySchemes land
+        // (design §5.2's "Track 08 supplies authSchemes" note) — an `auth`-mode
+        // route with a non-empty scheme name gets a bearer-shaped `security`
+        // entry; empty means the field is simply omitted (undocumented-but-
+        // guarded, honest for v1).
+        JsonValue buildOperation(Routing::RouteRec rec, string authSchemeName) {
+            Map<string, JsonValue> op = Map();
+            op["operationId"] = JsonValue::ofStr(rec.controller + "." + rec.action);
+            string opSummaryText = summaryFor(rec);
+            if (opSummaryText != "") {
+                op["summary"] = JsonValue::ofStr(opSummaryText);
+            }
+            Array<JsonValue> params = [];
+            for (Routing::ParamDesc p in rec.params) {
+                if (p.source == "path" || p.source == "query") {
+                    Map<string, JsonValue> pm = Map();
+                    pm["name"] = JsonValue::ofStr(p.name);
+                    pm["in"] = JsonValue::ofStr(p.source);
+                    pm["required"] = JsonValue::ofBool(p.source == "path");
+                    pm["schema"] = mapType(p.type);
+                    params = params.add(JsonValue::ofObject(pm));
+                }
+            }
+            if (!params.isEmpty()) {
+                op["parameters"] = JsonValue::ofArray(params);
+            }
+            JsonValue? bs = rec.bodySchema;
+            if (bs != None) {
+                Map<string, JsonValue> mt = Map();
+                mt["schema"] = bs ?? JsonValue::ofNull();
+                Map<string, JsonValue> content = Map();
+                content["application/json"] = JsonValue::ofObject(mt);
+                Map<string, JsonValue> rb = Map();
+                rb["content"] = JsonValue::ofObject(content);
+                op["requestBody"] = JsonValue::ofObject(rb);
+            }
+
+            Map<string, JsonValue> responses = Map();
+            Map<string, JsonValue> okResp = Map();
+            okResp["description"] = JsonValue::ofStr("OK");
+            responses["200"] = JsonValue::ofObject(okResp);
+            Map<string, JsonValue> defRef = Map();
+            defRef["$ref"] = JsonValue::ofStr("#/components/schemas/Problem");
+            Map<string, JsonValue> defMt = Map();
+            defMt["schema"] = JsonValue::ofObject(defRef);
+            Map<string, JsonValue> defContent = Map();
+            defContent["application/problem+json"] = JsonValue::ofObject(defMt);
+            Map<string, JsonValue> defResp = Map();
+            defResp["description"] = JsonValue::ofStr("Error");
+            defResp["content"] = JsonValue::ofObject(defContent);
+            responses["default"] = JsonValue::ofObject(defResp);
+            op["responses"] = JsonValue::ofObject(responses);
+
+            if (rec.authMode == 2) {
+                Array<JsonValue> noSecurity = [];
+                op["security"] = JsonValue::ofArray(noSecurity);
+            } else if (rec.authMode == 1 && authSchemeName != "") {
+                Map<string, JsonValue> schemeReq = Map();
+                Array<string> noScopes = [];
+                Array<JsonValue> noScopesV = [];
+                schemeReq[authSchemeName] = JsonValue::ofArray(noScopesV);
+                Array<JsonValue> secArr = [JsonValue::ofObject(schemeReq)];
+                op["security"] = JsonValue::ofArray(secArr);
+            }
+            return JsonValue::ofObject(op);
+        }
+
+        // §5.2 assembly. `authSchemeName` — see buildOperation's note.
+        JsonValue build(Array<Routing::RouteRec> records, SchemaRegistry schemas,
+                        AppInfo appInfo, string authSchemeName) {
+            Map<string, JsonValue> paths = Map();
+            for (Routing::RouteRec rec in records) {
+                string p = toOpenApiPath(rec.path);
+                JsonValue? existingV = paths.atOrNone(p);
+                Map<string, JsonValue> pathItem = Map();
+                if (existingV != None) {
+                    Map<string, JsonValue>? existingObj = (existingV ?? JsonValue::ofNull()).asObject();
+                    if (existingObj != None) {
+                        pathItem = existingObj;
+                    }
+                }
+                pathItem[rec.verb.toLower()] = buildOperation(rec, authSchemeName);
+                paths[p] = JsonValue::ofObject(pathItem);
+            }
+
+            Map<string, JsonValue> schemaComponents = Map();
+            for (Pair e in schemas.all()) {
+                schemaComponents[e.first] = e.second;
+            }
+            schemaComponents["Problem"] = problemSchema();
+            Map<string, JsonValue> components = Map();
+            components["schemas"] = JsonValue::ofObject(schemaComponents);
+
+            Map<string, JsonValue> info = Map();
+            info["title"] = JsonValue::ofStr(appInfo.name);
+            info["version"] = JsonValue::ofStr(appInfo.version);
+
+            Map<string, JsonValue> doc = Map();
+            doc["openapi"] = JsonValue::ofStr("3.1.0");
+            doc["info"] = JsonValue::ofObject(info);
+            doc["paths"] = JsonValue::ofObject(paths);
+            doc["components"] = JsonValue::ofObject(components);
+            return JsonValue::ofObject(doc);
+        }
+
+        // `./app openapi` (R3/Track 04 command): boots, builds, writes
+        // openapi.json (pretty-rendered) to cwd, exits 0 (design §5.2).
+        App::Command openApiCommand((Config::Config) => JsonValue buildDoc) {
+            return App::Command("openapi", "Write the OpenAPI 3.1 document to openapi.json",
+                (cfg, args) => runOpenApi(buildDoc, cfg));
+        }
+
+        int runOpenApi((Config::Config) => JsonValue buildDoc, Config::Config cfg) {
+            JsonValue doc = buildDoc(cfg);
+            using File f = File("openapi.json", std::write);
+            f.write(doc.renderPretty(2));
+            console.writeln("wrote openapi.json");
+            return 0;
+        }
+    }
+}

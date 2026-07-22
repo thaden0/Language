@@ -1,0 +1,1114 @@
+
+// Primitive object masks (§6.5): value types that carry a method shape. Stored
+// unboxed; `this` is the value. Empty-bodied methods are native intrinsics;
+// bodies present (e.g. int.abs) are ordinary in-language methods.
+class bool {
+    string toString();
+}
+class int {
+    int abs() => this < 0 ? 0 - this : this;
+    int max(int other) => this > other ? this : other;
+    int min(int other) => this < other ? this : other;
+    string toString();
+
+    // --- Track 06: math & numeric masks --------------------------------------
+    // Square-and-multiply; e<0 -> 0 (integer semantics, documented); overflow
+    // wraps (int64 two's complement — no trap v1, matches the rest of int).
+    int pow(int e) {
+        if (e < 0) return 0;
+        int result = 1;
+        int base = this;
+        int n = e;
+        while (n > 0) {
+            if (n % 2 == 1) result = result * base;
+            base = base * base;
+            n = n / 2;
+        }
+        return result;
+    }
+    int clamp(int lo, int hi) {
+        if (lo > hi) throw RuntimeException("clamp: lo > hi");
+        if (this < lo) return lo;
+        if (this > hi) return hi;
+        return this;
+    }
+    int sign() => this < 0 ? 0 - 1 : (this > 0 ? 1 : 0);
+    // Exact for |x| < 2^53; native (RuntimeNatives.cpp).
+    float toFloat();
+    // Hex digits, lowercase, no `0x` prefix, `-` sign for negatives. INT64_MIN
+    // is special-cased: negating it overflows (two's complement has no
+    // positive counterpart), so shifting toward 0 would never terminate.
+    string toHex() {
+        if (this == 0) return "0";
+        if (this == 1 << 63) return "-8000000000000000";
+        string digits = "0123456789abcdef";
+        bool neg = this < 0;
+        int n = neg ? 0 - this : this;
+        string r = "";
+        while (n != 0) {
+            r = digits.charAt(n & 15) + r;
+            n = n >> 4;
+        }
+        return neg ? "-" + r : r;
+    }
+    // radix 2..36; else throw. Never negates `this` (division/modulo toward
+    // zero terminates for every int64 value, including INT64_MIN, unlike the
+    // shift-based toHex above).
+    string toString(int radix) {
+        if (radix < 2 || radix > 36) throw RuntimeException("radix out of range 2..36");
+        if (this == 0) return "0";
+        string digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+        bool neg = this < 0;
+        int n = this;
+        string r = "";
+        while (n != 0) {
+            int d = n % radix;
+            int dd = d < 0 ? 0 - d : d;
+            r = digits.charAt(dd) + r;
+            n = n / radix;
+        }
+        return neg ? "-" + r : r;
+    }
+}
+// Track 03 §1: `char` — one Unicode scalar, unboxed value primitive. `code()`
+// and `toString()` are native (UTF-8); the classification/case helpers are
+// in-language over `code()` (ASCII-only in v1, documented; non-ASCII -> false /
+// unchanged). No arithmetic operators — use `code()`.
+class char {
+    int code();
+    string toString();
+    // NOTE: these bodies avoid BARE self-calls (e.g. `isLower()` inside another
+    // method) — those aren't checker-resolved in prelude bodies (bug.md #13) and
+    // misbehave on the compiled backends (bug.md #27 family). Each helper works
+    // off the native `code()` directly instead, so every one is a leaf.
+    bool isDigit() => code() >= 48 && code() <= 57;
+    bool isUpper() => code() >= 65 && code() <= 90;
+    bool isLower() => code() >= 97 && code() <= 122;
+    bool isAlpha() => (code() >= 65 && code() <= 90) || (code() >= 97 && code() <= 122);
+    bool isSpace() {
+        int c = code();
+        return c == 32 || c == 9 || c == 10 || c == 13;
+    }
+    char toUpper() => (code() >= 97 && code() <= 122) ? std::charFromCode(code() - 32) : this;
+    char toLower() => (code() >= 65 && code() <= 90) ? std::charFromCode(code() + 32) : this;
+}
+// Track 03 §3: `Block` — a fixed-length mutable byte buffer (contract C4).
+// Reference semantics; `slice` is an aliasing view (shared bytes). Every access
+// is bounds-checked (throws RuntimeException). All methods are native; the
+// engines construct/dispatch Block specially (like Array/Map). `equals` is
+// CONTENT equality; `==` remains reference identity. No ELF lane (frozen).
+class Block {
+    new Block(int size) {}
+    new fromString(string s) {}
+    int length();
+    int byteAt(int i);
+    void setByte(int i, int value);
+    Block slice(int off, int len);
+    string toString(int off, int len);
+    int int32At(int i);
+    void setInt32(int i, int value);
+    int int64At(int i);
+    void setInt64(int i, int value);
+    void fill(int off, int len, int value);
+    void blit(int dstOff, Block src, int srcOff, int len);
+    bool equals(Block other);
+    // First differing index at or after `from`, or -1. Equal lengths required.
+    int mismatch(Block other, int from);
+}
+
+// F4: opaque compile-time code carrier. It has no constructible/traversable
+// runtime surface; meta::parse* below are intercepted by the comptime oracle.
+class Ast;
+class float {
+    string toString();
+
+    // --- Track 06: math & numeric masks --------------------------------------
+    float abs() => this < 0.0 ? 0.0 - this : this;   // NaN passes through, fine
+    // Native (RuntimeNatives.cpp): round = half-away-from-zero (C `round`).
+    float floor();
+    float ceil();
+    float round();
+    float trunc();
+    // Truncation; NaN/±inf/out-of-int64-range -> RuntimeException (loud).
+    int toInt();
+    float sqrt();       // negative -> NaN (IEEE, not a throw — math convention)
+    float pow(float e);
+    // struct-equality design §8: raw IEEE-754 bit access (serialization wants
+    // these regardless). `bits()` = bit_cast to int64; `float::fromBits(int)`
+    // is math::floatFromBits, routed by the checker. `canonEq` is the
+    // canonical-relation primitive (§3) the synthesized struct `(==)` compares
+    // float fields through — every engine implements it via its ONE canon.
+    int bits();
+    bool canonEq(float other);
+    bool isNaN() => this != this;   // IEEE self-inequality — honest on all engines
+    // Reformulated from the design's `this == 1.0/0.0` sentinel: bug.md #12
+    // (LLVM's 0.0/0.0 silently yields 0.0, not NaN/inf — not this track's to
+    // fix) would make that form always-false on that one engine. Comparing
+    // the magnitude against the largest finite double sidesteps the division
+    // entirely and stays honest for +inf/-inf/finite/NaN on all five engines
+    // (verified: P2 probe, this track's implementation log).
+    bool isInfinite() {
+        float m = 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.0;
+        return this.abs() > m;
+    }
+}
+class string {
+    int length();
+    bool isEmpty();
+    string charAt(int i);
+    string subStr(int start, int len);
+    // Byte-indexed range slice — matches subStr(start, len) exactly (Range has
+    // no unit of its own; this is "the same value used as a slice argument",
+    // applied to the byte-indexed core per the Bytes-vs-scalars rule, not a
+    // new rune-indexed slice). Range is inclusive-inclusive (class Range's own
+    // ctor), so len = end - start + 1.
+    //
+    // Deliberately NOT named `subStr` (not an overload) -- a same-named
+    // body-bearing overload would hijack every existing bare self-call to
+    // subStr(int,int) inside this class on the frozen --emit-elf backend
+    // (name-only, arity-blind X64Gen::genCallM dynamic dispatch;
+    // designs/techdesign-stdlib-tail-methods.md §2.1). Same shape of fix
+    // Track 04 used for indexOf/indexOfFrom.
+    //
+    // Empty/backwards ranges (end < start) are a defined "" on every engine,
+    // decided uniformly here before the native subStr's own cross-engine
+    // negative-len disagreement is ever reached. Out-of-bounds end inherits
+    // subStr's historical clamp-not-throw (unlike Array.slice, which throws).
+    string subStrRange(Range r) {
+        int len = r.end - r.start + 1;
+        return len <= 0 ? "" : subStr(r.start, len);
+    }
+    string toUpper();
+    string toLower();
+    string trim();
+    bool contains(string sub);
+    bool startsWith(string prefix);
+    bool endsWith(string suffix);
+    int indexOf(string sub);
+    // Strict full-string parse: optional leading '-', digits only, no
+    // surrounding space; anything else (or overflow) -> None. BREAKING vs the
+    // old atoll-garbage-to-0 behavior (Track 04 M2; migrate callers with
+    // `int? p = s.toInt(); if (p != None) { ... }`).
+    int? toInt();
+    float? toFloat();
+    // Byte value 0..255 at index `i`. OOB throws RuntimeException, same as
+    // Array.at (Track 04 M3).
+    int byteAt(int i);
+    // Track 03 §1 (contract C1): `at` decodes the Unicode scalar STARTING at
+    // byte offset i (O(1)); a mid-sequence offset throws. `chars` full-decodes
+    // to an Array<char> (invalid bytes -> U+FFFD, never a throw). Native.
+    char at(int i);
+    Array<char> chars();
+    string toString() => this;
+
+    // --- Track 04: in-language toolkit over the native core above -----------
+    // Bodies slice whole segments (subStr/charAt), never accumulate char-by-char.
+
+    // indexOf from an offset. NOT an `indexOf` overload: primitive-mask method
+    // bodies aren't checker-verified (Checker::walk only walks the user
+    // program, never the prelude — bug.md), so a same-name bare self-call
+    // inside this class would resolve through Eval/Lower's arity-blind
+    // by-name fallback and silently pick the wrong arity. Distinct name
+    // sidesteps the ambiguity entirely (per this track's design, problem #5).
+    // Negative `from` clamps to 0; a `from` past the end is -1, never an error.
+    int indexOfFrom(string sub, int from) {
+        int f = from < 0 ? 0 : from;
+        if (f > length()) return -1;
+        int r = subStr(f, length() - f).indexOf(sub);
+        return r < 0 ? -1 : r + f;
+    }
+
+    // Earliest index at which ANY needle occurs, or -1 if none do (incl. an
+    // empty needles array). Does not report WHICH needle matched; a caller
+    // that needs the identity can re-check each needle's indexOf against the
+    // returned position. Order-independence: the POSITION found is what's
+    // minimized, not needle array order. `""` in needles -> 0 always (indexOf
+    // on an empty pattern is 0 on every engine), a defined edge case.
+    int indexOfAny(Array<string> needles) {
+        int best = -1;
+        for (string needle in needles) {
+            int p = indexOf(needle);
+            if (p >= 0 && (best < 0 || p < best)) best = p;
+        }
+        return best;
+    }
+
+    int lastIndexOf(string sub) {
+        int last = -1;
+        int idx = indexOf(sub);
+        while (idx >= 0) {
+            last = idx;
+            idx = indexOfFrom(sub, idx + 1);
+        }
+        return last;
+    }
+
+    // Empty separator -> array of 1-char strings (JS-compatible). Otherwise
+    // keeps empty segments (leading/trailing/adjacent separators all count).
+    Array<string> split(string sep) {
+        Array<string> r = [];
+        if (sep.isEmpty()) {
+            for (int i in 0 .. length() - 1) r = r.add(charAt(i));
+            return r;
+        }
+        int start = 0;
+        int idx = indexOf(sep);
+        while (idx >= 0) {
+            r = r.add(subStr(start, idx - start));
+            start = idx + sep.length();
+            idx = indexOfFrom(sep, start);
+        }
+        r = r.add(subStr(start, length() - start));
+        return r;
+    }
+
+    // Replace-all; segment-concat between matches. `from == ""` is a no-op
+    // (defined, rather than looping forever).
+    string replace(string from, string to) {
+        if (from.isEmpty()) return this;
+        string r = "";
+        int start = 0;
+        int idx = indexOf(from);
+        while (idx >= 0) {
+            r = r + subStr(start, idx - start) + to;
+            start = idx + from.length();
+            idx = indexOfFrom(from, start);
+        }
+        r = r + subStr(start, length() - start);
+        return r;
+    }
+
+    string padStart(int targetLen, string pad) {
+        if (pad.isEmpty() || length() >= targetLen) return this;
+        int need = targetLen - length();
+        string p = pad.repeat(need / pad.length() + 1);
+        return p.subStr(0, need) + this;
+    }
+    string padEnd(int targetLen, string pad) {
+        if (pad.isEmpty() || length() >= targetLen) return this;
+        int need = targetLen - length();
+        string p = pad.repeat(need / pad.length() + 1);
+        return this + p.subStr(0, need);
+    }
+
+    // Exponentiation-by-squaring: O(log n) concats, not O(n) char appends.
+    string repeat(int n) {
+        if (n <= 0) return "";
+        string result = "";
+        string base = this;
+        int k = n;
+        while (k > 0) {
+            if (k % 2 == 1) result = result + base;
+            base = base + base;
+            k = k / 2;
+        }
+        return result;
+    }
+
+    string trimStart() {
+        int i = 0;
+        int n = length();
+        while (i < n && (charAt(i) == " " || charAt(i) == "\t" || charAt(i) == "\n" || charAt(i) == "\r")) i = i + 1;
+        return subStr(i, n - i);
+    }
+    string trimEnd() {
+        int n = length();
+        int i = n;
+        while (i > 0 && (charAt(i - 1) == " " || charAt(i - 1) == "\t" || charAt(i - 1) == "\n" || charAt(i - 1) == "\r")) i = i - 1;
+        return subStr(0, i);
+    }
+
+    // Splits on "\n", then trims exactly one trailing "\r" per line (handles
+    // both CRLF and bare LF without disturbing intentional trailing spaces).
+    Array<string> splitLines() {
+        Array<string> lines = split("\n");
+        Array<string> r = [];
+        for (string line in lines) {
+            if (line.endsWith("\r")) r = r.add(line.subStr(0, line.length() - 1));
+            else r = r.add(line);
+        }
+        return r;
+    }
+
+    bool isBlank() => trim().isEmpty();
+
+    // Non-overlapping occurrence count. `sub == ""` -> 0 (defined).
+    int count(string sub) {
+        if (sub.isEmpty()) return 0;
+        int n = 0;
+        int idx = indexOf(sub);
+        while (idx >= 0) {
+            n = n + 1;
+            idx = indexOfFrom(sub, idx + sub.length());
+        }
+        return n;
+    }
+
+    string removePrefix(string prefix) => startsWith(prefix) ? subStr(prefix.length(), length() - prefix.length()) : this;
+    string removeSuffix(string suffix) => endsWith(suffix) ? subStr(0, length() - suffix.length()) : this;
+
+    // v1: allocates via toLower(); a non-allocating byte-compare is a follow-up.
+    bool equalsIgnoreCase(string other) => length() == other.length() && toLower() == other.toLower();
+
+    // UTF-8-correct reversal: reverses SCALARS, not bytes ("désert" -> "tréséd"
+    // with the é intact — a byte-reverse would shred every multi-byte sequence).
+    // Ill-formed bytes normalize to U+FFFD via chars() (§3.2 policy). The handoff
+    // promised in techdesign-04 §8 / techdesign-utf8-chars-string-ops.md §4.1.
+    string reverse() => chars().reverse().joinToString("");
+
+    // LA-31 ruling R13: SQL LIKE semantics, byte-oriented, anchored full-string
+    // match. `%` = any run of bytes incl. empty; `_` = exactly one byte; `\`
+    // escapes the next byte to a literal (a lone trailing `\` matches a literal
+    // `\`). `ilike` folds A-Z<->a-z per byte at each comparison site, no folded
+    // string copies. Explicit `this.` on every self-call (this-receiver rule).
+    bool like(string pattern) return this.__likeMatch(pattern, false);
+
+    bool ilike(string pattern) return this.__likeMatch(pattern, true);
+
+    bool __likeMatch(string pattern, bool fold) {
+        int n = this.length();
+        int m = pattern.length();
+        int i = 0;
+        int j = 0;
+        int star = 0 - 1;
+        int mark = 0;
+        while (i < n) {
+            int pb = 0 - 1;
+            if (j < m) pb = pattern.byteAt(j);
+            if (pb == 92 && j + 1 < m) {
+                int lit = pattern.byteAt(j + 1);
+                int tb = this.byteAt(i);
+                if (fold) {
+                    if (lit >= 65 && lit <= 90) lit = lit + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (lit == tb) { i = i + 1; j = j + 2; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            } else if (pb == 95) {
+                i = i + 1; j = j + 1;
+            } else if (pb == 37) {
+                star = j; mark = i; j = j + 1;
+            } else {
+                int tb = this.byteAt(i);
+                int qb = pb;
+                if (fold) {
+                    if (qb >= 65 && qb <= 90) qb = qb + 32;
+                    if (tb >= 65 && tb <= 90) tb = tb + 32;
+                }
+                if (j < m && qb == tb) { i = i + 1; j = j + 1; }
+                else if (star >= 0) { j = star + 1; mark = mark + 1; i = mark; }
+                else return false;
+            }
+        }
+        while (j < m && pattern.byteAt(j) == 37) j = j + 1;
+        return j == m;
+    }
+}
+
+// Array<T>: a tiny native core (length/at/add — add is pure, returns a new
+// array) with the LINQ/JS surface written in the language on top of it.
+// A 2-tuple, the result element of relational joins and Map iteration. A value
+// `struct` (NOT a reference class): copied not aliased, field-wise ==, and — as
+// a value type — its arrays store dense/row-major instead of boxed (see
+// designs/techdesign-triple.md §2). The (==) is hand-written because the struct-
+// equality synthesis pass bails on generic structs (Resolver.cpp:1359).
+struct Pair<A, B> {
+    A first;
+    B second;
+    new Of(A a, B b) { first = a; second = b; }
+    bool (==)(Pair<A, B> other) => first == other.first && second == other.second;
+    string toString() => "(" + first + ", " + second + ")";
+}
+
+// A 3-tuple sibling of Pair. Same value-struct conventions (see above).
+struct Triple<A, B, C> {
+    A first;
+    B second;
+    C third;
+    new Of(A a, B b, C c) { first = a; second = b; third = c; }
+    bool (==)(Triple<A, B, C> other) =>
+        first == other.first && second == other.second && third == other.third;
+    string toString() => "(" + first + ", " + second + ", " + third + ")";
+}
+
+// The iteration protocol (techdesign-07 §1). `for (T x in e)` where e's static
+// type implements IIterable<T> desugars to a hasNext()/next() pull loop. The
+// built-in collections take dedicated fast paths (contract C5); these interfaces
+// give protocol UNIFORMITY — an Array/Map/Range can stand where an IIterable is
+// wanted, and user collections plug into the same `for..in`.
+interface IIterator<T> {
+    bool hasNext();
+    T next();      // past-the-end is unspecified; stdlib iterators throw (loud)
+}
+interface IIterable<T> {
+    IIterator<T> iterator();
+}
+
+class Array<T> : IIterable<T> {
+    new Array() { }                    // empty (native)
+    new Array(int n, T fill) { }       // n copies of fill (native), like vector(n, v)
+
+    int length();                 // native
+    T at(int i);                  // native
+    Array<T> add(T item);         // native (pure: returns a new array)
+
+    get ([])(int i) => at(i);     // arrays index through the same ([]) any class can define
+
+    // Protocol uniformity (techdesign-07 §2.1): `for..in` over an array still
+    // takes the IterLen/IterAt fast path — this exists so an Array can be passed
+    // where an IIterable<T> is wanted (e.g. asSeq()'s source). Snapshots a pure
+    // value, so the iterator can never be invalidated (design problem #2).
+    IIterator<T> iterator() => ArrayIterator(this);
+
+    // The bridge into the lazy pipeline (techdesign-07 §3): arrays are eager,
+    // `Seq` is the opt-in lazy form (answering info.md §19#4).
+    Seq<T> asSeq() => ArraySeq(this);
+
+    bool isEmpty() => length() == 0;
+    T first() => at(0);
+    T last() => at(length() - 1);
+    T? firstOrNone() => isEmpty() ? None : first();
+    T? lastOrNone() => isEmpty() ? None : last();
+    T? find((T) => bool pred) {
+        for (T x in this) if (pred(x)) return x;
+        return None;
+    }
+
+    Array<T> where((T) => bool pred) {
+        Array<T> r = [];
+        for (T x in this) if (pred(x)) r = r.add(x);
+        return r;
+    }
+    Array<T> filter((T) => bool pred) => this.where(pred);
+    Array<U> map<U>((T) => U fn) {
+        Array<U> r = [];
+        for (T x in this) r = r.add(fn(x));
+        return r;
+    }
+    Array<U> select<U>((T) => U fn) => this.map(fn);
+    A reduce<A>(A seed, (A, T) => A fn) {
+        A acc = seed;
+        for (T x in this) acc = fn(acc, x);
+        return acc;
+    }
+    bool any((T) => bool pred) {
+        for (T x in this) if (pred(x)) return true;
+        return false;
+    }
+    bool all((T) => bool pred) {
+        for (T x in this) if (!pred(x)) return false;
+        return true;
+    }
+    int count((T) => bool pred) {
+        int n = 0;
+        for (T x in this) if (pred(x)) n = n + 1;
+        return n;
+    }
+    bool contains(T item) {
+        for (T x in this) if (x == item) return true;
+        return false;
+    }
+    int indexOf(T item) {
+        int i = 0;
+        for (T x in this) { if (x == item) return i; i = i + 1; }
+        return -1;
+    }
+    Array<T> reverse() {
+        Array<T> r = [];
+        int n = length();
+        for (int i in 0 .. n - 1) r = r.add(at(n - 1 - i));
+        return r;
+    }
+    Array<T> take(int k) {
+        Array<T> r = [];
+        int m = k < length() ? k : length();
+        for (int i in 0 .. m - 1) r = r.add(at(i));
+        return r;
+    }
+    Array<T> skip(int k) {
+        Array<T> r = [];
+        for (int i in k .. length() - 1) r = r.add(at(i));
+        return r;
+    }
+    Array<T> concat(Array<T> other) {
+        Array<T> r = this;
+        for (T x in other) r = r.add(x);
+        return r;
+    }
+    // Relational joins (§11). Predicate form for now; nested-loop (O(n*m)) —
+    // the by-key hidden index needs a Dictionary type (later). `U` is inferred
+    // from `other`, so these are honestly typed thanks to method-level generics.
+    Array<Pair<T, U>> join<U>(Array<U> other, (T, U) => bool pred) {
+        Array<Pair<T, U>> r = [];
+        for (T x in this)
+            for (U y in other)
+                if (pred(x, y)) r = r.add(Pair::Of(x, y));
+        return r;
+    }
+    Array<Pair<T, Array<U>>> groupJoin<U>(Array<U> other, (T, U) => bool pred) {
+        Array<Pair<T, Array<U>>> r = [];
+        for (T x in this) {
+            Array<U> matches = [];
+            for (U y in other) if (pred(x, y)) matches = matches.add(y);
+            r = r.add(Pair::Of(x, matches));
+        }
+        return r;
+    }
+    Array<U> flatMap<U>((T) => Array<U> fn) {
+        Array<U> r = [];
+        for (T x in this) for (U y in fn(x)) r = r.add(y);
+        return r;
+    }
+    void forEach((T) => void fn) {
+        for (T x in this) fn(x);
+    }
+    // Named `unique`, not `distinct` — `distinct` is a reserved member
+    // modifier keyword (diamond-inheritance disambiguation), so it can't be
+    // a method name at class-body declaration position.
+    Array<T> unique() {
+        Array<T> r = [];
+        for (T x in this) if (!r.contains(x)) r = r.add(x);
+        return r;
+    }
+    // O(n^2) scan-map v1 (correctness now, Dictionary later, §6): `m[k]`
+    // rebind-accumulate, not `.with()` (portable to every engine's `[]` sugar).
+    Map<K, Array<T>> groupBy<K>((T) => K key) {
+        Map<K, Array<T>> m = Map();
+        for (T x in this) {
+            K k = key(x);
+            Array<T> cur = m.has(k) ? m[k] : [];
+            m[k] = cur.add(x);
+        }
+        return m;
+    }
+    Array<Pair<T, U>> zip<U>(Array<U> other) {
+        Array<Pair<T, U>> r = [];
+        int n = length() < other.length() ? length() : other.length();
+        for (int i in 0 .. n - 1) r = r.add(Pair::Of(at(i), other.at(i)));
+        return r;
+    }
+    Array<T> takeWhile((T) => bool pred) {
+        Array<T> r = [];
+        for (T x in this) { if (!pred(x)) return r; r = r.add(x); }
+        return r;
+    }
+    Array<T> skipWhile((T) => bool pred) {
+        Array<T> r = [];
+        bool skipping = true;
+        for (T x in this) {
+            if (skipping) {
+                if (pred(x)) continue;
+                skipping = false;
+            }
+            r = r.add(x);
+        }
+        return r;
+    }
+    int indexWhere((T) => bool pred) {
+        int i = 0;
+        for (T x in this) { if (pred(x)) return i; i = i + 1; }
+        return -1;
+    }
+    Array<Pair<int, T>> withIndex() {
+        Array<Pair<int, T>> r = [];
+        int i = 0;
+        for (T x in this) { r = r.add(Pair::Of(i, x)); i = i + 1; }
+        return r;
+    }
+    Array<T> insertAt(int i, T v) {
+        if (i < 0 || i > length()) throw RuntimeException("insertAt: index out of bounds");
+        Array<T> r = take(i);
+        r = r.add(v);
+        for (int j in i .. length() - 1) r = r.add(at(j));
+        return r;
+    }
+    Array<T> removeAt(int i) {
+        if (i < 0 || i >= length()) throw RuntimeException("removeAt: index out of bounds");
+        Array<T> r = take(i);
+        for (int j in i + 1 .. length() - 1) r = r.add(at(j));
+        return r;
+    }
+    // Pure update at index `i` — mirrors Map's `with` vocabulary (Array.with
+    // sets an index; Map.with adds a key), an added overload, no name clash.
+    Array<T> with(int i, T v) {
+        if (i < 0 || i >= length()) throw RuntimeException("with: index out of bounds");
+        Array<T> r = [];
+        for (int j in 0 .. length() - 1) r = r.add(j == i ? v : at(j));
+        return r;
+    }
+    // Throws on OOB (unlike string.subStr's historical clamp).
+    Array<T> slice(int start, int len) {
+        if (start < 0 || len < 0 || start + len > length())
+            throw RuntimeException("slice: out of bounds");
+        Array<T> r = [];
+        for (int j in start .. start + len - 1) r = r.add(at(j));
+        return r;
+    }
+    // Stable merge sort: equal-key order is preserved (the `<=` tie-break
+    // below keeps the earlier-index run first) — a contract `orderBy` (later)
+    // depends on. Pure: returns a new array.
+    Array<T> sort((T, T) => int cmp) {
+        int n = length();
+        if (n <= 1) return this;
+        Array<T> left = take(n / 2).sort(cmp);
+        Array<T> right = skip(n / 2).sort(cmp);
+        Array<T> r = [];
+        int i = 0;
+        int j = 0;
+        while (i < left.length() && j < right.length()) {
+            if (cmp(left.at(i), right.at(j)) <= 0) { r = r.add(left.at(i)); i = i + 1; }
+            else { r = r.add(right.at(j)); j = j + 1; }
+        }
+        while (i < left.length()) { r = r.add(left.at(i)); i = i + 1; }
+        while (j < right.length()) { r = r.add(right.at(j)); j = j + 1; }
+        return r;
+    }
+    // Duck-typed on K's `<` (instantiation-time error if K has none — honest).
+    Array<T> sortBy<K>((T) => K key) {
+        return sort((a, b) => key(a) < key(b) ? 0 - 1 : (key(b) < key(a) ? 1 : 0));
+    }
+    // orderBy is the K=1-run degenerate case of thenBy: everything starts in
+    // one run (no key applied yet), so thenBy's own run-refinement collapses
+    // to exactly a stable sort by `key` -- same algorithm, same correctness
+    // guarantee as multi-key chains, zero duplicated sort logic.
+    OrderedArray<T> orderBy<K>((T) => K key) {
+        Array<int> allRun0 = [];
+        for (int i in 0 .. length() - 1) allRun0 = allRun0.add(0);
+        return OrderedArray(this, allRun0).thenBy(key);
+    }
+    T? minBy<K>((T) => K key) {
+        if (isEmpty()) return None;
+        T best = first();
+        K bestKey = key(best);
+        for (T x in this) {
+            K k = key(x);
+            if (k < bestKey) { best = x; bestKey = k; }
+        }
+        return best;
+    }
+    T? maxBy<K>((T) => K key) {
+        if (isEmpty()) return None;
+        T best = first();
+        K bestKey = key(best);
+        for (T x in this) {
+            K k = key(x);
+            if (bestKey < k) { best = x; bestKey = k; }
+        }
+        return best;
+    }
+
+    // Note: `join` is reserved for the by-key relational join (§11), so the
+    // string-building form (JS Array.join / Kotlin joinToString) is named thus.
+    string joinToString(string sep) {
+        string s = "";
+        int i = 0;
+        for (T x in this) {
+            if (i > 0) s = s + sep;
+            s = s + x.toString();
+            i = i + 1;
+        }
+        return s;
+    }
+
+    // O(total): sum lengths, one allocation, memcpy each part — the engine
+    // behind StringBuilder.toString() (Track 04 M4). Declared on Array<T>
+    // (return type `string`, not `T`) rather than specialized to Array<string>
+    // — the language has no generic specialization — but is only meaningful,
+    // and only ever called, on an Array<string>.
+    string concatAll();     // native
+}
+
+// The Array's protocol iterator (techdesign-07 §2.1). An honest mutable cursor
+// field `i` over a snapshotted pure-value array — reference semantics keep the
+// cursor advancing across pulls (the composition-class stance of design
+// problem #3; a snapshot closure would freeze it).
+class ArrayIterator<T> : IIterator<T> {
+    Array<T> a;
+    int i = 0;
+    new ArrayIterator(Array<T> src) { a = src; }
+    bool hasNext() => i < a.length();
+    T next() { T v = a.at(i); i = i + 1; return v; }
+}
+
+// A pure, in-language, zero-native wrapper over a sorted Array<T> -- exactly
+// Set<T>'s mold. Carries a run id per element (a plain, type-erased int,
+// monotonically assigned in current order) so that thenBy can tell "was
+// already tied on every earlier key" from "differs on an earlier key"
+// without growing a new generic parameter per chained call. Produced by
+// Array.orderBy / OrderedArray.thenBy -- not meant to be hand-constructed
+// (same norm as RangeIterator/ArrayIterator, technically public but
+// protocol-internal; no private/module-visibility keyword exists).
+class OrderedArray<T> : IIterable<T> {
+    Array<T> items;
+    Array<int> runId;   // runId[i] == runId[i-1]  <=>  items[i-1]/items[i]
+                         // tie on every key applied so far
+    new OrderedArray(Array<T> its, Array<int> ids) { items = its; runId = ids; }
+
+    // Reuses the already-proven-stable Array.sort rather than a hand-rolled
+    // segmented sort: tag each element with its EXISTING run id, sort tagged
+    // pairs comparing run id first -- key() is never even evaluated for a
+    // cross-run pair, so cross-run order literally cannot be touched, not
+    // just "usually preserved" -- then recompute a finer run partition.
+    OrderedArray<T> thenBy<K>((T) => K key) {
+        Array<Pair<int, T>> tagged = [];
+        for (int i in 0 .. items.length() - 1) {
+            tagged = tagged.add(Pair::Of(runId.at(i), items.at(i)));
+        }
+        Array<Pair<int, T>> sorted = tagged.sort((p, q) => {
+            if (p.first < q.first) return 0 - 1;
+            if (q.first < p.first) return 1;
+            K ka = key(p.second);
+            K kb = key(q.second);
+            return ka < kb ? 0 - 1 : (kb < ka ? 1 : 0);
+        });
+        Array<T> newItems = sorted.select((pr) => pr.second);
+        Array<int> newRunId = [];
+        int counter = 0;
+        for (int i in 0 .. sorted.length() - 1) {
+            if (i > 0) {
+                Pair<int, T> prev = sorted.at(i - 1);
+                Pair<int, T> cur = sorted.at(i);
+                bool sameOldRun = prev.first == cur.first;
+                K kprev = key(prev.second);
+                K kcur = key(cur.second);
+                bool tiedOnKey = !(kprev < kcur) && !(kcur < kprev);
+                if (!(sameOldRun && tiedOnKey)) counter = counter + 1;
+            }
+            newRunId = newRunId.add(counter);
+        }
+        return OrderedArray(newItems, newRunId);
+    }
+
+    Array<T> toArray() => items;
+    int length() => items.length();
+    bool isEmpty() => items.isEmpty();
+    IIterator<T> iterator() => OrderedArrayIterator(this);
+}
+
+class OrderedArrayIterator<T> : IIterator<T> {
+    Array<T> a;
+    int i = 0;
+    new OrderedArrayIterator(OrderedArray<T> src) { a = src.items; }
+    bool hasNext() => i < a.length();
+    T next() { T v = a.at(i); i = i + 1; return v; }
+}
+
+// A mutable accumulator over Array<string>.concatAll() (Track 04 M4): a
+// CLASS (reference semantics) since mutation across call sites is the point.
+// `parts = parts.add(s)` is the same self-append shape Array<T>'s own bodies
+// use; toString() is the one O(total) native call, not a join loop.
+class StringBuilder {
+    Array<string> parts = [];
+    int len = 0;
+    StringBuilder add(string s) { parts = parts.add(s); len = len + s.length(); return this; }
+    StringBuilder (<<)(string s) => add(s);
+    int length() => len;
+    bool isEmpty() => len == 0;
+    string toString() => parts.concatAll();
+}
+
+// Map<K, V>: a pure associative value (same model as Array): "changing"
+// methods return a new map; m[k] = v is rebind-sugar. Insertion-ordered.
+// (`get`/`set` are keywords, hence the pure vocabulary: at/with/without.)
+class Map<K, V> : IIterable<Pair<K, V>> {
+    new Map() { }
+
+    int length();                     // native
+    V at(K key);                      // native
+    Map<K, V> with(K key, V val);     // native (pure add/update)
+    Map<K, V> without(K key);         // native (pure remove)
+    bool has(K key);                  // native
+    Array<K> keys();                  // native
+    Array<V> values();                // native
+
+    get ([])(K key) => at(key);
+    bool isEmpty() => length() == 0;
+
+    // Protocol uniformity (techdesign-07 §2.1): the built-in `for (Pair e in m)`
+    // fast path and this iterator yield the identical Pair sequence, in insertion
+    // order (design problem #7). `for..in` over a map still takes the fast path.
+    IIterator<Pair<K, V>> iterator() => MapIterator(this);
+
+    V? atOrNone(K key) => has(key) ? at(key) : None;
+    V atOr(K key, V dflt) => has(key) ? at(key) : dflt;
+    // Iteration already yields Pair<K, V> (§11) — no keys()+at() double scan.
+    Array<Pair<K, V>> entries() {
+        Array<Pair<K, V>> r = [];
+        for (Pair e in this) r = r.add(e);
+        return r;
+    }
+    // Bracket-sugar accumulate (not `.with()`): portable to every engine,
+    // including the two Bug 18 blocks (`.with()`/`.without()` are missing
+    // from LLVM's and X64Gen's named-method native dispatch).
+    Map<K, V> withAll(Map<K, V> o) {
+        Map<K, V> m = this;
+        for (Pair e in o) m[e.first] = e.second;
+        return m;
+    }
+    Map<K, U> mapValues<U>((V) => U fn) {
+        Map<K, U> m = Map();
+        for (Pair e in this) m[e.first] = fn(e.second);
+        return m;
+    }
+    Map<K, V> whereEntries((K, V) => bool pred) {
+        Map<K, V> m = Map();
+        for (Pair e in this) if (pred(e.first, e.second)) m[e.first] = e.second;
+        return m;
+    }
+}
+
+// The Map's protocol iterator (techdesign-07 §2.1). Snapshots the insertion-
+// ordered key list and yields Pair<K, V> in that order — the same sequence the
+// built-in Map fast path produces (design problem #7).
+class MapIterator<K, V> : IIterator<Pair<K, V>> {
+    Map<K, V> m;
+    Array<K> ks;
+    int i = 0;
+    new MapIterator(Map<K, V> src) { m = src; ks = src.keys(); }
+    bool hasNext() => i < ks.length();
+    Pair<K, V> next() {
+        K k = ks.at(i);
+        i = i + 1;
+        return Pair::Of(k, m.at(k));
+    }
+}
+
+// Set<T>: in-language over Map<T, bool>, pure value semantics, insertion-
+// ordered, zero natives (§4.1). `with`/`without` rebuild via bracket sugar
+// (`m[v] = true`, a fresh scan-rebuild for without), never `.with()`/
+// `.without()` by name — Bug 18 (bug.md) means those are missing from LLVM's
+// and X64Gen's native dispatch, and Set has no reason to inherit that gap
+// when the portable sugar path does the same job.
+class Set<T> {
+    Map<T, bool> m;
+    new Set() { m = Map(); }
+    // Convenience ctor: fold an Array into a Set.
+    new Set(Array<T> items) {
+        Map<T, bool> mm = Map();
+        for (T x in items) mm[x] = true;
+        m = mm;
+    }
+    int length() => m.length();
+    bool isEmpty() => m.isEmpty();
+    bool has(T v) => m.has(v);
+    Set<T> with(T v) {
+        Set<T> r = Set();
+        Map<T, bool> mm = m;
+        mm[v] = true;
+        r.m = mm;
+        return r;
+    }
+    Set<T> without(T v) {
+        Set<T> r = Set();
+        Map<T, bool> mm = Map();
+        for (T x in m.keys()) if (x != v) mm[x] = true;
+        r.m = mm;
+        return r;
+    }
+    Array<T> toArray() => m.keys();
+    string toString() => "{" + toArray().joinToString(", ") + "}";
+    Set<T> union(Set<T> o) {
+        Set<T> r = this;
+        for (T x in o.toArray()) r = r.with(x);
+        return r;
+    }
+    Set<T> intersect(Set<T> o) {
+        Set<T> r = Set();
+        for (T x in toArray()) if (o.has(x)) r = r.with(x);
+        return r;
+    }
+    Set<T> except(Set<T> o) {
+        Set<T> r = Set();
+        for (T x in toArray()) if (!o.has(x)) r = r.with(x);
+        return r;
+    }
+}
+
+// ===========================================================================
+//  Seq<T> — the lazy pipeline (techdesign-07 §3). Pure library over the
+//  iterator protocol: NOTHING runs until a terminal (toArray/firstOrNone/
+//  count/forEach/reduce) pulls; each combinator's fn runs at most once per
+//  pulled element; firstOrNone short-circuits.
+//
+//  Implementation strategy (the design's central decision, problem #1/#3):
+//  iterator-COMPOSITION classes, not closures-holding-closures. Each combinator
+//  returns a wrapper Seq whose iterator wraps the source's iterator, holding
+//  honest mutable cursor state in fields — a snapshot-capture closure would
+//  freeze that state (§7.1). The source is held by the INTERFACE type
+//  (IIterable<T> / IIterator<T>), never the class, so `source.iterator()` and
+//  the pull calls dispatch to the real concrete subclass (a class-typed
+//  receiver would bake in the static declaration — the language's dynamic
+//  dispatch is interface-only, P2 finding).
+// ===========================================================================
+
+class Seq<T> : IIterable<T> {
+    // Abstract: every concrete Seq overrides this. A throwing body (rather than
+    // a bodyless declaration, which the IR treats as a native) keeps the class
+    // valid; it never runs, since a Seq value is always a concrete subclass and
+    // the terminals below pull through `for..in`'s dynamic iterator() dispatch.
+    IIterator<T> iterator() { throw RuntimeException("Seq is abstract: a subclass provides iterator()"); }
+
+    // --- combinators (lazy: build a wrapper, pull nothing) ---
+    Seq<U> map<U>((T) => U fn) => MapSeq(this, fn);
+    Seq<T> where((T) => bool pred) => FilterSeq(this, pred);
+    Seq<T> take(int n) => TakeSeq(this, n);
+    Seq<T> takeWhile((T) => bool pred) => TakeWhileSeq(this, pred);
+    Seq<T> skip(int n) => SkipSeq(this, n);
+
+    // --- terminals (drive the pull) ---
+    // Each terminal upcasts `this` to the INTERFACE before pulling: a call
+    // through IIterable/IIterator dispatches on the runtime object's concrete
+    // subclass, whereas a bare `this.iterator()` would statically bind the
+    // abstract base above (the language's dynamic dispatch is interface-only,
+    // P2 finding). Driving the iterator by hand (not `for..in`) also keeps these
+    // bodies independent of the checker's forInProtocol path-record, which the
+    // trusted prelude is not run through.
+    Array<T> toArray() {
+        IIterable<T> self = this;
+        IIterator<T> it = self.iterator();
+        Array<T> r = [];
+        while (it.hasNext()) r = r.add(it.next());
+        return r;
+    }
+    T? firstOrNone() {
+        IIterable<T> self = this;
+        IIterator<T> it = self.iterator();
+        if (it.hasNext()) return it.next();   // the lazy payoff: pulls exactly one
+        return None;
+    }
+    int count() {
+        IIterable<T> self = this;
+        IIterator<T> it = self.iterator();
+        int n = 0;
+        while (it.hasNext()) { it.next(); n = n + 1; }
+        return n;
+    }
+    void forEach((T) => void fn) {
+        var f = fn;                          // copy the closure field to a local
+        IIterable<T> self = this;
+        IIterator<T> it = self.iterator();
+        while (it.hasNext()) f(it.next());
+    }
+    A reduce<A>(A seed, (A, T) => A fn) {
+        IIterable<T> self = this;
+        IIterator<T> it = self.iterator();
+        A acc = seed;
+        while (it.hasNext()) acc = fn(acc, it.next());
+        return acc;
+    }
+}
+
+// The bridge in: view a pure Array as a lazy Seq. ArraySeq's iterator is the
+// array's own ArrayIterator (a snapshot of a value — never invalidated).
+class ArraySeq<T> : Seq<T> {
+    Array<T> items;
+    new ArraySeq(Array<T> a) { items = a; }
+    IIterator<T> iterator() => ArrayIterator(items);
+}
+
+class MapSeqIterator<T, U> : IIterator<U> {
+    IIterator<T> src;
+    (T) => U fn;
+    new MapSeqIterator(IIterator<T> s, (T) => U f) { src = s; fn = f; }
+    bool hasNext() => src.hasNext();
+    U next() { var f = fn; return f(src.next()); }
+}
+class MapSeq<T, U> : Seq<U> {
+    IIterable<T> source;
+    (T) => U fn;
+    new MapSeq(IIterable<T> src, (T) => U f) { source = src; fn = f; }
+    IIterator<U> iterator() => MapSeqIterator(source.iterator(), fn);
+}
+
+class FilterSeqIterator<T> : IIterator<T> {
+    IIterator<T> src;
+    (T) => bool pred;
+    bool primed = false;
+    bool has = false;
+    T val;
+    new FilterSeqIterator(IIterator<T> s, (T) => bool p) { src = s; pred = p; }
+    // Advance to the next matching element, buffering it once (at-most-once).
+    void prime() {
+        if (primed) return;
+        primed = true;
+        has = false;
+        var p = pred;
+        while (src.hasNext()) {
+            T v = src.next();
+            if (p(v)) { val = v; has = true; return; }
+        }
+    }
+    bool hasNext() { prime(); return has; }
+    T next() { prime(); primed = false; return val; }
+}
+class FilterSeq<T> : Seq<T> {
+    IIterable<T> source;
+    (T) => bool pred;
+    new FilterSeq(IIterable<T> src, (T) => bool p) { source = src; pred = p; }
+    IIterator<T> iterator() => FilterSeqIterator(source.iterator(), pred);
+}
+
+class TakeSeqIterator<T> : IIterator<T> {
+    IIterator<T> src;
+    int remaining;
+    new TakeSeqIterator(IIterator<T> s, int n) { src = s; remaining = n; }
+    bool hasNext() => remaining > 0 && src.hasNext();
+    T next() { remaining = remaining - 1; return src.next(); }
+}
+class TakeSeq<T> : Seq<T> {
+    IIterable<T> source;
+    int n;
+    new TakeSeq(IIterable<T> src, int cnt) { source = src; n = cnt; }
+    IIterator<T> iterator() => TakeSeqIterator(source.iterator(), n);
+}
+
+class TakeWhileSeqIterator<T> : IIterator<T> {
+    IIterator<T> src;
+    (T) => bool pred;
+    bool primed = false;
+    bool has = false;
+    bool done = false;
+    T val;
+    new TakeWhileSeqIterator(IIterator<T> s, (T) => bool p) { src = s; pred = p; }
+    void prime() {
+        if (primed || done) return;
+        primed = true;
+        if (src.hasNext()) {
+            T v = src.next();
+            var p = pred;
+            if (p(v)) { val = v; has = true; }
+            else { has = false; done = true; }
+        } else { has = false; done = true; }
+    }
+    bool hasNext() { prime(); return has; }
+    T next() { prime(); primed = false; return val; }
+}
+class TakeWhileSeq<T> : Seq<T> {
+    IIterable<T> source;
+    (T) => bool pred;
+    new TakeWhileSeq(IIterable<T> src, (T) => bool p) { source = src; pred = p; }
+    IIterator<T> iterator() => TakeWhileSeqIterator(source.iterator(), pred);
+}
+
+class SkipSeqIterator<T> : IIterator<T> {
+    IIterator<T> src;
+    int toSkip;
+    bool skipped = false;
+    new SkipSeqIterator(IIterator<T> s, int k) { src = s; toSkip = k; }
+    void doSkip() {
+        if (skipped) return;
+        skipped = true;
+        int k = 0;
+        while (k < toSkip && src.hasNext()) { src.next(); k = k + 1; }
+    }
+    bool hasNext() { doSkip(); return src.hasNext(); }
+    T next() { doSkip(); return src.next(); }
+}
+class SkipSeq<T> : Seq<T> {
+    IIterable<T> source;
+    int n;
+    new SkipSeq(IIterable<T> src, int cnt) { source = src; n = cnt; }
+    IIterator<T> iterator() => SkipSeqIterator(source.iterator(), n);
+}
+

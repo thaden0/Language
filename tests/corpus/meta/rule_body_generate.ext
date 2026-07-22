@@ -1,0 +1,19 @@
+// Bindgen metaprog scope: the minimal body-GENERATING rule. Unlike `rewrites`,
+// a `generates body of m` rule's `replace` template never references `$body`
+// (M36 forbids it) — the placeholder body `n + 1` is discarded outright and
+// replaced wholesale, not composed with.
+namespace M {
+    attribute Gen { }
+    rule gen generates body of m {
+        match @Gen on method m
+        replace `return 99;`
+    }
+}
+uses M;
+
+class Calc {
+    @Gen
+    int base(int n) => n + 1;   // placeholder; discarded, never runs
+}
+
+console.writeln(Calc().base(4));   // 99, not (4 + 1)

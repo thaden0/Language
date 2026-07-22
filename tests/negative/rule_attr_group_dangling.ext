@@ -1,0 +1,12 @@
+// techdesign-splices-desugars-sonnet.md §1.2 point 4: a trailing `@attr(A);`
+// with no following declaration in the body is a parse error, never a
+// silently-dropped attribute.
+namespace Orm {
+    attribute Column { }
+}
+uses Orm;
+
+class Row {
+    int id;
+    @attr(Column);
+}

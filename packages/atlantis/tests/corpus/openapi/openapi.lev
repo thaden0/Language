@@ -1,0 +1,158 @@
+// Atlantis Track 07 — M3 acceptance corpus (design §9 M3): OpenAPI 3.1
+// assembly against a hand-built Array<RouteRec> fixture (§5.1's own
+// sanctioned approach — Era-A's `AddRoute` hardcodes `controller = "Route"`,
+// so real router integration is a follow-up), SchemaRegistry (§4.3, hit +
+// miss), @Summary join, /llms.txt, and the schema-drift check (design risk
+// #1: the SAME DTO's schema through MCP's inputSchema and OpenAPI's
+// requestBody must be byte-identical, since both call the same schemaJson()).
+uses Atlantis;
+uses Atlantis::OpenApi;
+uses Atlantis::Mcp;
+uses Atlantis::Routing;
+
+@Serializable
+struct Address : IJsonSerializable {
+    string city;
+    string zip;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.city), Atlantis::__atlEnc(this.zip)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+@Serializable
+struct CreateUser : IJsonSerializable {
+    string email;
+    Address address;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.email), Atlantis::__atlEnc(this.address)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+@Serializable
+struct Unregistered : IJsonSerializable {
+    int v;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.v)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+// A DTO with an UNREGISTERED nested type — exercises SchemaRegistry's boot
+// error (§4.3).
+@Serializable
+struct HasUnregistered : IJsonSerializable {
+    Unregistered thing;
+
+    JsonValue toJson() {
+        Array<string> ks = this.__atlKeys();
+        Array<JsonValue> vs = [Atlantis::__atlEnc(this.thing)];
+        return Atlantis::__atlZipObj(ks, vs);
+    }
+}
+
+class UserController {
+    @Summary("Creates a new user")
+    JsonValue create(CreateUser body) => body.toJson();
+
+    JsonValue list() => JsonValue::ofArray([]);
+}
+
+// Same command-object DTO exposed as an MCP tool too — the schema-drift
+// check compares THIS inputSchema against the OpenAPI requestBody schema.
+class UserService : ToolSource {
+    @Tool("createUser", "Creates a new user")
+    JsonValue createUser(CreateUser args) => args.toJson();
+
+    new UserService() {
+        this.registerRun("createUser", "Creates a new user",
+            CreateUser::Empty().schemaJson(),
+            (JsonValue a) => guard("createUser", () => content(this.createUser(CreateUser::FromJson(a)))));
+    }
+}
+
+void main() {
+    console.writeln("== SchemaRegistry: miss -> boot error ==");
+    bool threw = false;
+    string msg = "";
+    try {
+        HasUnregistered::Empty().schemaJson();
+    } catch (RuntimeException e) {
+        threw = true;
+        msg = e.message;
+    }
+    console.writeln("threw=" + threw.toString());
+    console.writeln("mentionsFix=" + msg.contains("register(\"Unregistered\"").toString());
+
+    console.writeln("== SchemaRegistry: register + hit ==");
+    SchemaRegistry registry = schemas();
+    registry.register("Address", Address::Empty().schemaJson());
+    console.writeln("has(Address)=" + registry.has("Address").toString());
+
+    console.writeln("== instantiate UserController (runs the @Summary ctor-injection) ==");
+    UserController uc = UserController();
+    console.writeln("constructed");
+
+    console.writeln("== hand-built RouteRec fixture ==");
+    Array<ParamDesc> noParams = [];
+    JsonValue createBodySchema = CreateUser::Empty().schemaJson();
+    RouteRec createRoute = RouteRec("POST", "/users", "UserController", "create", noParams,
+        "JsonValue", 1, "", createBodySchema, "");
+    RouteRec listRoute = RouteRec("GET", "/users", "UserController", "list", noParams,
+        "Array<JsonValue>", 2, "", None, "");
+    Array<RouteRec> records = [createRoute, listRoute];
+
+    console.writeln("== OpenApiDoc.build ==");
+    AppInfo info = AppInfo("demo-app", "2.0.0");
+    JsonValue doc = build(records, registry, info, "bearerAuth");
+
+    console.writeln("-- §5.3 validation: openapi version --");
+    console.writeln(doc.at("openapi").asStr() ?? "?");
+
+    console.writeln("-- §5.3 validation: every route appears exactly once --");
+    JsonValue paths = doc.at("paths");
+    console.writeln("has /users=" + (paths.atOrNone("/users") != None).toString());
+    JsonValue usersPath = paths.at("/users");
+    console.writeln("has post=" + (usersPath.atOrNone("post") != None).toString());
+    console.writeln("has get=" + (usersPath.atOrNone("get") != None).toString());
+
+    console.writeln("-- create op: summary joined from @Summary (rec.summary was \"\") --");
+    console.writeln(usersPath.at("post").at("summary").asStr() ?? "?");
+    console.writeln("-- list op: no @Summary -> no summary key --");
+    console.writeln("hasSummary=" + (usersPath.at("get").atOrNone("summary") != None).toString());
+
+    console.writeln("-- create op: authMode=1(auth) + a scheme name -> security entry present --");
+    console.writeln("hasSecurity=" + (usersPath.at("post").atOrNone("security") != None).toString());
+    console.writeln("-- list op: authMode=2(noauth) -> security: [] --");
+    console.writeln(usersPath.at("get").at("security").render());
+
+    console.writeln("-- every op has a default->Problem $ref --");
+    console.writeln(usersPath.at("post").at("responses").at("default").at("content")
+        .at("application/problem+json").at("schema").at("$ref").asStr() ?? "?");
+
+    console.writeln("-- components/schemas has Problem + registered Address --");
+    JsonValue schemasObj = doc.at("components").at("schemas");
+    console.writeln("hasProblem=" + (schemasObj.atOrNone("Problem") != None).toString());
+    console.writeln("hasAddress=" + (schemasObj.atOrNone("Address") != None).toString());
+
+    console.writeln("== design risk #1: schema-drift check ==");
+    UserService svc = UserService();
+    JsonValue mcpInputSchema = svc.mcpTools().at(0).inputSchema;
+    JsonValue openApiBodySchema = createBodySchema;
+    console.writeln("identical=" + (mcpInputSchema.render() == openApiBodySchema.render()).toString());
+
+    console.writeln("== /llms.txt ==");
+    Array<ToolMeta> toolMetas = svc.toolMetas();
+    console.writeln(buildLlmsTxt(records, toolMetas, info));
+
+    console.writeln("== openApiCommand factory (no execution -- writes a file) ==");
+    App::Command cmd = openApiCommand((cfg) => doc);
+    console.writeln(cmd.name + ": " + cmd.description);
+}

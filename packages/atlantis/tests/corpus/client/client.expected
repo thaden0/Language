@@ -1,0 +1,8 @@
+== 2xx path (getJson) ==
+{"id":1.000000,"name":"Ada"}
+== 2xx path (postJson) ==
+{"id":2.000000,"name":"Bob"}
+== problem+json -> typed ApiException ==
+threw=true status=404 detailHasUser999=true
+== typed UsersClient (design §6.1) ==
+1,Ada

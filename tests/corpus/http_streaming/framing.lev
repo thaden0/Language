@@ -1,0 +1,70 @@
+// LA-HTTP-STREAM §7.2: head/framing. A streaming handler writes "a", "bc",
+// an empty (no-op) write, then end(). A raw client proves:
+//  - exactly one Transfer-Encoding: chunked, no Content-Length, computed Connection;
+//  - payloads frame as "1"/"2" size lines; write("") emits nothing;
+//  - end() emits exactly one 0\r\n\r\n; the decoded body is "abc".
+string esc(string s) {
+    string r = "";
+    int i = 0;
+    while (i < s.length()) {
+        int b = s.byteAt(i);
+        if (b == 13) { r = r + "\\r"; }
+        else if (b == 10) { r = r + "\\n"; }
+        else { r = r + s.subStr(i, 1); }
+        i = i + 1;
+    }
+    return r;
+}
+
+class Cli {
+    TcpStream s;
+    HttpServer srv;
+    string acc = "";
+    new Cli(TcpStream st, HttpServer sv) { s = st; srv = sv; }
+    void start() {
+        Cli self = this;
+        s.onData((c) => self.onData(c));
+        s << "GET /stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    }
+    void onData(string c) {
+        acc = acc + c;
+        int he = acc.indexOf("\r\n\r\n");
+        if (he < 0) { return; }
+        string body = acc.subStr(he + 4, acc.length() - (he + 4));
+        if (!body.endsWith("0\r\n\r\n")) { return; }        // terminal not yet
+        int firstNl = acc.indexOf("\r\n");
+        HeaderMap hm = std::parseHeaderLines(acc.subStr(firstNl + 2, he - (firstNl + 2)));
+        console.writeln("te=" + hm.firstOr("Transfer-Encoding", "?"));
+        console.writeln("te-count=" + hm.all("Transfer-Encoding").length());
+        console.writeln("cl=" + (hm.has("Content-Length") ? "present" : "absent"));
+        console.writeln("conn=" + hm.firstOr("Connection", "?"));
+        console.writeln("ct=" + hm.firstOr("Content-Type", "?"));
+        console.writeln("wire=" + esc(body));
+        ChunkedDecoder dec = ChunkedDecoder();
+        console.writeln("decoded=" + dec.feed(body));
+        s.close();
+        srv.stop();
+    }
+}
+
+HttpResponse handler(HttpRequest req) {
+    HeaderMap h = HeaderMap();
+    h.set("Content-Type", "text/plain");
+    h.set("Content-Length", "999");          // must be dropped by the server
+    h.set("Transfer-Encoding", "gzip");      // must be dropped by the server
+    return HttpResponse::ofStream(200, h, (sink) => {
+        sink.write("a");
+        sink.write("bc");
+        sink.write("");                      // no-op: emits nothing
+        sink.end();
+    });
+}
+
+void run() {
+    HttpServer server = HttpServer(8097);
+    server.handle((req) => handler(req));
+    int fd = std::sysTcpConnect("127.0.0.1", 8097);
+    Cli c = Cli(TcpStream(fd), server);
+    c.start();
+}
+run();

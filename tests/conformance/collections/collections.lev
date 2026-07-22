@@ -1,0 +1,25 @@
+// Arrays (pure, LINQ/JS surface), Maps, joins, ranges.
+void run() {
+    Array nums = [1..6];
+    console.writeln(nums.where((n) => n % 2 == 0).joinToString(","));
+    console.writeln(nums.map((n) => n * 10).joinToString(","));
+    console.writeln(nums.reduce(0, (a, b) => a + b));
+    console.writeln(nums.reverse().take(3).joinToString(","));
+    nums[0] = 99;
+    console.writeln(nums.first());
+
+    Map<string, int> ages;
+    ages["alice"] = 30;
+    ages["bob"] = 25;
+    ages["alice"] = 31;
+    console.writeln(ages);
+    console.writeln(ages.keys().joinToString("/"));
+    int total = 0;
+    for (Pair e in ages) total += e.second;
+    console.writeln(total);
+
+    Array a = [1, 2, 3];
+    Array b = [2, 3, 4];
+    for (Pair p in a.join(b, (x, y) => x == y)) console.writeln(p.first);
+}
+run();

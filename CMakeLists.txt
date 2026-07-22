@@ -16,34 +16,96 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # literal with the language's own real lexer without linking the rest of the
 # compiler (Parser/Resolver/Checker/Eval/... stay langfront-only).
 add_library(levsyntax
-  src/Diagnostic.cpp
-  src/Token.cpp
-  src/Lexer.cpp)
-target_include_directories(levsyntax PUBLIC src)
+  src/core/Diagnostic.cpp
+  src/core/Token.cpp
+  src/frontend/Lexer.cpp)
+# src/core + src/frontend: levsyntax's own sources use directory-qualified
+# includes, but its consumers (tools/trident/*) include Diagnostic/Source/
+# Token/Lexer unqualified; PUBLIC propagation keeps them building unedited.
+target_include_directories(levsyntax PUBLIC src src/core src/frontend)
 # --- end levsyntax ---
+
+# --- shipped prelude (techdesign-prelude-ship-as-files-opus.md §3/§5) ---
+# Canonical segment list, in concatenation order. This list is the single
+# source of truth (design R5): the generator bakes it into the embedded-
+# fallback table that Resolver::parsePrelude() and main.cpp's directory
+# validator both iterate. wasm = Track W W-M3 DOM bridge, wasm32*-only (R3).
+set(LV_PRELUDE_SEGMENTS core std rest regex_core regex_api web wasm expr)
+set(LV_PRELUDE_WASM_ONLY wasm)
+set(LV_PRELUDE_DIR ${CMAKE_SOURCE_DIR}/prelude)
+set(LV_PRELUDE_EMBEDDED ${CMAKE_BINARY_DIR}/generated/PreludeEmbedded.cpp)
+list(TRANSFORM LV_PRELUDE_SEGMENTS APPEND ".lev"
+     OUTPUT_VARIABLE LV_PRELUDE_FILES)
+list(TRANSFORM LV_PRELUDE_FILES PREPEND "${LV_PRELUDE_DIR}/"
+     OUTPUT_VARIABLE LV_PRELUDE_FILES)
+# Pass the lists comma-joined: a raw ;-list would be re-split by the shell
+# when the custom command's rule is generated. The script rejoins on ",".
+string(REPLACE ";" "," LV_PRELUDE_SEGMENTS_CSV "${LV_PRELUDE_SEGMENTS}")
+string(REPLACE ";" "," LV_PRELUDE_WASM_ONLY_CSV "${LV_PRELUDE_WASM_ONLY}")
+add_custom_command(
+  OUTPUT ${LV_PRELUDE_EMBEDDED}
+  COMMAND ${CMAKE_COMMAND}
+          -DOUT=${LV_PRELUDE_EMBEDDED}
+          -DPRELUDE_DIR=${LV_PRELUDE_DIR}
+          -DSEGMENTS=${LV_PRELUDE_SEGMENTS_CSV}
+          -DWASM_ONLY=${LV_PRELUDE_WASM_ONLY_CSV}
+          -P ${CMAKE_SOURCE_DIR}/cmake/GenPreludeEmbedded.cmake
+  DEPENDS ${LV_PRELUDE_FILES} ${CMAKE_SOURCE_DIR}/cmake/GenPreludeEmbedded.cmake
+  COMMENT "Generating embedded prelude fallback")
+# --- end shipped prelude ---
 
 # --- front-end library (shared by driver + tests) ---
 add_library(langfront
-  src/Parser.cpp
-  src/AstPrinter.cpp
-  src/Project.cpp
+  ${LV_PRELUDE_EMBEDDED}
+  src/frontend/Parser.cpp
+  src/frontend/ParserExpr.cpp
+  src/frontend/ParserMeta.cpp
+  src/meta/AstPrinter.cpp
+  src/driver/Project.cpp
   # --- Track A: compiler build-plan input (techdesign-toolchain.md §5.1) ---
-  src/BuildPlan.cpp
+  src/driver/BuildPlan.cpp
   # --- end Track A ---
-  src/Resolver.cpp
-  src/Checker.cpp
-  src/Eval.cpp
-  src/Rules.cpp
-  src/RuntimeLoop.cpp
-  src/RuntimeNatives.cpp
-  src/Lower.cpp
-  src/IrInterp.cpp
-  src/Ownership.cpp
-  src/MemVerify.cpp
-  src/CGen.cpp
+  src/sema/Resolver.cpp
+  src/sema/Checker.cpp
+  src/sema/CheckerInfer.cpp
+  src/sema/CheckerFlow.cpp
+  src/sema/CheckerDispatch.cpp
+  src/sema/CheckerGenerics.cpp
+  src/sema/CheckerReify.cpp
+  # refactor_1 session 03 (owner-approved addition, not pre-staged by session
+  # 01): the overload-resolution / generic-inference-support / bind-inject
+  # cluster shared across CheckerInfer/CheckerDispatch/CheckerGenerics call
+  # sites — table gap discovered during implementation, see
+  # designs/complete/refactor_1/techdesign-03-checker-split-sonnet.md.
+  src/sema/CheckerOverload.cpp
+  src/runtime/Eval.cpp
+  src/meta/Rules.cpp
+  src/meta/RulesExpand.cpp
+  src/meta/RulesClone.cpp
+  src/runtime/RuntimeCore.cpp
+  src/runtime/RuntimeLoop.cpp
+  src/runtime/RuntimeNatives.cpp
+  src/ir/Lower.cpp
+  src/backend/IrInterp.cpp
+  src/ir/Ownership.cpp
+  src/ir/MemVerify.cpp
+  src/backend/CGen.cpp
   src/X64.cpp
   src/X64Gen.cpp)
-target_include_directories(langfront PUBLIC src)
+# Everything under src/ uses directory-qualified includes resolved via `src`;
+# the extra layer dirs are on the path solely for files that may not / need
+# not be edited and still include unqualified:
+#   - the FROZEN X64 files at src/ root (Diagnostic.hpp -> core, Ir.hpp /
+#     Ownership.hpp -> ir) — X64 sources may never be edited;
+#   - the generated build/generated/PreludeEmbedded.cpp (PreludeEmbedded.hpp
+#     -> driver);
+#   - tests/* (Lexer/Parser -> frontend, Checker/Resolver -> sema,
+#     AstPrinter/Rules -> meta, Eval/RuntimeLoop -> runtime, Project ->
+#     driver), which get these PUBLICly.
+# The `layering` ctest enforces the dependency map on the qualified includes
+# within the src/ layer directories themselves.
+target_include_directories(langfront PUBLIC src src/core src/frontend
+  src/sema src/meta src/ir src/runtime src/driver)
 target_link_libraries(langfront PUBLIC levsyntax)
 
 # --- optional LLVM backend ---
@@ -55,7 +117,7 @@ execute_process(COMMAND llvm-config-18 --cmakedir
 find_package(LLVM QUIET CONFIG HINTS "${LLVM_CMAKE_DIR_HINT}")
 if (LLVM_FOUND)
   message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} found — native backend enabled")
-  target_sources(langfront PRIVATE src/LlvmGen.cpp)
+  target_sources(langfront PRIVATE src/backend/LlvmGen.cpp src/backend/LlvmGenOps.cpp src/backend/LlvmGenGlue.cpp)
   target_include_directories(langfront SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
   target_compile_definitions(langfront PUBLIC HAVE_LLVM)
   target_link_libraries(langfront PUBLIC LLVM)
@@ -75,7 +137,7 @@ endif()
 # --- end TLS (LA-2) ---
 
 # --- compiler driver ---
-add_executable(leviathan src/main.cpp)
+add_executable(leviathan src/driver/main.cpp)
 target_link_libraries(leviathan PRIVATE langfront)
 
 # --- Track B: trident package manager (techdesign-toolchain.md §5.2) ---
@@ -108,6 +170,16 @@ target_link_libraries(trident PRIVATE levsyntax)
 
 # --- tests ---
 enable_testing()
+
+# refactor_1 session 06: enforce the src/ layer dependency map (X64 exempt by
+# virtue of living at src/ root).
+add_test(NAME layering COMMAND bash ${CMAKE_SOURCE_DIR}/tools/check_layering.sh)
+
+# refactor_1 session 08: fail on NEW cross-file duplication above the checked-in
+# baseline (identifier-blind winnowing; X64 never scanned).
+add_test(NAME clone-ratchet
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/clonedet.py check
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(unittests tests/test_lexer.cpp)
 target_link_libraries(unittests PRIVATE langfront)
@@ -247,6 +319,58 @@ add_test(NAME corpus_target_uses_cpp
 add_test(NAME corpus_meta_expand_roundtrip
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expand_roundtrip.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus/meta")
+# B2 conditional splice (designs/complete/metaprog-splices/
+# techdesign-splices-conditional-opus.md §5/§8): the three `$if`/`$else` reject
+# rows — each a hard compile error carrying its named diagnostic. The green
+# fixtures (rule_if_splice{,_twin}, rule_if_expr{,_twin}, rule_if_chain) ride the
+# corpus_meta_* lanes above.
+add_test(NAME rule_if_reject_badcond            # M40: non-bool condition
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_badcond.ext"
+                 "$if-condition must be bool")
+add_test(NAME rule_if_reject_dangling_else      # M41: $else without a $if
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_dangling_else.ext"
+                 "$else without a preceding $if")
+add_test(NAME rule_if_reject_kindmix            # M41: statement in an expr-position branch
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_if_kindmix.ext"
+                 "expected expression")
+# techdesign-splices-desugars-sonnet.md §1.2 point 4: a trailing `@attr(A);`
+# grouped-attribute group with no following declaration is a parse error, not
+# a silently-dropped attribute.
+add_test(NAME rule_attr_group_reject_dangling
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_attr_group_dangling.ext"
+                 "@attr(...) must precede a declaration")
+# Named splice anchor (designs/metaprog-splices/techdesign-splices-named-anchor-
+# opus.md §4): the three splice-anchor reject rows. The green fixtures
+# (rule_splice_routes{,_twin}, rule_splice_multi, rule_splice_empty) ride the
+# corpus_meta_* + expand round-trip lanes above.
+add_test(NAME rule_splice_reject_missing         # M42: `at splice X` with no `@X()` site
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_missing.ext"
+                 "no '@InjectRoutes()' splice site exists")
+add_test(NAME rule_splice_reject_dup             # M42: two `@X()` sites, non-`multi` rule
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_dup.ext"
+                 "add 'multi' to fan out or keep one site")
+add_test(NAME rule_splice_reject_notattr         # M43: `@X()` site where X is not an attribute
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr.ext"
+                 "is not a declared attribute")
+add_test(NAME rule_splice_reject_notattr_norule  # M43 fires even with NO rules present
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr_norule.ext"
+                 "is not a declared attribute")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir
@@ -355,6 +479,19 @@ add_test(NAME corpus_math_transcendental_cpp
 add_test(NAME argv_differential
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_argv.sh"
                  $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}/tests/corpus")
+# ship-as-files prelude (techdesign-prelude-ship-as-files-opus.md §6.1):
+# per-target segment selection + directory-resolution tiers/fatals. Front-end
+# only, no wasm toolchain needed.
+add_test(NAME prelude_select
+         COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_select.sh
+                 $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
+# Bug #98 regression floor: a rule/attribute authored in a prelude/*.lev segment
+# participates in the rule stage (collect/match/rewrite) like a project-file
+# rule. Copies the prelude + appends a self-contained spike; the shipped
+# prelude/*.lev files are never touched.
+add_test(NAME prelude_rules
+         COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_rules.sh
+                 $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
 # terminal raw mode (designs/terminal-raw-mode.md §7): non-tty degradation across
 # the four non-frozen engines, the frozen-ELF deferral, comptime hermeticity, and
 # a pty end-to-end that reads one keystroke with no Enter/echo and verifies the
@@ -1029,6 +1166,21 @@ if (OpenSSL_FOUND)
 endif()
 # --- end TLS (LA-2) ---
 
+# --- HTTP streaming responses (LA-HTTP-STREAM) ---
+# designs/complete/techdesign-http_streaming_response-*.md §7. One consolidated
+# lane (run_http_streaming.sh) drives the http_streaming corpus — head/framing,
+# SSE return-before-end, keep-alive across the stream boundary, writer-throw,
+# pipelining-abort, bodyless/version, the flush barrier, sink abort, teardown
+# churn, and transport backpressure — on oracle / IR / LLVM, then asserts the
+# teardown churn's reachable root set is constant in N. Binds loopback
+# 8096-8102 / 18097 / 18110 / 18114, so it holds corpus_net_ports.
+add_test(NAME http_streaming_integration
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_http_streaming.sh"
+                 $<TARGET_FILE:leviathan> "${CMAKE_SOURCE_DIR}")
+set_tests_properties(http_streaming_integration PROPERTIES
+                     RESOURCE_LOCK corpus_net_ports TIMEOUT 600)
+# --- end HTTP streaming responses ---
+
 # Project / file system (§12): multi-file programs gathered into one logical
 # compilation unit via a manifest, resolved through trident into a build plan
 # (§3.3) — trident is the front door (GT1); leviathan never parses a manifest.
@@ -1683,7 +1835,7 @@ else()
 endif()
 
 # B-M5: Windows cross corpus lane under wine (doc-2 §7's two deferred driver
-# items — `-lws2_32`/.exe output in src/main.cpp, and this lane). Feature-
+# items — `-lws2_32`/.exe output in src/driver/main.cpp, and this lane). Feature-
 # detected on `wine` (to run the .exe) and the MinGW-w64 cross toolchain (to
 # build the per-triple runtime archive via runtime/build-triple.sh); absent
 # either, the lane is skipped so the suite stays green on hosts without a
@@ -1724,3 +1876,34 @@ else()
   message(STATUS "G-PTY3: Windows ConPTY lane SKIPPED "
                  "(need a MinGW-w64 cross compiler; not found)")
 endif()
+
+# ---------------------------------------------------------------------------
+# refactor_1 session 07 (techdesign-07): backend-agnostic conformance corpus.
+# One ctest test per (leg x program) over tests/conformance/<area>/<name>.lev,
+# on three legs: interp (--run), cgen (--build), llvm (--build-native).
+# There is NO x64/ELF leg — ever. Per-leg skips live in
+# tests/conformance/skip.<leg>.txt (reason REQUIRED per line); run.sh prints
+# the reason and exits 77, which ctest reports as Skipped — visible, never
+# silent. LEVIATHAN_BIN points run.sh at this build's compiler.
+file(GLOB_RECURSE CONFORMANCE_PROGRAMS
+     "${CMAKE_SOURCE_DIR}/tests/conformance/*.lev")
+list(SORT CONFORMANCE_PROGRAMS)
+foreach(prog ${CONFORMANCE_PROGRAMS})
+  file(RELATIVE_PATH prog_rel "${CMAKE_SOURCE_DIR}/tests/conformance" "${prog}")
+  string(REPLACE ".lev" "" tname "${prog_rel}")
+  string(REPLACE "/" "_" tname "${tname}")
+  foreach(leg interp cgen llvm)
+    add_test(NAME "conf_${leg}_${tname}"
+             COMMAND bash "${CMAKE_SOURCE_DIR}/tests/conformance/run.sh"
+                     "${leg}" "${prog}")
+    set_tests_properties("conf_${leg}_${tname}" PROPERTIES
+                         SKIP_RETURN_CODE 77
+                         TIMEOUT 300
+                         ENVIRONMENT "LEVIATHAN_BIN=$<TARGET_FILE:leviathan>")
+  endforeach()
+endforeach()
+
+# techdesign-07 Part A completeness gate: every enumerator of `enum class Op`
+# in src/ir/Ir.hpp must appear as an exact-name heading in docs/ir-spec.md.
+add_test(NAME ir_spec_complete
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/conformance/check_ir_spec.sh")

@@ -1,0 +1,39 @@
+// B2 (techdesign-splices-conditional, LA-16): ONE binding rule emits a
+// per-source marshaling statement for each @Param field — path / query / body —
+// by selecting the shape at EXPANSION time with `$if`/`$else if`/`$else`,
+// instead of one rule per source combination. It composes the two landed
+// splice primitives: `$for` iterates the fields, `$if` picks the branch per
+// field. The untaken branches are never emitted (the template stays a template
+// — see rule_if_splice_twin.ext, whose hand-written body this is byte-identical
+// to on --run, and --expand, which shows only the taken branch).
+namespace Web {
+    attribute Handler { }
+    attribute Param   { string source = "body"; }
+    rule bindParams {
+        match @Handler(h) on class C
+        inject `Array<string> bind() {
+            Array<string> out = [];
+            $for f in C.fields.where((x) => x.hasAttr("Param")) :
+                $if (f.attr("Param")?.argStr(0) == "path") {
+                    out = out.add("path " + $f.name);
+                } $else if (f.attr("Param")?.argStr(0) == "query") {
+                    out = out.add("query " + $f.name);
+                } $else {
+                    out = out.add("body " + $f.name);
+                }
+            return out;
+        }` at member of C
+    }
+}
+uses Web;
+
+@Handler
+class Show {
+    @Param("path")  int id;
+    @Param("query") int page;
+    @Param("body")  int payload;
+    int untagged;                 // no @Param — filtered out, no statement emitted
+}
+
+Show s = Show();
+console.writeln(s.bind().joinToString("\n"));

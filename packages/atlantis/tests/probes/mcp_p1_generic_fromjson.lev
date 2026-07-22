@@ -1,0 +1,31 @@
+// T7-P1: static-shaped call (A::FromJson) inside a generic body — the LA-18
+// mechanism (§3.3's makeTool<A,R>) — plus a real finding on how A must be
+// supplied at the call site.
+//
+// FINDING: A does NOT infer from a (A) => R function-value argument whose
+// lambda parameter carries an explicit type annotation ((Widget w) => ...),
+// even though that's exactly the design's own makeTool<A,R> call shape
+// (§3.3/§3.6: `(AddArgs args) => this.add(args)`). That call fails:
+// "cannot determine a concrete type tuple for generic 'callWithParsed' at
+// this call site". This is NOT a T7-P1/LA-18 failure — A::FromJson(v) itself
+// resolves and runs correctly once A is pinned; only the INFERENCE path is
+// the gap. Not metaprog-shaped (no rule/attribute involved) and not blocking
+// (a clean, in-spec fix exists): explicit turbofish (LA-32, landed
+// 2026-07-19) pins A/R directly. Applied in the real mcpTool rule (design
+// §3.3): the rule-generated call to `makeTool` splices an explicit
+// `::<$p.type, ReturnType>` rather than relying on inference.
+struct Widget {
+    string name;
+    new FromJson(JsonValue v) {
+        this.name = v.at("name").asStr() ?? "?";
+    }
+}
+
+R callWithParsed<A, R>((A) => R fn, JsonValue v) => fn(A::FromJson(v));
+
+void main() {
+    JsonValue doc = json::parse("{\"name\":\"gizmo\"}") ?? JsonValue::ofNull();
+    string result = callWithParsed::<Widget, string>((w) => w.name, doc);
+    console.writeln(result);
+}
+main();

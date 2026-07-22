@@ -1,0 +1,25 @@
+// LA-30 doc 5 §4 "nested_spawn_join.lev" — a worker inside a worker; joins
+// rethrow correctly at each level. `outer` spawns `middle`, which itself
+// spawns `inner` and awaits it locally (same thread that created it) before
+// returning — no bare Promise crosses a thread it wasn't created on, so this
+// never trips A-1's spawn-body-Promise reject (bug #35, reject route A: a spawn
+// body referencing a Promise through a capture OR a bare global is rejected —
+// see spawn_global_promise_rejected.lev). Verified byte-identical on
+// oracle/IR/LLVM.
+//
+// `inner`'s throw rejects its Worker; `middle`'s `await w` rethrows it (a
+// catchable RuntimeException, doc 2 §7's existing spawn try/catch, no new
+// plumbing); `outer`'s body is `middle()` itself, so the same exception
+// propagates out of `outer`'s body, rejecting `outer`'s Worker in turn;
+// the top-level `await outer` rethrows it once more, caught here.
+int inner() {
+    throw RuntimeException("inner boom");
+    return 0;                       // unreachable, satisfies the int return type
+}
+int middle() {
+    Worker<int> w = std::spawn(() => inner());
+    return await w;
+}
+Worker<int> outer = std::spawn(() => middle());
+try { console.writeln(await outer); }
+catch (RuntimeException e) { console.writeln(e.message); }   // inner boom
