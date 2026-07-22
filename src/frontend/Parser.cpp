@@ -1093,7 +1093,26 @@ StmtPtr Parser::parseTopLevelItemInner() {
     if (at(TokenKind::KwBind)) return parseBind();
     if (at(TokenKind::KwUses)) return parseUses();
     if (at(TokenKind::KwUse)) return parseUse();
-    if (at(TokenKind::KwThrow) || at(TokenKind::KwTry)) return parseStatement();
+    // Statement-form control flow in the top-level (script) body. parseStatement
+    // already handles every one of these verbatim; without this route they fall
+    // through to the bare-expression path below and fail with "expected
+    // expression" — even though `try`/`throw` (routed here) and a bare `match`
+    // (an expression, handled below) already work at the top level, and all of
+    // if/while/for/do work identically inside any function body. Top-level
+    // statements ARE the program body (reference.md §4.3 "top-level statements
+    // run in source order"), so a script's `for`/`if`/`while`/`do` belongs here.
+    // `break`/`continue`/`return` are intentionally NOT routed: they have no
+    // enclosing loop/function at the top level and stay rejected.
+    if (at(TokenKind::KwThrow) || at(TokenKind::KwTry) ||
+        at(TokenKind::KwIf) || at(TokenKind::KwWhile) ||
+        at(TokenKind::KwFor) || at(TokenKind::KwDo))
+        return parseStatement();
+    // Labeled top-level loop: `label: for/while/do …` — same three-token
+    // lookahead parseStatement uses; the recursive call lands in the loop case.
+    if (at(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon &&
+        (peek(2).kind == TokenKind::KwWhile || peek(2).kind == TokenKind::KwFor ||
+         peek(2).kind == TokenKind::KwDo))
+        return parseStatement();
 
     // function / global var:  Type Name ( ... )   |   Type Name ( = init )? ;
     // The Name may be a contextual keyword (`get`/`set`/`is`/…) exactly as a

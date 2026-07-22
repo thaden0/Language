@@ -445,3 +445,81 @@ IrInterp and the checker's authoritative table — the correct side), and both
 engines now consume that single table, so this class of drift cannot recur.
 Filed for the historical record per the refactor_1 doc's finding-disposition
 rule (b) — no further action needed.
+
+#105 fixed 2026-07-21 (found+fixed in-session, top-level-parsing sweep): a
+statement-form control-flow construct written in the TOP-LEVEL (script) body —
+`if`, `while`, `for`, `for-in`, `do`-while, or a labeled loop — was silently
+inert. Minimal repro (`for (int i = 0; i < 3; i = i + 1) console.writeln(i.toString());`
+as the whole program): on `--run` the tree-walk oracle printed nothing and ran
+no later statement; on the compiled parse path (`--ir`/`--build`/`--build-native`)
+the SAME source failed to parse at all with `error: expected expression` at the
+`for`. Expected: the loop runs and prints `0 1 2`, exactly as it does verbatim
+inside any function body, and exactly as `try`/`throw`/a bare `match` (an
+expression) already ran at the top level. Two independent, hand-maintained
+"what's allowed at the top level" lists had drifted out of sync with each other
+AND with the IR engine (same drift family as #104/#13 — parallel per-engine
+tables of statement kinds):
+
+  1. Parser (`src/frontend/Parser.cpp`, `parseTopLevelItemInner`): the top-level
+     item switch routed ONLY `throw`/`try` to `parseStatement()`; every other
+     statement keyword fell through to the bare-expression path
+     (`parseExpr(0)`), and `if`/`while`/`for`/`do` are not expression starters,
+     so parsing died with "expected expression". (A bare `match` slipped through
+     because it IS an expression — bug #84's top-level-`match` fix — which is why
+     `match` worked at the top level but `for` did not.)
+  2. Oracle (`src/runtime/Eval.cpp`, `execTopLevel`): the top-level body executor
+     had an `exec()` whitelist of `ExprStmt | Var | Try | Throw`, so even once a
+     top-level loop *did* parse it was never executed — the node was skipped and
+     the loop body (plus, in the oracle's single walk, its slot mutations) simply
+     vanished. The IR lowerer (`src/ir/Lower.cpp`) already lowered every
+     statement kind at the top level generically, which is why `--ir` diverged
+     from `--run` the instant the parser was opened up.
+  3. Checker (`src/sema/Checker.cpp`, `walk` over `program.items`): a THIRD such
+     list — the top-level type-check switch handled `Namespace`/`Class`/`Member`/
+     `Var`/`ExprStmt` and hit `default: break;` for everything else, so it never
+     descended into top-level control-flow bodies. Two consequences: (a) a type
+     error nested in a top-level `for`/`while`/`try` body slipped through
+     completely unchecked; (b) more seriously, a top-level LABELED loop's `break
+     <label>`/`continue <label>` was left with its label never bound (label
+     binding is a check-time step, `pushLoopLabel`/`bindLoopLabel`), so at runtime
+     the labeled break silently fell through to the INNERMOST loop instead of its
+     named target — a silent-wrong result, not a diagnostic. (`try`/`throw`, the
+     only control-flow forms that could reach the top level before this fix, were
+     likewise unchecked there — a latent pre-existing gap this closes.)
+
+Fix: (1) `parseTopLevelItemInner` now also routes `if`/`while`/`for`/`do` (and a
+`label: for/while/do` labeled-loop, via the same three-token lookahead
+`parseStatement` itself uses) to `parseStatement()`, alongside the existing
+`try`/`throw`; (2) `execTopLevel`'s whitelist gains `If | While | For | ForIn |
+DoWhile`, exactly matching the statement kinds the parser now admits; (3) the
+checker's top-level `walk` gains matching cases for `If`/`While`/`For`/`ForIn`/
+`DoWhile`/`Try`/`Throw` that set up a fresh function-body-like context (an env
+frame for body locals, no enclosing return target, clean `loopDepth_`/
+`labelStack_`) and delegate to the shared `check()` — so top-level loop bodies
+are type-checked AND labeled break/continue bind to the right loop, byte-identical
+to the same code inside a function. All three edits are minimal and mutually
+matched — no statement kind reaches the top level without both an executor and a
+checker case, and vice versa. Deliberately NOT admitted: `break`/`continue`/
+`return` as a *direct* top-level statement (no enclosing loop/function — they stay
+rejected; nested inside a top-level loop body they are fine). The IR/emit-C++/LLVM
+lowering legs needed no change (they already handled every kind), so ARC and
+codegen are untouched.
+
+Regression floor: `tests/corpus/toplevel_control_flow.lev` (+ `.expected`) —
+for-in accumulating into a top-level global (proving the body runs and its
+script-body slot mutation persists), C-style `for`, `while`, `if`/`else` (both
+arms), `do`-while, and a labeled `break outer` out of a nested top-level loop
+(whose expected output — `pair 0,0` / `pair 0,1` / `done`, byte-identical to the
+same loop written inside a function — is precisely what pins component (3): before
+the checker fix the top-level `break outer` wrongly printed `pair 1,0` too). It
+rides the whole-corpus `corpus_treewalk` + `corpus_ir` lanes automatically (the
+exact divergent pair) and is additionally pinned on emit-C++ and LLVM by the new
+`corpus_toplevel_control_flow_cpp` / `corpus_toplevel_control_flow_llvm`
+single-file lanes — byte-identical output on all four active engines. Verified:
+the four new/covering lanes green; `corpus_treewalk`/`_ir`/`_meta_*`,
+`parsertests`/`resolvertests`/`checkertests`/`evaltests`/`metatests`, `layering`,
+and `clone-ratchet` all still green (no pre-existing top-level program regressed —
+the change only ADDS reachable statement kinds); a negative probe (`int y =
+"s";` nested in a top-level `for`) now correctly reports `cannot initialize`.
+`docs/reference.md` §4.3 top-level-statements paragraph updated to state that the
+script body admits the full statement grammar except `break`/`continue`/`return`.

@@ -1,0 +1,13 @@
+foreach total=60
+cfor 0
+cfor 1
+cfor 2
+while 0
+while 1
+if-yes
+else-branch
+do 0
+do 1
+pair 0,0
+pair 0,1
+done
