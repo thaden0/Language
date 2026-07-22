@@ -66,6 +66,17 @@ private:
         std::vector<int> breakJumps, continueJumps;
         size_t usingsFloor = 0;
         const Stmt* stmt = nullptr;
+        // bug.md #99: register holding a BORROWED value-struct loop variable
+        // (a for-in over Array<Struct> where IterAt aliases the boxed element,
+        // per #66). The post-loop void at StmtKind::ForIn clears this so the
+        // stale alias is not released at frame exit, and `break` reaches that
+        // void too — but an early `return` jumps straight to Op::Ret /
+        // releaseAllRegs, bypassing it. A Return statement voids every active
+        // loop's borrowedElem before returning so releaseAllRegs never releases
+        // a value-struct alias whose backing array may already be freed
+        // (the #95/#66 family: a borrowed alias left live at frame exit). -1 =
+        // this loop has no borrowed value-struct elem.
+        int borrowedElem = -1;
     };
     std::vector<LoopCtx> loops_;
     // techdesign-labeled-break-continue.md F5: one using's break/continue
@@ -199,6 +210,21 @@ private:
     // Op::VFree reclaims it. Reg indices are per-function: cleared at each
     // function entry, saved/restored around nested lowering (lambdas, $init).
     std::set<int> freshStructRegs_;
+    // bug.md #96 (known_bugs_2): registers holding a BORROWED value-struct alias
+    // produced by `await` (Op::Await reads the promise's `value` field borrowed —
+    // lvrt_await's getfield, runtime/lv_runtime.c — and the dk==1 wrap's retain
+    // NO-OPS on a value class, so the register never gains a real count). The
+    // consuming CopyVal makes an independent copy, but the borrowed alias itself
+    // survives to frame exit; once the awaited Promise (and the value struct it
+    // owns) is freed in the same frame, releaseAllRegs (src/LlvmGen.cpp) releases
+    // the stale alias — reads the freed block's classId as garbage, the
+    // value-class skip in lv_is_counted fails, and the decrement lands on a
+    // freelist next-pointer word (heap corruption surfacing far from the site).
+    // Same family as #95 (method-receiver window) and #99 (loop-var early return):
+    // any lowering that leaves a borrowed value-struct alias live at a path that
+    // reaches releaseAllRegs must void that register first. A Return voids every
+    // recorded await alias before the frame exit. Reg indices are per-function.
+    std::set<int> borrowedAwaitStructs_;
     void noteFreshStructResult(const Expr* e, int reg);
     void maybeVFree(int reg);
     void emitArgCopies(const std::vector<int>& argRegs, const std::vector<ExprPtr>& args);

@@ -264,6 +264,59 @@ bool Evaluator::classHasMember(Symbol* cls, std::string_view name) {
     return false;
 }
 
+// #102: collect every identifier a lambda body references (a conservative
+// superset of its free variables) AND note whether it names `this` outright — the
+// same shape as src/Lower.cpp's lwrCollectExprNames. Used only to decide whether a
+// member-born closure must snapshot the receiver.
+static void evalLamRefsStmt(const Stmt* s,
+    std::unordered_set<std::string_view>& names, bool& sawThis);
+static void evalLamRefsExpr(const Expr* e,
+    std::unordered_set<std::string_view>& names, bool& sawThis) {
+    if (!e) return;
+    if (e->kind == ExprKind::This) sawThis = true;
+    if (e->kind == ExprKind::Name || e->kind == ExprKind::Member)
+        if (!e->text.empty()) names.insert(e->text);
+    evalLamRefsExpr(e->a.get(), names, sawThis);
+    evalLamRefsExpr(e->b.get(), names, sawThis);
+    evalLamRefsExpr(e->c.get(), names, sawThis);
+    for (const ExprPtr& x : e->list) evalLamRefsExpr(x.get(), names, sawThis);
+    for (const MatchArm& arm : e->arms) {
+        evalLamRefsExpr(arm.value.get(), names, sawThis);
+        evalLamRefsExpr(arm.bodyExpr.get(), names, sawThis);
+        evalLamRefsStmt(arm.bodyBlock.get(), names, sawThis);
+    }
+    for (const Param& p : e->params) evalLamRefsExpr(p.defaultValue.get(), names, sawThis);
+    evalLamRefsStmt(e->block.get(), names, sawThis);
+}
+static void evalLamRefsStmt(const Stmt* s,
+    std::unordered_set<std::string_view>& names, bool& sawThis) {
+    if (!s) return;
+    evalLamRefsExpr(s->expr.get(), names, sawThis);
+    evalLamRefsExpr(s->init.get(), names, sawThis);
+    evalLamRefsExpr(s->forStep.get(), names, sawThis);
+    for (const StmtPtr& b : s->body) evalLamRefsStmt(b.get(), names, sawThis);
+    evalLamRefsStmt(s->thenBranch.get(), names, sawThis);
+    evalLamRefsStmt(s->elseBranch.get(), names, sawThis);
+    evalLamRefsStmt(s->forInit.get(), names, sawThis);
+    evalLamRefsStmt(s->memberBody.get(), names, sawThis);
+    for (const CatchClause& c : s->catches) evalLamRefsStmt(c.body.get(), names, sawThis);
+}
+
+bool Evaluator::lambdaCapturesThis(const Expr* lam, Symbol* cls) {
+    if (!cls || !lam) return false;
+    std::unordered_set<std::string_view> names;
+    bool sawThis = false;
+    evalLamRefsExpr(lam, names, sawThis);
+    if (sawThis) return true;
+    for (std::string_view nm : names) {
+        if (classHasMember(cls, nm)) return true;   // field or method (flattened)
+        std::string s(nm);
+        if (findAccessor(cls, s, /*wantGet*/true) ||
+            findAccessor(cls, s, /*wantGet*/false)) return true;   // computed property
+    }
+    return false;
+}
+
 const Stmt* Evaluator::findMethod(Symbol* cls, const std::string& name, int argc) {
     // bug.md #13 arity-aware disambiguation, now the shared rtFindMethod (the
     // IR executor's findMethodByName is the same call) — see RuntimeCore.hpp.
@@ -1464,7 +1517,13 @@ Value Evaluator::eval(Expr* e) {
         case ExprKind::Lambda: {
             auto cl = std::make_shared<Closure>();
             cl->lambda = e; cl->env = env_;
-            cl->thisObj = thisObj_; cl->thisClass = thisClass_;
+            // #102: snapshot the receiver only when the body actually references
+            // `this` or a member. An unconditional thisObj snapshot made a no-op
+            // lambda stored into a field of `this` an uncollectable refcount cycle
+            // (object -> field -> closure -> thisObj=object). thisClass stays for
+            // member-name resolution context; it holds no reference count.
+            if (lambdaCapturesThis(e, thisClass_)) cl->thisObj = thisObj_;
+            cl->thisClass = thisClass_;
             Value v; v.kind = VKind::Closure; v.closure = cl; return v;
         }
         case ExprKind::Await: {          // LA-30: park the task (pump until M6)

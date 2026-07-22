@@ -485,6 +485,13 @@ add_test(NAME argv_differential
 add_test(NAME prelude_select
          COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_select.sh
                  $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
+# Bug #98 regression floor: a rule/attribute authored in a prelude/*.lev segment
+# participates in the rule stage (collect/match/rewrite) like a project-file
+# rule. Copies the prelude + appends a self-contained spike; the shipped
+# prelude/*.lev files are never touched.
+add_test(NAME prelude_rules
+         COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_rules.sh
+                 $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
 # terminal raw mode (designs/terminal-raw-mode.md §7): non-tty degradation across
 # the four non-frozen engines, the frozen-ELF deferral, comptime hermeticity, and
 # a pty end-to-end that reads one keystroke with no Enter/echo and verifies the

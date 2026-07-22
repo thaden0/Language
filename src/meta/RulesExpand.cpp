@@ -84,7 +84,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                 if (const std::vector<Symbol*>* v = parent->localLookup(s->name))
                     for (Symbol* sy : *v)
                         if (sy->kind == SymbolKind::Namespace) { nsym = sy; break; }
-            decls_.push_back({s, "namespace", fileOf(s->span), chain, nsym});
+            decls_.push_back({s, "namespace", fileIdxFor(s->span), chain, nsym});
             chain.push_back({"namespace", s, nsym});
             indexDecls(s->body, chain, full);
             chain.pop_back();
@@ -93,7 +93,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                                 : s->isInterface ? "interface"
                                 : s->isValue     ? "struct" : "class";
             Symbol* csym = rulesDetail::lookupClassIn(namespaceScope(ns), s->name);
-            decls_.push_back({s, kw, fileOf(s->span), chain, csym});
+            decls_.push_back({s, kw, fileIdxFor(s->span), chain, csym});
             chain.push_back({kw, s, csym});
             indexDecls(s->body, chain, ns);      // members share the namespace
             chain.pop_back();
@@ -106,7 +106,7 @@ void RuleEngine::indexDecls(std::vector<StmtPtr>& items,
                                 : (s->isGet || s->isSet) ? "accessor"
                                 : !s->callable         ? "field"
                                 : inClass              ? "method" : "function";
-            decls_.push_back({s, kw, fileOf(s->span), chain});
+            decls_.push_back({s, kw, fileIdxFor(s->span), chain});
         }
     }
 }
@@ -220,6 +220,53 @@ bool RuleEngine::implementsOrExtends(Symbol* cls, Symbol* iface) const {
 static bool findMarkerSlot(std::vector<StmtPtr>& vec, std::string_view marker,
                            std::vector<StmtPtr>** outVec, int* outIdx);
 
+// #98 (2 of 2): resolve the attribute a rule's `match @Foo` names, from the
+// RULE's own point of view — i.e. the same way resolveAttr resolves the `@Foo`
+// written at a use site, but keyed off the file that DECLARES the rule. A rule
+// writes `@Foo` (or `@NS::Foo`) relying on its own file's `uses` list plus the
+// namespaces that file opens; the attribute it names may live in a DIFFERENT
+// namespace than the rule (e.g. `ruleB` in `SibB` matching `@Foo` from `SibA`).
+// The old code only looked in the rule's OWN namespace + the global scope, so a
+// cross-namespace attribute resolved to null and the rule silently never fired.
+// The scope guard in tryMatch (rule's namespace must be visible to the DECL's
+// file) still governs whether the rule is eligible at all — this only fixes
+// WHICH attribute symbol `match @Foo` denotes.
+Symbol* RuleEngine::matchAttrSymbol(const OwnedRule& r) const {
+    const RuleMatch& m = *r.node->ruleMatch;
+    // Prefer an actual attribute class (mirrors resolveAttr): a same-named real
+    // class must not shadow the attribute the rule means to match.
+    auto attrIn = [&](Scope* sc) -> Symbol* {
+        if (!sc) return nullptr;
+        if (const std::vector<Symbol*>* v = sc->localLookup(m.attrName))
+            for (Symbol* s : *v)
+                if (s->kind == SymbolKind::Class && s->decl && s->decl->isAttribute)
+                    return s;
+        return nullptr;
+    };
+    // A qualified `match @NS::Name` walks straight down from the global scope.
+    if (!m.attrPath.empty()) {
+        Scope* sc = sema_.global;
+        for (std::string_view seg : m.attrPath) {
+            Scope* next = nullptr;
+            if (const std::vector<Symbol*>* v = sc->localLookup(seg))
+                for (Symbol* s : *v)
+                    if (s->kind == SymbolKind::Namespace && s->scope) { next = s->scope; break; }
+            if (!next) return nullptr;
+            sc = next;
+        }
+        return attrIn(sc);
+    }
+    // Unqualified: search the namespaces visible to the rule's own file (its
+    // `uses` + opened namespaces + std), then fall back to the rule's namespace
+    // and the global scope (covers prelude/co-located rules with no file slot).
+    int rfi = fileIdxFor(r.node->span);
+    if (rfi >= 0 && rfi < (int)imports_.size())
+        for (const std::string& ns : imports_[rfi].effective)
+            if (Symbol* s = attrIn(namespaceScope(ns))) return s;
+    if (Symbol* s = attrIn(namespaceScope(r.ns))) return s;
+    return attrIn(sema_.global);
+}
+
 // --- 4. matching (§5.4) ------------------------------------------------------
 bool RuleEngine::tryMatch(const OwnedRule& r, const DeclInfo& di, Bindings& out,
                           const AttrUse** firedAttr) {
@@ -234,8 +281,7 @@ bool RuleEngine::tryMatch(const OwnedRule& r, const DeclInfo& di, Bindings& out,
 
     // attribute pattern: an AttrUse on the decl resolving to the rule's attr
     if (m.hasAttr) {
-        Symbol* want = rulesDetail::lookupClassIn(namespaceScope(r.ns), m.attrName);
-        if (!want) want = rulesDetail::lookupClassIn(sema_.global, m.attrName);
+        Symbol* want = matchAttrSymbol(r);
         const AttrUse* found = nullptr;
         int count = 0;
         for (AttrUse& a : di.decl->attrs)
@@ -659,6 +705,11 @@ void RuleEngine::expand(const OwnedRule& r, const DeclInfo& di, Bindings& b,
         rec.fileIndex = di.fileIdx;
         expansions_.push_back(std::move(rec));
         changed_ = true;
+        // #98: a rewrite that landed on a prelude decl must survive to the
+        // backend — main.cpp's pass-2 resolver re-resolves this mutated prelude
+        // tree (adoptPrelude) rather than re-parsing a fresh, un-rewritten one.
+        if (preludeFileIdx_ >= 0 && di.fileIdx == preludeFileIdx_)
+            preludeMutated_ = true;
     }
 }
 

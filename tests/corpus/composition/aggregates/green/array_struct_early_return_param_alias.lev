@@ -1,0 +1,63 @@
+// Regression floor for bug #99 [P0] (LLVM native backend heap corruption that
+// surfaces at a LATER, unrelated heap-touching call — the crash-later P0.3
+// shape). Distilled from Atlantis Track 08's Auth::cookieValue. TWO ingredients,
+// both required: (a) a function with a CLASS-typed parameter (`Ctx` here, unused
+// in the body — its mere presence in the signature is enough), and (b) an early
+// `return` from inside a for-in over an Array<value-struct>.
+//
+// A value-struct loop variable is a BORROWED alias of the boxed array element
+// (bug #66); the for-in emits a post-loop void so that alias is not released at
+// frame exit, and `break` reaches that void too — but an early `return` jumps
+// straight to Op::Ret / releaseAllRegs, bypassing it. releaseAllRegs then
+// releases the stale value-struct alias whose backing Array was already freed in
+// the same frame: it reads the freed block's classId (garbage), the value-class
+// skip fails, and the "release" decrements a freelist word — heap corruption
+// that surfaces far from the site (here the `churn()` output is silently dropped
+// on LLVM before the fix; in Track 08's real repro it core-dumps inside a later
+// digest::hmacSha256 call). Same borrowed-value-struct-alias family as #95/#66.
+//
+// Fixed in src/Lower.cpp: a Return statement voids every active for-in loop's
+// borrowed value-struct loop-var register before returning (LoopCtx::borrowedElem),
+// exactly as the post-loop clear and `break` already do. Clean on run/ir/cpp/llvm;
+// pinned here so a future lowering change can't silently regress it.
+class Ctx { int tag = 0; new Ctx(int t) { this.tag = t; } }
+
+struct Kv { string name; string value;
+    new Kv(string name, string value) { this.name = name; this.value = value; } }
+
+Array<Kv> buildPairs(string s) {
+    Array<Kv> out = [];
+    for (string part in s.split(";")) {
+        int eq = part.indexOf("=");
+        if (eq < 0) { continue; }
+        out = out.add(Kv(part.subStr(0, eq), part.subStr(eq + 1, part.length() - (eq + 1))));
+    }
+    return out;
+}
+
+// (a) class-typed param `ctx` (UNUSED) + (b) early `return` from a for-in over
+// Array<Kv>. The returned `p.value` is read out of a BORROWED boxed-element alias.
+string? lookup(Ctx ctx, string name) {
+    string header = "x=1;y=2;a=v1.r3GNDygAj3fpO3Bg1qXc-P7VcVEmOzHww38cKvLRGqc.1784511493991.Zg6jEz2MeRy95zjB7lzztmuETwvMmXh2ggW57RC6bVM;z=3";
+    Array<Kv> pairs = buildPairs(header);
+    for (Kv p in pairs) {
+        if (p.name == name) { return p.value; }   // <- early return, second ingredient
+    }
+    return None;
+}
+
+// ANY later heap-touching work; the corruption planted above surfaces here.
+string churn(int n) {
+    string acc = "";
+    for (int i in 1..n) { acc = acc + i.toString() + "-"; }
+    return acc;
+}
+
+void main() {
+    Ctx ctx = Ctx(7);
+    console.writeln(lookup(ctx, "a") ?? "none");
+    console.writeln("about to churn");
+    string s = churn(200);
+    console.writeln("churn len=" + s.length().toString());
+}
+main();

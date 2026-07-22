@@ -1,0 +1,80 @@
+// Regression floor for known_bugs_2.md #96 [P0] (LLVM native backend heap
+// corruption that surfaces at a LATER, unrelated heap-touching call — the
+// crash-later P0.3 shape). Distilled from Atlantis Track 08's Auth::testPbkdf2
+// `VerifyResult r = await verifyPassword(...)` sequence, the live manifestation
+// of #96's original CPR-segfault symptom.
+//
+// The ingredient: `await` a Promise whose resolved value is a VALUE STRUCT with
+// a reference-typed field (`string? note` here forces the boxed representation,
+// bug #66). Op::Await reads the promise's `value` field BORROWED (lvrt_await's
+// getfield, runtime/lv_runtime.c), and the dk==1 wrap's retain NO-OPS on a value
+// class — so the await result register holds a bare borrowed alias of the
+// promise's stored struct, never gaining a real count. The consuming CopyVal
+// makes an independent copy into the local, but the borrowed alias survives to
+// frame exit; once the awaited Promise (and the struct it owns) is freed in the
+// same frame, releaseAllRegs (src/LlvmGen.cpp) releases the stale alias — reads
+// the freed block's classId (garbage), the value-class skip in lv_is_counted
+// fails, and the "release" decrements a freed block's freelist next-pointer
+// word. Heap corruption surfacing far from the site: the `churn()` loop below
+// re-allocates the SAME size class (small boxed value structs), pulls the
+// corrupted freelist node, and SIGSEGVs inside lv_alloc_heap on LLVM before the
+// fix; in Track 08's real corpus the same corruption (planted in testPbkdf2)
+// core-dumps ~eight test-functions later, partway through the session strategy.
+// Same borrowed-value-struct-alias family as #95 (method-receiver window) and
+// #99 (loop-var early return).
+//
+// Fixed in src/Lower.cpp: a value-struct `await` result register is recorded
+// (borrowedAwaitStructs_) and voided at every frame-exit path before control
+// reaches releaseAllRegs, exactly as #99 does for a for-in loop var. Clean on
+// run/ir/cpp/llvm; pinned here so a future lowering change can't silently
+// regress it (verified red->green: SIGSEGV on LLVM before, correct output after).
+struct Vr {
+    bool ok;
+    string? note;          // reference-typed field -> boxed value struct (#66)
+    new Vr(bool ok, string? note) { this.ok = ok; this.note = note; }
+}
+
+Promise<Vr> verify(bool good) {
+    Promise<Vr> p = Promise();
+    p.resolve(good ? Vr(true, "up") : Vr(false, None));
+    return p;
+}
+
+// Several `await`-into-a-value-struct-local sites, then an explicit Promise
+// return — the exact shape of testPbkdf2. Each await leaves a borrowed alias
+// that must be voided before this frame's releaseAllRegs.
+Promise<int> runChecks() {
+    int okCount = 0;
+    Vr r1 = await verify(true);
+    if (r1.ok) { okCount = okCount + 1; }
+    Vr r2 = await verify(false);
+    if (r2.ok) { okCount = okCount + 1; }
+    Vr r3 = await verify(true);
+    if (r3.ok) { okCount = okCount + 1; }
+    Vr r4 = await verify(true);
+    if (r4.ok) { okCount = okCount + 1; }
+    Vr r5 = await verify(false);
+    if (r5.ok) { okCount = okCount + 1; }
+    Promise<int> done = Promise();
+    done.resolve(okCount);
+    return done;
+}
+
+// Later heap-touching work over the SAME size class the freed value structs
+// used; pulls the corrupted freelist node — the corruption planted above
+// surfaces here (SIGSEGV in lv_alloc_heap on LLVM before the fix).
+int churn(int n) {
+    int acc = 0;
+    for (int i in 1..n) {
+        Array<Vr> a = [Vr(i % 2 == 0, "n")];
+        Vr got = a.at(0);
+        if (got.ok) { acc = acc + 1; }
+    }
+    return acc;
+}
+
+int oks = await runChecks();
+console.writeln("oks=" + oks.toString());
+console.writeln("about to churn");
+int c = churn(500);
+console.writeln("churn acc=" + c.toString());
