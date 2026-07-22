@@ -516,6 +516,8 @@ ExprPtr RuleEngine::cloneExpr(const Expr* e, Bindings& b, bool& err) {
     out->isRawSegment = e->isRawSegment;
     out->isQuasiPayload = e->isQuasiPayload;
     out->isRawString = e->isRawString;
+    out->singleQuoted = e->singleQuoted;
+    out->charLit = e->charLit;
 
     // Decl-hole in member-name position: `this.$m` -> splice the selector.
     if (e->kind == ExprKind::Member && isHole(e->text)) {

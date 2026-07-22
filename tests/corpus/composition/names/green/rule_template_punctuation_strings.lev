@@ -1,0 +1,18 @@
+// Regression floor for known bug #93: quasiquote cloning must preserve
+// punctuation-only and @-leading string literals as strings.
+namespace TemplateStrings {
+    attribute Mark { string table; }
+
+    rule addContext {
+        match @Mark(m) on class C
+        inject `string context() => $m.table + "." + "@Row " + "!?";`
+            at member of C
+    }
+}
+uses TemplateStrings;
+
+@Mark("users")
+class User { }
+
+User u = User();
+console.writeln(u.context());

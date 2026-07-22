@@ -236,6 +236,31 @@ static void test_allocator(void) {
     lvrt_release(&merged);
     lvrt_release(&s2);
 
+    /* bug #95: a compiler cleanup can retain a stale alias to a standalone
+     * value struct after its owning aggregate has already reclaimed it.  The
+     * payload remains inside the heap region, so the old ARC gate read the
+     * poisoned class id, mistook the value struct for a counted object, and
+     * decremented its free-list link.  The next two same-class allocations
+     * then followed that corrupted pointer and crashed later in unrelated
+     * code.  Freed-payload release/vfree must both be idempotent no-ops. */
+    LvValue va, vb;
+    lvrt_obj_new(&va, CLS_PAIR_VALUE);
+    lvrt_obj_new(&vb, CLS_PAIR_VALUE);
+    void* vaBlock = (void*)((uint8_t*)(intptr_t)va.payload - 16);
+    void* vbBlock = (void*)((uint8_t*)(intptr_t)vb.payload - 16);
+    lvrt_vfree(&va);
+    lvrt_vfree(&vb);                    /* free-list head: vb -> va */
+    lvrt_release(&vb);                  /* stale compiler-cleanup alias */
+    lvrt_vfree(&vb);                    /* stale explicit value free */
+
+    LvValue vc, vd;
+    lvrt_obj_new(&vc, CLS_PAIR_VALUE);
+    lvrt_obj_new(&vd, CLS_PAIR_VALUE);
+    CHECK((void*)((uint8_t*)(intptr_t)vc.payload - 16) == vbBlock);
+    CHECK((void*)((uint8_t*)(intptr_t)vd.payload - 16) == vaBlock);
+    lvrt_vfree(&vc);
+    lvrt_vfree(&vd);
+
     fprintf(stderr, "OK: allocator\n");
 }
 

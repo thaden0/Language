@@ -70,6 +70,7 @@ static void lv_die(const char* msg) {
 #define LV_HEAP_BYTES  (256 * 1024 * 1024)
 #define LV_ARENA_BYTES (64 * 1024 * 1024)
 #define LV_SIZE_CLASSES 28   /* block size 16 << c, c in [0,27]: 2^4 .. 2^31 */
+#define LV_FREE_POISON_WORD UINT64_C(0xfefefefefefefefe)
 
 /* the dense-array marker is bit 63 of the length field (§2.4). Shifting a
  * literal `1` into the sign bit of a signed int64 is undefined behavior
@@ -106,6 +107,24 @@ static int lv_in_region(const void* p) {
     if (u >= g_heap_base && u < g_heap_end) return 1;
     if (u >= g_arena_base && u < g_arena_end) return 1;
     return 0;
+}
+
+/* A payload needs 16 bytes of preceding storage for its LvHeader.  Keep this
+ * stronger than the general region predicate: ARC/vfree must never form HDR()
+ * from a garbage pointer that merely happens to equal a region boundary. */
+static int lv_payload_has_header(int64_t payload) {
+    const uint8_t* p = P8(payload);
+    if (g_heap_base && p >= g_heap_base + 16 && p < g_heap_end) return 1;
+    if (g_arena_base && p >= g_arena_base + 16 && p < g_arena_end) return 1;
+    return 0;
+}
+
+/* lv_free_raw preserves the free-list link in header word 0 and poisons every
+ * following byte.  A stale LvValue therefore still points inside a registered
+ * region, but header word 1 is this unambiguous tombstone. */
+static int lv_payload_is_freed(int64_t payload) {
+    return lv_payload_has_header(payload) &&
+           (uint64_t)HDR(payload)[1] == LV_FREE_POISON_WORD;
 }
 
 /* rounds `n` up to its power-of-two class (16 << c); mirrors X64Gen's
@@ -221,7 +240,8 @@ static int lv_is_counted(int64_t tag, int64_t payload) {
      * pointer (caught by ASan: an earlier version read the tag-5 classId
      * before confirming the pointer was runtime-owned at all). Only pure
      * pointer-value comparisons happen before this line. */
-    if (!lv_in_region(P8(payload))) return 0;                   /* literal or out-of-region */
+    if (!lv_payload_has_header(payload)) return 0;              /* literal or out-of-region */
+    if (lv_payload_is_freed(payload)) return 0;                 /* stale freed alias */
     if (tag == LV_OBJ && lvrt_isvalueclass(lv_ld_i64(payload, 0)))
         return 0;                                               /* value struct / dense record */
     return 1;
@@ -282,6 +302,7 @@ void lvrt_release(const LvValue* v) {
 
 void lvrt_vfree(const LvValue* v) {
     if (v->tag != LV_OBJ) return;
+    if (!lv_payload_has_header(v->payload) || lv_payload_is_freed(v->payload)) return;
     int64_t classId = lv_ld_i64(v->payload, 0);
     if (!lvrt_isvalueclass(classId)) return;
     int64_t rc = HDR(v->payload)[0];
