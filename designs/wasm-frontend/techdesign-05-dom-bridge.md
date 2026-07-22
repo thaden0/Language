@@ -1,7 +1,10 @@
 # Track W — doc 5 of 6: the JS/DOM bridge (W-M3, part 1)
 
-**Status:** LANDED (2026-07-18) — see §9 for the as-built shape. **Depends on:** W-M2 (doc
-04 — event handlers await; the bridge assumes suspension works).
+**Status:** PARTIALLY IMPLEMENTED / ACTIVE (reopened 2026-07-22). The synchronous DOM
+bridge and events-as-streams landed on 2026-07-18; §6's user-facing `fetch` endpoint did
+not, and its promised `lvrt_hostawait` follow-up was never packetized. WebSocket remains
+explicitly deferred to its first real consumer. See §9 for the as-built shape. **Depends
+on:** W-M2 (doc 04 — event handlers await; the bridge assumes suspension works).
 **HARD content:** the design bet below did NOT hold — reaching a JS host import from a
 hand-written prelude method needs a native seam, and every new native is a `CallNativeFn`
 row in `LlvmGen.cpp` (a HARD edit). Landed as the minimal packet
