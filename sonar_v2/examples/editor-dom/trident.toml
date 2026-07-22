@@ -1,0 +1,13 @@
+name = "editor-dom"
+entry = "main"
+sources = [
+    "main.lev",
+    "../../tests/harness/scripted_input.lev",
+    "../../tests/harness/assert.lev",
+    "../../tests/harness/dom_helpers.lev"
+]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Sonar"
