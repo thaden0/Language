@@ -284,7 +284,7 @@ private:
     // lookup helpers
     Value* localLookup(std::string_view name);
     bool ctorTarget(Expr* callee, Symbol*& cls, std::string& label);
-    const Stmt* resolveFunction(Expr* callee);
+    const Stmt* resolveFunction(Expr* callee, int argc = -1);
     bool classHasMember(Symbol* cls, std::string_view name);
     // #102: does a member-born lambda's body reference `this` or any member of
     // `cls` (field/method/accessor)? Gates whether the closure snapshots the

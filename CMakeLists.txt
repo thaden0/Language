@@ -529,6 +529,13 @@ add_test(NAME prelude_select
 add_test(NAME prelude_rules
          COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_rules.sh
                  $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
+# Arity-blind prelude-overload regression (techdesign-bindgen-metaprog-scope.md
+# §3.1): a call from an unchecked prelude body to one of several distinct-arity
+# overloads of a namespaced helper must resolve by arity, not to the first
+# same-named function. Pure-Leviathan pin — oracle/IR/LLVM must agree.
+add_test(NAME prelude_overload
+         COMMAND ${CMAKE_SOURCE_DIR}/tests/run_prelude_overload.sh
+                 $<TARGET_FILE:leviathan> ${CMAKE_SOURCE_DIR}/prelude)
 # terminal raw mode (designs/terminal-raw-mode.md §7): non-tty degradation across
 # the four non-frozen engines, the frozen-ELF deferral, comptime hermeticity, and
 # a pty end-to-end that reads one keystroke with no Enter/echo and verifies the

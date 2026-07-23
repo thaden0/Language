@@ -20,16 +20,81 @@ namespace std {
     string sysHostEcho<T>(T v);
 }
 
+// --- bindgen: @extern + `generates body of` (techdesign-bindgen-metaprog-scope.md)
+//
+// The DOM handle-wrapper marshaling bodies below are NOT hand-written. Each
+// marshaled method carries a one-line `@extern(op, kind)` attribute plus a
+// type-valid placeholder body; a `generates body of` rule per `kind` overwrites
+// that body in place (Layer D — no member is injected, so the M33 declare-vs-
+// generate collision never arises, §5). The per-parameter slot mapping (which
+// argument fills h1/a/b) is NOT expressed in the rules at all: `$_args` forwards
+// the method's own parameters verbatim into a hand-written marshal-helper family
+// (`__new`/`__int`/`__str`/`__act`), and OVERLOAD RESOLUTION over that family
+// places each argument in its slot (§3.1). A future DOM method whose parameter
+// shape matches no overload is a compile error at generation time, not a silent
+// miscompile — the family is the single, visible extension point (§8).
+//
+// `kind` is a plain string (the five constants below), not an enum: attribute
+// fields are limited to int/float/bool/string (§13 spike 3 fallback). The two
+// facts not recoverable from a signature are carried explicitly: `op` (the host
+// op string, e.g. "setAttribute") and `kind` (native tag I/S/V + the Node-vs-
+// Fluent return-shape bit).
+namespace Dom {
+    // op = the host op string.
+    // kind ∈ { "Node", "Int", "Str", "Fluent", "Child", "Act" }.
+    attribute extern { string op; string kind; }
+
+    // The marshal-helper family — the ONLY hand-written marshaling logic that
+    // survives, written once (not per method). Each is a single-expression
+    // forwarder into sysHost{I,S,V} with the h0/h1/a/b slots already placed; the
+    // overload signatures ARE the slot-mapping table (§3.1).
+
+    // receiver-less constructors (document-scoped ops, h0 = 0) -> new DomNode
+    DomNode __new(string op)                             => DomNode(std::sysHostI(op, 0, 0, "", ""));
+    DomNode __new(string op, string a)                   => DomNode(std::sysHostI(op, 0, 0, a,  ""));
+    // receiver-less int query
+    int     __int(string op)                             => std::sysHostI(op, 0, 0, "", "");
+    // receiver-handle queries (h0 = this.h), string return
+    string  __str(int h, string op)                      => std::sysHostS(op, h, 0, "", "");
+    string  __str(int h, string op, string a)            => std::sysHostS(op, h, 0, a,  "");
+    // receiver-handle actions (h0 = this.h), void return
+    void    __act(int h, string op)                      => std::sysHostV(op, h, 0, "", "");
+    void    __act(int h, string op, string a)            => std::sysHostV(op, h, 0, a,  "");
+    void    __act(int h, string op, string a, string b)  => std::sysHostV(op, h, 0, a, b);
+    // A child-handle action: the DomNode param's handle lands in h1. Distinct
+    // NAME (not a fourth __act overload) because an unchecked prelude body
+    // resolves same-named overloads by ARITY only — this shares arity 3 with
+    // __act(int,string,string), so it must be a separate name (docs/gotchas.md).
+    void    __child(int h, string op, DomNode child)     => std::sysHostV(op, h, child.h, "", "");
+
+    // One branch-free rule per kind. `$e.op` splices the op string as a bare
+    // expression; `$_args` forwards the matched method's parameter list; a
+    // `where` on the kind partitions the annotated methods across the five rules
+    // (mutually exclusive, so M35's double-rewrite check never fires here).
+    rule bindNode   generates body of m { match @extern(e) on method m where e.kind == "Node"
+        replace `return Dom::__new($e.op, $_args);` }
+    rule bindInt    generates body of m { match @extern(e) on method m where e.kind == "Int"
+        replace `return Dom::__int($e.op, $_args);` }
+    rule bindStr    generates body of m { match @extern(e) on method m where e.kind == "Str"
+        replace `return Dom::__str(this.h, $e.op, $_args);` }
+    rule bindFluent generates body of m { match @extern(e) on method m where e.kind == "Fluent"
+        replace `Dom::__act(this.h, $e.op, $_args); return this;` }
+    rule bindChild  generates body of m { match @extern(e) on method m where e.kind == "Child"
+        replace `Dom::__child(this.h, $e.op, $_args); return this;` }
+    rule bindAct    generates body of m { match @extern(e) on method m where e.kind == "Act"
+        replace `Dom::__act(this.h, $e.op, $_args);` }
+}
+
 // A DOM event, handle-wrapped (doc 05 §2). The bridge hands the trampoline a
 // bare int handle; this wraps it so user handlers take a typed DomEvent.
 class DomEvent {
     int h;
     new DomEvent(int handle) { h = handle; }
     int handle() => h;
-    string type() => std::sysHostS("eventType", h, 0, "", "");
+    @extern("eventType", "Str")        string type()        => "";
     // value of a form control the event targeted ("" if none) — enough for the
     // Atlantis demo's input handling without a full Event surface.
-    string targetValue() => std::sysHostS("eventTargetValue", h, 0, "", "");
+    @extern("eventTargetValue", "Str") string targetValue() => "";
 }
 
 // A DOM node, handle-wrapped (doc 05 §2): an int slot, nothing more. Leviathan
@@ -41,20 +106,11 @@ class DomNode {
     int handle() => h;
     bool exists() => h != 0;                    // getElementById miss -> 0
 
-    DomNode setAttr(string name, string value) {
-        std::sysHostV("setAttribute", h, 0, name, value);
-        return this;
-    }
-    string attr(string name) => std::sysHostS("getAttribute", h, 0, name, "");
-    DomNode setText(string t) {
-        std::sysHostV("setText", h, 0, t, "");
-        return this;
-    }
-    string text() => std::sysHostS("getText", h, 0, "", "");
-    DomNode append(DomNode child) {
-        std::sysHostV("appendChild", h, child.h, "", "");
-        return this;
-    }
+    @extern("setAttribute", "Fluent") DomNode setAttr(string name, string value) => this;
+    @extern("getAttribute", "Str")    string  attr(string name)                  => "";
+    @extern("setText",      "Fluent") DomNode setText(string t)                  => this;
+    @extern("getText",      "Str")    string  text()                            => "";
+    @extern("appendChild",  "Child")  DomNode append(DomNode child)             => this;
 
     // Events as a §13 stream endpoint (doc 05 §6): one host listener per
     // subscription feeds the trampoline, which pushes DomEvents into an ordinary
@@ -89,22 +145,20 @@ class DomNode {
     // Synthesize an event on this node — a real DOM dispatchEvent (in a page the
     // user clicks; a headless harness / test self-dispatches through the same
     // API, doc 05 §8).
-    void dispatch(string type) {
-        std::sysHostV("dispatchEvent", h, 0, type, "");
-    }
+    @extern("dispatchEvent", "Act") void dispatch(string type) { }
     void click() { this.dispatch("click"); }
 
-    void release() { std::sysHostV("release", h, 0, "", ""); }
+    @extern("release", "Act") void release() { }
 }
 
 // The document surface (doc 05 §2): the well-known entry points. document-scoped
 // ops ignore the primary handle (h0 = 0). A getElementById miss returns a
 // DomNode with handle 0 (exists() == false).
 namespace Dom {
-    DomNode body()            => DomNode(std::sysHostI("documentBody", 0, 0, "", ""));
-    DomNode create(string t)  => DomNode(std::sysHostI("createElement", 0, 0, t, ""));
-    DomNode textNode(string s)=> DomNode(std::sysHostI("createTextNode", 0, 0, s, ""));
-    DomNode byId(string id)   => DomNode(std::sysHostI("getElementById", 0, 0, id, ""));
+    @extern("documentBody",    "Node") DomNode body()            => DomNode(0);
+    @extern("createElement",   "Node") DomNode create(string t)  => DomNode(0);
+    @extern("createTextNode",  "Node") DomNode textNode(string s)=> DomNode(0);
+    @extern("getElementById",  "Node") DomNode byId(string id)   => DomNode(0);
     // The §5 leak-pin meter: live closure roots (0 when every listener is off).
-    int listenerCount()       => std::sysHostI("cloCount", 0, 0, "", "");
+    @extern("cloCount",        "Int")  int listenerCount()       => 0;
 }

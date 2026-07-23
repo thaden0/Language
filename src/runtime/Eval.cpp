@@ -237,10 +237,32 @@ static Symbol* resolveNsChain(Scope* global, const Expr* e) {
     return nullptr;
 }
 
-const Stmt* Evaluator::resolveFunction(Expr* callee) {
+// When `argc >= 0`, prefer the same-named OVERLOAD whose parameter count matches
+// (an unchecked prelude body has no checker-resolved target, so a call to one of
+// several distinct-arity overloads must be disambiguated here, exactly as the
+// IR lowering fallback does — same-named prelude overloads must be arity-unique,
+// docs/gotchas.md). `argc < 0` keeps the legacy first-by-name behavior.
+static const Stmt* pickByArity(const std::vector<Symbol*>& v, int argc) {
+    const Stmt* firstByName = nullptr;
+    for (Symbol* s : v)
+        if (s->kind == SymbolKind::Function && s->decl) {
+            if (!firstByName) firstByName = s->decl;
+            if (argc >= 0 && (int)s->decl->params.size() == argc) return s->decl;
+        }
+    return firstByName;
+}
+
+const Stmt* Evaluator::resolveFunction(Expr* callee, int argc) {
     if (callee->kind == ExprKind::Name) {
         Symbol* s = sema_.global->lookup(callee->text);
-        if (s && s->kind == SymbolKind::Function) return s->decl;
+        if (s && s->kind == SymbolKind::Function) {
+            // A bare name resolves to a single global symbol; if it heads an
+            // overload set, prefer the arity match among its peers.
+            if (argc >= 0)
+                if (const auto* v = sema_.global->localLookup(callee->text))
+                    if (const Stmt* byArity = pickByArity(*v, argc)) return byArity;
+            return s->decl;
+        }
     } else if (callee->kind == ExprKind::Member) {
         // Accept BOTH `NS::fn` and the dot spelling `NS.fn` a namespace singleton
         // uses (e.g. `term.enableRaw()`): resolveNsChain resolves the qualifier
@@ -251,8 +273,7 @@ const Stmt* Evaluator::resolveFunction(Expr* callee) {
         if (Symbol* ns = resolveNsChain(sema_.global, callee->a.get()))
             if (ns->scope)
                 if (const auto* v = ns->scope->localLookup(callee->text))
-                    for (Symbol* s : *v)
-                        if (s->kind == SymbolKind::Function) return s->decl;
+                    return pickByArity(*v, argc);
     }
     return nullptr;
 }
@@ -1292,7 +1313,7 @@ Value Evaluator::evalCall(Expr* e) {
                         : (hasPrimThis_ ? thisClass_ : nullptr);
         bool shadowedBySelf = selfCls && classHasMember(selfCls, callee->text);
         if (!shadowedBySelf)
-            if (const Stmt* fn = resolveFunction(callee))
+            if (const Stmt* fn = resolveFunction(callee, (int)args.size()))
                 return callFunction(fn, args, nullptr, nullptr);
         std::string name(callee->text);
         if (thisObj_) {
@@ -1388,7 +1409,7 @@ Value Evaluator::evalCall(Expr* e) {
                     if (m) return callPrimMethod(m, bv, args, cn);
                 }
         }
-        if (const Stmt* fn = resolveFunction(callee))   // namespaced function (NS::fn)
+        if (const Stmt* fn = resolveFunction(callee, (int)args.size()))   // namespaced function (NS::fn)
             return callFunction(fn, args, nullptr, nullptr);
     }
 
