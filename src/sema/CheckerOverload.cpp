@@ -552,6 +552,38 @@ static const TypeRef* directBaseTypeRef(Symbol* cls, Symbol* target) {
 Type Checker::inferConstruction(Symbol* cls, const Stmt* ctor,
                                 const std::vector<Type>& args, const Expr* call,
                                 const TypeRef* expected, SourceSpan span) {
+    // Implicit memberwise construction (bug #38): a class that declares NO
+    // constructor populates its data fields positionally, in slot order. That
+    // path performed no arity check at all, so surplus arguments were silently
+    // dropped at runtime — `int(3.9)`/`string(5)`/`bool(1)` (primitives have
+    // zero data fields) and `Foo(1, 2, 3)` (one field) all compiled and then
+    // yielded a default/garbage value that diverged across engines (the IR
+    // backend zero-inited an int to "0" while the tree-walker / LLVM / emit-C++
+    // left an empty object stringifying to ""). Reject a construction that
+    // supplies more arguments than the class has assignable data slots — the
+    // same "too many arguments" a declared constructor's arity check already
+    // gives. Gated on "declares no constructor": a class that DOES declare one
+    // but matched none has already been diagnosed by the overload picker
+    // ("no constructor matches the arguments"), so this never double-reports.
+    // `ctor` null + zero-or-fewer args than fields (partial memberwise) and the
+    // canonical `FieldError("email", "required")` (2 fields, 2 args) stay valid.
+    if (!ctor && cls && call && !call->list.empty()) {
+        bool declaresAnyCtor = false;
+        if (cls->decl)
+            for (const StmtPtr& m : cls->decl->body)
+                if (m->isCtor) { declaresAnyCtor = true; break; }
+        if (!declaresAnyCtor) {
+            size_t dataSlots = 0;
+            for (const Slot& s : cls->shape.slots)
+                if (!s.isMethod) ++dataSlots;
+            if (call->list.size() > dataSlots)
+                return error(span,
+                    "too many arguments to construct '" + std::string(cls->name) +
+                    "': it has " + std::to_string(dataSlots) +
+                    (dataSlots == 1 ? " assignable field but " : " assignable fields but ") +
+                    std::to_string(call->list.size()) + " were given");
+        }
+    }
     if (!cls || !cls->decl || cls->decl->generics.empty())
         return checkerDetail::classType(cls);
 

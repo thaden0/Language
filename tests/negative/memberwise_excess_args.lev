@@ -1,0 +1,10 @@
+// Regression floor: implicit memberwise construction (bug #38) must reject a
+// call that supplies MORE positional arguments than the class has assignable
+// data fields. Before the fix, the surplus args were silently dropped at
+// runtime and the value diverged across engines (IR zero-inited an int to "0";
+// the tree-walker / LLVM / emit-C++ left an empty object stringifying to "").
+// A primitive has zero data fields, so ANY argument is too many.
+void run() {
+    console.writeln(int(3.9).toString());   // int has 0 data fields, 1 arg
+}
+run();

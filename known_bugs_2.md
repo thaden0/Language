@@ -708,3 +708,39 @@ element (`lv_map_upsert` does — the array path lacks the twin call), and the
 boxed shared-COW path aliases value-struct pointers into the fresh array
 (#49's map family, unfixed for arrays); both pre-date this fix and only bite
 on the #66 boxed edge.
+
+memberwise-107 [P2] fixed 2026-07-22 (found+fixed in-session, differential-testing
+sweep — branch-prefixed identifier per docs/policies.md § Bug Numbering, since a
+sibling worktree independently claimed bare `#107` for an unrelated dense_index_set
+churn fix):
+implicit **memberwise construction** (bug.md #38 — a class that declares no
+constructor fills its data fields positionally, `FieldError("email", "required")`)
+performed NO arity check, so a construction supplying more arguments than the
+class has assignable data fields silently dropped the surplus at runtime and
+produced an engine-DIVERGENT value. Minimal repro (`int(3.9).toString()`, plus
+`string(5)` / `bool(1)` / any `Foo(1, 2, 3)` where `Foo` has one field): a
+primitive (`int`/`float`/`bool`/`string`) has zero data fields, so ANY argument
+is surplus. Actual: the IR engine (`--ir`) zero-inited the object and printed
+`"0"`/`"0.000000"`, while the tree-walker (`--run`), LLVM, and emit-C++ all left
+an empty/uninitialized object stringifying to `""` (and `string(5)` reached
+`<object>`) — four engines, three answers, none of them a diagnostic. Expected:
+a compile error, exactly as the declared-constructor arity path already gives
+(`Bar()` where `new Bar(int v)` exists → "missing required argument 'v'"). Root
+cause: `Checker::inferConstruction` (`src/sema/CheckerOverload.cpp`) returned
+early for a non-generic class WITHOUT validating argument count against the
+class's data slots, and the runtime memberwise path (`Evaluator::runCtor`,
+`src/runtime/Eval.cpp` — the `!ctor` branch) iterates SLOTS, so it just stops
+when the fields run out and never consumes the extra args. Fix: `inferConstruction`
+now, when the chosen ctor is null AND the class declares no constructor at all
+(so the overload picker has not already diagnosed a mismatch — no double-report),
+counts non-method slots in `cls->shape` and rejects a call whose argument count
+exceeds that ("too many arguments to construct 'X': it has N assignable
+field(s) but M were given"). Both construction entry points
+(`typeOfCallInner` expression path and the target-typed var-decl/return/field-init
+path, both of which funnel through `inferConstruction`) are covered by the single
+site. Unrelated to #73 (namespace-global Array COW), #105 (top-level control-flow
+parsing), and #106 (mem-verify sweep). Regression floor: `memberwise_excess_args_reject`
+(ctest, via `tests/negative/memberwise_excess_args.lev`). Reference §4.5 updated.
+[P2]: silent operation-drop + cross-engine divergence (P0.3-shaped), but the
+trigger is an uncommon spelling and the intended observable behavior ("reject")
+was undecided before this ruling — semantics-cap holds it at P2.
