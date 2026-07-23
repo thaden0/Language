@@ -1,10 +1,12 @@
-// XFAIL: dense IndexStore leaks its VALUE operand — the struct written into a
-// dense array is heap-allocated (it "escapes" per Ownership's stored-by-index
-// rule), its record is memcpy'd into the buffer, but the standalone copy is
-// never freed (~64B/iteration). idxset cannot free it (the source local may
-// still be read); the fix needs Lower-side liveness (a VFree at the consuming
-// site, like returned value structs) or arena routing for operands that are
-// provably copied in. Pre-existing — present before the §11 COW work.
+// XFAIL-ELF: the frozen X64Gen backend still leaks the dense IndexStore VALUE
+// operand — the struct written into a dense array is heap-allocated (it
+// "escapes" per Ownership's stored-by-index rule), its record is memcpy'd into
+// the buffer, and the standalone copy is never freed (~64B/iteration). On LLVM
+// this is FIXED (guarded green): the store's value operand is a definite fresh
+// `CopyVal c=1` temp read only by the store, so codegen routes it to the
+// consuming lvrt_idxset_move, which vfrees the dead copy on every path that
+// copied the record in (dense/columnar/map) and transfers ownership to the
+// slot on the boxed in-range edge. See known_bugs_2.md worktree-agent-a7c3e630889a1bf22-107.
 struct Pt {
     int x;
     int y;

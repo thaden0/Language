@@ -474,6 +474,79 @@ static void test_arrays_maps(void) {
     fprintf(stderr, "OK: arrays/maps (COW + dense)\n");
 }
 
+/* known_bugs_2.md worktree-agent-a7c3e630889a1bf22-107: lvrt_idxset_move — idxset with the VALUE operand
+ * CONSUMED (§15 destination ownership). The dense/columnar/map paths copy the
+ * record in and must vfree the dead standalone copy (the old ~recBytes/store
+ * churn leak); the boxed in-range path transfers ownership to the slot (the
+ * array's free path vfrees it) and must NOT free it; an OOB store consumes
+ * nothing and must vfree. Every leg asserts live-bytes returns to baseline. */
+static void test_idxset_move(void) {
+    int64_t baseline = lvrt_live_bytes();
+    LvValue idx0; idx0.tag = LV_INT; idx0.payload = 0;
+
+    /* dense: record bytes memcpy'd in -> the standalone operand is freed */
+    LvValue empty; lvrt_arr_new(&empty, 0);
+    lvrt_retain(&empty);
+    LvValue seed; lvrt_obj_new(&seed, CLS_PAIR_VALUE);
+    LvValue av; av.tag = LV_INT; av.payload = 1;
+    LvValue bv; bv.tag = LV_INT; bv.payload = 2;
+    lvrt_setfield(&seed, kA, &av);
+    lvrt_setfield(&seed, kB, &bv);
+    LvValue dense; lvrt_arr_append(&dense, &empty, &seed);   /* rc 1, dense */
+    lvrt_vfree(&seed);
+    lvrt_release(&empty);
+    CHECK(lv_test_len(dense.payload) < 0);
+    LvValue q; lvrt_obj_new(&q, CLS_PAIR_VALUE);             /* fresh rc-0 copy */
+    LvValue qa; qa.tag = LV_INT; qa.payload = 77;
+    lvrt_setfield(&q, kA, &qa);
+    LvValue after; lvrt_idxset_move(&after, &dense, &idx0, &q);   /* consumes q */
+    CHECK(after.payload == dense.payload);                   /* rc==1: in place */
+    LvValue elem; lvrt_idxget(&elem, &after, &idx0);
+    LvValue elemA; lvrt_getfield(&elemA, &elem, kA);
+    CHECK(elemA.tag == LV_INT && elemA.payload == 77);
+    lvrt_release(&dense);
+    CHECK(lvrt_live_bytes() == baseline);   /* q reclaimed at the store, not leaked */
+
+    /* boxed in-range: the slot takes the pointer itself — ownership moves to
+     * the array (its free path vfrees the element); no premature free */
+    LvValue boxed; lvrt_arr_new(&boxed, 1);
+    lvrt_retain(&boxed);
+    LvValue q2; lvrt_obj_new(&q2, CLS_PAIR_VALUE);
+    lvrt_setfield(&q2, kA, &av);
+    int64_t q2pay = q2.payload;
+    LvValue after2; lvrt_idxset_move(&after2, &boxed, &idx0, &q2);
+    CHECK(after2.payload == boxed.payload);
+    LvValue elem2; lvrt_idxget(&elem2, &after2, &idx0);
+    CHECK(elem2.tag == LV_OBJ && elem2.payload == q2pay);    /* aliased, not copied */
+
+    /* boxed OOB: nothing stored -> the operand is dead and reclaimed */
+    LvValue q3; lvrt_obj_new(&q3, CLS_PAIR_VALUE);
+    LvValue idx5; idx5.tag = LV_INT; idx5.payload = 5;
+    LvValue after3; lvrt_idxset_move(&after3, &boxed, &idx5, &q3);
+    CHECK(after3.payload == boxed.payload);
+    lvrt_release(&boxed);                                    /* vfrees the q2 element */
+    CHECK(lvrt_live_bytes() == baseline);
+
+    /* map: upsert deep-copies the struct value -> the operand is reclaimed */
+    LvValue m; lvrt_map_new(&m, 0);
+    lvrt_retain(&m);
+    LvValue key; lvrt_str_new(&key, "pt", 2);
+    LvValue q4; lvrt_obj_new(&q4, CLS_PAIR_VALUE);
+    lvrt_setfield(&q4, kB, &bv);
+    LvValue m2; lvrt_idxset_move(&m2, &m, &key, &q4);        /* fresh map, consumes q4 */
+    CHECK(m2.payload != m.payload);
+    lvrt_retain(&m2);
+    lvrt_release(&m);
+    LvValue got; lvrt_idxget(&got, &m2, &key);
+    CHECK(got.tag == LV_OBJ);
+    LvValue gotB; lvrt_getfield(&gotB, &got, kB);
+    CHECK(gotB.tag == LV_INT && gotB.payload == 2);
+    lvrt_release(&m2);
+    CHECK(lvrt_live_bytes() == baseline);
+
+    fprintf(stderr, "OK: idxset_move (consumed value operand, worktree-agent-a7c3e630889a1bf22-107)\n");
+}
+
 /* techdesign-columnar-arrays.md §4-§6, plan §2.1/§3.3: the runtime columnar
  * core, driven entirely from C with no LLVM. Builds an Array<Col> (Col = 3 int
  * fields, the only lv_col_eligible class), and exercises: flip, append×N,
@@ -1956,6 +2029,7 @@ int main(void) {
     test_arc_object_graph();
     test_strings();
     test_arrays_maps();
+    test_idxset_move();   /* known_bugs_2.md worktree-agent-a7c3e630889a1bf22-107 */
     test_columnar();
     test_map_with();
     test_dispatch_and_issub();

@@ -3088,8 +3088,11 @@ maps, value-struct arrays, heap strings) free through retain/release over a real
 (power-of-two size classes, blocks reused rather than the bump pointer growing forever). A
 differential churn corpus (`tests/corpus/churn/`) is **13/13 green at +0 bytes on both ELF
 and LLVM** (a 200k-iteration stress run holds at ~1KB escaping-tier peak on ELF; the LLVM
-lane reaches the same 13-green/1-XFAIL profile as of A-M6's arena tier), with one shared
-XFAIL (a dense-append edge, `dense_index_set.ext`) on both engines.
+lane reaches the same 13-green/1-XFAIL profile as of A-M6's arena tier). The dense-index-set
+edge (`dense_index_set.ext` and its columnar mirror) is guarded green on LLVM as of
+known_bugs_2.md worktree-agent-a7c3e630889a1bf22-107 — the store's fresh value-struct operand is consumed by
+`lvrt_idxset_move`, which reclaims the standalone copy on every layout that copies the record
+in — and stays an `XFAIL-ELF` on the frozen backend only.
 The last two gate-excluded kinds are now covered on both native backends: value structs
 returned by value (freed by uniqueness via `Op::VFree` and, on LLVM, the arena, since a
 value-struct pointer may point inline into a dense buffer) and heap-allocated strings

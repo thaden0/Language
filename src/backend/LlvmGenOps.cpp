@@ -2083,6 +2083,34 @@ namespace llvmDetail {
                         // runtime core, which COWs internally (in-place iff base
                         // rc==1). dest was pre-released above; the dk==1 wrap sees
                         // a void old-ref and retains the result.
+                        //
+                        // §15 destination ownership (dense_index_set /
+                        // columnar_index_set churn XFAILs): when the value operand
+                        // is a DEFINITE fresh value-struct copy — lowerAssign's
+                        // `CopyVal c=1` bind, whose dst is a write-once temp read
+                        // only by this store — the store CONSUMES it. Ownership
+                        // marks that copy "stored by index" (heap tier, rc 0), a
+                        // dense/columnar base memcpys/scatters the record's BYTES
+                        // in, and nobody ever freed the standalone copy (~recBytes
+                        // leaked per store). Only the runtime knows the layout
+                        // (boxed slots take the pointer itself — bug #66's boxed
+                        // edge — and must NOT free it), so consumption routes to
+                        // lvrt_idxset_move, which vfrees exactly on the paths that
+                        // copied the record in or stored nothing. Find the unique
+                        // writer of in.d: registers written by a definite CopyVal
+                        // are fresh temps (never rewritten), so the first hit
+                        // scanning backwards is THE writer; any other writer op
+                        // (or an `a`-as-source op like SetMember/Print stopping
+                        // the scan) conservatively keeps the old call — a leak at
+                        // worst, never a premature free.
+                        bool consumeVal = false;
+                        for (int w = (int)pc - 1; w >= 0; --w) {
+                            const Inst& wi = irfn.code[w];
+                            if (wi.a != in.d) continue;
+                            consumeVal = wi.op == Op::CopyVal && wi.c == 1;
+                            break;
+                        }
+                        FunctionCallee idxSetFn = consumeVal ? rtIdxSetMove : rtIdxSet;
                         std::vector<std::pair<int, int>> sets;   // (classId, fnIndex)
                         for (Symbol* cls : instClasses) {
                             std::vector<const Stmt*> mem;
@@ -2097,7 +2125,7 @@ namespace llvmDetail {
                             }
                         }
                         if (sets.empty()) {
-                            b.CreateCall(rtIdxSet, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
+                            b.CreateCall(idxSetFn, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
                         } else {
                             BasicBlock* doneBB = newBB("is.done");
                             BasicBlock* coreBB = newBB("is.core");
@@ -2119,13 +2147,23 @@ namespace llvmDetail {
                                 b.CreateBr(doneBB);
                                 b.SetInsertPoint(next);
                             }
-                            b.CreateCall(rtIdxSet, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
+                            b.CreateCall(idxSetFn, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
                             b.CreateBr(doneBB);
                             b.SetInsertPoint(coreBB);
-                            b.CreateCall(rtIdxSet, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
+                            b.CreateCall(idxSetFn, {regs[in.a], regs[in.b], regs[in.c], regs[in.d]});
                             b.CreateBr(doneBB);
                             b.SetInsertPoint(doneBB);
                         }
+                        // Consumed operand: the register still holds the (possibly
+                        // freed, possibly array-owned) struct pointer — void it
+                        // BEFORE the throw check so neither the unwind path nor
+                        // frame-exit releaseAllRegs ever touches a stale alias
+                        // (the #95/#96/#99 borrowed-alias family). The temp is
+                        // read only by this store, so the clear is invisible.
+                        // (On the declared-([]) setter hit path the copy was
+                        // handed to the setter and keeps today's fate; voiding
+                        // the temp is equally correct there.)
+                        if (consumeVal) storeVoid(b, regs[in.d]);
                         emitThrowCheck((int)pc);   // idxset raises RuntimeException on OOB
                         break;
                     }

@@ -86,7 +86,9 @@ struct Gen {
         rtPrintVal, rtPrintNl, rtSysWrite, rtReadLine,
         rtGetm, rtSetm, rtRegister,
         rtValueHasPromise, rtRegisterSpawnCheck,   // bug #35 spawn-global guard
-        rtArrNew, rtArrAppend, rtArrFill, rtArrConcatall, rtMapNew, rtMapWith, rtIdxGet, rtIdxSet, rtKeyEq,
+        rtArrNew, rtArrAppend, rtArrFill, rtArrConcatall, rtMapNew, rtMapWith, rtIdxGet, rtIdxSet,
+        rtIdxSetMove,   // §15: idxset with the value operand consumed (dense standalone-copy leak)
+        rtKeyEq,
         rtCanonEq,   // struct-equality design §8: the canonical float relation
 
         rtStrEq, rtStrSubstr, rtStrIndexof, rtStrToint, rtStrTofloat, rtStrTrim, rtStrCase,

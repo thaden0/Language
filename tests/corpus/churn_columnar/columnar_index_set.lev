@@ -1,10 +1,10 @@
-// XFAIL: columnar IndexStore leaks its VALUE operand, exactly as the row-major
-// dense_index_set.ext does (this is its columnar mirror). `arr[i] = q` scatters
-// q's fields across the columns, but q's standalone heap copy is never freed
-// (~48B/iteration) — idxset cannot free it (the source local may still be read).
-// The fix is the SAME Lower-side liveness (a VFree at the consuming site) or
-// arena routing that dense needs; a shared stretch goal, not a v1 gate
-// (techdesign-columnar-arrays.md §6.1, plan §3.2). Inherited, not introduced.
+// Guarded GREEN (was XFAIL until known_bugs_2.md worktree-agent-a7c3e630889a1bf22-107): columnar IndexStore
+// used to leak its VALUE operand exactly as the row-major dense_index_set.ext
+// did (this is its columnar mirror) — `arr[i] = q` scatters q's fields across
+// the columns but never freed q's standalone heap copy (~48B/iteration). The
+// consuming lvrt_idxset_move now vfrees the dead copy at the store (the same
+// fix as dense — techdesign-columnar-arrays.md §6.1's shared stretch goal,
+// landed); this program is the leak-flatness floor for the columnar leg.
 struct Pt { int x; int y; }
 void run(int n) {
     Pt p;
