@@ -413,7 +413,7 @@ void Parser::parseRuleAction(RuleAction& out, bool generates) {
 
     // Parse the saved template with the fragment parser the anchor selects.
     if (out.anchor == AnchorKind::MemberOf)
-        out.tmplMember = parseMemberFragment(out.quasiSpan);
+        out.tmplMembers = parseMemberFragment(out.quasiSpan);
     else if (out.anchor == AnchorKind::NamespaceScope)
         out.tmplStmts = parseItemsFragment(out.quasiSpan);   // decls, not statements
     else
@@ -452,12 +452,23 @@ std::vector<StmtPtr> Parser::parseStmtsFragment(SourceSpan quasi) {
     return out;
 }
 
-StmtPtr Parser::parseMemberFragment(SourceSpan quasi) {
-    if (quasi.length < 2) return nullptr;
+// `member of C` template: a LIST of members (techdesign-splices-positions §1.4).
+// A single member is the common case; a multi-member template
+// (`int a()=>1; int b()=>2;`) used to silently keep only the first — now every
+// member is parsed and injected, so nothing vanishes without a diagnostic.
+std::vector<StmtPtr> Parser::parseMemberFragment(SourceSpan quasi) {
+    std::vector<StmtPtr> out;
+    if (quasi.length < 2) return out;
     Lexer lex(file_, sink_, /*allowHoles=*/true);
     Parser sub(lex.tokenizeRange(quasi.offset + 1, quasi.end() - 1), file_, sink_);
-    if (sub.atEnd()) { sub.error("a member in template"); return nullptr; }
-    return sub.parseFragmentStmt(SpliceBody::Member);   // member, `$for`, or `$if`
+    if (sub.atEnd()) { sub.error("a member in template"); return out; }
+    while (!sub.atEnd()) {
+        size_t before = sub.pos_;
+        StmtPtr s = sub.parseFragmentStmt(SpliceBody::Member);   // member, `$for`, or `$if`
+        if (s) out.push_back(std::move(s));
+        if (sub.pos_ == before) { sub.error("a member in template"); break; }
+    }
+    return out;
 }
 
 ExprPtr Parser::parseExprFragment(SourceSpan quasi) {

@@ -66,6 +66,15 @@ struct TypeRef {
     std::string canonical;
     Symbol* resolvedSymbol = nullptr;
 
+    // B1 (splice positions, techdesign-splices-positions §2): a dotted hole in
+    // type position — `$f.type` / `$p.name`. holeBind is the `$`-prefixed hole
+    // text ("$f"); holeField is the meta value's canonical-string field to read
+    // ("type" or "name"). Empty holeBind => an ordinary named type. Filled by
+    // the fragment parser; consumed by cloneType, which splices the bound meta
+    // value's field as this type's name (rename-exempt, author-chosen).
+    std::string_view holeBind;
+    std::string_view holeField;
+
     explicit TypeRef(TypeKind k) : kind(k) {}
 };
 
@@ -334,9 +343,11 @@ struct RuleAction {
     bool spliceMulti = false;        // `at splice Name multi` — fan out into every
                                      // matching site instead of demanding exactly one
     // The parsed quasiquote template; which field is set follows the anchor kind
-    // (ctor/body anchors -> statement list; member of -> one member; expr later).
+    // (ctor/body anchors -> statement list; member of -> member list; expr later).
+    // `member of` carries a LIST (techdesign-splices-positions §1.4): a template
+    // may inject several members at once; the expand arm loops over them.
     std::vector<StmtPtr> tmplStmts;
-    StmtPtr tmplMember;
+    std::vector<StmtPtr> tmplMembers;
     ExprPtr tmplExpr;
     SourceSpan quasiSpan;            // the `...` literal's span (rule-site provenance)
     SourceSpan span;
@@ -349,6 +360,14 @@ struct Stmt {
     // common
     Access access = Access::Default;
     std::string_view name;
+    // C (splice positions, techdesign-splices-positions §3): when the decl name
+    // was written `$ident(a, b, …)` in a template, the actual name is synthesized
+    // at expansion by concatenating the comptime-string values of these args.
+    // hasNameSynth => `name` is a placeholder; the engine fills it (and checks for
+    // a scope collision, M37). Composite identifiers (`copy_$f`) do NOT use this
+    // — they stay a plain `name` with an embedded `$`, spliced at clone time.
+    std::vector<ExprPtr> nameSynthArgs;
+    bool hasNameSynth = false;
     std::vector<AttrUse> attrs;   // `@Name(args)` annotations on this decl (§16.5)
 
     // Namespace / Class / Block bodies

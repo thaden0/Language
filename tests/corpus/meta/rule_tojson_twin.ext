@@ -1,0 +1,14 @@
+// Hand-written twin of rule_tojson.ext: the key/value projection the toJson
+// close-out generates, written out by hand. Its --run / --ir output is
+// byte-identical to the rule version's — the acceptance proof that `this.$f` in
+// array-element position and a `$f.name` key array compose exactly like hand code.
+class Point {
+    int x = 3;
+    int y = 4;
+    Array<string> keys() => ["x", "y"];
+    Array<int>    vals() => [this.x, this.y];
+}
+
+Point p = Point();
+console.writeln(p.keys().joinToString(","));
+console.writeln(p.vals().joinToString(","));

@@ -26,4 +26,4 @@
   json={"ok":true}
   redirect.status=302 loc=/login
   status=teapot
-  view=[view:home]
+  view=<!doctype html><h1>home v</h1>

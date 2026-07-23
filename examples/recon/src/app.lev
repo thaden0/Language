@@ -1,10 +1,10 @@
 // Application state hub (DESIGN §10.1) + ReconApp composition root (§10.4).
 // AppState is a plain reference class: the single source of truth. Widgets read
 // from it and mutate it; a mutation is followed by invalidate() on the affected
-// pane so the next frame repaints (Sonar is retained-mode).
+// pane so the next frame repaints (Moby is retained-mode).
 namespace Recon {
 
-// A user-facing feedback message (DESIGN-2 §9.1). Headless (no Sonar) so AppState
+// A user-facing feedback message (DESIGN-2 §9.1). Headless (no Moby) so AppState
 // — the single hub — stays dependency-light; the NoticeLine/NoticesLog UI over it
 // lives in ui/notices.lev.
 class Notice {

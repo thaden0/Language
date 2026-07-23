@@ -1,5 +1,0 @@
-acquires=1
-releases=1
-ansi-release-idempotent=true
-survived-throw=true
-input-stops=1

@@ -329,6 +329,13 @@ bool Evaluator::isMethodOf(Symbol* cls, const Stmt* decl) {
     if (!cls || !decl) return false;
     for (const Slot& s : cls->shape.slots)
         if (s.isMethod && s.decl == decl) return true;
+    // An override replaces the inherited slot in a derived class's flattened
+    // shape, but a base-qualified call deliberately resolves to the hidden
+    // base declaration. Walk the declared bases so that target still counts as
+    // an instance method of the derived receiver.
+    if (cls->decl)
+        for (const TypeRefPtr& base : cls->decl->bases)
+            if (isMethodOf(base->resolvedSymbol, decl)) return true;
     return false;
 }
 
@@ -1299,6 +1306,18 @@ Value Evaluator::evalCall(Expr* e) {
 
     // Member callee: method on an object/primitive/array, or a namespaced function
     if (callee->kind == ExprKind::Member) {
+        // The checker marks closure-valued fields on the Member itself. Invoke
+        // the loaded value before any by-name method lookup so a same-named
+        // method cannot steal (or suppress) the field call.
+        if (!callee->colon && callee->resolved && !callee->resolved->callable &&
+            callee->resolved->type &&
+            callee->resolved->type->kind == TypeKind::Function) {
+            Value cv = eval(callee);
+            if (cv.kind == VKind::Closure) return callClosure(cv.closure, args);
+            if (throwing_) return vvoid();
+            return throwRuntime("callable field '" + std::string(callee->text) +
+                                "' does not contain a closure");
+        }
         // `recv.Base::method(...)` — the inner `.Base` is a SOURCE QUALIFIER
         // naming a base class (§4), not a field read on `recv`. The receiver is
         // `recv` and dispatch is static to the checker-resolved base method.

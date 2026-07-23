@@ -1,8 +1,0 @@
-name = "sonar-modal"
-entry = "main"
-sources = ["modal.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

@@ -1,0 +1,4 @@
+<h1>{{ title }}</h1>
+<form>{{csrf}}</form>
+<link rel="stylesheet" href="{{asset "css/app.css"}}">
+{{#if flash.notice}}<div class="notice">{{ flash.notice }}</div>{{/if}}

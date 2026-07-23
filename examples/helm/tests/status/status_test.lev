@@ -1,9 +1,9 @@
 // H08 golden — the status bar model: segment composition (mode / branch /
 // diagnostics counts / build state on the left; cursor Ln,Col / encoding /
-// language on the right) and its render through a real `Sonar::ContentBar`.
+// language on the right) and its render through a real `Moby::ContentBar`.
 // `applyBatch` folds a delivered diagnostic batch into the counts (the status
 // half of the edit→diagnostics loop). Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

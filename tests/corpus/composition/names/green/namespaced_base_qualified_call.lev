@@ -1,0 +1,25 @@
+// Regression floor for known bug #96: a base-qualified call must resolve the
+// base through the enclosing namespace, not only the global scope.
+namespace TerminalUi {
+    class App {
+        int frames = 0;
+
+        void renderFrame() {
+            this.frames = this.frames + 1;
+        }
+
+        int frameCount() => this.frames;
+    }
+
+    namespace Dom {
+        class SonarApp : App {
+            void renderFrame() {
+                this.App::renderFrame();
+            }
+        }
+    }
+}
+
+TerminalUi::Dom::SonarApp app = TerminalUi::Dom::SonarApp();
+app.renderFrame();
+console.writeln(app.frameCount());

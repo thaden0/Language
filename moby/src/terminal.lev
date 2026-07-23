@@ -1,0 +1,38 @@
+namespace Moby {
+    // Anchor C5. The renderer contract: a Surface is a pure cell model (C6);
+    // present() diffs it against the renderer's OWN previous frame and emits the
+    // minimal escape stream (R8). AnsiRenderer is the production implementation
+    // (ansi_renderer.lev); T10's TestRenderer records grids instead. `release()`
+    // is idempotent because the crash/panic path calls it too (§5).
+    interface IRenderer {
+        Size size();
+        void acquire(bool altScreen, bool mouse, bool bracketedPaste);
+        void release();
+        void present(Surface s);
+        void setCursor(Point? pos);
+        void bell();
+    }
+
+    // §2 acquire/quit. TerminalSession is the RAII bracket around the renderer's
+    // terminal state: `using TerminalSession s = TerminalSession(...)` runs
+    // close() on EVERY exit edge of run()'s block (fallthrough / return /
+    // throw-unwind — reference §5.2), so a TUI that dies mid-draw never orphans
+    // the shell (§8.3). close() delegates to renderer.release(), which is itself
+    // idempotent, so the belt-and-suspenders language-level term restore (F2, on
+    // SIGTERM/HUP) double-covering the same teardown is harmless.
+    class TerminalSession : IDisposable {
+        IRenderer renderer;
+        bool closed_ = false;
+
+        new TerminalSession(IRenderer r, bool altScreen, bool mouse, bool paste) {
+            renderer = r;
+            renderer.acquire(altScreen, mouse, paste);
+        }
+
+        void close() {
+            if (closed_) return;
+            closed_ = true;
+            renderer.release();
+        }
+    }
+}

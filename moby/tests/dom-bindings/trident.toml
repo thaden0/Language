@@ -1,0 +1,8 @@
+name = "moby-dom-bindings-test"
+entry = "main"
+sources = ["bindings.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Moby"

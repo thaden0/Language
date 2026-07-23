@@ -1,0 +1,7 @@
+name = "atlantis-views-p5"
+sources = ["p5_match_dispatch.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

@@ -1,0 +1,9 @@
+name = "moby-dom-drift-test"
+entry = "main"
+sources = ["drift.lev"]
+assets = ["*.moby"]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Moby"

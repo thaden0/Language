@@ -4,7 +4,7 @@
 // (N5, §9.2). Notices are reference classes held in an AppState instance field
 // (#73-safe). The line renders through the RichText leaf (full-width bg, #4 belt).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class NoticeLine {
     public RichText row;
@@ -88,7 +88,7 @@ class NoticesLog {
         if (rows.isEmpty()) { rows = ["  (no notices yet)"]; }
         this.list.items(rows);
         this.modal.open();
-        Sonar::app().focus(this.list);
+        Moby::app().focus(this.list);
     }
 
     void onKey(KeyEvent e) {

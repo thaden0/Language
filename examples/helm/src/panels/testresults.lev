@@ -1,12 +1,12 @@
 // H07 — the Test-results panel model (§3, §7.2).
 //
-// A `Sonar::ITableSource` of `@Test` results (name / pass-fail / time /
+// A `Moby::ITableSource` of `@Test` results (name / pass-fail / time /
 // message) for the shell's `#testresults` tableview; `resultAt(row)` gives the
-// shell the failing test to jump to. Parsing `harpoon`'s output into
+// shell the failing test to jump to. Parsing `sonar`'s output into
 // `TestResult`s belongs to the build/test driver (H11, G-H4) — this file owns
 // only the panel model, populated via `setResults`.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

@@ -1,5 +1,5 @@
 // H04a golden — the buffer/edit algebra (piece table + line index + undo/redo).
-// Pure model, no Sonar: exercises insert/remove splices, scalar<->byte
+// Pure model, no Moby: exercises insert/remove splices, scalar<->byte
 // translation (incl. a wide glyph), line queries, slice, and the undo/redo
 // invariant that reconstructed bytes == expected. Oracle + IR.
 namespace Helm {

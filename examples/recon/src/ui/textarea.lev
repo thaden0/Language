@@ -3,7 +3,7 @@
 // and dodges the custom-Container paint caveat). Cursor math is scalar-correct
 // (line.chars()); handlers register in the constructor with explicit this.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class TextArea : Focusable, Scrollable {
     Array<string> lines;

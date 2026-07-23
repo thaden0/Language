@@ -1,0 +1,36 @@
+// Sonar M4 acceptance criteria 4/5: an async test (a deliberately-wrong
+// assertion AFTER an `await` point is still caught correctly — acceptance
+// 4) and a threaded test (spawn + join + assert — acceptance 5), proving
+// the runner needs ZERO special-casing for either: `await`/`spawn` inside
+// a `void` @Test-shaped method just parks/resumes the runner's own call,
+// exactly as design §1 claims.
+uses sonar;
+
+class ConcurrencyTests {
+    // Two workers computed and joined; the sum is asserted after both
+    // `await`s complete — proves multi-worker join + post-await assertion.
+    @Test void threadedJoinAssert() {
+        Worker<int> w1 = std::spawn(() => 10 + 10);
+        Worker<int> w2 = std::spawn(() => 5 * 5);
+        int a = await w1;
+        int b = await w2;
+        sonar::assertEqual(45, a + b);
+    }
+
+    // A single worker joined, assertion passes after the await.
+    @Test void asyncAssertionPasses() {
+        Worker<int> w = std::spawn(() => 21 * 2);
+        int result = await w;
+        sonar::assertEqual(42, result);
+    }
+
+    // Deliberately-wrong assertion AFTER the await — must still surface as
+    // an ordinary FAIL, not get lost or mis-attributed (acceptance 4).
+    @Test void asyncAssertionFailsCorrectly() {
+        Worker<int> w = std::spawn(() => 1 + 1);
+        int result = await w;
+        sonar::assertEqual(999, result);
+    }
+}
+
+sonar::main();

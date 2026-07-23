@@ -3,7 +3,7 @@
 Recon is a **Postman-in-the-terminal**: import Postman collections, build & send
 HTTP/HTTPS requests with `{{variable}}` interpolation, inspect responses, run a
 native declarative test/extract layer, and manage cookies/sessions/history — all
-in a Sonar TUI.
+in a Moby TUI.
 
 It is the **first end-to-end Leviathan application** and the **reference standard**
 for how Leviathan apps are structured, named, tested, and packaged. The full spec
@@ -27,7 +27,7 @@ examples/recon/tests/run-tests.sh examples/recon/tests/eval   # one test
 The **run lanes are the tree-walk oracle and the IR interpreter** (`trident run`
 + `leviathan --plan build/plan.lvplan --ir`). The compiled lanes are not v1
 targets (emit-C++ has no `App.run()`; LLVM segfaults on component paint, bug #67).
-Networking and the run loop are engine-clean; only Sonar *paint* pins us to the
+Networking and the run loop are engine-clean; only Moby *paint* pins us to the
 interpreters.
 
 ## Layout
@@ -50,14 +50,14 @@ themes/recon.toml     the shipped theme
 
 Everything except `ui/` is **pure, headless, and unit-testable without a terminal**
 (DESIGN §2). The UI is a thin, replaceable shell over a fully-tested core. Network
-work is **callbacks + timers** on the single-threaded event loop the Sonar run loop
+work is **callbacks + timers** on the single-threaded event loop the Moby run loop
 already rides — **the UI task never `await`s** (DESIGN §2.1).
 
 ## Coding standard (DESIGN §12, normative — later apps copy this)
 
 - **Files:** one concern per file, grouped in `src/<area>/`; 4-space indent; a
   method body is one statement (block or `=>`).
-- **Namespaces:** one app namespace `Recon`; files reopen and merge it. `uses Sonar;`
+- **Namespaces:** one app namespace `Recon`; files reopen and merge it. `uses Moby;`
   goes **inside** the namespace block in UI files. Namespace globals are written
   **bare** (`x = v;`, never `NS::x = v;`).
 - **`class` vs `struct`:** default to `class`; use `struct` only for small copy-
@@ -76,7 +76,7 @@ already rides — **the UI task never `await`s** (DESIGN §2.1).
   `this.method()` inside any lambda (bug #53 — bare `this` segfaults on native/LLVM).
   Bind a `char` local before comparing/passing (bug #50).
 - **Env:** read `env::get(...)` at the top-level `main()` and pass values down (bug #68).
-- **Sonar UI:** prefer composing shipped components; where a custom container is
+- **Moby UI:** prefer composing shipped components; where a custom container is
   unavoidable, build a plain class that *owns* a framework `Container` rather than
   subclassing one (sidesteps the MI-leaf paint hazards). Custom **leaves** override
   `contentDesired` + `paintContent`, register handlers in the ctor with explicit
@@ -98,13 +98,13 @@ persistence — all byte-identical on the oracle and IR lanes.
 **M2 — interactive shell (T7–T9): implemented.** `AppState` hub, the `ReconApp`
 component tree (top bar / sidebar `TreeView` / request panel / response panel /
 bottom bar), the `TextArea` multi-line editor, source adapters, command registry,
-command bar, dialogs (over Sonar's now-shipped `Modal`), keymap, and the callback-
+command bar, dialogs (over Moby's now-shipped `Modal`), keymap, and the callback-
 driven send flow. A headless end-to-end corpus test composes the app, loads a
 collection, selects a request, feeds a mock response (tests + history), exports, and
 paints frames.
 
 **Deviations from DESIGN (both since RESEARCH.md was written):**
-1. Dialogs compose Sonar's now-shipped `Modal`/`alert`/`confirm` instead of a
+1. Dialogs compose Moby's now-shipped `Modal`/`alert`/`confirm` instead of a
    hand-rolled custom Container-leaf over the raw overlay stack (§9.4 assumed no
    Modal existed). Same intent, far more robust.
 2. Panels are plain builder classes that own framework `Container`s rather than

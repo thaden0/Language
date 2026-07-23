@@ -162,17 +162,22 @@ namespace Atlantis {
                 return r;
             }
         }
-        // View is rendered by Track 09-views; the kernel seed returns a placeholder
-        // so the surface exists and compiles (Atlantis::View('home') sugar lands with 09).
+        // View is the simple string-keyed convenience sugar (`Atlantis::View('home')
+        // .with('k','v')`, the example app's own idiom); it renders through the real
+        // Track 09 engine now that it exists. This is a DIFFERENT, complementary type
+        // from `Atlantis::Views::View` (the fully-typed `view()`/`fragment()` path for
+        // C7 models, techdesign-09-views.md §4.1) — both ultimately render through the
+        // one installed `Atlantis::Views::Engine` (`Views::engineOrThrow()`).
         class View : IActionResponse {
             string name;
             Map<string, string> model = Map();
             new View(string name) { this.name = name; }
             View with(string key, string value) { this.model[key] = value; return this; }
             HttpResponse render(Context ctx) {
-                HttpResponse r = HttpResponse(200, "[view:" + this.name + "]");
-                r.withHeader("Content-Type", "text/html; charset=utf-8");
-                return r;
+                Map<string, JsonValue> m = Map();
+                for (Pair e in this.model) { m[e.first] = JsonValue::ofStr(e.second); }
+                Views::View v = Views::View(this.name, JsonValue::ofObject(m), 200, false);
+                return Views::render(ctx, v);
             }
         }
 

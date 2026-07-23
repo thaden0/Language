@@ -1,0 +1,94 @@
+namespace Moby { namespace Dom {
+
+    // The current Document global (contract D-C4). Written ONLY through the
+    // namespace free-function setter — the `__setCurrentApp` lowering rule (R3):
+    // a bare-name assignment inside the namespace lowers on every engine, a
+    // qualified `Moby::Dom::currentDocument_ = ...` does not.
+    Document? currentDocument_ = None;
+    void __setCurrentDocument(Document d) { currentDocument_ = d; }
+    Document document() {
+        Document? d = currentDocument_;
+        if (d != None) return d;
+        throw MobyException("no MobyApp is running (no current Document)");
+    }
+    void __resetDocument() { currentDocument_ = None; }
+
+    // ======================================================================
+    // MobyApp (techdesign-01 §3, contract D-C1)
+    //
+    // The DOM-aware App: owns the Document, adds `document()`, `start()` (an
+    // alias — `run()` stays canonical), a binding sweep at frame start, and
+    // query sugar at the root. A plain `App` user touches none of this.
+    // ======================================================================
+    class MobyApp : App {
+        // Optional: Document has no nullary ctor, so a bare `Document doc_`
+        // cannot auto-construct (§3). Set in the ctor, narrowed on read.
+        Document? doc_ = None;
+
+        new MobyApp() {
+            // Run the base App ctor EXPLICITLY (reference §4.5: base ctors are
+            // invoked with `Base::Ctor()`, never auto-run). It installs the
+            // single-app guard, the R3 `currentApp` global (so `Moby::app()` —
+            // used by the overlay stack, menus, dialogs, and D03's popover —
+            // resolves), the ILifecycleHost, and the root FlexLayout. D01 relied
+            // on an assumed auto-run and so left MobyApp half-initialized; the
+            // gap was invisible until a path actually needed `Moby::app()`.
+            App::App();
+            Document d = Document(this);
+            doc_ = d;
+            __setCurrentDocument(d);       // R3 global via a free fn
+            // Pre-register the root `quit` action (D-C7). Explicit `this.`
+            // receiver in the stored lambda — #53 discipline.
+            d.__actionsFor(this).add("quit", () => this.quit());
+        }
+
+        Document document() {
+            Document? d = doc_;
+            if (d != None) return d;
+            throw MobyException("MobyApp has no Document");
+        }
+
+        void start() { this.run(); }        // alias; run() stays canonical
+
+        // Absolute-aware root arrange (D03 §3): the sketch adds its floating
+        // `fileMenu` straight to the app root, so the root partitions children
+        // exactly like a FlexContainer — flow set through the inherited
+        // FlexLayout, absolute set placed at their resolved screen rects (shared
+        // free functions in containers.lev, one implementation). The root's
+        // content rect is the full screen, so root floats are never clipped —
+        // the documented home for floating UI (D-C5). Painting rides the landed
+        // damage-driven walk (renderFrame -> paintDamaged), which draws each
+        // child at its arranged box; root-float z-order is child order (v1).
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            this.layout().arrange(flowOf(this.children()), this.contentRect());
+            arrangeAbs(this.children());
+            layoutDirty_ = false;
+        }
+
+        // frame hook: sweep DOM bindings, then the landed frame (D05 fills the
+        // sweep body; interim no-op).
+        void renderFrame() {
+            Document? d = doc_;
+            if (d != None) d.__sweepBindings();
+            this.App::renderFrame();        // qualified base call (landed, #64-fixed)
+        }
+
+        // ---- query sugar at the root ---------------------------------------
+        DomNode query(string selector) {
+            Document d = this.document();
+            return DomNode(queryStr(d, this, selector), d);
+        }
+        DomNodeList queryAll(string selector) {
+            Document d = this.document();
+            return DomNodeList(queryAllStr(d, this, selector), d);
+        }
+        DomNode? queryOrNone(string selector) {
+            Document d = this.document();
+            IComponent? hit = queryOrNoneStr(d, this, selector);
+            if (hit != None) return DomNode(hit, d);
+            return None;
+        }
+    }
+
+}}

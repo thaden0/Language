@@ -1,0 +1,31 @@
+== full page (layout weave) ==
+<html>
+<head><title>Links — Top links</title></head>
+<body>
+<header>MySite</header>
+<main>
+
+<h1>Top links</h1>
+<ul><li>Leviathan</li><li>Atlantis</li></ul>
+
+
+</main>
+<footer>made with atlantis</footer>
+</body>
+</html>
+
+== fragment (layout skipped) ==
+
+
+<h1>Top links</h1>
+<ul><li>Leviathan</li><li>Atlantis</li></ul>
+
+
+
+== partial rendered directly as its own page ==
+<ul><li>Leviathan</li><li>Atlantis</li></ul>
+
+== ./myapp views ==
+layouts/main -> packages/atlantis/tests/corpus/views_layout/Resources/Views/layouts/main.lhtml
+links/_list -> packages/atlantis/tests/corpus/views_layout/Resources/Views/links/_list.lhtml
+links/index -> packages/atlantis/tests/corpus/views_layout/Resources/Views/links/index.lhtml, layout=layouts/main, blocks=[title, footer], partials=[links/_list]

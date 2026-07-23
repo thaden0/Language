@@ -1,0 +1,397 @@
+namespace Moby {
+    // T05 §3.8 — the menu system: MenuSeparator, MenuItem, Menu (dropdown),
+    // BarMenu (top strip). Rides T09's overlay stack: a dropdown is an overlay
+    // pushed with a shared group id (a menu + its submenus), dismissOnOutside,
+    // and R13 focus save/restore; activating an item pops the whole group.
+    //
+    // Carries the same #65-family / #59 / #53 / #64 workarounds as modal.lev
+    // (every Container leaf redeclares the Container-overrides-of-Component
+    // method set and reimplements paintChrome via .chars(); paint bodies take
+    // no pushClip). See modal.lev's header for the full rationale.
+
+    // A thin non-focusable divider between menu groups.
+    class MenuSeparator : Component, Styleable {
+        Size contentDesired(Size avail) => Size(1, 1);
+        void paintContent(Surface s) {
+            Rect r = box;
+            if (r.isEmpty()) return;
+            char dash = '─';
+            Style st = resolveOrDefault(this, "menu.separator");
+            for (int x in r.x()..r.right() - 1) s.put(x, r.y(), dash, st);
+        }
+    }
+
+    // A leaf command: label on the left, optional chord right-aligned.
+    class MenuItem : Focusable, Styleable, ISingleLine {
+        string label = "";
+        string chord = "";
+        bool enabled = true;
+        // Close callback the owning Menu installs: activating an item fires its
+        // select handlers THEN closes the whole menu chain (§3.8).
+        () => void closeAction_ = () => { };
+        bool hasClose_ = false;
+
+        Array<() => void> selectHandlers_ = [];
+        Array<int> selectTokens_ = [];
+
+        new MenuItem() {
+            setTabStop(true);
+            this.onKey((e) => {
+                if (!this.enabled) return;
+                if (e.code == KeyCode::Enter && e.mods == 0) { this.activate(); e.handled = true; }
+            });
+            this.onMouse((e) => {
+                if (!this.enabled) return;
+                if (e.kind == MouseKind::Press && e.button == MouseButton::Left) { this.activate(); e.handled = true; }
+            });
+        }
+
+        MenuItem label(string s) { label = s; invalidateLayout(); return this; }
+        MenuItem chord(string s) { chord = s; invalidate(); return this; }
+        MenuItem enable(bool v) {
+            if (enabled == v) return this;
+            enabled = v;
+            setTabStop(v);
+            invalidate();
+            return this;
+        }
+        void __setClose(() => void a) { closeAction_ = a; hasClose_ = true; }
+
+        int onSelect(() => void h) {
+            int token = newHandlerToken();
+            selectHandlers_ = selectHandlers_.add(h);
+            selectTokens_ = selectTokens_.add(token);
+            return token;
+        }
+        void offSelect(int token) {
+            Array<() => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..selectTokens_.length() - 1) if (selectTokens_[i] != token) {
+                hs = hs.add(selectHandlers_[i]);
+                ts = ts.add(selectTokens_[i]);
+            }
+            selectHandlers_ = hs;
+            selectTokens_ = ts;
+        }
+        void fireSelect() {
+            Array<() => void> snapshot = selectHandlers_;
+            for (() => void h in snapshot) h();
+        }
+        void activate() {
+            if (!enabled) return;
+            fireSelect();
+            if (hasClose_) { var a = closeAction_; a(); }
+        }
+
+        Size contentDesired(Size avail) {
+            int w = stringCellWidth(label);
+            if (!chord.isEmpty()) w = w + stringCellWidth(chord) + 2;
+            return Size(w + 2, 1);
+        }
+
+        void paintContent(Surface s) {
+            Rect content = box;
+            if (content.isEmpty()) return;
+            string themeKey = "menu.item";
+            if (!enabled) themeKey = "menu.item.disabled";
+            else if (focused) themeKey = "menu.item.focused";
+            Style st = resolveOrDefault(this, themeKey);
+            char space = ' ';
+            s.fill(content, space, st);
+            s.writeText(content.x() + 1, content.y(), clipToWidth(label, content.w() - 2), st);
+            if (!chord.isEmpty()) {
+                Style cs = resolveOrDefault(this, "menu.chord");
+                int cw = stringCellWidth(chord);
+                int cx = content.right() - 1 - cw;
+                if (cx > content.x() + stringCellWidth(label) + 1)
+                    s.writeText(cx, content.y(), chord, cs);
+            }
+        }
+    }
+
+    // A dropdown panel: a bordered, self-positioning overlay of MenuItem /
+    // MenuSeparator / Menu (submenu) children.
+    class Menu : Container, Focusable, Styleable, Bordered {
+        string label = "";
+        int group_ = 0;
+        int menuX_ = 0;
+        int menuY_ = 0;
+        int focusIndex_ = 0 - 1;
+        bool positioned_ = false;
+
+        new Menu() {
+            setTabStop(true);
+            setBorder(BorderStyle::Single);
+            this.onKeyCapture((e) => this.handleNav(e));
+        }
+
+        Menu label(string s) { label = s; return this; }
+
+        // Add a command with a select handler in one call (fluent sugar); the
+        // close wiring is installed here so activation pops the chain.
+        Menu item(string text, () => void onSelect) {
+            MenuItem mi = MenuItem();
+            mi.label(text);
+            mi.onSelect(onSelect);
+            this.add(mi);
+            return this;
+        }
+        Menu separator() { this.add(MenuSeparator()); return this; }
+
+        // ---- open / close --------------------------------------------------
+        // openAt pushes this dropdown at (x,y) under a shared group; the first
+        // enabled item takes focus (App focus, so keys route into the overlay).
+        void openAt(int x, int y, int group) {
+            menuX_ = x;
+            menuY_ = y;
+            group_ = group;
+            positioned_ = true;
+            // Wire every direct MenuItem child to close the whole chain on
+            // activation (§3.8 "pops ALL menu overlays").
+            for (IComponent c in children()) this.wireClose(c);
+            Moby::app().pushOverlay(this, true, false, group);
+            focusFirst();
+        }
+        void wireClose(IComponent c) {
+            if (c is MenuItem) {
+                MenuItem mi = c;
+                mi.__setClose(() => Moby::app().popOverlayGroup(this.group_));
+            }
+        }
+        void closeAll() {
+            if (group_ != 0) Moby::app().popOverlayGroup(group_);
+            else Moby::app().popOverlayComponent(this);
+        }
+
+        // ---- keyboard navigation (capture on the overlay root) -------------
+        void handleNav(KeyEvent e) {
+            if (e.mods != 0) return;
+            if (e.code == KeyCode::Down) { this.moveHighlight(1); e.handled = true; }
+            else if (e.code == KeyCode::Up) { this.moveHighlight(0 - 1); e.handled = true; }
+            else if (e.code == KeyCode::Enter) { this.activateFocused(); e.handled = true; }
+            else if (e.code == KeyCode::Escape) { this.closeAll(); e.handled = true; }
+        }
+
+        bool isSelectable(IComponent c) {
+            if (c is MenuItem) { MenuItem mi = c; return mi.enabled; }
+            return false;
+        }
+
+        void focusFirst() {
+            Array<IComponent> kids = children();
+            for (int i in 0..kids.length() - 1) {
+                if (this.isSelectable(kids[i])) { this.setHighlight(i); return; }
+            }
+        }
+
+        void setHighlight(int idx) {
+            Array<IComponent> kids = children();
+            for (int i in 0..kids.length() - 1) {
+                IComponent ci = kids[i];
+                if (ci is Focusable) {
+                    Focusable f = ci;
+                    f.setFocused(i == idx);
+                }
+            }
+            focusIndex_ = idx;
+            IComponent focused = kids[idx];
+            if (focused is Focusable) {
+                Focusable target = focused;
+                Moby::app().focus(target);   // route keys into the overlay
+            }
+            invalidate();
+        }
+
+        void moveHighlight(int dir) {
+            Array<IComponent> kids = children();
+            int n = kids.length();
+            if (n == 0) return;
+            int idx = focusIndex_;
+            for (int step in 0..n - 1) {
+                idx = idx + dir;
+                if (idx < 0) idx = n - 1;
+                if (idx >= n) idx = 0;
+                if (this.isSelectable(kids[idx])) { this.setHighlight(idx); return; }
+            }
+        }
+
+        void activateFocused() {
+            Array<IComponent> kids = children();
+            if (focusIndex_ < 0 || focusIndex_ >= kids.length()) return;
+            IComponent c = kids[focusIndex_];
+            if (c is MenuItem) { MenuItem mi = c; mi.activate(); }
+        }
+
+        // ---- #65-family workaround set + self-positioning ------------------
+        Array<IComponent> __mobyChildren() => children();
+        Rect __mobyContentRect() => contentRect();
+        Rect contentRect() => box.inset(this.chrome());
+        Size contentDesired(Size avail) {
+            Size inner = Size(avail.w - this.chrome().h(), avail.h - this.chrome().v());
+            if (inner.w < 0) inner.w = 0;
+            if (inner.h < 0) inner.h = 0;
+            Size measured = layout().measure(children(), inner);
+            return Size(measured.w + this.chrome().h(), measured.h + this.chrome().v());
+        }
+        // Ignore the assigned full-screen rect from App.paintOverlays: a
+        // dropdown self-positions at (menuX_, menuY_) with its own desired size.
+        void arrange(Rect assigned) {
+            Size want = this.contentDesired(Size(Moby::Unbounded, Moby::Unbounded));
+            Rect target = positioned_
+                ? Rect(Point(menuX_, menuY_), want)
+                : normalizeRect(assigned);
+            box = normalizeRect(target);
+            layout().arrange(children(), contentRect());
+            layoutDirty_ = false;
+        }
+
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style = resolveOrDefault(this, "menu.border");
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+        }
+
+        void paintBackground(Surface s) {
+            char space = ' ';
+            Style st = resolveOrDefault(this, "menu");
+            s.fill(box, space, st);
+        }
+
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            for (IComponent child in children()) if (child.visible()) child.paint(s);
+        }
+    }
+
+    // The top-level horizontal strip of menu titles. Each child Menu is a
+    // titled dropdown opened under its title.
+    class BarMenu : Container, Focusable, Styleable {
+        int activeMenu_ = 0 - 1;
+
+        new BarMenu() {
+            setTabStop(true);
+            setLayout(FlexLayout(Axis::Horizontal));
+            this.onKey((e) => this.handleKey(e));
+            this.onMouse((e) => this.handleMouse(e));
+        }
+
+        BarMenu menu(Menu m) { this.add(m); return this; }
+
+        // Column x of the i-th title in the strip (" label " cells).
+        int titleX(int idx) {
+            Array<IComponent> kids = children();
+            int x = box.x();
+            for (int i in 0..idx - 1) x = x + this.titleWidth(i);
+            return x;
+        }
+        int titleWidth(int idx) {
+            Array<IComponent> kids = children();
+            IComponent c = kids[idx];
+            if (c is Menu) { Menu m = c; return stringCellWidth(m.label) + 2; }
+            return 2;
+        }
+
+        void openMenu(int idx) {
+            Array<IComponent> kids = children();
+            if (idx < 0 || idx >= kids.length()) return;
+            IComponent c = kids[idx];
+            if (c is Menu) {
+                Menu m = c;
+                activeMenu_ = idx;
+                int g = Moby::app().newOverlayGroup();
+                m.openAt(this.titleX(idx), box.bottom(), g);
+            }
+        }
+
+        void handleKey(KeyEvent e) {
+            Array<IComponent> kids = children();
+            int n = kids.length();
+            if (n == 0) return;
+            if ((e.code == KeyCode::Enter || e.code == KeyCode::Down) && e.mods == 0) {
+                int idx = activeMenu_ < 0 ? 0 : activeMenu_;
+                this.openMenu(idx);
+                e.handled = true;
+            } else if (e.code == KeyCode::Left && e.mods == 0) {
+                if (activeMenu_ > 0) activeMenu_ = activeMenu_ - 1; else activeMenu_ = n - 1;
+                invalidate();
+                e.handled = true;
+            } else if (e.code == KeyCode::Right && e.mods == 0) {
+                if (activeMenu_ < n - 1) activeMenu_ = activeMenu_ + 1; else activeMenu_ = 0;
+                invalidate();
+                e.handled = true;
+            }
+        }
+
+        void handleMouse(MouseEvent e) {
+            if (e.kind != MouseKind::Press || e.button != MouseButton::Left) return;
+            Array<IComponent> kids = children();
+            int x = box.x();
+            for (int i in 0..kids.length() - 1) {
+                int w = this.titleWidth(i);
+                if (e.x >= x && e.x < x + w) { this.openMenu(i); e.handled = true; return; }
+                x = x + w;
+            }
+        }
+
+        Size contentDesired(Size avail) {
+            Array<IComponent> kids = children();
+            int w = 0;
+            for (int i in 0..kids.length() - 1) w = w + this.titleWidth(i);
+            return Size(w, 1);
+        }
+
+        // ---- #65-family workaround set -------------------------------------
+        Array<IComponent> __mobyChildren() => children();
+        Rect __mobyContentRect() => box;
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            // children (the Menu dropdowns) are not laid out inline — they only
+            // appear as overlays; the strip paints titles directly.
+            layoutDirty_ = false;
+        }
+
+        void paint(Surface s) {
+            if (!visible()) return;
+            Rect strip = box;
+            if (strip.isEmpty()) return;
+            Style base = resolveOrDefault(this, "menu.title");
+            char space = ' ';
+            s.fill(strip, space, base);
+            Array<IComponent> kids = children();
+            int x = strip.x();
+            for (int i in 0..kids.length() - 1) {
+                IComponent ci = kids[i];
+                if (ci is Menu) {
+                    Menu m = ci;
+                    string themeKey = (i == activeMenu_ && focused) ? "menu.title.focused" : "menu.title";
+                    Style st = resolveOrDefault(this, themeKey);
+                    string cell = " " + m.label + " ";
+                    int col = x;
+                    for (char c in cell.chars()) {
+                        if (col >= strip.x() && col < strip.right()) s.put(col, strip.y(), c, st);
+                        col = col + glyphWidth(c);
+                    }
+                }
+                x = x + this.titleWidth(i);
+            }
+        }
+    }
+}

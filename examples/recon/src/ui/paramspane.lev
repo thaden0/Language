@@ -3,7 +3,7 @@
 // always equals joinQueryPairs(enabled rows) — is re-established at loadFrom (URL →
 // table), on every table edit (table → URL, via onChange), and at commitTo.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class ParamsPane {
     public KeyValueEditor editor;

@@ -1,5 +1,0 @@
-struct Constraint {
-    int value;
-    new Fixed(int n) { value = n; }
-}
-console.writeln(Constraint::Fixed(3).value);

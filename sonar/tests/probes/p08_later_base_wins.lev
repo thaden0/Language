@@ -1,4 +1,0 @@
-class A { string name() => "a"; }
-class B { string name() => "b"; }
-class C : A, B { }
-console.writeln(C().name());

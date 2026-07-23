@@ -1,0 +1,516 @@
+### self-closing leaf
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Input();
+    __doc.__recordBuild(__moby_0, "input", [], []);
+    return __moby_0;
+})
+
+### open-close container
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    return __moby_0;
+})
+
+### registry rows resolve
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Menu();
+    __doc.__recordBuild(__moby_0, "menu", [], []);
+    var __moby_1 = MenuItem();
+    __doc.__recordBuild(__moby_1, "menuitem", [], []);
+    __moby_1.label("Open");
+    __moby_0.add(__moby_1);
+    var __moby_2 = MenuSeparator();
+    __doc.__recordBuild(__moby_2, "separator", [], []);
+    __moby_0.add(__moby_2);
+    return __moby_0;
+})
+
+### nested containers
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = SplitBox();
+    __doc.__recordBuild(__moby_0, "split", [], []);
+    var __moby_1 = Tabs();
+    __doc.__recordBuild(__moby_1, "tabs", [], []);
+    var __moby_2 = ContentBox();
+    __doc.__recordBuild(__moby_2, "box", [], []);
+    __moby_1.add(__moby_2);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### bar aliases
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Bar();
+    __doc.__recordBuild(__moby_0, "bar", [], []);
+    var __moby_1 = Bar();
+    __doc.__recordBuild(__moby_1, "contentbar", [], []);
+    var __moby_2 = Text();
+    __moby_2.text("Ready");
+    __doc.__recordBuild(__moby_2, "span", [], []);
+    __moby_1.add(__moby_2);
+    var __moby_3 = FlexContainer();
+    __moby_3.add(__moby_0);
+    __moby_3.add(__moby_1);
+    return __moby_3;
+})
+
+### common literals
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", ["id", "class", "width", "height", "padding"], ["main", "panel side", "40", "10", "1"]);
+    __moby_0.setWidth(Constraint::Fixed(40));
+    __moby_0.setHeight(Constraint::Fixed(10));
+    __moby_0.padding = Insets::Uniform(1);
+    this.main = __moby_0;
+    return __moby_0;
+})
+
+### dock + grid cells
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Spinner();
+    __doc.__recordBuild(__moby_0, "spinner", ["dock", "row", "col", "rowSpan", "colSpan"], ["Top", "1", "2", "1", "3"]);
+    __moby_0.dock = Dock::Top;
+    __moby_0.gridRow = 1;
+    __moby_0.gridCol = 2;
+    __moby_0.gridRowSpan = 1;
+    __moby_0.gridColSpan = 3;
+    return __moby_0;
+})
+
+### flex both axes
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = ProgressBar();
+    __doc.__recordBuild(__moby_0, "progress", ["flex"], ["2"]);
+    __moby_0.setWidth(Constraint::Flex(2));
+    __moby_0.setHeight(Constraint::Flex(2));
+    return __moby_0;
+})
+
+### hidden literal
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Spinner();
+    __doc.__recordBuild(__moby_0, "spinner", ["hidden"], ["true"]);
+    __moby_0.addClass("hidden");
+    var __moby_1 = Spinner();
+    __doc.__recordBuild(__moby_1, "spinner", ["hidden"], ["false"]);
+    var __moby_2 = FlexContainer();
+    __moby_2.add(__moby_0);
+    __moby_2.add(__moby_1);
+    return __moby_2;
+})
+
+### title bordered vs not
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Menu();
+    __doc.__recordBuild(__moby_0, "menu", ["title"], ["File"]);
+    __moby_0.setTitle("File");
+    var __moby_1 = Spinner();
+    __doc.__recordBuild(__moby_1, "spinner", ["title"], ["nope"]);
+    var __moby_2 = FlexContainer();
+    __moby_2.add(__moby_0);
+    __moby_2.add(__moby_1);
+    return __moby_2;
+})
+
+### per-tag typed rows
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Input();
+    __doc.__recordBuild(__moby_0, "input", ["placeholder", "value", "maxLength"], ["name", "len", "20"]);
+    __moby_0.setPlaceholder("name");
+    __moby_0.setValue("len");
+    __moby_0.setMaxLength(20);
+    var __moby_1 = Text();
+    __doc.__recordBuild(__moby_1, "span", ["align", "wrap"], ["Center", "Wrap"]);
+    __moby_1.align(Align::Center);
+    __moby_1.wrap(Overflow::Wrap);
+    __moby_1.text("hi");
+    var __moby_2 = CheckBox();
+    __doc.__recordBuild(__moby_2, "checkbox", ["checked", "label"], ["true", "Agree"]);
+    __moby_2.setChecked(true);
+    __moby_2.setLabel("Agree");
+    var __moby_3 = FlexContainer();
+    __moby_3.add(__moby_0);
+    __moby_3.add(__moby_1);
+    __moby_3.add(__moby_2);
+    return __moby_3;
+})
+
+### expr attrs splice raw
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    __moby_0.setWidth(w);
+    __moby_0.dock = d;
+    if (cond) __moby_0.addClass("hidden");
+    return __moby_0;
+})
+
+### action/hotkey are meta only
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Button();
+    __doc.__recordBuild(__moby_0, "button", ["action", "hotkey"], ["save", "ctrl+s"]);
+    __moby_0.setLabel("Save");
+    return __moby_0;
+})
+
+### on: handlers
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Button();
+    __doc.__recordBuild(__moby_0, "button", [], []);
+    __moby_0.onPress(this.save);
+    __moby_0.onKey((e) => this.onKey(e));
+    __moby_0.setLabel("Go");
+    return __moby_0;
+})
+
+### container text becomes span
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __moby_1.text("hello world");
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### multiline whitespace collapse
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __moby_1.text("one two");
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### one-shot splice
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __moby_1.text("hi" + (name) + "!");
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### binding hole in container
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __moby_1.text("Editing");
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    var __moby_2 = Text();
+    Moby::Dom::bindText(__doc, __moby_2, "{{filename}}", () => Moby::Dom::text(filename));
+    __doc.__recordBuild(__moby_2, "span", [], []);
+    __moby_0.add(__moby_2);
+    return __moby_0;
+})
+
+### typed hole
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    Moby::Dom::bindText(__doc, __moby_1, "{{count}}", () => Moby::Dom::text(count));
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### leaf text channels
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Button();
+    __doc.__recordBuild(__moby_0, "button", [], []);
+    __moby_0.setLabel("Open");
+    var __moby_1 = MenuItem();
+    __doc.__recordBuild(__moby_1, "menuitem", [], []);
+    __moby_1.label("Quit");
+    var __moby_2 = ContentBar();
+    __doc.__recordBuild(__moby_2, "statusbar", [], []);
+    __moby_2.setLeft("Ready");
+    var __moby_3 = Input();
+    __doc.__recordBuild(__moby_3, "input", [], []);
+    __moby_3.setValue("seed");
+    var __moby_4 = ProgressBar();
+    __doc.__recordBuild(__moby_4, "progress", [], []);
+    var __moby_5 = FlexContainer();
+    __moby_5.add(__moby_0);
+    __moby_5.add(__moby_1);
+    __moby_5.add(__moby_2);
+    __moby_5.add(__moby_3);
+    __moby_5.add(__moby_4);
+    return __moby_5;
+})
+
+### leaf hole is one-shot
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Button();
+    __doc.__recordBuild(__moby_0, "button", [], []);
+    __moby_0.setLabel("count" + " " + Moby::Dom::text(n));
+    return __moby_0;
+})
+
+### escapes
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __moby_1.text("a < b { c $ d } e ` f");
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### comment skipped
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    var __moby_1 = Text();
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_1.text("x");
+    __moby_0.add(__moby_1);
+    return __moby_0;
+})
+
+### for loop
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    for (var p in perms) {
+        var __moby_1 = CheckBox();
+        __doc.__recordBuild(__moby_1, "checkbox", [], []);
+        __moby_1.setLabel(p);
+        __moby_0.add(__moby_1);
+    }
+    return __moby_0;
+})
+
+### hole inside for is one-shot
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    for (var p in perms) {
+        var __moby_1 = Text();
+        __moby_1.text(Moby::Dom::text(p));
+        __doc.__recordBuild(__moby_1, "span", [], []);
+        __moby_0.add(__moby_1);
+    }
+    return __moby_0;
+})
+
+### if/else
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = FlexContainer();
+    __doc.__recordBuild(__moby_0, "flex", [], []);
+    if (this.showHelp) {
+        var __moby_1 = Text();
+        __doc.__recordBuild(__moby_1, "span", [], []);
+        __moby_1.text("help");
+        __moby_0.add(__moby_1);
+    } else {
+        var __moby_2 = Text();
+        __doc.__recordBuild(__moby_2, "span", [], []);
+        __moby_2.text("ok");
+        __moby_0.add(__moby_2);
+    }
+    return __moby_0;
+})
+
+### user tag + pass-through attr
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Gizmo();
+    __doc.__recordBuild(__moby_0, "Gizmo", ["spin", "width"], ["3", "5"]);
+    __moby_0.setSpin("3");
+    __moby_0.setWidth(Constraint::Fixed(5));
+    return __moby_0;
+})
+
+### qualified user tag
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Views::Panel();
+    __doc.__recordBuild(__moby_0, "Views::Panel", ["title"], ["T"]);
+    if (__moby_0 is Bordered) __moby_0.setTitle("T");
+    return __moby_0;
+})
+
+### multi-root auto-wrap
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Text();
+    __doc.__recordBuild(__moby_0, "span", [], []);
+    __moby_0.text("a");
+    var __moby_1 = Text();
+    __doc.__recordBuild(__moby_1, "span", [], []);
+    __moby_1.text("b");
+    var __moby_2 = FlexContainer();
+    __moby_2.add(__moby_0);
+    __moby_2.add(__moby_1);
+    return __moby_2;
+})
+
+### text root
+__mobyBuild(() => {
+    var __doc = Moby::Dom::document();
+    var __moby_0 = Text();
+    __moby_0.text("just text");
+    __doc.__recordBuild(__moby_0, "span", [], []);
+    return __moby_0;
+})
+
+### E-D1 unclosed
+markup:1:1: '<menu>' was never closed (E-D1)
+<menu>
+^
+
+### E-D1 mismatched close
+markup:1:1: '<menu>' opened here is closed by '</flex>' (E-D1)
+<menu>
+^
+
+### E-D1 stray close
+markup:1:1: unexpected '</' with no open tag (E-D1)
+</menu>
+^
+
+### E-D2 missing =
+markup:1:8: attribute 'placeholder' is missing '=' (E-D2)
+<input placeholder/>
+       ^
+
+### E-D2 unterminated literal
+markup:1:21: unterminated "..." for attribute 'value' (E-D2)
+<input value="oops/>
+                    ^
+
+### E-D2 reserved separator byte
+markup:1:16: reserved separator byte in attribute literal (E-D2)
+<input value="ab"/>
+               ^
+
+### E-D2 unterminated hole
+markup:1:7: unterminated '{{' binding hole (E-D2)
+<flex>{{filename</flex>
+      ^
+
+### E-D2 id expr
+markup:1:7: 'id' takes a "name", not {expr} (E-D2)
+<flex id={x}></flex>
+      ^
+
+### E-D2 on: literal
+markup:1:9: 'on:press' handler must be {expr} (E-D2)
+<button on:press="save">x</button>
+        ^
+
+### E-D3 unknown tag
+markup:2:5: unknown tag '<nope>' (E-D3) — lowercase tags come from the registry; a user class is Capitalized at the dom! tier
+    <nope/>
+    ^
+
+### E-D4 unknown attr + did-you-mean
+markup:1:8: '<input>' has no attribute 'placholder' (did you mean 'placeholder'?) (E-D4)
+<input placholder="x"/>
+       ^
+
+### E-D4 unknown attr no suggestion
+markup:1:7: '<span>' has no attribute 'bogus' (E-D4)
+<span bogus="1">x</span>
+      ^
+
+### E-D5 int
+markup:1:7: attribute 'width="wide"' must be an integer (E-D5)
+<flex width="wide"></flex>
+      ^
+
+### E-D5 bool
+markup:1:11: attribute 'checked="maybe"' must be "true" or "false" (E-D5)
+<checkbox checked="maybe"/>
+          ^
+
+### E-D5 enum align
+markup:1:7: align="Wat" is not one of Start/Center/End/Stretch (E-D5)
+<span align="Wat">x</span>
+      ^
+
+### E-D5 enum dock
+markup:1:10: dock="Under" is not one of Top/Bottom/Left/Right/Fill (E-D5)
+<spinner dock="Under"/>
+         ^
+
+### E-D6 theme
+markup:1:7: theme="dark" is not supported yet (E-D6)
+<flex theme="dark"></flex>
+      ^
+
+### E-D12 empty payload
+markup is empty (E-D12: a node is required)
+
+### id inside for
+markup:1:28: 'id' is not allowed inside a $for body
+<flex>$for p in xs { <span id="bad">x</span> }</flex>
+                           ^
+
+### for at top level
+markup:1:1: '$for' needs an enclosing element at the dom! tier
+$for p in xs { <span>x</span> }
+^
+
+### else without if
+markup:1:7: unexpected '$else' with no matching '$if'
+<flex>$else { <span>x</span> }</flex>
+      ^
+
+### for missing in
+markup:1:16: '$for p' expected 'in'
+<flex>$for p of xs { }</flex>
+               ^
+
+### unclosed block
+markup:1:32: unexpected '</' inside a '{ }' block (missing '}')
+<flex>$if cond { <span>x</span></flex>
+                               ^
+
+### leaf with element child
+markup:1:9: <button> is a leaf and cannot hold element children
+<button><span>x</span></button>
+        ^
+
+### for inside leaf
+markup:1:9: '$for'/'$if' need a container tag, not leaf <button>
+<button>$for p in xs { x }</button>
+        ^
+

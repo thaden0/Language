@@ -3,7 +3,7 @@
 // rename, Delete delete — F25), the History tab is the HistoryPane (F7). ^H jumps
 // to History. Plain builder class (compose-only).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class Sidebar {
     public Tabs tabs;
@@ -93,7 +93,7 @@ class Sidebar {
         CollectionItem item = s ?? CollectionItem();
         PromptDialog dlg = PromptDialog("Rename", "New name:", item.name);
         dlg.setOnAccept((v) => this.applyRename(item, v));
-        dlg.open(Sonar::app());
+        dlg.open(Moby::app());
     }
     void applyRename(CollectionItem item, string name) {
         if (name.isEmpty()) { return; }

@@ -1,0 +1,40 @@
+// Atlantis Track 09 — Views: `./myapp views`, the views analog of `./myapp routes`
+// (design §8 point 4, registered through Track 04's app-hosted dispatch, R3 —
+// openapi/doc.lev's `openApiCommand` is the pattern this follows).
+//
+// Building the `Engine` itself performs the full boot check (§8): every template is
+// parsed, cross-file checks run, and any error throws before this command prints
+// anything — "with a clean corpus lists `name -> file (layout, blocks, partials used)`".
+namespace Atlantis {
+    namespace Views {
+
+        int cmpStr(string a, string b) {
+            if (a < b) { return 0 - 1; }
+            if (a > b) { return 1; }
+            return 0;
+        }
+
+        App::Command viewsCommand((Config::Config) => Engine buildEngine) {
+            return App::Command("views", "List every loaded view template (boot-checks the whole corpus)",
+                (cfg, args) => runViewsCommand(buildEngine, cfg));
+        }
+
+        int runViewsCommand((Config::Config) => Engine buildEngine, Config::Config cfg) {
+            Engine e = buildEngine(cfg);
+            Array<string> names = e.cache.keys().sort((a, b) => cmpStr(a, b));
+            for (string name in names) {
+                Template t = e.cache.at(name);
+                Collector c = collectAll(t);
+                Array<string> partials = [];
+                for (Pair p in c.includes) {
+                    if (!partials.contains(p.first)) { partials = partials.add(p.first); }
+                }
+                string layoutPart = t.layoutName != None ? (", layout=" + (t.layoutName ?? "")) : "";
+                string blocksPart = t.blocks.isEmpty() ? "" : (", blocks=[" + t.blocks.keys().joinToString(", ") + "]");
+                string partialsPart = partials.isEmpty() ? "" : (", partials=[" + partials.joinToString(", ") + "]");
+                console.writeln(name + " -> " + t.filePath + layoutPart + blocksPart + partialsPart);
+            }
+            return 0;
+        }
+    }
+}

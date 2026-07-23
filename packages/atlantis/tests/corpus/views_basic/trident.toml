@@ -1,0 +1,7 @@
+name = "atlantis-views-basic-corpus"
+sources = ["views_basic.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

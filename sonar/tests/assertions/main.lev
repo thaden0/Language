@@ -1,0 +1,137 @@
+// Sonar M1 self-test: direct-call assertion vocabulary tests, no
+// discovery involved (discovery is blocked — known_bugs_1.md #76; see
+// sonar/README.md). Exercises every function in assert.lev on its
+// PASS path (no throw) and FAIL path (throws AssertionException).
+uses sonar;
+
+int passCount = 0;
+int failCount = 0;
+
+void ok(string label) {
+    passCount = passCount + 1;
+    console.writeln("ok   " + label);
+}
+
+void bad(string label, string detail) {
+    failCount = failCount + 1;
+    console.writeln("FAIL " + label + ": " + detail);
+}
+
+void expectPass(string label, (() => void) body) {
+    try {
+        body();
+        ok(label);
+    } catch (IException e) {
+        bad(label, "unexpected throw: " + e.message);
+    }
+}
+
+void expectFail(string label, (() => void) body) {
+    try {
+        body();
+        bad(label, "expected a throw, none happened");
+    } catch (IAssertionException e) {
+        ok(label);
+    } catch (IException e) {
+        bad(label, "threw the wrong kind: " + e.message);
+    }
+}
+
+// Explicit (==) required for value equality — known_bugs_2.md #77: a
+// struct with no defined (==) is NOT field-wise by default.
+struct Point {
+    int x; int y;
+    new Point(int px, int py) { x = px; y = py; }
+    bool (==)(Point other) => x == other.x && y == other.y;
+}
+
+enum Color { Red, Green, Blue }
+
+class Counter {
+    int n = 0;
+}
+
+// Named runSelfTest for clarity. #78 (a bulk `uses sonar;` import's `main`
+// silently winning over this file's own same-named top-level function) was
+// FIXED 2026-07-15 — the file's own declaration now wins ties over a
+// bulk-imported one — so a local `void main()` here would resolve correctly;
+// the descriptive name is kept regardless.
+void runSelfTest() {
+    // assertEqual: scalar ladder
+    expectPass("assertEqual int pass", () => { sonar::assertEqual(1, 1); });
+    expectFail("assertEqual int fail", () => { sonar::assertEqual(1, 2); });
+    expectPass("assertEqual string pass", () => { sonar::assertEqual("a", "a"); });
+    expectFail("assertEqual string fail", () => { sonar::assertEqual("a", "b"); });
+    expectPass("assertEqual bool pass", () => { sonar::assertEqual(true, true); });
+    expectFail("assertEqual bool fail", () => { sonar::assertEqual(true, false); });
+    expectPass("assertEqual char pass", () => { sonar::assertEqual('a', 'a'); });
+    expectFail("assertEqual char fail", () => { sonar::assertEqual('a', 'b'); });
+    expectPass("assertEqual float pass (within eps)", () => { sonar::assertEqual(1.0, 1.0000001); });
+    expectFail("assertEqual float fail", () => { sonar::assertEqual(1.0, 2.0); });
+
+    // assertEqual: array ladder
+    expectPass("assertEqual array int pass", () => { sonar::assertEqual([1, 2, 3], [1, 2, 3]); });
+    expectFail("assertEqual array int fail (value)", () => { sonar::assertEqual([1, 2, 3], [1, 9, 3]); });
+    expectFail("assertEqual array int fail (length)", () => { sonar::assertEqual([1, 2, 3], [1, 2]); });
+    expectPass("assertEqual array string pass", () => { sonar::assertEqual(["a", "b"], ["a", "b"]); });
+    expectFail("assertEqual array string fail", () => { sonar::assertEqual(["a", "b"], ["a", "c"]); });
+    expectPass("assertEqual array float pass", () => { sonar::assertEqual([1.5, 2.5], [1.5, 2.5]); });
+    expectFail("assertEqual array float fail", () => { sonar::assertEqual([1.5, 2.5], [1.5, 9.5]); });
+    expectPass("assertEqual array bool pass", () => { sonar::assertEqual([true, false], [true, false]); });
+    expectFail("assertEqual array bool fail", () => { sonar::assertEqual([true, false], [true, true]); });
+
+    // assertEqual: generic duck-typed fallback (struct / enum)
+    expectPass("assertEqual generic struct pass", () => { sonar::assertEqual(Point(1, 2), Point(1, 2)); });
+    expectFail("assertEqual generic struct fail", () => { sonar::assertEqual(Point(1, 2), Point(9, 9)); });
+    expectPass("assertEqual generic enum pass", () => { sonar::assertEqual(Color::Red, Color::Red); });
+    expectFail("assertEqual generic enum fail", () => { sonar::assertEqual(Color::Red, Color::Blue); });
+
+    // assertNotEqual
+    expectPass("assertNotEqual int pass", () => { sonar::assertNotEqual(1, 2); });
+    expectFail("assertNotEqual int fail", () => { sonar::assertNotEqual(1, 1); });
+
+    // assertSame / assertNotSame
+    Counter c1 = Counter();
+    Counter c2 = Counter();
+    expectPass("assertSame pass", () => { sonar::assertSame(c1, c1); });
+    expectFail("assertSame fail", () => { sonar::assertSame(c1, c2); });
+    expectPass("assertNotSame pass", () => { sonar::assertNotSame(c1, c2); });
+    expectFail("assertNotSame fail", () => { sonar::assertNotSame(c1, c1); });
+
+    // assertTrue / assertFalse
+    expectPass("assertTrue pass", () => { sonar::assertTrue(1 == 1); });
+    expectFail("assertTrue fail", () => { sonar::assertTrue(1 == 2, "custom message"); });
+    expectPass("assertFalse pass", () => { sonar::assertFalse(1 == 2); });
+    expectFail("assertFalse fail", () => { sonar::assertFalse(1 == 1); });
+
+    // assertNone / assertSome
+    int? none = None;
+    int? some = 5;
+    expectPass("assertNone pass", () => { sonar::assertNone(none); });
+    expectFail("assertNone fail", () => { sonar::assertNone(some); });
+    expectPass("assertSome pass", () => { sonar::assertSome(some); });
+    expectFail("assertSome fail", () => { sonar::assertSome(none); });
+
+    // assertThrows
+    expectPass("assertThrows pass", () => {
+        IException e = sonar::assertThrows(() => { throw RuntimeException("boom"); });
+        sonar::assertEqual("boom", e.message);
+    });
+    expectFail("assertThrows fail (nothing thrown)", () => {
+        sonar::assertThrows(() => { });
+    });
+    expectPass("assertThrows mustContain pass", () => {
+        sonar::assertThrows(() => { throw RuntimeException("big boom here"); }, "boom");
+    });
+    expectFail("assertThrows mustContain fail", () => {
+        sonar::assertThrows(() => { throw RuntimeException("nope"); }, "boom");
+    });
+
+    // fail
+    expectFail("fail always throws", () => { sonar::fail("deliberate"); });
+
+    console.writeln("---");
+    console.writeln("${passCount} passed, ${failCount} failed");
+    env::setExitCode(failCount > 0 ? 1 : 0);
+}
+runSelfTest();

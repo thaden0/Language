@@ -1,0 +1,84 @@
+// Atlantis Track 09 — Views P-2 (design §9): `sysListDir` recursive walk + whole-file
+// `File` read parity across engines, incl. LLVM (the reference note that file shims are
+// interpreter-hosted is re-verified here per §6.6.58's landed filesystem quartet).
+// Builds a 20-file nested tree, walks it the same way `Engine.walkFiles` does, reads
+// every file back, and prints a stable digest (sorted names + total bytes) — byte-
+// identical across oracle/IR/LLVM is the pass condition.
+void mkTree(string root) {
+    std::sysMkdir(root);
+    std::sysMkdir(root + "/a");
+    std::sysMkdir(root + "/a/b");
+    std::sysMkdir(root + "/c");
+    int i = 0;
+    while (i < 8) {
+        using File f = File(root + "/f" + i.toString() + ".lhtml", std::write);
+        f.write("root file " + i.toString());
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 6) {
+        using File f = File(root + "/a/g" + i.toString() + ".lhtml", std::write);
+        f.write("a file " + i.toString());
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 4) {
+        using File f = File(root + "/a/b/h" + i.toString() + ".lhtml", std::write);
+        f.write("a/b file " + i.toString());
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 2) {
+        using File f = File(root + "/c/i" + i.toString() + ".lhtml", std::write);
+        f.write("c file " + i.toString());
+        i = i + 1;
+    }
+}
+
+Array<string> walk(string root, string rel) {
+    string dir = rel == "" ? root : (root + "/" + rel);
+    Array<string>? entries = std::sysListDir(dir);
+    Array<string> out = [];
+    if (entries != None) {
+        Array<string> es = entries ?? [];
+        for (string e in es) {
+            string relPath = rel == "" ? e : (rel + "/" + e);
+            string full = root + "/" + relPath;
+            if (std::isDir(full)) {
+                out = out.concat(walk(root, relPath));
+            } else {
+                out = out.add(relPath);
+            }
+        }
+    }
+    return out;
+}
+
+int cmp(string a, string b) {
+    if (a < b) { return 0 - 1; }
+    if (a > b) { return 1; }
+    return 0;
+}
+
+void main() {
+    string root = "packages/atlantis/tests/views/_p2_fixture";
+    mkTree(root);
+    Array<string> names = walk(root, "").sort((a, b) => cmp(a, b));
+    console.writeln("file_count=" + names.length().toString());
+    int totalBytes = 0;
+    for (string n in names) {
+        using File f = File(root + "/" + n, std::read);
+        string content = f.read(f.size());
+        totalBytes = totalBytes + content.length();
+        console.writeln(n + " len=" + content.length().toString());
+    }
+    console.writeln("total_bytes=" + totalBytes.toString());
+
+    // cleanup
+    for (string n in names) { std::sysRemove(root + "/" + n); }
+    std::sysRemove(root + "/a/b");
+    std::sysRemove(root + "/a");
+    std::sysRemove(root + "/c");
+    std::sysRemove(root);
+}
+main();

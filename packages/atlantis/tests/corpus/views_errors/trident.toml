@@ -1,0 +1,7 @@
+name = "atlantis-views-errors-corpus"
+sources = ["views_errors.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

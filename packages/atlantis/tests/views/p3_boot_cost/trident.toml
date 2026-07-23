@@ -1,0 +1,7 @@
+name = "atlantis-views-p3"
+sources = ["p3_boot_cost.lev"]
+
+[[dep]]
+path = "../../.."
+version = "0.1.0"
+as = "Atlantis"

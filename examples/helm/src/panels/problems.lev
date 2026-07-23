@@ -1,6 +1,6 @@
 // H07 — the Problems panel model (§3, §6.2).
 //
-// A `Sonar::ITableSource` over the current diagnostic set, so the shell's
+// A `Moby::ITableSource` over the current diagnostic set, so the shell's
 // `tableview` (§3's `#problems`) paints the viewport without the whole list
 // resident. Rows are the diagnostics of the latest applied batch, sorted
 // most-severe-first then by source order; `diagnosticAt(row)` gives the shell
@@ -9,7 +9,7 @@
 // The three columns are severity glyph / location / message. The model keeps
 // the batch version so the status bar and gutter read a consistent set.
 
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

@@ -3,7 +3,7 @@
 // search / assert-from-response); non-JSON bodies fall back to a raw view inside
 // it. Assert/extract from a selected value routes out to the request's Tests tab.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class ResponsePanel {
     public Container root;

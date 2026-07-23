@@ -1,4 +1,4 @@
-// Regression floor for known_bugs_2.md #105: statement-form control flow in the
+// Regression floor for known_bugs_2.md #108: statement-form control flow in the
 // TOP-LEVEL (script) body. Two independent lists gated this: the parser
 // (parseTopLevelItemInner routed only try/throw to parseStatement, so if/while/
 // for/do fell through to the expression path and failed "expected expression")

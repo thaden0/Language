@@ -1,8 +1,0 @@
-name = "sonar-contentbox-gridbox"
-entry = "main"
-sources = ["contentbox_gridbox.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

@@ -1,8 +1,0 @@
-name = "sonar-teardown-test"
-entry = "main"
-sources = ["teardown.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

@@ -2,7 +2,7 @@
 // sensitivity, literal vs regex, the .git/node_modules skip-list, the result cap),
 // and the SearchResultsModel ITableSource surface. Reads committed fixtures
 // under fixtures/proj. Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

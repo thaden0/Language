@@ -1,0 +1,176 @@
+namespace Moby {
+    // C5 lists these as frozen core interfaces, but no track before T04
+    // actually needed one, so none was ever declared. Declared here (T04's
+    // first file, alongside the other shared basics) rather than editing
+    // T01-owned component.lev.
+    interface ISingleLine { }
+    interface IMultiLine { }
+    interface IValidatable {
+        bool validate();
+        string validationMessage();
+    }
+
+    // ---- shared helpers (T04 M1) --------------------------------------------
+    // Used across this track's component files; kept here since Text is the
+    // first component to need string/cell measurement.
+
+    int stringCellWidth(string s) {
+        int width = 0;
+        for (char c in s.chars()) width = width + glyphWidth(c);
+        return width;
+    }
+
+    // Truncates (never mid-glyph) to fit within `w` cells.
+    string clipToWidth(string text, int w) {
+        string result = "";
+        int used = 0;
+        for (char c in text.chars()) {
+            int cw = glyphWidth(c);
+            if (used + cw > w) break;
+            result = result + c.toString();
+            used = used + cw;
+        }
+        return result;
+    }
+
+    // Guarded theme resolution: falls back to a bare (Default/Default/0)
+    // Style when no theme is installed (activeTheme_ == None) rather than
+    // requiring every test/example to wire T08's DI before painting.
+    Style resolveOrDefault(Styleable c, string key) {
+        if (activeTheme_ != None) return c.resolve(key, activeTheme_);
+        Style s;
+        return s;
+    }
+
+    // Greedy word-wrap: spaces are the only break points (v1); a word wider
+    // than `w` hard-breaks at the cell boundary. Shared verbatim between
+    // Text.contentDesired (measure) and Text.paintContent (paint) so the two
+    // can never disagree (this file's own §1 requirement).
+    Array<string> wrapOneLine(string line, int w) {
+        int width = w < 1 ? 1 : w;
+        Array<char> chars = line.chars();
+        int n = chars.length();
+        Array<string> words = [];
+        string word = "";
+        for (int i in 0..n - 1) {
+            char c = chars[i];
+            if (c == ' ') { words = words.add(word); word = ""; }
+            else word = word + c.toString();
+        }
+        words = words.add(word);
+
+        Array<string> lines = [];
+        string current = "";
+        int currentWidth = 0;
+        for (string wd in words) {
+            int wdWidth = stringCellWidth(wd);
+            if (wdWidth > width) {
+                if (currentWidth > 0) { lines = lines.add(current); current = ""; currentWidth = 0; }
+                Array<char> wc = wd.chars();
+                int wn = wc.length();
+                int j = 0;
+                while (j < wn) {
+                    string piece = "";
+                    int pieceWidth = 0;
+                    while (j < wn) {
+                        int cw = glyphWidth(wc[j]);
+                        if (pieceWidth > 0 && pieceWidth + cw > width) break;
+                        piece = piece + wc[j].toString();
+                        pieceWidth = pieceWidth + cw;
+                        j = j + 1;
+                        if (pieceWidth >= width) break;
+                    }
+                    lines = lines.add(piece);
+                }
+            } else if (currentWidth == 0) {
+                current = wd;
+                currentWidth = wdWidth;
+            } else if (currentWidth + 1 + wdWidth <= width) {
+                current = current + " " + wd;
+                currentWidth = currentWidth + 1 + wdWidth;
+            } else {
+                lines = lines.add(current);
+                current = wd;
+                currentWidth = wdWidth;
+            }
+        }
+        if (currentWidth > 0 || lines.isEmpty()) lines = lines.add(current);
+        return lines;
+    }
+
+    Array<string> wrapLines(string text, int cellWidth) {
+        Array<string> outLines = [];
+        for (string rawLine in text.splitLines()) outLines = outLines.concat(wrapOneLine(rawLine, cellWidth));
+        return outLines;
+    }
+
+    int maxLineWidth(Array<string> lines) {
+        int maxW = 0;
+        for (string ln in lines) {
+            int w = stringCellWidth(ln);
+            if (w > maxW) maxW = w;
+        }
+        return maxW;
+    }
+
+    // ---- Text -----------------------------------------------------------------
+    // C14 marker correction: ISingleLine dropped from this class's base list —
+    // wrap makes Text potentially multi-line, contradicting the marker's
+    // meaning (noted in the anchor log per this design doc's own instruction).
+    class Text : Component, Styleable {
+        string text = "";
+        Align align = Align::Start;
+        Overflow wrap = Overflow::Clip;
+
+        Text text(string value) {
+            text = value;
+            invalidateLayout();
+            return this;
+        }
+        Text align(Align value) {
+            align = value;
+            invalidate();
+            return this;
+        }
+        Text wrap(Overflow value) {
+            Overflow actual = value;
+            if (value == Overflow::Scroll) {
+                log("Text.wrap: Overflow::Scroll is not valid on Text; using Clip");
+                actual = Overflow::Clip;
+            }
+            wrap = actual;
+            invalidateLayout();
+            return this;
+        }
+
+        Size contentDesired(Size avail) {
+            if (wrap == Overflow::Wrap && avail.w != Moby::Unbounded && avail.w > 0) {
+                Array<string> lines = wrapLines(text, avail.w);
+                int maxW = maxLineWidth(lines);
+                int capped = maxW < avail.w ? maxW : avail.w;
+                return Size(capped, lines.length());
+            }
+            Array<string> rawLines = text.splitLines();
+            int lineCount = rawLines.length();
+            if (lineCount == 0) lineCount = 1;
+            return Size(maxLineWidth(rawLines), lineCount);
+        }
+
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            Array<string> lines = wrap == Overflow::Wrap ? wrapLines(text, content.w()) : text.splitLines();
+            Style st = resolveOrDefault(this, "text");
+            int y = content.y();
+            for (string ln in lines) {
+                if (y >= content.bottom()) break;
+                int lw = stringCellWidth(ln);
+                int x = content.x();
+                if (align == Align::Center) x = content.x() + (content.w() - lw) / 2;
+                else if (align == Align::End) x = content.x() + content.w() - lw;
+                s.writeText(x, y, ln, st);
+                y = y + 1;
+            }
+        }
+    }
+}

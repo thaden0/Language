@@ -313,7 +313,7 @@ add_test(NAME corpus_target_uses_cpp
          COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native.sh"
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev")
-# known_bugs_2.md #105: statement-form control flow (if/while/for/for-in/do/
+# known_bugs_2.md #108: statement-form control flow (if/while/for/for-in/do/
 # labeled-break) in the top-level script body. The treewalk+ir engines are pinned
 # by the file's presence in the whole-corpus lanes above; this single-file lane
 # locks the emit-C++ leg too (the LLVM leg is corpus_toplevel_control_flow_llvm).
@@ -355,6 +355,25 @@ add_test(NAME rule_attr_group_reject_dangling
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/rule_attr_group_dangling.ext"
                  "@attr(...) must precede a declaration")
+# Splice positions (designs/metaprog-splices/techdesign-splices-positions-opus.md
+# §4): the three reject rows for `$ident(…)`/`$f.type` splices. The green fixtures
+# (rule_tojson{,_twin}, rule_type_splice{,_twin}, rule_ident_synth{,_twin},
+# rule_member_multi{,_twin}) ride the corpus_meta_* + expand round-trip lanes above.
+add_test(NAME rule_ident_reject_collision       # M37: synthesized name collides in scope
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_ident_collision.ext"
+                 "synthesized names must be unique")
+add_test(NAME rule_ident_reject_badarg          # M38: $ident arg not a comptime string
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_ident_badarg.ext"
+                 "is not a comptime string")
+add_test(NAME rule_type_splice_reject_badfield  # M39: dotted-hole type with no reifiable field
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/rule_type_splice_badfield.ext"
+                 "has no reifiable type/name field")
 # Named splice anchor (designs/metaprog-splices/techdesign-splices-named-anchor-
 # opus.md §4): the three splice-anchor reject rows. The green fixtures
 # (rule_splice_routes{,_twin}, rule_splice_multi, rule_splice_empty) ride the
@@ -1299,7 +1318,7 @@ if (LLVM_FOUND)
                    $<TARGET_FILE:leviathan>
                    "${CMAKE_SOURCE_DIR}/tests/corpus/meta/target_uses.lev"
                    ${LANG_LVRT_SOURCES})
-  # known_bugs_2.md #105: top-level script-body control flow on the LLVM leg
+  # known_bugs_2.md #108: top-level script-body control flow on the LLVM leg
   # (see corpus_toplevel_control_flow_cpp for the emit-C++ twin).
   add_test(NAME corpus_toplevel_control_flow_llvm
            COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_native_llvm.sh"

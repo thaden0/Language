@@ -1,0 +1,16 @@
+// (C) name synthesis (techdesign-splices-positions §3.3, M38): every `$ident(…)`
+// argument must be a comptime STRING. A non-string arg (here the int literal 42)
+// is a rule-stage error at the argument site — the synthesized name would
+// otherwise be ill-defined.
+namespace App {
+    attribute Entity { }
+    rule cols {
+        match @Entity on class C
+        inject `class $ident(C.name, 42) { int marker = 1; }` at namespace Gen
+    }
+}
+uses App;
+
+@Entity class User { int age; }
+
+console.writeln("unreached");

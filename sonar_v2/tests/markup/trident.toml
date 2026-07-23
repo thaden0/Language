@@ -1,8 +1,0 @@
-name = "sonar-dom-markup-test"
-entry = "main"
-sources = ["markup.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.2.0"
-as = "Sonar"

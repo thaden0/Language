@@ -2311,6 +2311,27 @@ every rule that can touch it.
   (naming the rule, mirroring the `where`-clause bool check); a `$else` with no
   preceding `$if`, or a branch whose contents don't fit its fragment kind, is a
   parse error.
+- **`$f.type` / `$p.name` in type/identifier position, `name_$hole`
+  concatenation, and `$ident(…)` name synthesis** — three ways to splice a
+  bound value's *string* where a **name or type token** is expected, all
+  author-chosen and therefore alpha-rename-exempt. (1) A `$for`-bound
+  `meta::Field`/`meta::Param`/`meta::Method`'s **canonical `.type` or `.name`
+  string stands in for a type**: `$for f in C.fields : $f.type copy_$f =
+  this.$f;` declares one typed local per field (and `$p.type::FromJson(v)` names
+  a labeled constructor on the spliced type); only `.type`/`.name` are reifiable
+  as a type, any other field is a rule-stage error (M39). (2) A **literal
+  identifier prefix glued to a hole** (`copy_$f`, `local_$idx`) lexes as one
+  composite identifier and expands to the concatenated name (`copy_x`, …). (3)
+  **`$ident(a, b, …)`** in any decl-name position (`class $ident(C.name,
+  "Cols")`, a member name) builds the name by concatenating its **comptime-string
+  args** — a non-string arg or an illegal result is a rule-stage error (M38). A
+  `$ident`-synthesized declaration name that **collides** with an existing decl
+  in its target namespace is a rule-stage error naming both sites (M37) — never
+  silent shadowing. (Known limitation: a class injected `at namespace N` can be
+  consumed cross-namespace by *call* but not yet as a *type* from outside N;
+  consume such a synthesized descriptor within its own namespace.) A `member of`
+  template may inject **several members** (`int a()=>1; int b()=>2;`), each
+  subject to the same collision check.
 - **Additive + hygienic (by default):** ordinary rules only add code (no silent
   rewrites); the loud, explicitly-marked exception is a `rewrites` rule (below).
   A local a template declares is alpha-renamed to a fresh symbol, so injected
@@ -2654,6 +2675,74 @@ Digests use the int64 mask idiom (words masked to 32 bits after each op); verifi
 1321/3174 + FIPS 180-4 + RFC 4231 vectors incl. the padding-boundary trap set. Slow-ish on the
 interpreters (fine for cookies/etags). Coverage: oracle, IR, emit-C++, LLVM (not frozen ELF —
 post-freeze `byteAt`/`byteToString`).
+
+---
+
+## 6.13a Atlantis Views — server-rendered templates (`Atlantis::Views`, Atlantis Track 09)
+
+Not a language feature — a framework package (`packages/atlantis/src/views/`,
+`designs/complete/techdesign-09-views.md`) — noted here because, like JSON/DateTime/encoding
+above, it is a self-contained, boot-checked engine other Atlantis-consuming apps depend on.
+Deleting the package changes nothing for a JSON-only app.
+
+**Templates:** files under `Resources/Views/**`, extension `.lhtml`; name = path relative to
+the root minus extension (`Resources/Views/links/index.lhtml` -> `"links/index"`, subdirs by
+`/` or `.`). Partials are ordinary templates whose final segment starts with `_`
+(`links/_list`, a naming convention only). Parsed **once at boot** (`Engine(cfg, logger)`
+constructor) into a `Template`/`Node` tree (`views/node.lev`, `views/parser.lev` — hand-rolled
+scanner, no regex); any parse or cross-file error aggregates into ONE thrown `ViewException`
+listing every `file:line: message` found, refusing to start. `views.dev` (`EngineConfig.dev`)
+re-stats (`mtime`+`size`, never re-reads unless one differs) on every render and reparses only
+the one file that changed; prod builds never stat after boot.
+
+**Syntax** (frozen, no operators/filters/nested layouts):
+```
+{{ expr }}                          output, HTML-escaped        {{{ expr }}}   output, raw
+{{#if expr}} … {{#else}} … {{/if}}  conditional (else optional)  {{#for x in expr}} … {{/for}}
+{{> partial/name}}                  include (current model/scope)
+{{#layout "layouts/main"}}          first construct only, at most one, no chaining
+{{#block "name"}} … {{/block}}      child-supplied block          {{#yield "name"}} / {{#yield}}
+{{csrf}}                            hidden CSRF input (Track 08)  {{asset "css/app.css"}}  static URL
+{{! comment }}                      stripped; `{{! lint:allow }}` on the prior line downgrades
+                                     the next line's context lint from error to warning
+```
+`expr` is `path | literal` only — `path = ident ('.' (ident|int))*` resolved against a
+`JsonValue` model (ints index arrays); `literal = "string" | int | true | false`. `$index` is
+the only builtin (the innermost `{{#for}}`'s 0-based counter). Truth table (`{{#if}}`):
+missing/`null`/`false`/`""`/`[]` falsy; every number **including 0** truthy; everything else
+truthy. A missing dot-path in OUTPUT position is a loud dev-mode error (`file:line — path
+'a.b' not found`, with a nearest-object-keys hint) and a `""` + one structured `Atlantis::Log`
+warning in prod; missing in `{{#if}}`/`{{#for}}` TEST position is falsy/empty in both modes.
+
+**Controller surface** (`views/view.lev`):
+```
+Atlantis::Views::View v = view("links/index", jsonValue);        // untyped JsonValue model
+Atlantis::Views::View v = view("links/index", dto);              // T with C7 toJson() -> JsonValue
+Atlantis::Views::View v = fragment("links/_list", dto);           // asFragment=true (skips layout)
+HttpResponse r = Atlantis::Views::render(ctx, v);                 // resolves the installed Engine
+bool wantsFragment(Http::Context ctx);                            // HX-Request: true
+```
+There is no runtime DI container reachable from `Http::Context` (kernel/context.lev), so the
+`Engine` is bound via a boot-installed process-wide holder, not injection:
+`Atlantis::Views::install(Engine(cfg, logger))` once at startup; every `render`/`view()` call
+resolves it via `engineOrThrow()` (a clear `RuntimeException` if never installed). The kernel's
+simple string-keyed `Atlantis::Http::View('name').with(k, v)` sugar (facade.lev) renders through
+the SAME installed engine, wrapping its `Map<string,string>` model as a `JsonValue` object.
+Flash messages ride the Track 08 session seam: `Atlantis::Views::flash(ctx, "notice", "…")`
+writes `_flash.notice` into the current session record (`Auth::currentSessionRecord`/
+`putSessionRecord`, additive — `auth/session.lev`); `render()` pops every `_flash.*` entry
+(read-once) into the reserved model key `flash` before rendering.
+
+**Diagnostics:** `./myapp views` (an `App::Command`, `views/command.lev`) boots the engine
+(so it shares the exact same checks) and lists `name -> file (layout, blocks, partials)`, or
+exits nonzero printing every finding if the corpus is broken — the views analog of
+`./myapp routes`.
+
+**Known limitation (not fixed by this track):** number rendering goes through the same
+`JsonValue.render()` formatter as §6.11 — an integer-valued field still prints `3.000000`, not
+`3`, in template output (same pin as §6.11's `"age":30.000000`). Coordinate with whoever
+revisits float/JSON formatting globally (§19) rather than special-casing it in the template
+engine.
 
 ---
 

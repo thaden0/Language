@@ -1,0 +1,34 @@
+== structure ==
+2
+2
+2
+Open
+open
+
+true
+Agree
+== hole ==
+true
+2
+== serializer ==
+<menu id="file-menu" class="bar"><button id="open" action="open" width="10">Open</button><button id="save">Save</button></menu>
+== registerTag ==
+Go
+gizmo
+== errors ==
+unclosed:
+markup:1:7: '<button>' is closed by '</menu>'
+<menu><button>x</menu>
+      ^
+mismatch:
+markup:1:1: '<menu>' is closed by '</flex>'
+<menu></flex>
+^
+unknown-tag:
+unknown tag '<nope>' (register it with Moby::Dom::registerTag, or use a known tag)
+bad-int:
+attribute 'width="wide"' must be an integer
+theme:
+theme="dark" is not supported yet (E-D6)
+empty:
+markup is empty (E-D12: a node is required)

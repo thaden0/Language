@@ -1,9 +1,0 @@
-t0 A=0 B=0
-t1 A=5 B=5
-t2 A=6 B=6
-cyc.init a0b0 a=0 b=0
-cyc.a=3 a0b0a3b3 a=3 b=3
-cyc.b=1 a0b0a3b3a3b3 a=3 b=3
-detached A=6 (count=99)
-broken.init good=1
-broken.n=7 good=2

@@ -1,6 +1,6 @@
 // H09 — the subprocess bridge (designs/helm/techdesign-00-overview.md §7.1).
 //
-// Helm shells out to `leviathan`/`trident`/`harpoon` and the integrated
+// Helm shells out to `leviathan`/`trident`/`sonar` and the integrated
 // terminal's children. This module is the single seam over the language's
 // `Process` (reference §6.6.59): it frames raw stdout/stderr chunks into lines
 // and delivers immutable `ProcEvent` messages to the UI.
@@ -23,7 +23,7 @@
 namespace Helm {
 
     // ProcEvent tags. Plain int consts (never a user enum in a Map/Array — the
-    // Sonar keymap corpus hit bug #40/#41 there); read through the accessors.
+    // Moby keymap corpus hit bug #40/#41 there); read through the accessors.
     const int ProcStdout = 0;
     const int ProcStderr = 1;
     const int ProcExit   = 2;
@@ -46,7 +46,7 @@ namespace Helm {
 
     // The UI-drained, single-thread event queue. Producers are the Process
     // callbacks; the consumer is the UI's frame-start drain (a `renderFrame`
-    // hook, where SonarApp.__sweepBindings already runs).
+    // hook, where MobyApp.__sweepBindings already runs).
     class ProcEventQueue {
         Array<ProcEvent> pending_ = [];
 
@@ -196,7 +196,7 @@ namespace Helm {
     // (renderFrame hook); this stands in for that in spikes/tests/CLI use.
     //
     // The sink is held in a one-element Array<closure> (the sanctioned safe
-    // shape for a stored closure — Sonar's Button.pressHandlers_ precedent),
+    // shape for a stored closure — Moby's Button.pressHandlers_ precedent),
     // not a bare closure field, to avoid any auto-construct hazard.
     class ProcStreamer {
         Proc                        proc_;

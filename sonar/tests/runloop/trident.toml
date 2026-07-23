@@ -1,8 +1,0 @@
-name = "sonar-runloop-test"
-entry = "main"
-sources = ["runloop.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

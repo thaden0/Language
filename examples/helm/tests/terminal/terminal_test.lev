@@ -11,7 +11,7 @@
 // output translation would produce — VtParser (like a real VT100) only resets
 // the column on CR, never on a bare LF; feeding raw "\n" alone is a
 // deliberately different, rarer case exercised nowhere here.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

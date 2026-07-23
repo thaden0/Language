@@ -3,7 +3,7 @@
 // Up/Down move, Enter runs, Escape closes. The old "type exact name, Enter" path
 // still works because an exact-id match sorts first (§6.4).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class CommandPalette {
     public Modal modal;
@@ -36,7 +36,7 @@ class CommandPalette {
         this.filter.setValue("");
         this.refilter("");
         this.modal.open();
-        Sonar::app().focus(this.filter);
+        Moby::app().focus(this.filter);
     }
 
     void close() { this.modal.close(); }

@@ -39,6 +39,11 @@ namespace Atlantis {
             string csrfToken;
             int createdAtMs;          // absolute-lifetime anchor
             int expiresAtMs;          // rolling expiry — authoritative over the cookie's own exp
+            // Additive (Track 09 views §5.4): flash-message storage, keyed "_flash.<name>".
+            // A bare field default (no constructor parameter) so every existing
+            // `SessionRecord(p, csrfToken, createdAtMs, expiresAtMs)` call site is
+            // untouched — this is a pure addition, not a signature change.
+            Map<string, string> flash = Map();
             new SessionRecord(Principal? principal, string csrfToken, int createdAtMs, int expiresAtMs) {
                 this.principal = principal;
                 this.csrfToken = csrfToken;
@@ -247,5 +252,52 @@ namespace Atlantis {
                 if (cookie != "") { r.headers.add("Set-Cookie", cookie); }
                 return r;
             };
+
+        // Additive seam (Track 09 views §5.4, STOP-4 — coordinated here rather than
+        // forked): `Http::Context` carries no store/strategy reference (no runtime DI
+        // container is reachable from Context, kernel/context.lev's own header), so a
+        // boot-installed process-wide holder is the same honest idiom Views uses for
+        // its Engine (views/engine.lev). Composition roots that call
+        // `useAuthentication([SessionStrategy(...), ...])` should also call
+        // `installSessionStrategy(...)` with the same instance so flash (and any future
+        // session read/write need) has a seam without a parallel session mechanism.
+        SessionStrategy? installedSessionStrategy = None;
+        void installSessionStrategy(SessionStrategy s) { installedSessionStrategy = s; }
+
+        // Read the CURRENT request's session record, if any — verified the same way
+        // `authenticate()` verifies the envelope (CS-1), but does NOT require a
+        // Principal: flash rides even the anonymous pre-session (§7 of csrf.lev).
+        SessionRecord? currentSessionRecord(Http::Context ctx) {
+            SessionStrategy? s = installedSessionStrategy;
+            if (s == None) {
+                return None;
+            } else {
+                SessionStrategy strat = s;
+                string sid = strat.verifiedSidOf(ctx);
+                if (sid == "") { return None; } else { return await strat.store.get(sid); }
+            }
+        }
+
+        // Persist a (presumably mutated) SessionRecord back to the installed store,
+        // keyed by THIS request's verified sid. A no-op Promise if there is no
+        // installed strategy or no live envelope on the request.
+        Promise<void> putSessionRecord(Http::Context ctx, SessionRecord rec) {
+            SessionStrategy? s = installedSessionStrategy;
+            if (s == None) {
+                Promise<void> done = Promise();
+                done.resolve(None);
+                return done;
+            } else {
+                SessionStrategy strat = s;
+                string sid = strat.verifiedSidOf(ctx);
+                if (sid == "") {
+                    Promise<void> done = Promise();
+                    done.resolve(None);
+                    return done;
+                } else {
+                    return strat.store.put(sid, rec);
+                }
+            }
+        }
     }
 }

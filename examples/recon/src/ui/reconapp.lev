@@ -1,9 +1,9 @@
-// ReconApp — composition root & orchestration (DESIGN-2 §11). Owns the Sonar App,
+// ReconApp — composition root & orchestration (DESIGN-2 §11). Owns the Moby App,
 // the one command registry (every keybinding/menu/palette/hint derives from it —
 // P1/P3), the panel tree, the overlays, and the send flow. Background work is
 // callbacks + timers — the UI never awaits (P4).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class ReconApp {
     public App app;
@@ -74,7 +74,7 @@ class ReconApp {
         SplitBox outer = SplitBox();
         outer.setAxis(Axis::Horizontal);
         outer.setRatio(28);
-        outer.setHeight(Constraint::Flex(1));      // sonar-bugs #1: opt vertical child into flex
+        outer.setHeight(Constraint::Flex(1));      // moby-bugs #1: opt vertical child into flex
         outer.add(this.sidebar.tabs);
 
         SplitBox inner = SplitBox();

@@ -1,0 +1,90 @@
+// Atlantis Track 09 — Views V-M3 acceptance: `View`/`view()`/`view<T>()`/`fragment()`
+// + content negotiation shape, `@Fragment`/`wantsFragment` (HX-Request), `{{csrf}}`
+// (Track 08 seam), flash (Track 08 session seam, read-once), and `{{asset}}`. Driven
+// without a socket (synthetic requests), so output is deterministic — same convention
+// as tests/corpus/auth. Run from the REPO ROOT.
+uses Atlantis;
+uses Atlantis::Http;
+uses Atlantis::Auth;
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+HttpRequest mkReq(string method, string path, string headers) {
+    HttpRequest r = HttpRequest();
+    r.parse(method + " " + path + " HTTP/1.1\r\nHost: x\r\n" + headers + "\r\n");
+    return r;
+}
+string cookieNameValue(string setCookieHeader) {
+    int semi = setCookieHeader.indexOf(";");
+    return semi >= 0 ? setCookieHeader.subStr(0, semi) : setCookieHeader;
+}
+
+// The csrf token is random per run (Track 08 seam) — redact it so the golden
+// comparison stays byte-identical across processes/engines.
+string redactCsrf(string html) {
+    string marker = "name=\"_csrf\" value=\"";
+    int start = html.indexOf(marker);
+    if (start < 0) { return html; }
+    int valueStart = start + marker.length();
+    int valueEnd = html.indexOfFrom("\"", valueStart);
+    if (valueEnd < 0) { return html; }
+    return html.subStr(0, valueStart) + "<REDACTED>" + html.subStr(valueEnd, html.length() - valueEnd);
+}
+
+@Serializable
+class PageDto : IJsonSerializable {
+    string title;
+    new PageDto(string title) { this.title = title; }
+    JsonValue toJson() {
+        Map<string, JsonValue> m = Map();
+        m["title"] = JsonValue::ofStr(this.title);
+        return JsonValue::ofObject(m);
+    }
+}
+
+Promise<void> run() {
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig("packages/atlantis/tests/corpus/views_integration/Resources/Views", false, "/public");
+    install(Engine(cfg, logger));
+
+    InMemorySessionStore store = InMemorySessionStore();
+    SessionConfig scfg = SessionConfig("atlantis_sid",
+        encoding::base64Encode("0123456789abcdef0123456789abcdef"), 1800, 43200, false);
+    SessionStrategy strat = SessionStrategy(store, scfg);
+    installSessionStrategy(strat);
+
+    Context anonCtx = Context(mkReq("GET", "/", ""));
+    string cookie = await strat.issue(anonCtx, Principal("u1", "Ann", ["editor"], emptyClaims()));
+
+    Context ctx = Context(mkReq("GET", "/page", "Cookie: " + cookieNameValue(cookie) + "\r\n"));
+    Principal? who = strat.authenticate(ctx);   // populates ctx.items["auth.csrfToken"]
+    console.writeln("authenticated=" + (who != None).toString());
+
+    flash(ctx, "notice", "Link added");
+
+    PageDto dto = PageDto("Top links");
+    View v = view("page", dto);
+    HttpResponse r1 = render(ctx, v);
+    console.writeln("== first render (flash present) ==");
+    console.writeln("status=" + r1.status.toString() + " ctype=" + r1.headers.firstOr("Content-Type", "-"));
+    console.writeln(redactCsrf(r1.body));
+
+    HttpResponse r2 = render(ctx, view("page", dto));
+    console.writeln("== second render (flash popped, read-once) ==");
+    console.writeln(redactCsrf(r2.body));
+
+    View fv = fragment("page", dto);
+    console.writeln("asFragment=" + fv.asFragment.toString());
+
+    Context hxCtx = Context(mkReq("GET", "/page", "HX-Request: true\r\n"));
+    console.writeln("wantsFragment(hx)=" + wantsFragment(hxCtx).toString());
+    console.writeln("wantsFragment(plain)=" + wantsFragment(ctx).toString());
+
+    Promise<void> done = Promise();
+    done.resolve(None);
+    return done;
+}
+
+void main() { await run(); }
+main();

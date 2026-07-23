@@ -1,8 +1,0 @@
-name = "sonar-reactive-macro-test"
-entry = "main"
-sources = ["app.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

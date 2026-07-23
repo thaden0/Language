@@ -6,7 +6,7 @@
 **Supersedes:** `DESIGN.md` §9 (UI architecture) and parts of §12 (coding standard, per §13 below).
 `DESIGN.md` remains normative for the headless core (§4–§8), the async model (§2.1), and
 everything this document does not explicitly amend. `RESEARCH.md` facts are superseded where
-noted — Sonar has shipped substantially since it was written (see §2.1).
+noted — Moby has shipped substantially since it was written (see §2.1).
 
 > **Why this document exists.** Recon v0.1 proved the architecture: the headless core is
 > corpus-tested and correct, and the UI shell runs end-to-end. But the shell is **unclear and
@@ -23,7 +23,7 @@ noted — Sonar has shipped substantially since it was written (see §2.1).
 | § | What it covers |
 |---|---|
 | 1 | The UX audit — every concrete complaint, numbered, each mapped to its fix |
-| 2 | What changed under us (Sonar/compiler deltas since v0.1) and what they unlock |
+| 2 | What changed under us (Moby/compiler deltas since v0.1) and what they unlock |
 | 3 | UX principles (normative) |
 | 4 | Visual design system: palette, color coding, glyphs, theme v2, a11y |
 | 5 | Information architecture: zones, screens, the new main layout |
@@ -72,7 +72,7 @@ checklist for the whole effort: **v0.2 ships when every A and B row is closed.**
 | F20 | **No JSON navigation.** Response bodies pretty-print as a flat wrapped `Text` — no folding, no search, no path readout, no way to build an assertion from what you see. | B | §8.2/§8.3 |
 | F21 | **No settings UI** (timeout, redirects, theme, session policy are model-only). | B | §10.6 |
 | F22 | **No visual method/status color coding** anywhere (tree glyphs are plain text; status is plain text). | C | §4.2/§4.3 |
-| F23 | **No menu bar.** Keyboard-first is right, but menus are the *discoverability* backbone a TUI can now afford — Sonar ships `BarMenu`/`Menu` (post-RESEARCH). | B | §6.3 |
+| F23 | **No menu bar.** Keyboard-first is right, but menus are the *discoverability* backbone a TUI can now afford — Moby ships `BarMenu`/`Menu` (post-RESEARCH). | B | §6.3 |
 | F24 | **Focus is hard to see**: default framework focus styling only; the theme's `focused.border` keys are never wired. | C | §4.5 |
 | F25 | **New/rename/delete for tree nodes missing** (`F2`/`Delete` in DESIGN §9.6's table — never wired). | B | §10.1 |
 | F26 | **No "new request" path at all** — you cannot compose a request without importing a collection first. | A | §10.5 scratch collection |
@@ -84,7 +84,7 @@ are the open work"). This design is that work, plus the standard it should have 
 
 ## 2. What changed under us — and what it unlocks
 
-### 2.1 Sonar deltas since RESEARCH.md (verified against `sonar/src` at HEAD)
+### 2.1 Moby deltas since RESEARCH.md (verified against `moby/src` at HEAD)
 
 RESEARCH.md §3.2 listed as *missing*: `Modal`, `BarMenu`/`Menu`, `@Shortcut`, theming DI. **All
 of these have since shipped**, plus more:
@@ -92,21 +92,21 @@ of these have since shipped**, plus more:
 | Now shipped | Surface (verified) | Recon v0.2 use |
 |---|---|---|
 | `Modal` | `title()/border()/pad()/dismissWith()/open()/close()/onDismiss()`; scrim; overlay groups | All dialogs (§7.3, §10) |
-| `Sonar::alert` / `Sonar::confirm` | `confirm -> Promise<bool>` | Quit guard, destructive confirms |
+| `Moby::alert` / `Moby::confirm` | `confirm -> Promise<bool>` | Quit guard, destructive confirms |
 | `Menu` / `MenuItem` / `MenuSeparator` / `BarMenu` | `BarMenu.menu(Menu)`, `Menu.item(label, cb)`, `openAt(x,y,group)`, arrow/mouse nav | The menu bar (§6.3) |
 | Overlay extensions | `pushOverlay(c, dismissOnOutsidePress, inputTransparent, group)`, `newOverlayGroup`, `popOverlayGroup/Component`, focus save/restore | Palette, help, notices |
 | Theming (T08) | TOML themes, dotted keys, `Style.over`, `setTheme()` live switch, 4 built-ins | Theme v2 (§4.4) |
-| `@Sonar::Shortcut/@Timer/@Validator`, `validateTree` | attach/detach-scoped registration | Considered §11.4 |
-| `@Sonar::Reactive` | set-view injection, global fan-out | Considered & rejected §11.4 |
-| `sonar!` templates | comptime tag grammar | Not adopted v0.2 (§16) |
-| TestRenderer harness (T10) | `TestRenderer` (DI-selected), `ScriptedInput`, chord encoder, `SonarTest` (`eq/snap/snapText/harness/pump/reset`), `runtests.sh` matrix | All UI acceptance tests (§14) |
+| `@Moby::Shortcut/@Timer/@Validator`, `validateTree` | attach/detach-scoped registration | Considered §11.4 |
+| `@Moby::Reactive` | set-view injection, global fan-out | Considered & rejected §11.4 |
+| `moby!` templates | comptime tag grammar | Not adopted v0.2 (§16) |
+| TestRenderer harness (T10) | `TestRenderer` (DI-selected), `ScriptedInput`, chord encoder, `MobyTest` (`eq/snap/snapText/harness/pump/reset`), `runtests.sh` matrix | All UI acceptance tests (§14) |
 | `Input` validators & masks | `addValidator(()=>bool, msg)`, `mask(char)` | Secret fields, inline validation |
 | `Tabs` polish | digit-select 1–9, arrow nav, `select()` clamps + fires on change | Response/request tabs |
 | `Spinner` | braille frames by default, `setInterval` | In-flight ticker (§9.4) |
 | `DebugOverlay` | frame stats overlay | `F12` (§6.2) |
 
 **Design consequence:** v0.1's two "deviations" (compose `Modal`; owns-a-`Container` builder
-classes) are ratified as the house pattern and extended — nothing in v0.2 hand-rolls what Sonar
+classes) are ratified as the house pattern and extended — nothing in v0.2 hand-rolls what Moby
 now ships.
 
 ### 2.2 Compiler/runtime deltas
@@ -115,7 +115,7 @@ now ships.
   (commit `1cd07bb`). These were the *only* reasons Recon was pinned to the oracle/IR lanes.
   §12 promotes the LLVM lane behind explicit gates.
 - **The MI-dispatch bug family (#64/#65/#59/#61/#41/#40/#49/#36) is fixed at source**
-  (`054e159` et al., 2026-07-14) and the whole Sonar composite set now passes on LLVM.
+  (`054e159` et al., 2026-07-14) and the whole Moby composite set now passes on LLVM.
 - **The current open register is exactly:** #72 [P2] (misleading TLS error text — the message
   fix landed `d994ab8`; the underlying "why did `sysTcpConnect` return −1 in that environment"
   question remains open), #73 [P2] (a **global** `Array<T>` grown by `xs = xs.add(...)` leaks
@@ -132,15 +132,15 @@ now ships.
 - **Trident glob `src/**` (v0.1 bug #71)**: the explicit per-directory `sources` list stays; new
   UI files must be added to the manifest list when created (checklist item in every track).
 
-### 2.3 Open Sonar bugs that constrain the visual work
+### 2.3 Open Moby bugs that constrain the visual work
 
-- **sonar-bugs #4 (open):** a leaf repainting a *shorter* string leaves stale glyphs when the
+- **moby-bugs #4 (open):** a leaf repainting a *shorter* string leaves stale glyphs when the
   resolved background is the default/empty theme (`paintBackground` fills only for a themed
   non-default bg). **Mitigation, normative:** every Recon-authored leaf paints its own
   full-content-width background line (or pads with spaces to the content width) in
   `paintContent`; and theme v2 gives every Recon surface a themed bg so the framework fill
   engages. Both belts. (Watchpoint W1 in §15.4.)
-- **sonar-bugs #1 (Recon side fixed in `3d06800`):** vertical flex must be opted into
+- **moby-bugs #1 (Recon side fixed in `3d06800`):** vertical flex must be opted into
   (`setHeight(Constraint::Flex(1))`) — retained knowledge, now a standard rule (§13 N3).
 
 ---
@@ -160,7 +160,7 @@ every future Recon change should be too.
   All three render from the same registry entry, so they cannot drift apart.
 - **P4 — Never steal focus.** Background completion (a send settling, a toast, history
   appending) must not move keyboard focus. Only a *user-initiated* open (dialog, palette,
-  menu) may move focus, and closing it restores the previous focus (Sonar's overlay stack
+  menu) may move focus, and closing it restores the previous focus (Moby's overlay stack
   already saves/restores).
 - **P5 — Escape always retreats, in order.** Top overlay → in-flight cancel → nothing. Never
   quit, never destructive. One rule, everywhere (§6.2).
@@ -169,9 +169,9 @@ every future Recon change should be too.
   bodies, compressed responses — v0.1 already did this well; keep it).
 - **P7 — Color is never the only channel.** Status text accompanies status color; method names
   accompany method colors; `✓/✗` accompany pass/fail green/red; the secret mask is dots, not a
-  color. (This is Sonar's own theme a11y rule, applied to every Recon key — §4.4.)
+  color. (This is Moby's own theme a11y rule, applied to every Recon key — §4.4.)
 - **P8 — Keyboard-first, mouse-welcome.** Every flow completes without a mouse. Everything
-  clickable (tabs, tree rows, menu titles, buttons) already handles mouse via Sonar; nothing
+  clickable (tabs, tree rows, menu titles, buttons) already handles mouse via Moby; nothing
   in v0.2 may *require* it.
 
 ---
@@ -180,9 +180,9 @@ every future Recon change should be too.
 
 ### 4.1 Palette discipline
 
-Sonar's `Color` is the 16-color terminal set plus `Default`, with an 8-bit attr field
+Moby's `Color` is the 16-color terminal set plus `Default`, with an 8-bit attr field
 (bold/dim/italic/underline/blink/reverse/hidden/strike as the renderer supports). **v0.2 stays
-inside 16 colors** — no 256-color request to Sonar (out of scope, §16). The discipline that
+inside 16 colors** — no 256-color request to Moby (out of scope, §16). The discipline that
 makes 16 colors look designed rather than accidental:
 
 - **One accent.** Cyan is Recon's accent: focused borders, selected tab underline text, the
@@ -217,7 +217,7 @@ them align in history and (future) multi-request views.
 
 **Honest limit:** `ITreeSource.labelAt` returns a plain string — the shipped `TreeView` has no
 per-row style hook, so the sidebar tree keeps *text* method badges without color in v0.2. The
-color coding lives in the method selector, history pane, and status line. (Filing a Sonar
+color coding lives in the method selector, history pane, and status line. (Filing a Moby
 enhancement request for a styled-label tree source is a v0.3 candidate; we do not fork or
 patch the framework for it.)
 
@@ -244,14 +244,14 @@ clock inside).
 1. **`themes/recon.toml` is actually loaded**, via the T08 idiom: `trident.toml` gains
    `assets = ["themes/recon.toml"]`, and `src/ui/theme.lev` declares a top-level
    `comptime string reconThemeToml = import("themes/recon.toml");` global (the *only* legal
-   `import()` position — a runtime call throws, LA-20), parsed once by Sonar's TOML loader at
+   `import()` position — a runtime call throws, LA-20), parsed once by Moby's TOML loader at
    startup. `Settings.themeName` selects among `recon | dark | light | highContrast` (the
-   Sonar built-ins for the latter three); unknown names fall back to `recon` with a notice.
+   Moby built-ins for the latter three); unknown names fall back to `recon` with a notice.
 2. **Runtime switching**: the settings dialog / `theme` command calls `setTheme(...)` (T08
    supports live in-place switch) and repaints; the choice persists in `settings.json`.
 3. **The full key taxonomy** — the file grows from 12 keys to the complete set. Every key
    below carries the a11y rule (any state distinction has a non-color channel *in the UI
-   element itself*, per P7). Component base keys (`input`, `button`, `tabs`, …) follow Sonar's
+   element itself*, per P7). Component base keys (`input`, `button`, `tabs`, …) follow Moby's
    most-specific-first `resolve` fold, so shipped components pick them up without code.
 
 ```
@@ -301,7 +301,7 @@ Every zone renders guidance when it has nothing real to show (all static `Text`,
 
 ### 4.7 Glyph vocabulary
 
-Fixed set, all narrow (width-1) BMP glyphs — Sonar's wide-glyph healing exists, but staying
+Fixed set, all narrow (width-1) BMP glyphs — Moby's wide-glyph healing exists, but staying
 narrow avoids ragged columns on constrained terminals: `▸ ▾` (tree, shipped), `▶` (selection),
 `●` (status dot / dirty), `◌` (timeout/cancel), `✓ ✗` (pass/fail), `…` (truncation), `⠋…`
 (braille spinner, shipped default), `∙` (separator in meta lines). ASCII fallback is *not*
@@ -415,7 +415,7 @@ rendered hint's chord round-trips through the chord encoder to a bound action.
 
 ### 6.2 Keymap v2 (complete global table)
 
-**Chord discipline (normative):** global chords are Ctrl-letters and F-keys **only**. Sonar
+**Chord discipline (normative):** global chords are Ctrl-letters and F-keys **only**. Moby
 rules global chords win at capture over a focused `Input` (R11), so a bare printable global
 chord (`?`, `:`, `[`) would steal typing from the URL field — v0.1's design tables suggesting
 `:` and `?` are rescinded. Component-local keys (only when that component is focused) may be
@@ -435,7 +435,7 @@ printable.
 | `^E` | `env.edit` | environment editor |
 | `^H` | `view.history` | toggle sidebar History tab |
 | `^B` | `view.sidebar` | focus the sidebar tree |
-| `^Q` | `app.quit` | dirty-guarded (§10.5); `^C` remains Sonar's hard quit |
+| `^Q` | `app.quit` | dirty-guarded (§10.5); `^C` remains Moby's hard quit |
 | `Tab` / `S-Tab` | — | shipped FocusRing traversal (unchanged) |
 
 Component-local (documented in help, bound in the component): tree `F2` rename, `Delete`
@@ -602,7 +602,7 @@ parsed `JsonValue`:
   fold; `Left` folds (or jumps to parent when already folded — the tree-nav idiom); `Right`
   unfolds. Mouse press selects; press on a fold glyph toggles.
 - **Painting:** per-row, token-styled (`json.*` keys), cursor row on `editor.cursorline` bg,
-  **full-width bg fill every row** (sonar-bugs #4 belt, §2.3). Long values ellipsize with `…`
+  **full-width bg fill every row** (moby-bugs #4 belt, §2.3). Long values ellipsize with `…`
   (full value visible via the footer path + a future copy story, §16).
 - **Footer** (one row inside the pane): the selected row's JSONPath in the exact
   `eval/jsonpath.lev` dialect (`$.meta.page`), right-aligned hints `/ search  a assert  x extract`.
@@ -648,7 +648,7 @@ quiet — the API supports them; the risk/benefit doesn't, yet.)*
   When nothing is live the row collapses (`Constraint::Fixed(0)` — layout reflows).
 - **Notices log:** `Help ▸ Notices log` / palette `view.notices` opens a Modal `ListView` of
   the 50 retained rows with `fmtAgo` timestamps — the answer to "what did that flash say?".
-- `Sonar::log` keeps receiving everything notices receive (headless debugging unchanged).
+- `Moby::log` keeps receiving everything notices receive (headless debugging unchanged).
 
 ### 9.2 Error taxonomy (normative)
 
@@ -695,7 +695,7 @@ ResolveReport resolveReport(string template, VarResolver vars) { ... }
   (BrightRed bold). Painted by a small span leaf (`src/ui/richtext.lev`, new: a `Component`
   painting `Array<Span{text, styleKey}>` — also reused by the status line and notice line).
 - **At send:** if any URL/header/auth/body hole is unresolved and
-  `settings.warnUnresolved` (default true), a `Sonar::confirm` intercepts:
+  `settings.warnUnresolved` (default true), a `Moby::confirm` intercepts:
   `"2 unresolved variables ({{tokn}}, {{userid}}) will be sent literally. Send anyway?"`.
   Decline focuses the preview strip. The report rows also land as a warn notice.
 
@@ -813,7 +813,7 @@ old settings.json files valid — additive JSON).
 App (FlexLayout Vertical)
  ├─ MenuBar          (BarMenu, Fixed(1))                    §6.3
  ├─ TopBar           (ContentBar, Fixed(1))                 §5.1
- ├─ SplitBox outer   (Horizontal 28%, Flex(1))              ← sonar-bugs #1 opt-in retained
+ ├─ SplitBox outer   (Horizontal 28%, Flex(1))              ← moby-bugs #1 opt-in retained
  │   ├─ Tabs sidebar (Collections | History)                §10.1
  │   └─ SplitBox inner (Vertical 45%)
  │       ├─ RequestPanel.root  (method ∙ url ∙ send / preview strip / 5 tabs)
@@ -845,13 +845,13 @@ misplaced `CommandRegistry` moves to `commands.lev` and `keymap.lev` keeps only 
 
 ### 11.4 Reactivity decision (recorded)
 
-**Keep the explicit `refresh()` hub; do not adopt `@Sonar::Reactive` for app state.** The
+**Keep the explicit `refresh()` hub; do not adopt `@Moby::Reactive` for app state.** The
 landed reactivity is component-field-scoped (int/string/bool/float set-views with global
 fan-out per host) — excellent for a self-contained widget, wrong for a cross-panel hub where
 one send touches seven surfaces in a deliberate order (state → statusline → tests badge →
 history → cookies → topbar → frame). The explicit hub is *why* v0.1's update flow is easy to
 reason about; v0.2 keeps it and simply routes every mutation through the (now more granular)
-`refresh(...)` helpers. `@Sonar::Shortcut/@Timer` attributes are likewise skipped: Recon's
+`refresh(...)` helpers. `@Moby::Shortcut/@Timer` attributes are likewise skipped: Recon's
 chords come from the registry (P1), not per-class annotations. Revisit only if a v0.3 widget
 is genuinely self-contained.
 
@@ -898,10 +898,10 @@ flips the text. Until U8 merges, the old rules stay in force for new code (no ch
 | `env::get` only at top-level `main()` | #68 | fixed | Retire the mandate; keep "read env at the root, pass values down" as architecture guidance (it is simply good design) |
 | Map bracket-sugar writes only | #18 | fixed per register | Retire after probe |
 | Compose-don't-subclass `Container` | #65 family | fixed | **Keep as house pattern** (simpler, testable, no framework-internals coupling) — reworded from "workaround" to "style" |
-| Vertical children opt into `Flex(1)` | sonar #1 | framework behavior | **Keep** (N3): every child of a vertical flex that should fill declares it |
+| Vertical children opt into `Flex(1)` | moby #1 | framework behavior | **Keep** (N3): every child of a vertical flex that should fill declares it |
 | **N1 (new):** no repeated `Array<Struct>.add` loops in native-lane code until #74 closes | #74 open | — | Mandate |
 | **N2 (new):** never grow a namespace-global array element-wise; grow a local, assign once | #73 fixed 2026-07-21 (`known_bugs_1.md` #73) | — | Retired as mandate — global COW growth is leak-free on LLVM native; keep as optional style |
-| **N3 (new):** Recon leaves paint full-width row backgrounds | sonar #4 open | — | Mandate |
+| **N3 (new):** Recon leaves paint full-width row backgrounds | moby #4 open | — | Mandate |
 | **N4 (new):** global chords are Ctrl/F-keys only (R11 capture) | — | — | Mandate (§6.2) |
 | **N5 (new):** every user-facing failure produces exactly one notice (§9.2) | — | — | Mandate |
 | **N6 (new):** new UI files are added to the manifest `sources` list (explicit dirs; `**` excluded top-level files, v0.1 #71) | — | — | Checklist |
@@ -995,7 +995,7 @@ final ownership except this line, which overrides: `dialog.lev` → **U2**).
 
 | # | Risk | Mitigation |
 |---|---|---|
-| W1 | sonar #4 stale glyphs on any shrinking leaf | N3 full-width bg painting; themed default bg; snapshot tests shrink content deliberately |
+| W1 | moby #4 stale glyphs on any shrinking leaf | N3 full-width bg painting; themed default bg; snapshot tests shrink content deliberately |
 | W2 | #74 surfaces via prelude struct arrays (`HeaderMap.entries()`) on the LLVM lane | small-N per frame; gate G3 watches; Outcome B fallback costs nothing UX-side |
 | W3 | BarMenu/overlay focus interplay with palette+dialog stacking | U0 probe exercises menu→submenu→dialog→restore chain before any feature builds on it |
 | W4 | NoticeLine collapse (`Fixed(0)`) reflow jitter | U0 probe; fallback = keep the row permanently with quiet bg |
@@ -1006,7 +1006,7 @@ final ownership except this line, which overrides: `dialog.lev` → **U2**).
 ### 15.5 STOP-and-escalate (implementer protocol)
 
 Stop the track and escalate (do not improvise) when: (a) a needed capability turns out to
-require modifying `sonar/src/**` or compiler `src/**` — file the request/bug instead; (b) any
+require modifying `moby/src/**` or compiler `src/**` — file the request/bug instead; (b) any
 engine divergence appears on the oracle/IR pair — rebuild first, then file; (c) a #74-shaped
 crash (allocator SIGSEGV away from site) appears anywhere — stop-the-line applies; (d) an
 overlay/focus behavior contradicts §2.1's verified API table; (e) a §13 probe that "should"
@@ -1020,7 +1020,7 @@ Everything in DESIGN §1.2/§1.3 stays out (JS execution, binary bodies, decompr
 insecure-TLS toggle, SSE/WebSockets/gRPC, OAuth2 flows, pooling). Additionally out of v0.2:
 256-color/truecolor themes (16-color discipline instead, §4.1); clipboard/OSC52 copy;
 mouse-hover states; a styled-label tree source (framework request candidate); floating toasts
-(§9.1 decision); `sonar!` template adoption; ASCII-glyph fallback mode; multi-request
+(§9.1 decision); `moby!` template adoption; ASCII-glyph fallback mode; multi-request
 tabs/workspaces; response-body diffing. Each is a candidate for a v0.3 list, none blocks the
 §1 checklist.
 

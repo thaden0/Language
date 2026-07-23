@@ -1,3 +1,0 @@
-name = "harpoon"
-sources = ["src/*.lev"]
-version = "0.1.0"

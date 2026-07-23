@@ -1,0 +1,24 @@
+// Atlantis Track 09 — Views P-1 (design §9): mtime observability + granularity.
+// Writes a fixture file, records its mtime, busy-waits past a whole second of real
+// wall time (sysMonotonic, ms-resolution, never comptime — reference.md §6.6.58),
+// rewrites the file, and records mtime again. Not run via runtests.sh (timing-
+// sensitive); run manually per engine and its result logged in the design's §13 log.
+void main() {
+    string path = "packages/atlantis/tests/views/_p1_fixture.tmp";
+    using File f1 = File(path, std::write);
+    f1.write("v1");
+    int m1 = std::fileModified(path);
+
+    int start = std::sysMonotonic();
+    while (std::sysMonotonic() - start < 1100) { }   // spin past 1.1s of wall time
+
+    using File f2 = File(path, std::write);
+    f2.write("v2-longer-content");
+    int m2 = std::fileModified(path);
+
+    console.writeln("mtime_observed=" + (m1 >= 0).toString());
+    console.writeln("mtime_changed=" + (m2 != m1).toString());
+    console.writeln("size_changed=" + (std::fileSize(path) != 2).toString());
+    std::sysRemove(path);
+}
+main();

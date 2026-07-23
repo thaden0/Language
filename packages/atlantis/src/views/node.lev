@@ -1,0 +1,114 @@
+// Atlantis Track 09 — Views: the compiled node tree (design §2.4).
+//
+// A closed-in-spirit-but-open-in-mechanism hierarchy (the language has no sealed/union
+// class list, reference.md §3.15), `match`-dispatched at render time (P-5). Every node
+// carries its source `line` for the diagnostic messages §3.3/§8 promise.
+namespace Atlantis {
+    namespace Views {
+
+        class Node { int line; }
+
+        // Plain text between tags — copied to the sink verbatim (§2.4).
+        class TextNode : Node {
+            string text;
+            new TextNode(int line, string text) { this.line = line; this.text = text; }
+        }
+
+        // `{{ path }}` / `{{{ path }}}` — a dot-path resolved against the render Frame
+        // (§2.2); `raw` selects the escaped vs. unescaped sink (§3.1/§3.2).
+        class OutputNode : Node {
+            Array<string> path;
+            bool raw;
+            new OutputNode(int line, Array<string> path, bool raw) {
+                this.line = line; this.path = path; this.raw = raw;
+            }
+        }
+
+        // A literal in output position (`{{ "hi" }}`, `{{ 3 }}`, `{{ true }}`) — rare
+        // (literals exist chiefly as directive arguments, §2.2), but when it happens the
+        // parser resolves it directly to its rendered text rather than a dot-path lookup.
+        class LiteralNode : Node {
+            string value;
+            bool raw;
+            new LiteralNode(int line, string value, bool raw) {
+                this.line = line; this.value = value; this.raw = raw;
+            }
+        }
+
+        // `{{#if condPath}} … {{#else}} … {{/if}}` — §2.5's truth table decides the arm.
+        class IfNode : Node {
+            Array<string> condPath;
+            Array<Node> thenNodes;
+            Array<Node> elseNodes;
+            new IfNode(int line, Array<string> condPath, Array<Node> thenNodes, Array<Node> elseNodes) {
+                this.line = line; this.condPath = condPath;
+                this.thenNodes = thenNodes; this.elseNodes = elseNodes;
+            }
+        }
+
+        // `{{#for x in path}} … {{/for}}` — iterates a JSON array (§2.5).
+        class ForNode : Node {
+            string varName;
+            Array<string> path;
+            Array<Node> body;
+            new ForNode(int line, string varName, Array<string> path, Array<Node> body) {
+                this.line = line; this.varName = varName; this.path = path; this.body = body;
+            }
+        }
+
+        // `{{> partial/name}}` — renders with the CURRENT model + loop scope (§2.2).
+        class IncludeNode : Node {
+            string partialName;
+            new IncludeNode(int line, string partialName) { this.line = line; this.partialName = partialName; }
+        }
+
+        // `{{#yield "title"}}` / `{{#yield}}` — layout-side slot; "" = the child's body.
+        class YieldNode : Node {
+            string blockName;
+            new YieldNode(int line, string blockName) { this.line = line; this.blockName = blockName; }
+        }
+
+        // `{{csrf}}` — Track 08 seam (§5.3).
+        class CsrfNode : Node {
+            new CsrfNode(int line) { this.line = line; }
+        }
+
+        // `{{asset "css/app.css"}}` — Track 01 static-file convention (§7).
+        class AssetNode : Node {
+            string assetPath;
+            new AssetNode(int line, string assetPath) { this.line = line; this.assetPath = assetPath; }
+        }
+
+        // One aggregated boot-time parse/lint finding (§8).
+        class ParseError {
+            string file;
+            int line;
+            string message;
+            new ParseError(string file, int line, string message) {
+                this.file = file; this.line = line; this.message = message;
+            }
+            string render() => this.file + ":" + this.line.toString() + ": " + this.message;
+        }
+
+        // A parsed template (§2.4). `mtime`/`size` back dev-mode invalidation (§2.1);
+        // `layoutName` is `None` for a standalone template; `blocks` holds every
+        // `{{#block "name"}}` body, keyed by name, for the layout-weave step (§2.4).
+        class Template {
+            string name;              // "links/index"
+            string filePath;          // "Resources/Views/links/index.lhtml"
+            int mtime;
+            int size;
+            string? layoutName;
+            int layoutLine;           // the line {{#layout "…"}} appeared on (0 if none)
+            Map<string, Array<Node>> blocks = Map();
+            Array<Node> body = [];
+            new Template(string name, string filePath, int mtime, int size) {
+                this.name = name;
+                this.filePath = filePath;
+                this.mtime = mtime;
+                this.size = size;
+                this.layoutName = None;
+            }
+        }
+    }
+}

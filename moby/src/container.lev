@@ -1,0 +1,86 @@
+namespace Moby {
+    class Container : Component, IContainer {
+        Array<IComponent> children_ = [];
+        ILayoutStrategy layout_ = FlexLayout(Axis::Vertical);
+
+        bool wouldCreateCycle(IComponent? cursor, IComponent child) {
+            if (cursor != None) {
+                if (cursor == child) return true;
+                return wouldCreateCycle(cursor.parent(), child);
+            }
+            return false;
+        }
+
+        Container add(IComponent child) {
+            if (wouldCreateCycle(this, child))
+                throw MobyException("Cannot add a component to its descendant");
+            children_ = children_.add(child);
+            child.setParent(this);
+            child.__mobyAttach();
+            invalidateLayout();
+            return this;
+        }
+
+        Container remove(IComponent child) {
+            Array<IComponent> kept = [];
+            bool removed = false;
+            for (IComponent item in children_) {
+                if (item == child) removed = true;
+                else kept = kept.add(item);
+            }
+            if (removed) {
+                children_ = kept;
+                child.setParent(None);
+                child.__mobyDetach();
+                invalidateLayout();
+            }
+            return this;
+        }
+
+        Container clear() {
+            Array<IComponent> old = children_;
+            children_ = [];
+            for (IComponent child in old) {
+                child.setParent(None);
+                child.__mobyDetach();
+            }
+            invalidateLayout();
+            return this;
+        }
+
+        Array<IComponent> children() => children_;
+        Container setLayout(ILayoutStrategy layout) {
+            layout_ = layout;
+            invalidateLayout();
+            return this;
+        }
+        ILayoutStrategy layout() => layout_;
+        Rect contentRect() => box.inset(this.chrome());
+        Array<IComponent> __mobyChildren() => children_;
+        Rect __mobyContentRect() => contentRect();
+
+        Size contentDesired(Size avail) {
+            Size inner = Size(avail.w - this.chrome().h(), avail.h - this.chrome().v());
+            if (inner.w < 0) inner.w = 0;
+            if (inner.h < 0) inner.h = 0;
+            Size measured = layout_.measure(children_, inner);
+            return Size(measured.w + this.chrome().h(), measured.h + this.chrome().v());
+        }
+
+        void arrange(Rect assigned) {
+            box = normalizeRect(assigned);
+            layout_.arrange(children_, contentRect());
+            layoutDirty_ = false;
+        }
+
+        void paint(Surface s) {
+            if (!visible()) return;
+            this.paintBackground(s);
+            this.paintChrome(s);
+            Rect content = contentRect();
+            s.pushClip(content);
+            for (IComponent child in children_) if (child.visible()) child.paint(s);
+            s.popClip();
+        }
+    }
+}

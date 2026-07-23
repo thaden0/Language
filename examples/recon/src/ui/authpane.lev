@@ -3,7 +3,7 @@
 // (P2). Digest is surfaced-unsupported. Values accept {{vars}}; the §9.3 strip
 // flags unresolved ones at send time.
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class AuthPane {
     public Container root;

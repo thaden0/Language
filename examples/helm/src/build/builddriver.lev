@@ -8,7 +8,7 @@
 //
 //     begin(job)  → status "building…", clear the job's panel
 //     onEvent(e)  → stdout/stderr stream to Output; stderr collects for the
-//                   diagnostic parse; test stdout collects for the harpoon parse
+//                   diagnostic parse; test stdout collects for the sonar parse
 //     finish(code)→ parse → Problems (build/test) + Test panel (test) + status ✓/✗
 //
 // The routing is driven through `onEvent(ProcEvent)`, exactly the shape a real
@@ -19,8 +19,8 @@
 // by both the live path and the golden.
 //
 // Design-vs-reality (the H-C4/H-C2/H-C3 precedent, recorded in the doc log):
-// `trident` exposes no `test` subcommand, so Test runs a harpoon project via
-// `trident run <testsDir>` and parses stdout (harpoon.lev). "Choose engine"
+// `trident` exposes no `test` subcommand, so Test runs a sonar project via
+// `trident run <testsDir>` and parses stdout (sonar.lev). "Choose engine"
 // (§7.2) drives a differential run of the already-built plan through
 // `leviathan --plan <ws>/build/plan.lvplan <flag>` — the exact invocation the
 // project's own test runners use.
@@ -69,7 +69,7 @@ namespace Helm {
         // Per-job accumulators (reference-type fields — a stream closure cannot
         // write back a captured local, the G-H2 footgun; §langservice precedent).
         StderrCollector errbuf_ = StderrCollector();   // stderr → diagnostics
-        StderrCollector outbuf_ = StderrCollector();   // test stdout → harpoon
+        StderrCollector outbuf_ = StderrCollector();   // test stdout → sonar
 
         // Path attributed to a location-less diagnostic (the compiler usually
         // emits real paths; "" keeps every Diagnostic addressable).
@@ -147,7 +147,7 @@ namespace Helm {
                 status_.applyBatch(b);
 
                 if (job_ == JobTest) {
-                    panels_.tests.setResults(parseHarpoon(outbuf_.text()));
+                    panels_.tests.setResults(parseSonar(outbuf_.text()));
                     // Surface the Test panel unless a build error already pulled
                     // Problems forward (a broken test build is more urgent).
                     if (b.errorCount() == 0) panels_.show(PanelTest);

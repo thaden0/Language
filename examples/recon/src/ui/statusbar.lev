@@ -4,7 +4,7 @@
 // registry entry, so a hint is structurally incapable of advertising an unbound
 // command (P1). The top bar surfaces dirty/env/session/cookies (P2).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class TopBar {
     public ContentBar bar;

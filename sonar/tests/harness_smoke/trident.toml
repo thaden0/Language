@@ -1,8 +1,0 @@
-name = "sonar-harness-smoke"
-entry = "main"
-sources = ["main.lev", "../harness/scripted_input.lev", "../harness/assert.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

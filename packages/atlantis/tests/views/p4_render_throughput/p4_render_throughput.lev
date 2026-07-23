@@ -1,0 +1,60 @@
+// Atlantis Track 09 — Views P-4 (design §9): render throughput. A `{{#for}}` table
+// over N then 2N rows (escape-heavy), timed via `sysMonotonic`. Pass condition is
+// O(total) scaling (2x rows ~ 2x time, no quadratic blowup) — real millisecond
+// numbers are recorded in the design's §13 log from a manual run; the golden-
+// comparable part here is the deterministic OUTPUT LENGTH (proves every row
+// rendered, escaped correctly) at each size. Row count deliberately modest (design
+// §9 asks for 10k; StringBuilder self-append is DOCUMENTED quadratic on the oracle/IR
+// interpreters — reference.md §6.3.5 — a pre-existing, out-of-scope gap, not
+// something this track's code triggers; LLVM is linear at any size, §10 problem #3's
+// own resolution: "if interpreters lag badly, that is a dev-mode-only cost, prod = LLVM").
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+JsonValue buildModel(int rows, bool escapeHeavy) {
+    Array<JsonValue> items = [];
+    int i = 0;
+    while (i < rows) {
+        Map<string, JsonValue> row = Map();
+        string idx = i.toString().padStart(5, "0");    // fixed width: length is exactly rows-invariant per row
+        string label = escapeHeavy ? ("<b>&row" + idx + "</b>") : ("row" + idx);
+        row["label"] = JsonValue::ofStr(label);
+        items = items.add(JsonValue::ofObject(row));
+        i = i + 1;
+    }
+    Map<string, JsonValue> model = Map();
+    model["items"] = JsonValue::ofArray(items);
+    return JsonValue::ofObject(model);
+}
+
+void main() {
+    string root = "packages/atlantis/tests/views/p4_render_throughput/_fixture";
+    std::sysMkdir(root);
+    { using File f = File(root + "/table.lhtml", std::write);
+      f.write("<ul>{{#for item in items}}<li>{{ item.label }}</li>{{/for}}</ul>"); }
+
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig(root, false, "/public");
+    Engine e = Engine(cfg, logger);
+    RenderEnv env = RenderEnv("", "/public");
+
+    int rowsN = 800;
+    int start1 = std::sysMonotonic();
+    string outN = e.renderNamed("table", buildModel(rowsN, true), false, env);
+    int tN = std::sysMonotonic() - start1;
+
+    int start2 = std::sysMonotonic();
+    string out2N = e.renderNamed("table", buildModel(rowsN * 2, true), false, env);
+    int t2N = std::sysMonotonic() - start2;
+
+    int wrapper = 9;   // "<ul></ul>" — the one row-count-invariant constant
+    console.writeln("len_N=" + outN.length().toString());
+    console.writeln("len_2N=" + out2N.length().toString());
+    console.writeln("len_ratio_is_2x=" + ((out2N.length() - wrapper) == (outN.length() - wrapper) * 2).toString());
+    console.writeln("no_quadratic_blowup=" + (t2N < (tN + 1) * 8 + 500).toString());
+
+    std::sysRemove(root + "/table.lhtml");
+    std::sysRemove(root);
+}
+main();

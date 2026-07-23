@@ -1,0 +1,13 @@
+<h1>Hi</h1>
+<p>Hello, Ann (3.000000)</p>
+<ul>
+<li>0.000000: a</li>
+<li>1.000000: b</li>
+</ul>
+<p>empty:[has]</p>
+<p>missing:[]</p>
+<p>raw:[<b>bold</b>]</p>
+<p>escaped:[&lt;script&gt;&amp;&#39;&quot;]</p>
+<p>zero:[yes]</p>
+
+warnings=1

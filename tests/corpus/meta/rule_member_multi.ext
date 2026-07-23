@@ -1,0 +1,17 @@
+// (§1.4 adjacency) multi-member `member of`: a template may inject SEVERAL
+// members at once. This used to silently keep only the first (the second member
+// vanished with no diagnostic); now every member is parsed and injected.
+namespace M {
+    attribute Pair { }
+    rule addPair {
+        match @Pair(a) on class C
+        inject `int a() => 1; int b() => 2;` at member of C
+    }
+}
+uses M;
+
+@Pair
+class W { }
+
+W w = W();
+console.writeln(w.a() + w.b());

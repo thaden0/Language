@@ -68,7 +68,7 @@ or deferred) is the precedent to match; not investigated as part of filing this 
    succeeds (no "native floor function" fail) and links.
 2. A differential corpus case (list a directory, remove a file, remove a directory, rename a
    file, list a nonexistent path) is byte-identical across oracle, IR, and LLVM.
-3. `sonar_v2/tests/dom-dialogs/` (techdesign-07) — currently the first real caller, failing on
+3. `moby/tests/dom-dialogs/` (techdesign-07) — currently the first real caller, failing on
    the LLVM lane only, oracle+IR green — passes on LLVM once this lands; no changes needed on
    the Sonar DOM side (`FileDialog` already calls only the documented `std::sysListDir`/
    `std::isDir`/`std::fileExists` surface).
@@ -76,7 +76,7 @@ or deferred) is the precedent to match; not investigated as part of filing this 
 ## Interim Fallback
 
 None workable for a real directory-listing feature — `sysListDir` has no alternative native
-path. `sonar_v2/tests/dom-dialogs/` ships with its LLVM lane left failing
+path. `moby/tests/dom-dialogs/` ships with its LLVM lane left failing
 (`runtests.sh` reports `FAIL dom-dialogs (llvm codegen)`), documented in techdesign-07's
 implementation log rather than worked around, since trimming the feature to avoid the native
 would defeat the point of a real file dialog. Oracle and IR are unaffected and both pass

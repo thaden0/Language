@@ -1,0 +1,53 @@
+namespace Moby {
+    // T05 §3.10 — DebugOverlay. A non-modal, INPUT-TRANSPARENT overlay that
+    // reads T09's diagnostics ring (Moby::logHistory) + frame stats
+    // (Moby::frameStats) and paints them over the top rows. Toggled by
+    // App.debugOverlay(bool), which pushes it with inputTransparent = true so
+    // dispatch skips it (R13) and the app underneath keeps full input.
+    //
+    // A plain Component leaf (no Container), so the #65 children-loop family
+    // doesn't apply; it paints its own text directly. paint() is leaf-declared
+    // and takes no pushClip (#64-clean). Reads the two free-global surfaces
+    // rather than an injected App reference — the log ring and FrameStats live
+    // in events.lev/log.lev precisely so a reader needs no App handle.
+    class DebugOverlay : Component, Styleable {
+        int maxLines_ = 8;
+
+        // D03 §6: the debug overlay paints its text directly over the live tree
+        // and must never clear its box (it would blank whatever it floats above).
+        new DebugOverlay() { paintsBackground_ = false; }
+
+        DebugOverlay lines(int n) {
+            maxLines_ = n < 1 ? 1 : n;
+            invalidate();
+            return this;
+        }
+
+        Size contentDesired(Size avail) => Size(avail.w, maxLines_ + 1);
+
+        void paint(Surface s) {
+            if (!visible()) return;
+            Rect area = box;
+            if (area.isEmpty()) return;
+            Style st = resolveOrDefault(this, "debug");
+
+            FrameStats fs = frameStats();
+            string stats = "frame " + fs.frameMs.toString() + "ms" +
+                " dirty=" + fs.dirtyComponents.toString() +
+                " cells=" + fs.cellsChanged.toString() +
+                " frames=" + fs.frames.toString();
+            int y = area.y();
+            s.writeText(area.x(), y, clipToWidth(stats, area.w()), st);
+            y = y + 1;
+
+            Array<string> hist = logHistory();
+            int total = hist.length();
+            int start = total > maxLines_ ? total - maxLines_ : 0;
+            for (int i in start..total - 1) {
+                if (y >= area.bottom()) break;
+                s.writeText(area.x(), y, clipToWidth(hist[i], area.w()), st);
+                y = y + 1;
+            }
+        }
+    }
+}

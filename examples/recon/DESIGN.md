@@ -1,6 +1,6 @@
 # Recon — Technical Design
 
-**A terminal REST API client (Postman-in-the-terminal), written in Leviathan on the Sonar TUI framework.**
+**A terminal REST API client (Postman-in-the-terminal), written in Leviathan on the Moby TUI framework.**
 
 **Status:** design, ready to implement. **Date:** 2026-07-14.
 **Companion:** `examples/recon/RESEARCH.md` (the research dossier — every language/framework/library
@@ -73,7 +73,7 @@ fact this design relies on is verified there; section references like *(R §4.1)
   verification. A per-request "insecure / custom-CA" path is a stretch goal (§11 Q5).
 - **Single run lane: the tree-walk oracle (`trident run`), with the IR interpreter as the second.**
   The compiled lanes are not v1 targets (emit-C++ has no `App.run()`; LLVM segfaults on component
-  paint, bug #67). Networking and the loop are engine-clean; it is only the Sonar *paint* path that
+  paint, bug #67). Networking and the loop are engine-clean; it is only the Moby *paint* path that
   pins us to the interpreters (R §7).
 
 ### 1.3 Non-goals (v1)
@@ -90,7 +90,7 @@ terminal**. The UI is a thin, replaceable shell over a fully-testable core.
 
 ```
                     ┌─────────────────────────────────────────────┐
-   terminal ◄──────►│  UI shell (Sonar)          — src/ui/*.lev    │   §9
+   terminal ◄──────►│  UI shell (Moby)          — src/ui/*.lev    │   §9
                     │  panels, custom widgets, dialogs, keymap      │
                     └───────────────────┬─────────────────────────┘
                                         │ reads/mutates
@@ -109,13 +109,13 @@ terminal**. The UI is a thin, replaceable shell over a fully-testable core.
    └────┬────┘   └─────────────┘   └──────────┘   └───────────┘   └───────────┘
         │ uses std::HttpClient / json / encoding / digest / datetime  (R §4)
         ▼
-   the language event loop  (sockets · timers · the Sonar run loop all ride it)
+   the language event loop  (sockets · timers · the Moby run loop all ride it)
 ```
 
 ### 2.1 The async model (decided once, applied everywhere)
 
 **The UI task never `await`s.** All network work is **callback + timer** driven on the single-threaded
-event loop that the Sonar run loop already rides (R §3.7). A send is kicked off from a key handler,
+event loop that the Moby run loop already rides (R §3.7). A send is kicked off from a key handler,
 returns immediately, and its continuation fires later on the same loop:
 
 ```lev
@@ -136,7 +136,7 @@ exactly once with a `RunOutcome`. No `await`, no `spawn`, no OS threads — so b
 available and are used freely in **tests** (which are not UI tasks) and would be the tool if Recon
 ever grows a non-UI worker task.
 
-This is the standard: **in a Sonar app, background work is callbacks + `App.every`/`std::after`
+This is the standard: **in a Moby app, background work is callbacks + `App.every`/`std::after`
 timers; reserve `await` for headless code.**
 
 ---
@@ -203,23 +203,23 @@ entry   = "main"                       # gather everything, call Recon::main()
 sources = ["src/**/*.lev"]             # recursive glob; alphabetical expansion (order irrelevant — §12.2)
 
 [[dep]]
-path    = "../../sonar"
-as      = "Sonar"
-version = "0.1.0"
+path    = "../../moby"
+as      = "Moby"
+version = "0.2.0"
 ```
 
 `entry = "main"` names the free function `Recon::main()` in `src/main.lev` (R §8.1). `**` recursion
-is the same glob form the Sonar/Atlantis manifests use for `assets`. If a future `trident` rejects
+is the same glob form the Moby/Atlantis manifests use for `assets`. If a future `trident` rejects
 `**` in `sources`, flatten to `src/*.lev` — namespaces are declaration-based, so directory layout is
 purely organizational (§12.2).
 
 ### 3.3 Namespace policy
 
 - **One namespace: `Recon`.** Every Recon file opens `namespace Recon { ... }`. Files merge; disk
-  layout is organizational only (this mirrors Sonar's single-`Sonar`-namespace pattern). We do **not**
+  layout is organizational only (this mirrors Moby's single-`Moby`-namespace pattern). We do **not**
   nest sub-namespaces — a flat `Recon` keeps `::` qualification unnecessary within the app and avoids
   the phantom-dep and qualified-write hazards (§12.2).
-- **Imports at the top of `main.lev` and any file that needs them:** `uses Sonar;` (the UI files),
+- **Imports at the top of `main.lev` and any file that needs them:** `uses Moby;` (the UI files),
   and the prelude `std`/`json`/`encoding`/`digest`/`datetime`/`regex`/`env` namespaces are used
   qualified (`json::parse`, `encoding::base64Encode`) — qualified use is the standard for prelude
   calls so a reader always sees which subsystem a call belongs to (§12.3).
@@ -437,7 +437,7 @@ class History {
 
 ## 5. Pure engine — URL, variables, import/export, JSON path
 
-Everything in §5 is **pure and headless**: no Sonar, no `console` during a running app, deterministic,
+Everything in §5 is **pure and headless**: no Moby, no `console` during a running app, deterministic,
 unit-tested as print-and-expect corpus programs (§13). These are the highest-value tests.
 
 ### 5.1 URL parser — `src/net/url.lev`
@@ -766,9 +766,9 @@ void writeAll(string path, string text) {
 
 ---
 
-## 9. UI architecture (Sonar) — `src/ui/`
+## 9. UI architecture (Moby) — `src/ui/`
 
-Sonar is a **checked package** — full narrowing/`T?`, no prelude caveats (R §3.3 R15). The prelude
+Moby is a **checked package** — full narrowing/`T?`, no prelude caveats (R §3.3 R15). The prelude
 footguns still apply to Recon's own prelude-facing code (net/io/eval), but the UI layer enjoys the
 clean checker.
 
@@ -796,7 +796,7 @@ App (FlexLayout Vertical)                                     src/app.lev
  └─ ContentBar  bottomBar     (keybind hints · timing · size · Spinner when in-flight)   statusbar.lev
 ```
 
-All shipped Sonar components (`TreeView`, `TableView`, `ListView`, `Tabs`, `SplitBox`, `ContentBox`,
+All shipped Moby components (`TreeView`, `TableView`, `ListView`, `Tabs`, `SplitBox`, `ContentBox`,
 `ContentBar`, `Input`, `Button`, `RadioGroup`, `Spinner`) already work around the paint footguns (R
 §7); Recon inherits those fixes by composing them.
 
@@ -815,7 +815,7 @@ Recon implements the virtualization source interfaces over its model:
 
 ### 9.3 `TextArea` — the multi-line editor — `src/ui/textarea.lev`
 
-The single new **leaf** component (there is no `TextBox` in Sonar — R §3.2). It is `Focusable +
+The single new **leaf** component (there is no `TextBox` in Moby — R §3.2). It is `Focusable +
 Scrollable` (a leaf, not a Container, so it paints via `paintContent` and dodges the custom-Container
 paint caveat).
 
@@ -909,7 +909,7 @@ value.
 
 ### 9.7 Theming — `src/ui/theme.lev` + `themes/recon.toml`
 
-One shipped theme in **TOML** (never JSON — R §3.3 R10), plus the four Sonar built-ins selectable via
+One shipped theme in **TOML** (never JSON — R §3.3 R10), plus the four Moby built-ins selectable via
 settings/command bar. Bound at the composition root (`bind ITheme => ...`, §10.4). Theme keys are
 dotted strings (`"request.url.border"`, `"response.status.ok"`, `"test.pass"`, `"test.fail"`). Secret
 variables and masked auth values render with a `"field.secret"` style.
@@ -945,7 +945,7 @@ class AppState {
 ```
 
 `AppState` is a plain reference `class` — the single source of truth. Widgets read from it and mutate
-it; a mutation is followed by `invalidate()` on the affected pane so the next frame repaints (Sonar is
+it; a mutation is followed by `invalidate()` on the affected pane so the next frame repaints (Moby is
 retained-mode: mutate-in-place + damage repaint — R §3).
 
 ### 10.2 The send flow (end to end)
@@ -969,13 +969,13 @@ Everything after step 3 happens later on the event loop; the UI never blocked.
 ### 10.3 Diagnostics during a run
 
 `console.write` is forbidden while the app runs (R §3.3 R16 — it corrupts the screen). All Recon
-diagnostics go through `Sonar::log(string)` (a 200-entry ring buffer); `SONAR_LOG_STDERR=1` tees it
+diagnostics go through `Moby::log(string)` (a 200-entry ring buffer); `MOBY_LOG_STDERR=1` tees it
 for headless debugging.
 
 ### 10.4 Composition root — `src/main.lev`
 
 ```lev
-uses Sonar;
+uses Moby;
 
 void main() {
     // env reads at the TOP LEVEL (bug #68), then pass values down.
@@ -985,7 +985,7 @@ void main() {
 
     Array<string> args = env::args();          // optional: a collection path to open on launch
 
-    // DI composition root (follow the shipped Sonar examples' setter/bind mix — R §3.8)
+    // DI composition root (follow the shipped Moby examples' setter/bind mix — R §3.8)
     bind ITheme     => loadTheme(cfg);         // Recon theme or a built-in
     bind IRenderer  => AnsiRenderer();
     bind IInputSource => StdinSource();
@@ -995,7 +995,7 @@ void main() {
 }
 ```
 
-`ReconApp` owns the Sonar `App`, wires the tree (§9.1), binds the keymap (§9.6), loads persisted
+`ReconApp` owns the Moby `App`, wires the tree (§9.1), binds the keymap (§9.6), loads persisted
 sessions/environments/history/settings, and opens any collection named on the command line.
 
 ---
@@ -1043,7 +1043,7 @@ Later apps copy it.
 
 ### 12.3 Imports
 
-- `uses Sonar;` at the top of UI files; prelude subsystems are called **qualified**
+- `uses Moby;` at the top of UI files; prelude subsystems are called **qualified**
   (`json::parse`, `encoding::percentEncode`, `digest::md5`, `datetime::parseHttpDate`, `std::after`)
   so the subsystem is legible at the call site.
 - A file may only `uses`/`use` a namespace from the project or a **direct** dep.
@@ -1053,7 +1053,7 @@ Later apps copy it.
 - **Default to `class`.** Use `struct` only for small, copy-semantics value bundles with no identity
   and no mutation-across-call-sites (and never one holding an `enum` field if it will live in an
   `Array`, nor one used as a `Map` value on a class field).
-- Concretely: geometry/config bundles → `struct` (and Sonar's are); model rows, trees, jars, state,
+- Concretely: geometry/config bundles → `struct` (and Moby's are); model rows, trees, jars, state,
   components → `class`.
 
 ### 12.5 No statics; construction
@@ -1093,7 +1093,7 @@ Later apps copy it.
   argument/ternary position does not retype (bug #50).
 - **Bind an indexed callable before calling it** (`var f = arr[i]; f();`) — bug #52.
 
-### 12.9 Sonar UI rules
+### 12.9 Moby UI rules
 
 - Custom **leaf** components: subclass `Component`/mixins, override `contentDesired` + `paintContent`,
   register handlers in the constructor with explicit `this.`, call `invalidate()` on state change.

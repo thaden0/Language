@@ -1,0 +1,621 @@
+namespace Moby {
+    // T05 §2. Data-source interfaces — owned here (listview.lev is the
+    // FIRST file in implementation order to need any of them), consumed by
+    // ListView (this file), and later by TableView/TreeView (a LATER
+    // track). Same anchor-log precedent T04's text.lev already established
+    // for ISingleLine/IMultiLine/IValidatable: declared in the first
+    // consumer's file rather than a separate interfaces file, reused
+    // as-declared by later files. Do not split these into per-component
+    // files.
+    interface IListSource {
+        int count();
+        string itemAt(int i);
+    }
+    interface ITableSource {
+        int rowCount();
+        int colCount();
+        string cellAt(int r, int c);
+    }
+    interface ITreeSource {
+        int rootCount();
+        TreeNodeId rootAt(int i);
+        int childCount(TreeNodeId n);
+        TreeNodeId childAt(TreeNodeId n, int i);
+        string labelAt(TreeNodeId n);
+        bool hasChildren(TreeNodeId n);
+    }
+
+    // Opaque handle; the SOURCE owns meaning (§2's identity-free ruling —
+    // expansion state for a future TreeView lives in the VIEW, keyed by
+    // `id`, never on this struct). Every other struct in this package
+    // (Point/Size/Insets/Rect/Constraint/Style/ShortcutReg/TimerReg) uses an
+    // explicit constructor rather than bare positional auto-construction —
+    // bug.md #38 found this necessary for a closure-typed field, but the
+    // codebase's convention is uniform explicit constructors regardless of
+    // field shape, so TreeNodeId gets one too even though its single `int`
+    // field isn't itself implicated by #38.
+    struct TreeNodeId {
+        int id;
+        new TreeNodeId(int nodeId) { id = nodeId; }
+    }
+
+    // §2's shipped convenience: wraps a plain Array<string> as an
+    // IListSource. `ListView.items(Array<string>)` sugar constructs one of
+    // these.
+    class ArrayListSource : IListSource {
+        Array<string> items_;
+        new ArrayListSource(Array<string> items) { items_ = items; }
+        int count() => items_.length();
+        string itemAt(int i) => items_[i];
+    }
+
+    // ---- RowScroller ----------------------------------------------------
+    // §3.5's "factor this out NOW" helper. Package-internal (NOT a
+    // Component — no box/paint/measure, not IComponent-shaped),
+    // parameterized purely by primitives (row count, viewport height,
+    // scroll offset, selected index) so a LATER track's TableView/TreeView
+    // can each construct their own instance and drive it with their own row
+    // counts, without any dependency on IListSource or ListView's own
+    // fields. ListView (below) is RowScroller's first real consumer —
+    // dogfooded, not built speculatively.
+    //
+    // RowWindow: the visible row-index window, [first, last) — last is
+    // EXCLUSIVE, matching the design's own `first..last-1` loop spelling.
+    // Explicit constructor per this file's struct convention (see
+    // TreeNodeId above).
+    struct RowWindow {
+        int first;
+        int last;
+        new RowWindow(int f, int l) { first = f; last = l; }
+    }
+
+    class RowScroller {
+        // The virtualization core's windowing math, factored out verbatim
+        // from §3.5's `first = scrollY; last = min(count, scrollY +
+        // viewport.h)` so ListView (and later TableView/TreeView) never
+        // duplicate it. Defensive against a stale/out-of-range scrollY
+        // (design §5 issue 4: "every paint re-reads count() and clamps
+        // scroll/selection defensively") — clamps `first` up to 0 and
+        // `last` down to `count`, and never lets `last` fall below `first`,
+        // so a caller never needs to special-case count==0 or a
+        // beyond-range scrollY before looping `first..last-1` (the
+        // established codebase-wide pattern for a possibly-empty range,
+        // e.g. `for (int i in 0..arr.length()-1)` already relied on
+        // elsewhere for empty arrays).
+        RowWindow visibleWindow(int count, int viewportHeight, int scrollY) {
+            int first = scrollY < 0 ? 0 : scrollY;
+            int last = first + viewportHeight;
+            if (last > count) last = count;
+            if (last < first) last = first;
+            return RowWindow(first, last);
+        }
+
+        // Clamps a candidate row index into [0, count-1], or -1 if
+        // count <= 0 (no valid row exists at all). The -1 sentinel matches
+        // this codebase's own "-1 = none/invalid" convention (Focusable's
+        // ListView.selected default, RadioGroup.selected default, etc.).
+        int clampIndex(int idx, int count) {
+            if (count <= 0) return -1;
+            if (idx < 0) return 0;
+            if (idx > count - 1) return count - 1;
+            return idx;
+        }
+
+        // Minimum-scroll-amount clamp, same shape as Scrollable.scrollTo's
+        // own math (§3.5: "ensureVisible(i) = scrollTo clamp math"): moves
+        // scrollY the smallest amount that brings `idx` back into
+        // [scrollY, scrollY + viewportHeight), then clamps the result into
+        // [0, max(0, count - viewportHeight)]. Returns the CURRENT scrollY
+        // unchanged if idx is already visible or the inputs are degenerate
+        // (count/viewportHeight <= 0) — callers compare the result against
+        // their own current scrollY to decide whether an actual scroll
+        // happened.
+        int ensureVisible(int idx, int count, int viewportHeight, int scrollY) {
+            if (count <= 0 || viewportHeight <= 0) return 0;
+            int maxScroll = count - viewportHeight;
+            if (maxScroll < 0) maxScroll = 0;
+            int next = scrollY;
+            if (idx < next) next = idx;
+            else if (idx >= next + viewportHeight) next = idx - viewportHeight + 1;
+            if (next < 0) next = 0;
+            if (next > maxScroll) next = maxScroll;
+            return next;
+        }
+
+        // Up/Down/PageUp/PageDown/Home/End ONLY (any other key, or any key
+        // with mods != 0, returns -1 = "not handled" — safe as a sentinel
+        // since -1 is never a valid row index). Returns the row index the
+        // key maps to; does NOT fire events, invalidate, or re-scroll —
+        // per the design brief's explicit instruction, all of that is the
+        // CALLER's job (ListView fires on:select(int); a later TreeView
+        // will map the returned flat-list index through its own
+        // index->TreeNodeId lookup and fire on:select(TreeNodeId) instead —
+        // this method knows nothing about either).
+        //
+        // Judgment call: when `selected` is -1 (no current selection), ALL
+        // six keys land on row 0 for the very first keypress, regardless of
+        // direction — not "Up wraps to the last row." This mirrors T04's
+        // own RadioGroup.moveSelection, which the design's own §3.5 cites
+        // ListView's ensureVisible/key shape as reusing ("the classic
+        // two-state rendering" aside): `int idx = selected < 0 ? 0 : selected
+        // + delta;` — RadioGroup ignores delta entirely on first press too.
+        // Kept identical rather than inventing a new "Up wraps to end"
+        // convention nothing else in the package uses.
+        int handleKey(KeyEvent e, int selected, int count, int viewportHeight) {
+            if (count <= 0 || e.mods != 0) return -1;
+            int amount = viewportHeight > 0 ? viewportHeight : 1;
+            if (e.code == KeyCode::Up)
+                return selected < 0 ? this.clampIndex(0, count) : this.clampIndex(selected - 1, count);
+            if (e.code == KeyCode::Down)
+                return selected < 0 ? this.clampIndex(0, count) : this.clampIndex(selected + 1, count);
+            if (e.code == KeyCode::PageUp)
+                return selected < 0 ? this.clampIndex(0, count) : this.clampIndex(selected - amount, count);
+            if (e.code == KeyCode::PageDown)
+                return selected < 0 ? this.clampIndex(0, count) : this.clampIndex(selected + amount, count);
+            if (e.code == KeyCode::Home) return this.clampIndex(0, count);
+            if (e.code == KeyCode::End) return this.clampIndex(count - 1, count);
+            return -1;
+        }
+    }
+
+    // Double-press timing (§3.5: "double = two presses within 400ms on the
+    // same row"). A free function, not a ListView method, specifically so
+    // it can be unit-tested in isolation from real wall-clock timing (this
+    // track's own verification note: driving it through actual consecutive
+    // std::sysNow() calls in a test is timing-fragile; testing this
+    // pure function directly with synthetic ms values is not). `lastMs
+    // < 0` (ListView's own "no prior press" sentinel) always yields false,
+    // and a `nowMs < lastMs` sample (a backward clock jump) is treated as
+    // "not a double" defensively rather than underflowing negative.
+    const int DoublePressMs = 400;
+    bool isDoublePress(int lastMs, int nowMs) =>
+        lastMs >= 0 && nowMs >= lastMs && (nowMs - lastMs) <= DoublePressMs;
+
+    // ---- ListView ---------------------------------------------------------
+    // §3.5's own header is `Focusable, Scrollable, Bordered` — two header
+    // completions applied here, both following T04/T05's own established
+    // anchor-log precedent for exactly this situation (ContentBox/Tabs/
+    // SplitBox all did the same for the same reason):
+    //   1. `Styleable` added: paintContent/paintRow below need
+    //      `resolveOrDefault(this, key)`, which only exists via Styleable.
+    //   2. `bool enabled` field + `setEnabled` added even though §3.5's own
+    //      State list omits it: this doc's own §1 restates T04's "enabled
+    //      convention" as BINDING for every component in this track that
+    //      "takes input" — ListView plainly does (keyboard/mouse-driven
+    //      selection) — so the omission from §3.5's State paragraph is
+    //      read as an oversight, not an amendment, exactly like the
+    //      Styleable gaps found in ContentBox/Tabs.
+    // Order: Focusable, Scrollable, Bordered, Styleable — matches
+    // SplitBox's (the most recently landed sibling with the identical
+    // Bordered+Styleable pair) ordering; Tabs/RadioGroup's own comments
+    // already establish that Focusable/Styleable don't collide with
+    // anything, so this is documentation, not a functional requirement.
+    class ListView : Focusable, Scrollable, Bordered, Styleable {
+        IListSource source_ = ArrayListSource([]);
+        int selected = -1;
+        bool multi = false;
+        Map<int, bool> checked_ = Map();
+        // Shift-range v2 — field reserved, unused v1 (§3.5, verbatim).
+        int anchorIdx = -1;
+        bool enabled = true;
+
+        RowScroller rowScroller_ = RowScroller();
+        // -1 = "no prior press" sentinel (never a real timestamp).
+        int lastPressRow_ = -1;
+        int lastPressMs_ = -1;
+
+        Array<(int) => void> selectHandlers_ = [];
+        Array<int> selectTokens_ = [];
+        Array<(int) => void> activateHandlers_ = [];
+        Array<int> activateTokens_ = [];
+
+        new ListView() {
+            setTabStop(true);
+            // bug.md #53: a lambda calling an instance method with a bare
+            // (implicit-`this`) receiver silently misbehaves once stored
+            // and invoked later from a different call frame; every call
+            // below uses an explicit `this.` receiver as the workaround.
+            // bug.md #50: char literals don't retype in call-argument
+            // position; bind to a local first.
+            char spaceKey = ' ';
+            this.onKey((e) => {
+                if (!enabled) return;
+                int viewportH = box.inset(this.chrome()).h();
+                int next = rowScroller_.handleKey(e, selected, source_.count(), viewportH);
+                if (next != -1) {
+                    this.selectIndex(next);
+                    e.handled = true;
+                } else if (multi && e.isChar(spaceKey) && selected >= 0) {
+                    this.toggleChecked(selected);
+                    e.handled = true;
+                } else if (e.code == KeyCode::Enter && e.mods == 0 && selected >= 0) {
+                    this.fireActivate(selected);
+                    e.handled = true;
+                }
+            });
+            this.onMouse((e) => {
+                if (!enabled) return;
+                if (e.kind != MouseKind::Press || e.button != MouseButton::Left) return;
+                Rect content = box.inset(this.chrome());
+                if (!content.contains(e.x, e.y)) return;
+                int row = scrollY + (e.y - content.y());
+                int count = source_.count();
+                if (row < 0 || row >= count) return;
+                int nowMs = std::sysNow();
+                bool doublePress = row == lastPressRow_ && isDoublePress(lastPressMs_, nowMs);
+                this.selectIndex(row);
+                lastPressRow_ = row;
+                lastPressMs_ = nowMs;
+                e.handled = true;
+                if (doublePress) this.fireActivate(row);
+            });
+        }
+
+        // ---- state setters (attribute table below expands to these) -----
+
+        void setEnabled(bool value) {
+            if (enabled == value) return;
+            enabled = value;
+            setTabStop(value);
+            invalidate();
+        }
+
+        // Real finding, caught by this track's own test (not assumed):
+        // RowScroller.clampIndex is deliberately "any negative candidate
+        // clamps UP to row 0" — correct for a navigation DELTA (Up from row
+        // 0 must land back on row 0, not clear the selection), which is
+        // exactly what RowScroller.handleKey's own internal calls need. But
+        // `selected`/the argument to `setSelected`/`selectIndex`/`refresh`
+        // can legitimately BE -1, meaning "nothing selected" (§3.5's own
+        // stated default) — reusing RowScroller.clampIndex there silently
+        // PROMOTES that -1 sentinel to row 0 the instant `refresh()` runs
+        // (i.e. the moment `items(...)`/`setSource(...)` is called), so the
+        // very first Down press would already see `selected == 0` and move
+        // to row 1, skipping row 0 entirely (caught exactly this way: a
+        // test asserting `nav.selected == 0` after one Down press from a
+        // freshly-`items()`-populated ListView failed with `1`). This is a
+        // ListView-level policy (preserve "no selection"), not a
+        // RowScroller windowing primitive, so it lives here rather than on
+        // RowScroller (whose own clampIndex contract — "clamp a real
+        // navigation candidate" — stays unchanged and is still correct for
+        // its own callers).
+        int clampSelection(int idx, int count) {
+            if (count <= 0) return -1;
+            if (idx < 0) return -1;
+            if (idx > count - 1) return count - 1;
+            return idx;
+        }
+
+        // Programmatic setter (template attribute `selected="..."` per the
+        // C11 table below) — clamps and re-scrolls to keep the selection
+        // visible, but deliberately does NOT fire on:select. Judgment call,
+        // following RadioGroup.setOptions's own "Rebind safety" convention
+        // (this track's own T04-inherited rule, restated in §1: on:* fires
+        // for user interaction only) — Up/Down/PageUp/PageDown/Home/End and
+        // mouse press (below) are the interactive paths and go through
+        // `selectIndex`, which does fire. `setSelected(-1)` is a valid way
+        // to programmatically clear the selection (see clampSelection above).
+        void setSelected(int idx) {
+            int clamped = this.clampSelection(idx, source_.count());
+            if (clamped == selected) return;
+            selected = clamped;
+            this.ensureVisibleIndex(selected);
+            invalidate();
+        }
+        void setMulti(bool value) {
+            if (multi == value) return;
+            multi = value;
+            invalidate();
+        }
+
+        // `items` C11 attribute sugar: `items(Array<string>)` installs a
+        // fresh ArrayListSource. Fluent (returns ListView), matching every
+        // other T04/T05 leaf-typed fluent wrapper (Text.text/align/wrap,
+        // ContentBox.border/title/overflow/pad).
+        ListView items(Array<string> values) {
+            this.setSource(ArrayListSource(values));
+            return this;
+        }
+
+        // General source install (not itself a C11 attribute — `items` is
+        // the sugar for the common Array<string> case; setSource is the
+        // escape hatch for a real IListSource, e.g. a lazy/virtualized
+        // backing store). Unlike `refresh()` below, this always
+        // invalidateLayout()s too: swapping the WHOLE source is assumed to
+        // change desired height (contentDesired reads source_.count()),
+        // whereas `refresh()` is for the "same source, mutated backing
+        // data" case the design's own §2 change-notification ruling
+        // describes, where the caller is expected to call refresh() after
+        // mutating.
+        void setSource(IListSource src) {
+            source_ = src;
+            this.refresh();
+            invalidateLayout();
+        }
+
+        // §2's change-notification ruling + §3.5's own spec, verbatim:
+        // "re-clamps selected/scrollY to the new count, invalidates" — only
+        // `invalidate()`, not `invalidateLayout()` (that's setSource's
+        // job, above); refresh() is for a caller that mutated the SAME
+        // already-installed source's backing data and wants the view to
+        // notice, not for installing a new source.
+        void refresh() {
+            int count = source_.count();
+            selected = this.clampSelection(selected, count);
+            int viewportH = box.inset(this.chrome()).h();
+            int maxScroll = count - viewportH;
+            if (maxScroll < 0) maxScroll = 0;
+            if (scrollY > maxScroll) scrollY = maxScroll;
+            if (scrollY < 0) scrollY = 0;
+            invalidate();
+        }
+
+        // ---- selection / check state --------------------------------------
+
+        // The interactive path (keys via RowScroller.handleKey's returned
+        // index, mouse press): updates `selected`, keeps it in view, and
+        // fires on:select(int) — but only on an actual change, matching
+        // RadioGroup/Tabs' own "fire only when the value really moved"
+        // convention.
+        void selectIndex(int idx) {
+            int clamped = this.clampSelection(idx, source_.count());
+            bool didChange = clamped != selected;
+            selected = clamped;
+            this.ensureVisibleIndex(selected);
+            invalidate();
+            if (didChange) this.fireSelect(selected);
+        }
+
+        void ensureVisibleIndex(int idx) {
+            if (idx < 0) return;
+            int viewportH = box.inset(this.chrome()).h();
+            if (viewportH <= 0) return;
+            int nextScroll = rowScroller_.ensureVisible(idx, source_.count(), viewportH, scrollY);
+            if (nextScroll != scrollY) this.scrollTo(scrollX, nextScroll);
+        }
+
+        bool isChecked(int idx) {
+            bool? found = checked_.atOrNone(idx);
+            return found == None ? false : found;
+        }
+        void toggleChecked(int idx) {
+            if (idx < 0 || idx >= source_.count()) return;
+            checked_[idx] = !this.isChecked(idx);
+            invalidate();
+        }
+
+        // ---- events ---------------------------------------------------------
+
+        int onSelect((int) => void h) {
+            int token = newHandlerToken();
+            selectHandlers_ = selectHandlers_.add(h);
+            selectTokens_ = selectTokens_.add(token);
+            return token;
+        }
+        void offSelect(int token) {
+            Array<(int) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..selectTokens_.length() - 1) if (selectTokens_[i] != token) {
+                hs = hs.add(selectHandlers_[i]);
+                ts = ts.add(selectTokens_[i]);
+            }
+            selectHandlers_ = hs;
+            selectTokens_ = ts;
+        }
+        void fireSelect(int idx) {
+            Array<(int) => void> snapshot = selectHandlers_;
+            for ((int) => void h in snapshot) h(idx);
+        }
+
+        int onActivate((int) => void h) {
+            int token = newHandlerToken();
+            activateHandlers_ = activateHandlers_.add(h);
+            activateTokens_ = activateTokens_.add(token);
+            return token;
+        }
+        void offActivate(int token) {
+            Array<(int) => void> hs = [];
+            Array<int> ts = [];
+            for (int i in 0..activateTokens_.length() - 1) if (activateTokens_[i] != token) {
+                hs = hs.add(activateHandlers_[i]);
+                ts = ts.add(activateTokens_[i]);
+            }
+            activateHandlers_ = hs;
+            activateTokens_ = ts;
+        }
+        void fireActivate(int idx) {
+            Array<(int) => void> snapshot = activateHandlers_;
+            for ((int) => void h in snapshot) h(idx);
+        }
+
+        // ---- bug.md #61 extension: Scrollable+Bordered dispatch --------------
+        // NEW finding, verified against a real build (not assumed) before
+        // writing this override — the task brief for this track claimed
+        // Scrollable.scrollTo()/scrollBy() were safe to leave unmodified/
+        // inherited because their only internal calls are to `distinct
+        // changed()` and root-declared `invalidate()`. That claim is WRONG:
+        // Scrollable.scrollTo (mixins.lev, T01-owned) also calls
+        // `this.chrome()` to compute its viewport for the clamp math, and
+        // Scrollable is itself an intermediate mixin (a direct Component
+        // subclass, sibling of Bordered) — the exact bug #61/#65 shape
+        // already documented for Container+Bordered, just for a different
+        // sibling pair nothing before this track exercised (T05's own
+        // ContentBox/GridBox/SplitBox/Tabs are all Container-based; ListView
+        // is the first Container-LESS Bordered composite).
+        //
+        // Confirmed via a minimal `class Probe : Focusable, Scrollable,
+        // Bordered { }` probe (no override): `setBorder(Single)` then
+        // `scrollTo(1000,1000)` against a `contentSize=(100,100)`,
+        // `box=(10,5)` clamps `scrollY` to 95 (as if chrome() returned bare
+        // padding, ignoring the 1-cell border inset — WRONG, should be 97).
+        // A leaf-declared override of scrollTo, reimplementing the exact
+        // same body, correctly clamps to 97. Separately confirmed that
+        // Scrollable.scrollBy (left un-overridden below) correctly reaches
+        // THIS leaf override via its own inherited `this.scrollTo(...)`
+        // call (verified: scrollBy(1000,1000) also yields 97) — because
+        // scrollTo's ORIGINAL declaring class (Scrollable) is a direct
+        // ancestor of ListView, not a sibling being collapsed in; bug #61's
+        // mechanism is specific to a ROOT-declared member being overridden
+        // by a SIBLING mixin, not to a leaf overriding its own ancestor's
+        // method. So only `scrollTo` needs redeclaring here; `scrollBy`
+        // stays inherited, unmodified.
+        //
+        // Not filed as a new bug.md entry: #61's own text already states
+        // the general mechanism ("a DIFFERENT sibling mixin provides the
+        // override") without scoping it to Container specifically, so this
+        // is a predictable instance of the already-documented defect, not a
+        // new shape — logged here in detail instead so a later TableView/
+        // TreeView track (same Scrollable+Bordered pair) doesn't have to
+        // rediscover it.
+        //
+        // Note this is NOT a verbatim copy of Scrollable.scrollTo's clamp
+        // math (unlike ContentBox's own #61 workaround, which reuses
+        // Scrollable's `contentSize`-based formula unchanged because
+        // ContentBox genuinely measures/tracks a `contentSize` for its
+        // arranged children): ListView never populates the inherited
+        // `contentSize` field at all (there is no arranged-subtree size to
+        // measure — rows are painted procedurally from `source_`), so
+        // reusing `contentSize.h` here would silently clamp every scroll to
+        // 0 (caught by this track's own virtualization test: `contentSize`
+        // stays at Scrollable's `Size(0,0)` default, so `maxY` would always
+        // compute negative and clamp to 0 regardless of `source_.count()`).
+        // The correct scroll ceiling for a row-virtualized view is
+        // `source_.count() - viewportHeight`, matching RowScroller's own
+        // `ensureVisible` formula exactly (both must agree — a caller
+        // alternating between `ensureVisibleIndex` and a raw `scrollTo`
+        // call must see the same ceiling). ListView also has no horizontal
+        // scroll dimension in v1 (§3.5 never mentions one — rows are
+        // truncated via `clipToWidth`, not horizontally scrolled, matching
+        // RadioGroup/CheckBox/Input's own single-axis convention), so
+        // `scrollX` is simply pinned to 0 rather than tracking a second,
+        // unused content-width axis.
+        void scrollTo(int x, int y) {
+            int viewportH = box.inset(this.chrome()).h();
+            int maxY = source_.count() - viewportH;
+            if (maxY < 0) maxY = 0;
+            int nextY = y < 0 ? 0 : (y > maxY ? maxY : y);
+            int nextX = 0;
+            if (nextX == scrollX && nextY == scrollY) return;
+            scrollX = nextX;
+            scrollY = nextY;
+            changed();
+            invalidate();
+        }
+
+        // ---- layout / paint -----------------------------------------------
+        // Not a Container — rows are painted, not child components (§3.5).
+        // No `paint()`/`measure()` override: both leaf hooks below
+        // (contentDesired/paintContent, declared directly on Component the
+        // ROOT) are reached correctly by Component's own inherited
+        // paint()/measure() templates per the confirmed-safe half of the
+        // bug #60/#61/#65 dispatch matrix — this is exactly the mechanism
+        // that already makes T04's Button/CheckBox/RadioGroup/Text/Input
+        // work with zero paint()/measure() overrides, and ListView (no
+        // Container in its mixin list) needs nothing more.
+
+        // §3.5, verbatim v1 rule: "desired = Size(avail.w, count) capped by
+        // constraints; width fills." No chrome()-aware shrinking here by
+        // design (avoids the "longest visible label" scan trap the design
+        // explicitly calls out) — and since this doesn't call `this.chrome()`
+        // at all, it carries no dispatch risk regardless of the scrollTo
+        // finding above.
+        Size contentDesired(Size avail) => Size(avail.w, source_.count());
+
+        // The virtualization core (§3.5): `first = scrollY; last =
+        // min(count, scrollY + viewport.h); for i in first..last-1: paint
+        // row (i - scrollY) from source.itemAt(i)` — exactly `viewport.h`
+        // calls to itemAt per repaint (RowScroller.visibleWindow computes
+        // the [first,last) bound; the loop below makes exactly one
+        // source_.itemAt(i) call per iteration, inside paintRow).
+        void paintContent(Surface s) {
+            Rect content = box.inset(this.chrome());
+            if (content.isEmpty()) return;
+            int count = source_.count();
+            RowWindow win = rowScroller_.visibleWindow(count, content.h(), scrollY);
+            for (int i in win.first..win.last - 1) {
+                int y = content.y() + (i - scrollY);
+                this.paintRow(s, content, i, y);
+            }
+        }
+
+        // Row style: listview.item, .selected, .focused.selected (focus+
+        // selection distinct per §3.5), .disabled taking priority over both
+        // when !enabled (matching CheckBox/Input's own priority order for
+        // the T04 enabled convention this file adopts — see the class-level
+        // header-completion note above). Multi mode prefixes `[x]`/`[ ]`.
+        // No `Surface.pushClip` anywhere in this file (bug #63/#64 are both
+        // gated on an ACTIVE pushClip; Text/RadioGroup/CheckBox/Input all
+        // already establish that a manually-bounded loop with plain
+        // put/writeText/fill calls, no pushClip, is the safe pattern for a
+        // leaf's own paintContent — followed here too). The row-background
+        // `fill` call (full content width, so a selected row's highlight
+        // covers the whole row even when the label is shorter) is likewise
+        // safe: bug #64's own repro explicitly confirms the identical
+        // fill/put sequence is clean on every engine, including LLVM, as
+        // long as no pushClip is active first.
+        void paintRow(Surface s, Rect content, int idx, int y) {
+            string label = source_.itemAt(idx);
+            bool isSelected = idx == selected;
+            string themeKey = "listview.item";
+            if (!enabled) themeKey = "listview.item.disabled";
+            else if (isSelected && focused) themeKey = "listview.item.focused.selected";
+            else if (isSelected) themeKey = "listview.item.selected";
+            Style st = resolveOrDefault(this, themeKey);
+            char space = ' ';
+            s.fill(Rect(Point(content.x(), y), Size(content.w(), 1)), space, st);
+            string prefix = multi ? (this.isChecked(idx) ? "[x] " : "[ ] ") : "";
+            s.writeText(content.x(), y, clipToWidth(prefix + label, content.w()), st);
+        }
+
+        // bug.md #59 workaround: Bordered.paintChrome (mixins.lev,
+        // T01-owned, off limits here) indexes its border-glyph string with
+        // `.at(byteOffset)` using character-position values, which throws
+        // "byte offset N is not a scalar boundary" the first time a real
+        // (non-NoBorder) border is painted. Reimplemented here verbatim
+        // (same draw order/logic as Bordered.paintChrome and this track's
+        // own ContentBox/SplitBox fixes) but decoding via `.chars()` into a
+        // proper Array<char> first. paintChrome is not `distinct`, so this
+        // cleanly replaces the single inherited slot; it's reached
+        // correctly from Component.paint() regardless (paint() is
+        // ROOT-declared, the confirmed-safe half of the dispatch matrix —
+        // this override exists solely for the #59 byte-offset fix, not for
+        // any dispatch reason).
+        void paintChrome(Surface s) {
+            if (border == BorderStyle::NoBorder || box.w() < 2 || box.h() < 2) return;
+            Array<char> glyphs = borderGlyphs().chars();
+            Style style;
+            int left = box.x();
+            int right = box.right() - 1;
+            int top = box.y();
+            int bottom = box.bottom() - 1;
+            s.put(left, top, glyphs[0], style);
+            s.put(right, top, glyphs[1], style);
+            s.put(left, bottom, glyphs[2], style);
+            s.put(right, bottom, glyphs[3], style);
+            for (int x in left + 1..right - 1) {
+                s.put(x, top, glyphs[4], style);
+                s.put(x, bottom, glyphs[4], style);
+            }
+            for (int y in top + 1..bottom - 1) {
+                s.put(left, y, glyphs[5], style);
+                s.put(right, y, glyphs[5], style);
+            }
+
+            Array<char> titleChars = title.chars();
+            int room = box.w() - 4;
+            if (room <= 0 || titleChars.length() == 0) return;
+            int count = titleChars.length() < room ? titleChars.length() : room;
+            bool truncated = titleChars.length() > room;
+            if (truncated) count = room - 1;
+            int column = left + 2;
+            for (int i in 0..count - 1) {
+                s.put(column, top, titleChars[i], style);
+                column = column + glyphWidth(titleChars[i]);
+            }
+            if (truncated) {
+                char ellipsis = '…';
+                s.put(column, top, ellipsis, style);
+            }
+        }
+    }
+}

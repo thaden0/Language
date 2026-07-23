@@ -4,7 +4,7 @@
 **Answers:** `designs/requests/request-bindgen-metaprog-scope.md`.
 **Sources grounded against (code, not prose, wherever the two disagree):**
 `src/Rules.cpp` (2598 lines), `src/Rules.hpp`, `src/Resolver.cpp` (`kPreludeWasm`,
-lines 5302–5423), `designs/complete/techdesign-05-dom-bridge.md`,
+lines 5302–5423), `designs/wasm-frontend/techdesign-05-dom-bridge.md`,
 `designs/complete/hard-06-hostbridge-seam.md`, `designs/wasm-frontend/techdesign-06-bindgen-and-ship.md`,
 `designs/complete/techdesign-metaprog-phase4.md`, `designs/requests/request-metaprog-attr-values.md`,
 `designs/requests/request-metaprog-splices.md`, `designs/complete/techdesign-unit-test-library.md`,

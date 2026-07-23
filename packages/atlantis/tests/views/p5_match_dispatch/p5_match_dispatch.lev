@@ -1,0 +1,43 @@
+// Atlantis Track 09 — Views P-5 (design §9): `match` type-arm dispatch over the real
+// 10-class Node hierarchy (Node + 9 subclasses, views/node.lev), with `else` (an open
+// hierarchy requires it, reference.md §3.15). Confirms correct arm selection AND
+// narrowed member access in-arm, on oracle/IR/LLVM.
+uses Atlantis::Views;
+
+string describe(Node n) {
+    return match (n) {
+        TextNode    => "text:" + n.text;
+        LiteralNode => "literal:" + n.value + ":" + n.raw.toString();
+        OutputNode  => "output:" + n.path.joinToString(".") + ":" + n.raw.toString();
+        IfNode      => "if:" + n.condPath.joinToString(".") + ":then=" + n.thenNodes.length().toString() +
+                        ":else=" + n.elseNodes.length().toString();
+        ForNode     => "for:" + n.varName + " in " + n.path.joinToString(".") + ":body=" + n.body.length().toString();
+        IncludeNode => "include:" + n.partialName;
+        YieldNode   => "yield:" + n.blockName;
+        CsrfNode    => "csrf";
+        AssetNode   => "asset:" + n.assetPath;
+        else        => "unknown";
+    };
+}
+
+void main() {
+    Node thenLeaf = TextNode(5, "a");
+    Node elseLeaf = TextNode(6, "b");
+    Node forLeaf = TextNode(8, "x");
+    Array<Node> thenNodes = [thenLeaf];
+    Array<Node> elseNodes = [elseLeaf];
+    Array<Node> forBody = [forLeaf];
+    Array<Node> nodes = [
+        TextNode(1, "hi"),
+        LiteralNode(2, "3", false),
+        OutputNode(3, ["user", "name"], false),
+        IfNode(4, ["user"], thenNodes, elseNodes),
+        ForNode(7, "item", ["items"], forBody),
+        IncludeNode(9, "links/_list"),
+        YieldNode(10, "title"),
+        CsrfNode(11),
+        AssetNode(12, "css/app.css")
+    ];
+    for (Node n in nodes) { console.writeln(describe(n)); }
+}
+main();

@@ -1,0 +1,1 @@
+<ul>{{#for link in links}}<li>{{ link.title }}</li>{{/for}}</ul>

@@ -1,8 +1,0 @@
-name = "form-wizard"
-entry = "main"
-sources = ["main.lev", "../../tests/harness/scripted_input.lev", "../../tests/harness/assert.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.1.0"
-as = "Sonar"

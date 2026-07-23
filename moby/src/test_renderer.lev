@@ -1,0 +1,230 @@
+namespace Moby {
+    // Track 10 §2 — the DI-selected recording renderer. Ships in the package so
+    // downstream apps snapshot-test THEIR UIs the same way (README testing guide,
+    // §7). It implements IRenderer by copying each presented Surface into an owned
+    // cell grid and rendering the frozen two-channel snapshot below; it never
+    // touches an fd, so it is safe on every engine (no term::enableRaw, no
+    // sysWrite) and drives the differential-doctrine goldens.
+    //
+    // Snapshot format (frozen — goldens depend on byte stability, §2):
+    //   # WxH
+    //   ┌ channel 1: text ────────
+    //   Hello.World...............   <- one line per row; '.' = a space (or blank) cell
+    //   └─
+    //   ┌ channel 2: style ───────
+    //   AAAAA.BBBBB...............   <- one letter per cell; '.' = default style
+    //   └─
+    //   A = fg:brightWhite bg:blue attrs:bold
+    //   B = fg:default bg:default attrs:reverse
+    //   @cursor 6,0                  <- omitted when hidden
+    // Style letters are assigned in first-use order over a row-major scan, which
+    // is deterministic given the frame phases' deterministic paint order (§2).
+    // Wide-glyph continuation cells render '▏' in channel 1 (visible, stable);
+    // trailing-blank rows are NOT elided (fixed shape = mechanical diffs).
+    class TestRenderer : IRenderer {
+        int w_;
+        int h_;
+        int gw_;
+        int gh_;
+        Block grid_;
+
+        Point? cursor_ = None;
+        bool acquired_ = false;
+        int acquires_ = 0;
+        int releases_ = 0;
+        int presents_ = 0;
+        int bells_ = 0;
+
+        // resize-notification hook for resize tests (§2): fired by setSize.
+        Array<(Size) => void> onResize_ = [];
+
+        new TestRenderer(int width, int height) {
+            if (width <= 0 || height <= 0) throw MobyException("TestRenderer size must be positive");
+            w_ = width;
+            h_ = height;
+            gw_ = width;
+            gh_ = height;
+            grid_ = Block(width * height * 8);
+        }
+
+        // ---- IRenderer -----------------------------------------------------
+
+        Size size() => Size(w_, h_);
+
+        void acquire(bool altScreen, bool mouse, bool bracketedPaste) {
+            acquired_ = true;
+            acquires_ = acquires_ + 1;
+        }
+        void release() {
+            acquired_ = false;
+            releases_ = releases_ + 1;
+        }
+
+        void present(Surface s) {
+            presents_ = presents_ + 1;
+            int bytes = s.width * s.height * 8;
+            if (s.width != gw_ || s.height != gh_) {
+                gw_ = s.width;
+                gh_ = s.height;
+                grid_ = Block(bytes);
+            }
+            grid_.blit(0, s.cells(), 0, bytes);
+        }
+
+        void setCursor(Point? pos) { cursor_ = pos; }
+        void bell() { bells_ = bells_ + 1; }
+
+        // ---- observers (§2) ------------------------------------------------
+
+        Point? cursor() => cursor_;
+        bool acquired() => acquired_;
+        int bells() => bells_;
+        int presents() => presents_;
+        int acquires() => acquires_;
+        int releases() => releases_;
+
+        void setSize(int width, int height) {
+            if (width <= 0 || height <= 0) throw MobyException("TestRenderer size must be positive");
+            w_ = width;
+            h_ = height;
+            Array<(Size) => void> handlers = onResize_;
+            for ((Size) => void handler in handlers) handler(Size(width, height));
+        }
+        TestRenderer onResize((Size) => void handler) { onResize_ = onResize_.add(handler); return this; }
+
+        // ---- snapshot rendering (§2) ---------------------------------------
+
+        // The two-channel snapshot. Ends WITHOUT a trailing newline so the harness
+        // can `console.writeln` it as one block.
+        string snapshot() {
+            StringBuilder out = StringBuilder();
+            out.add("# " + gw_.toString() + "x" + gh_.toString() + "\n");
+
+            // Channel 1 — text.
+            out.add(channelBanner("channel 1: text") + "\n");
+            for (int y in 0..gh_ - 1) out.add(textRow(y) + "\n");
+            out.add("└─\n");
+
+            // Channel 2 — style. One scan assigns style letters in first-use
+            // order and simultaneously builds the key legend.
+            Array<int> keyFg = [];
+            Array<int> keyBg = [];
+            Array<int> keyAttrs = [];
+            out.add(channelBanner("channel 2: style") + "\n");
+            for (int y in 0..gh_ - 1) {
+                StringBuilder row = StringBuilder();
+                for (int x in 0..gw_ - 1) {
+                    int off = (y * gw_ + x) * 8;
+                    int fg = grid_.byteAt(off + 4);
+                    int bg = grid_.byteAt(off + 5);
+                    int attrs = grid_.byteAt(off + 6);
+                    if (fg == 255 && bg == 255 && attrs == 0) { row.add("."); continue; }
+                    int idx = styleIndex(keyFg, keyBg, keyAttrs, fg, bg, attrs);
+                    if (idx < 0) {
+                        keyFg = keyFg.add(fg);
+                        keyBg = keyBg.add(bg);
+                        keyAttrs = keyAttrs.add(attrs);
+                        idx = keyFg.length() - 1;
+                    }
+                    row.add(styleLetter(idx));
+                }
+                out.add(row.toString() + "\n");
+            }
+            out.add("└─");
+
+            // Key legend, in assignment order.
+            for (int i in 0..keyFg.length() - 1)
+                out.add("\n" + styleLetter(i) + " = " + styleDesc(keyFg[i], keyBg[i], keyAttrs[i]));
+
+            // Cursor (omitted when hidden).
+            Point? cp = cursor_;
+            if (cp != None) {
+                Point p = cp;
+                out.add("\n@cursor " + p.x.toString() + "," + p.y.toString());
+            }
+            return out.toString();
+        }
+
+        // Channel 1 only — behavior assertions that survive theme/style tweaks (§2).
+        string textOnly() {
+            StringBuilder out = StringBuilder();
+            out.add("# " + gw_.toString() + "x" + gh_.toString() + "\n");
+            for (int y in 0..gh_ - 1) {
+                out.add(textRow(y));
+                if (y < gh_ - 1) out.add("\n");
+            }
+            return out.toString();
+        }
+
+        // ---- helpers -------------------------------------------------------
+
+        string channelBanner(string label) {
+            StringBuilder b = StringBuilder();
+            b.add("┌ ");
+            b.add(label);
+            b.add(" ");
+            for (int i in 0..23) b.add("─");
+            return b.toString();
+        }
+
+        string textRow(int y) {
+            StringBuilder row = StringBuilder();
+            for (int x in 0..gw_ - 1) {
+                int off = (y * gw_ + x) * 8;
+                int flags = grid_.byteAt(off + 7);
+                if ((flags & 1) != 0) { row.add("▏"); continue; }   // wide continuation
+                int scalar = grid_.int32At(off);
+                if (scalar == 0 || scalar == 32) row.add(".");       // blank / space cell
+                else row.add(std::charFromCode(scalar).toString());
+            }
+            return row.toString();
+        }
+
+        int styleIndex(Array<int> fg, Array<int> bg, Array<int> attrs, int f, int b, int a) {
+            for (int i in 0..fg.length() - 1)
+                if (fg[i] == f && bg[i] == b && attrs[i] == a) return i;
+            return 0 - 1;
+        }
+
+        // A..Z, then a..z, then '*' once exhausted (>52 distinct styles is not a
+        // realistic snapshot; a stable overflow glyph keeps diffs mechanical).
+        string styleLetter(int idx) {
+            if (idx < 26) return std::charFromCode(65 + idx).toString();
+            if (idx < 52) return std::charFromCode(97 + (idx - 26)).toString();
+            return "*";
+        }
+
+        string styleDesc(int fg, int bg, int attrs) =>
+            "fg:" + colorName(fg) + " bg:" + colorName(bg) + " attrs:" + attrsName(attrs);
+
+        // Carrier byte -> lower-first-letter enum name (255 == Default).
+        string colorName(int b) {
+            if (b == 255) return "default";
+            Color? decoded = Color::fromCode(b);
+            Color c = decoded == None ? Color::Default : decoded;   // ternary narrows (surface.lev pattern)
+            string name = c.toString();
+            if (name.isEmpty()) return name;
+            char first = name.at(0);
+            return first.toLower().toString() + name.subStr(1, name.length() - 1);
+        }
+
+        // Attr bitmask -> '+'-joined lower-case names in bit order, or "none".
+        string attrsName(int attrs) {
+            StringBuilder b = StringBuilder();
+            appendAttr(b, attrs, Attr::Bold, "bold");
+            appendAttr(b, attrs, Attr::Dim, "dim");
+            appendAttr(b, attrs, Attr::Italic, "italic");
+            appendAttr(b, attrs, Attr::Underline, "underline");
+            appendAttr(b, attrs, Attr::Reverse, "reverse");
+            appendAttr(b, attrs, Attr::Blink, "blink");
+            string s = b.toString();
+            return s.isEmpty() ? "none" : s;
+        }
+        void appendAttr(StringBuilder b, int attrs, int bit, string name) {
+            if ((attrs / bit) % 2 == 1) {
+                if (!b.isEmpty()) b.add("+");
+                b.add(name);
+            }
+        }
+    }
+}

@@ -1,0 +1,27 @@
+// Atlantis Track 09 — Views V-M1 acceptance: boot diagnostics produce expected
+// file:line messages, and the parser collects EVERY error in one pass rather than
+// stopping at the first (§8 point 1). The corrupt fixture (broken.lhtml) carries
+// three independent, unrelated defects: an unclosed {{#if}}, an {{#if}} condition
+// that isn't a plain path, and an {{> }} target that doesn't exist. Constructing the
+// Engine performs the whole boot check and throws ONE aggregated message; caught and
+// printed here (not relying on engine-specific "Uncaught ..." wording) so the
+// assertion is deterministic across oracle/IR/LLVM.
+uses Atlantis::Views;
+uses Atlantis::Log;
+
+void main() {
+    CaptureSink sink = CaptureSink();
+    Logger logger = Logger(sink, 0);
+    EngineConfig cfg = EngineConfig("packages/atlantis/tests/corpus/views_errors/Resources/Views", false, "/public");
+    bool threw = false;
+    string msg = "";
+    try {
+        Engine e = Engine(cfg, logger);
+    } catch (IException e) {
+        threw = true;
+        msg = e.message;
+    }
+    console.writeln("boot_refused=" + threw.toString());
+    console.writeln(msg);
+}
+main();

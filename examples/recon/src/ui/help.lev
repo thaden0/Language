@@ -3,7 +3,7 @@
 // "While focused" block for component-local keys. Because it is generated, adding
 // a command updates help automatically; help cannot go stale (P1's sibling).
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class HelpOverlay {
     public Modal modal;
@@ -23,7 +23,7 @@ class HelpOverlay {
     void open() {
         this.rebuild();
         this.modal.open();
-        Sonar::app().focus(this.list);
+        Moby::app().focus(this.list);
     }
 
     void rebuild() {

@@ -4,7 +4,7 @@
 // plan in order), and the tab label becomes Tests ✓3 / Tests ✗1 (§8). Rows created
 // from the response inspector (§8.3) land here pre-filled via addAssertion().
 namespace Recon {
-uses Sonar;
+uses Moby;
 
 class TestsPane {
     public Container root;

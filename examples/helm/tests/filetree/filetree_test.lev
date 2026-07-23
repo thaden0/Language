@@ -1,7 +1,7 @@
 // H05 golden — FileTree as an ITreeSource: lazy directory listing (dirs-first,
 // alphabetical), then file ops (create/rename/delete) in a scratch dir the test
 // makes and cleans up. Reads committed fixtures under fixtures/proj. Oracle + IR.
-uses Sonar;
+uses Moby;
 
 namespace Helm {
 

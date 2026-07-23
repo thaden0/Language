@@ -1,0 +1,45 @@
+// Atlantis Track 09 — Views: the HTML escaper (design §3.1).
+//
+// Escaped by default: `&` `<` `>` `"` `'` — the five-char set that is safe in both text
+// content and quoted attribute values (either quote style). Fast path: scan first; if no
+// byte in the set appears, return the original string with zero allocation (matters for
+// P-4's throughput probe). Byte-indexed (not `chars()`): every character in the escape
+// set is single-byte ASCII, and no UTF-8 continuation/lead byte (always >= 0x80) can ever
+// equal one of them, so a plain `byteAt` scan is exact without decoding scalars.
+namespace Atlantis {
+    namespace Views {
+
+        string escName(int code) {
+            if (code == 38) { return "&amp;"; }
+            if (code == 60) { return "&lt;"; }
+            if (code == 62) { return "&gt;"; }
+            if (code == 34) { return "&quot;"; }
+            return "&#39;";                 // code == 39
+        }
+        bool isEscByte(int code) => code == 38 || code == 60 || code == 62 || code == 34 || code == 39;
+
+        string escapeHtml(string s) {
+            int n = s.length();
+            int i = 0;
+            int firstHit = 0 - 1;
+            while (i < n) {
+                if (isEscByte(s.byteAt(i))) { firstHit = i; i = n; } else { i = i + 1; }
+            }
+            if (firstHit < 0) { return s; }          // zero-allocation fast path
+            StringBuilder sb = StringBuilder();
+            int start = 0;
+            int j = firstHit;
+            while (j < n) {
+                int b = s.byteAt(j);
+                if (isEscByte(b)) {
+                    if (j > start) { sb.add(s.subStr(start, j - start)); }
+                    sb.add(escName(b));
+                    start = j + 1;
+                }
+                j = j + 1;
+            }
+            if (start < n) { sb.add(s.subStr(start, n - start)); }
+            return sb.toString();
+        }
+    }
+}

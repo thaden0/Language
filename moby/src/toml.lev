@@ -1,0 +1,236 @@
+// Moby Track 08 — the TOML subset parser (design §4, normative).
+//
+// Exactly what themes need, nothing more (dependency-free, matching the
+// toolchain's own hand-rolled-parser philosophy). A table header is a full
+// theme key; the `fg`/`bg`/`attrs` under it fold into one `Style` written to
+// the theme at table close. Supported: dotted table headers, `key = value`
+// with string/int values, `#` comments (whole-line and trailing), blank
+// lines. NOT supported (a parse error with line/col, never a silent skip):
+// arrays, inline tables, multiline strings, floats, booleans, quoted keys.
+//
+// Errors throw `MobyException("<source>:<line>:<col>: <message>")` — line/col
+// mandatory (design §4). This parser runs at RUNTIME inside the Theme
+// constructors (comptime holds only the imported asset string, design §3), so
+// ordinary char literals / string ops are safe here (no comptime char-literal
+// footgun #58, no call-arg char-literal footgun #50 — every char test below is
+// over `.code()`).
+namespace Moby {
+
+    // ---- color / attr name tables (design §4: "a match-free Map, built once";
+    // realized as a straight-line lookup so there is no global-init ordering or
+    // Map<string,Enum> #40 exposure). camelCase of the Color enum member. ----
+    int lookupColor(string name) {
+        if (name == "black")         return 0;
+        if (name == "red")           return 1;
+        if (name == "green")         return 2;
+        if (name == "yellow")        return 3;
+        if (name == "blue")          return 4;
+        if (name == "magenta")       return 5;
+        if (name == "cyan")          return 6;
+        if (name == "white")         return 7;
+        if (name == "brightBlack")   return 8;
+        if (name == "brightRed")     return 9;
+        if (name == "brightGreen")   return 10;
+        if (name == "brightYellow")  return 11;
+        if (name == "brightBlue")    return 12;
+        if (name == "brightMagenta") return 13;
+        if (name == "brightCyan")    return 14;
+        if (name == "brightWhite")   return 15;
+        return 0 - 2;                    // sentinel: unknown (Default is -1)
+    }
+
+    int lookupAttr(string name) {
+        if (name == "bold")      return 1;
+        if (name == "dim")       return 2;
+        if (name == "italic")    return 4;
+        if (name == "underline") return 8;
+        if (name == "reverse")   return 16;
+        if (name == "blink")     return 32;
+        return 0 - 1;                    // sentinel: unknown (all valid attrs >= 1)
+    }
+
+    // A validated carrier int (-1 == Default, or 0..15) back to a Color. The
+    // guard uses an else-arm, not an early return, so the `Color?` narrowing
+    // survives — flow narrowing is branch-scoped and doesn't survive an early
+    // return/continue.
+    Color colorFromCode(int code) {
+        Color? c = Color::fromCode(code);
+        if (c == None) { return Color::Default; }
+        else { return c; }
+    }
+
+    // ---- tiny lexical helpers (string-only; no reliance on endsWith etc.) ----
+    string themePos(string source, int line, int col) {
+        return source + ":" + line.toString() + ":" + col.toString() + ": ";
+    }
+
+    // 0-based index of the first non-space/non-tab char at or after `start`;
+    // returns the length when the rest is all whitespace.
+    int firstNonWsFrom(string line, int start) {
+        Array<char> cs = line.chars();
+        int i = start;
+        while (i < cs.length()) {
+            int c = cs[i].code();
+            if (c != 32 && c != 9) return i;
+            i = i + 1;
+        }
+        return cs.length();
+    }
+
+    // The value token up to the first space, tab, or `#` (trailing-comment strip
+    // for a bare int value; quoted values are handled separately).
+    string firstToken(string v) {
+        int sp = v.indexOf(" ");
+        int tab = v.indexOf("\t");
+        int hash = v.indexOf("#");
+        int cut = 0 - 1;
+        if (sp >= 0) cut = sp;
+        if (tab >= 0 && (cut < 0 || tab < cut)) cut = tab;
+        if (hash >= 0 && (cut < 0 || hash < cut)) cut = hash;
+        if (cut < 0) return v;
+        return v.subStr(0, cut);
+    }
+
+    bool allDigits(string s) {
+        if (s.isEmpty()) return false;
+        for (char c in s.chars()) {
+            int code = c.code();
+            if (code < 48 || code > 57) return false;
+        }
+        return true;
+    }
+
+    int toIntVal(string s) {
+        int n = 0;
+        for (char c in s.chars()) { n = n * 10 + (c.code() - 48); }
+        return n;
+    }
+
+    bool lastCharIs(string s, string ch) {
+        if (s.isEmpty()) return false;
+        return s.subStr(s.length() - 1, 1) == ch;
+    }
+
+    // `v` begins with a double quote; return the inner text (trailing comment
+    // after the closing quote discarded). Throws on an unterminated string.
+    string extractQuoted(string v, string source, int line, int col) {
+        string rest = v.subStr(1, v.length() - 1);
+        int close = rest.indexOf("\"");
+        if (close < 0)
+            throw MobyException(themePos(source, line, col) + "unterminated string value");
+        return rest.subStr(0, close);
+    }
+
+    // ---- value parsers (design §4: color = name | 0..15 | "default";
+    // attrs = '|'-joined names | int) ----
+    int parseColorValue(string raw, string source, int line, int col) {
+        string v = raw.trim();
+        if (v.isEmpty())
+            throw MobyException(themePos(source, line, col) + "expected a color value");
+        if (v.startsWith("\"")) {
+            string inner = extractQuoted(v, source, line, col);
+            if (inner == "default") return 0 - 1;
+            int code = lookupColor(inner);
+            if (code == 0 - 2)
+                throw MobyException(themePos(source, line, col) + "unknown color '" + inner + "'");
+            return code;
+        } else {
+            string tok = firstToken(v);
+            if (!allDigits(tok))
+                throw MobyException(themePos(source, line, col)
+                    + "invalid color value '" + tok + "' (expected a color name, 0..15, or \"default\")");
+            int n = toIntVal(tok);
+            if (n > 15)
+                throw MobyException(themePos(source, line, col)
+                    + "color code out of range 0..15: " + tok);
+            return n;
+        }
+    }
+
+    int parseAttrsValue(string raw, string source, int line, int col) {
+        string v = raw.trim();
+        if (v.isEmpty())
+            throw MobyException(themePos(source, line, col) + "expected an attrs value");
+        if (v.startsWith("\"")) {
+            string inner = extractQuoted(v, source, line, col);
+            int attrs = 0;
+            for (string part in inner.split("|")) {
+                string nm = part.trim();
+                if (nm.isEmpty())
+                    throw MobyException(themePos(source, line, col)
+                        + "empty attribute name in '" + inner + "'");
+                int a = lookupAttr(nm);
+                if (a < 0)
+                    throw MobyException(themePos(source, line, col) + "unknown attribute '" + nm + "'");
+                attrs = mergeAttrs(attrs, a);      // OR-merge (bitwise ops unused in Moby, style.lev)
+            }
+            return attrs;
+        } else {
+            string tok = firstToken(v);
+            if (!allDigits(tok))
+                throw MobyException(themePos(source, line, col)
+                    + "invalid attrs value '" + tok + "' (expected '|'-joined names or an int)");
+            return toIntVal(tok);
+        }
+    }
+
+    // ---- the line-oriented scan (design §4: split on \n, trim, classify;
+    // a current-prefix register from the last table header; fg/bg/attrs folded
+    // into a Style per prefix written at table close). Writes into `into` via
+    // its fluent `set` — the storage detail (parallel int columns) lives there. ----
+    void parseThemeToml(string text, Theme into, string source) {
+        Array<string> lines = text.split("\n");
+        bool hasCurrent = false;
+        string currentKey = "";
+        int curFg = 0 - 1;             // Default
+        int curBg = 0 - 1;             // Default
+        int curAttrs = 0;
+        int lineNo = 0;
+        for (string rawLine in lines) {
+            lineNo = lineNo + 1;
+            string t = rawLine.trim();
+            if (t.isEmpty()) continue;
+            if (t.startsWith("#")) continue;
+            int lead = firstNonWsFrom(rawLine, 0) + 1;      // 1-based column of first non-ws
+
+            if (t.startsWith("[")) {
+                // Flush the previous table's accumulated style before switching.
+                if (hasCurrent)
+                    into.set(currentKey, Style(colorFromCode(curFg), colorFromCode(curBg), curAttrs));
+                if (!lastCharIs(t, "]"))
+                    throw MobyException(themePos(source, lineNo, lead) + "expected ']' to close table header");
+                string inner = t.subStr(1, t.length() - 2).trim();
+                if (inner.isEmpty())
+                    throw MobyException(themePos(source, lineNo, lead) + "empty table header '[]'");
+                if (inner.contains("\""))
+                    throw MobyException(themePos(source, lineNo, lead) + "quoted keys are not supported");
+                for (string seg in inner.split(".")) {
+                    if (seg.trim().isEmpty())
+                        throw MobyException(themePos(source, lineNo, lead)
+                            + "empty segment in table header '" + inner + "'");
+                }
+                currentKey = inner;
+                curFg = 0 - 1; curBg = 0 - 1; curAttrs = 0;
+                hasCurrent = true;
+            } else {
+                if (!hasCurrent)
+                    throw MobyException(themePos(source, lineNo, lead) + "key/value pair before any [table] header");
+                int eqRaw = rawLine.indexOf("=");
+                if (eqRaw < 0)
+                    throw MobyException(themePos(source, lineNo, lead) + "expected '=' in key/value pair");
+                string key = rawLine.subStr(0, eqRaw).trim();
+                int valStart = firstNonWsFrom(rawLine, eqRaw + 1);
+                string valRaw = rawLine.subStr(valStart, rawLine.length() - valStart);
+                int vcol = valStart + 1;
+                if (key == "fg") curFg = parseColorValue(valRaw, source, lineNo, vcol);
+                else if (key == "bg") curBg = parseColorValue(valRaw, source, lineNo, vcol);
+                else if (key == "attrs") curAttrs = parseAttrsValue(valRaw, source, lineNo, vcol);
+                else
+                    throw MobyException(themePos(source, lineNo, lead)
+                        + "unknown key '" + key + "' (expected fg, bg, or attrs)");
+            }
+        }
+        if (hasCurrent)
+            into.set(currentKey, Style(colorFromCode(curFg), colorFromCode(curBg), curAttrs));
+    }
+}

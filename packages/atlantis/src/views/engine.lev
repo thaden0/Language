@@ -1,0 +1,514 @@
+// Atlantis Track 09 — Views: the render engine (design §2.1, §2.4, §3.3, §8).
+//
+// Boots by walking `Resources/Views/**` (§0R supersedes §2.1's `views/*.html`: the
+// example's real convention is `.lhtml` files under `Resources/Views/`), parsing every
+// template once, and refusing to start on any error (§8). Dev mode re-stats (never
+// reads) on every render and only re-parses the one file that changed (§2.1).
+//
+// There is NO runtime DI container reachable from `Http::Context` (kernel/context.lev's
+// own header comment). `install(Engine)` is the same "process-wide holder built once at
+// boot" idiom this track needs in place of a container — a plain namespace-scope
+// mutable global (reference.md §4.3b: a namespace global's declared type may be
+// reassigned any number of times after its startup initializer runs; only `const`
+// namespace globals are write-once).
+namespace Atlantis {
+    namespace Views {
+
+        class ViewException : Exception, Http::IHttpException {
+            int status;
+            new ViewException(string message) {
+                Exception::Exception(message);
+                this.status = 500;
+            }
+        }
+
+        struct EngineConfig {
+            string viewsRoot;      // default "Resources/Views" (§0R)
+            bool dev;              // views.dev (C6 config) — mtime+size reload (§2.1)
+            string assetPrefix;    // default "/public" (§7) — must match Track 01's mount
+            new EngineConfig(string viewsRoot, bool dev, string assetPrefix) {
+                this.viewsRoot = viewsRoot;
+                this.dev = dev;
+                this.assetPrefix = assetPrefix;
+            }
+        }
+        EngineConfig defaultEngineConfig() => EngineConfig("Resources/Views", false, "/public");
+
+        // Render-time scope (§2.4). A CLASS (not a struct): `withFile` builds fresh
+        // copies whenever rendering crosses into a different template's nodes (a
+        // partial or a child's yielded body), so file-tagged diagnostics stay correct
+        // without ever mutating a frame shared by sibling nodes.
+        class Frame {
+            JsonValue model;
+            Array<Pair<string, JsonValue>> locals;
+            int loopIndex;
+            Map<string, Array<Node>> childBlocks;
+            RenderEnv env;
+            string currentFile;
+            new Frame(JsonValue model, Array<Pair<string, JsonValue>> locals, int loopIndex,
+                      Map<string, Array<Node>> childBlocks, RenderEnv env, string currentFile) {
+                this.model = model;
+                this.locals = locals;
+                this.loopIndex = loopIndex;
+                this.childBlocks = childBlocks;
+                this.env = env;
+                this.currentFile = currentFile;
+            }
+            Frame withFile(string f) => Frame(this.model, this.locals, this.loopIndex, this.childBlocks, this.env, f);
+        }
+
+        // Facts shared across an entire render call tree (§5.3/§7); `includeDepth` is
+        // the one field every recursive include/partial call mutates in place — a
+        // CLASS on purpose, unlike `Frame`'s per-scope copies.
+        class RenderEnv {
+            string csrfTok;
+            string assetPrefix;
+            int includeDepth = 0;
+            new RenderEnv(string csrfTok, string assetPrefix) {
+                this.csrfTok = csrfTok;
+                this.assetPrefix = assetPrefix;
+            }
+            string assetUrl(string p) => this.assetPrefix + "/" + p;
+        }
+
+        class Resolved {
+            bool found;
+            JsonValue value;
+            int failedAt;              // segment index that failed, -1 if found
+            JsonValue nearestParent;    // value just before the failing segment
+            bool haveNearest;
+            new Resolved(bool found, JsonValue value, int failedAt, JsonValue nearestParent, bool haveNearest) {
+                this.found = found;
+                this.value = value;
+                this.failedAt = failedAt;
+                this.nearestParent = nearestParent;
+                this.haveNearest = haveNearest;
+            }
+        }
+        Resolved foundValue(JsonValue v) => Resolved(true, v, 0 - 1, JsonValue::ofNull(), false);
+        Resolved notFoundAt(int idx, JsonValue parent, bool haveParent) =>
+            Resolved(false, JsonValue::ofNull(), idx, parent, haveParent);
+
+        // §2.5 truth table: missing/null/false falsy; "" and [] falsy; every number
+        // (INCLUDING 0) truthy; everything else truthy.
+        bool truthy(JsonValue v) {
+            if (v.isNull()) { return false; }
+            if (v.isBool()) { bool? b = v.asBool(); return b ?? false; }
+            if (v.isStr())  { string? s = v.asStr(); return (s ?? "") != ""; }
+            if (v.isArray()) { Array<JsonValue>? a = v.asArray(); return (a ?? []).length() > 0; }
+            return true;   // number (incl. 0), object, or true
+        }
+
+        // §2.2/§2.4 dot-path resolution: `$index` is the sole builtin; locals shadow
+        // the root model (searched innermost-last -> innermost-first); ints index
+        // arrays, everything else indexes objects.
+        Resolved resolvePath(Array<string> path, Frame f) {
+            if (path.length() == 1 && path.at(0) == "$index") {
+                return foundValue(JsonValue::ofNum(f.loopIndex.toFloat()));
+            }
+            string head = path.at(0);
+            JsonValue cur = JsonValue::ofNull();
+            bool haveCur = false;
+            int li = f.locals.length() - 1;
+            while (li >= 0) {
+                if (!haveCur && f.locals.at(li).first == head) {
+                    cur = f.locals.at(li).second;
+                    haveCur = true;
+                }
+                li = li - 1;
+            }
+            if (!haveCur) {
+                if (f.model.isObject()) {
+                    JsonValue? v = f.model.atOrNone(head);
+                    if (v == None) {
+                        return notFoundAt(0, f.model, true);
+                    } else {
+                        cur = v;
+                        haveCur = true;
+                    }
+                } else {
+                    return notFoundAt(0, f.model, false);
+                }
+            }
+            int idx = 1;
+            bool ok = true;
+            while (idx < path.length() && ok) {
+                string seg = path.at(idx);
+                JsonValue parentBefore = cur;
+                if (cur.isArray()) {
+                    int? ai = seg.toInt();
+                    if (ai == None) {
+                        ok = false;
+                    } else {
+                        Array<JsonValue>? arrOpt = cur.asArray();
+                        Array<JsonValue> arr = arrOpt ?? [];
+                        if (ai < 0 || ai >= arr.length()) { ok = false; } else { cur = arr.at(ai); }
+                    }
+                } else if (cur.isObject()) {
+                    JsonValue? nxt = cur.atOrNone(seg);
+                    if (nxt == None) { ok = false; } else { cur = nxt; }
+                } else {
+                    ok = false;
+                }
+                if (!ok) { return notFoundAt(idx, parentBefore, true); }
+                idx = idx + 1;
+            }
+            return foundValue(cur);
+        }
+
+        // Tree walk collecting every `{{> name}}` target (with its line) and every
+        // `{{#yield "name"}}` name across a template's body + block bodies (§8 point 2).
+        class Collector {
+            Array<Pair<string, int>> includes = [];
+            Array<string> yieldNames = [];
+            void addInclude(string name, int line) { this.includes = this.includes.add(Pair::Of(name, line)); }
+            void addYield(string name) { this.yieldNames = this.yieldNames.add(name); }
+        }
+
+        void walkNodes(Array<Node> nodes, Collector c) {
+            for (Node n in nodes) {
+                match (n) {
+                    IncludeNode => { c.addInclude(n.partialName, n.line); }
+                    YieldNode    => { c.addYield(n.blockName); }
+                    IfNode       => { walkNodes(n.thenNodes, c); walkNodes(n.elseNodes, c); }
+                    ForNode      => { walkNodes(n.body, c); }
+                    else         => { }
+                }
+            }
+        }
+        Collector collectAll(Template t) {
+            Collector c = Collector();
+            walkNodes(t.body, c);
+            for (Pair e in t.blocks) { walkNodes(e.second, c); }
+            return c;
+        }
+
+        class DfsState {
+            Array<string> visiting = [];
+            Array<string> done = [];
+            string? cycleAt;
+        }
+        void dfsIncludes(string name, Map<string, Template> loaded, Map<string, Collector> byName, DfsState st) {
+            if (st.cycleAt != None) { return; }
+            if (st.done.contains(name)) { return; }
+            if (st.visiting.contains(name)) { st.cycleAt = name; return; }
+            st.visiting = st.visiting.add(name);
+            if (byName.has(name)) {
+                Collector c = byName.at(name);
+                for (Pair inc in c.includes) {
+                    if (st.cycleAt == None && loaded.has(inc.first)) {
+                        dfsIncludes(inc.first, loaded, byName, st);
+                    }
+                }
+            }
+            st.visiting = st.visiting.where((x) => x != name);
+            st.done = st.done.add(name);
+        }
+
+        class Engine {
+            EngineConfig cfg;
+            Log::Logger logger;
+            Map<string, Template> cache = Map();
+
+            new Engine(EngineConfig cfg, Log::Logger logger) {
+                this.cfg = cfg;
+                this.logger = logger;
+                this.bootLoad();
+            }
+
+            Array<string> walkFiles(string root, string rel) {
+                string dir = rel == "" ? root : (root + "/" + rel);
+                Array<string>? entries = std::sysListDir(dir);
+                Array<string> out = [];
+                if (entries == None) { return out; }
+                Array<string> es = entries ?? [];
+                for (string e in es) {
+                    if (!e.startsWith(".")) {
+                        string relPath = rel == "" ? e : (rel + "/" + e);
+                        string full = root + "/" + relPath;
+                        if (std::isDir(full)) {
+                            out = out.concat(this.walkFiles(root, relPath));
+                        } else if (relPath.endsWith(".lhtml")) {
+                            out = out.add(relPath);
+                        }
+                    }
+                }
+                return out;
+            }
+
+            // §8: parse EVERY template, aggregate EVERY error (never stop at the
+            // first), run cross-file checks, and refuse to start on any error.
+            void bootLoad() {
+                Array<string> files = this.walkFiles(this.cfg.viewsRoot, "");
+                Array<ParseError> allFindings = [];
+                Map<string, Template> loaded = Map();
+                for (string relPath in files) {
+                    string full = this.cfg.viewsRoot + "/" + relPath;
+                    string name = relPath.subStr(0, relPath.length() - 6);   // strip ".lhtml"
+                    using File fh = File(full, std::read);
+                    string src = fh.read(fh.size());
+                    int mtime = fh.modified();
+                    int size = fh.size();
+                    Parser p = Parser(full, src);
+                    Template t = p.parseTemplate(name, full, mtime, size);
+                    for (ParseError e in p.errors) { allFindings = allFindings.add(e); }
+                    loaded[name] = t;
+                }
+                for (ParseError e in this.crossFileChecks(loaded)) { allFindings = allFindings.add(e); }
+                this.cache = loaded;
+                bool hasError = false;
+                for (ParseError e in allFindings) {
+                    if (!e.message.startsWith("warning: ")) { hasError = true; }
+                }
+                if (hasError) {
+                    Array<string> lines = [];
+                    for (ParseError e in allFindings) { lines = lines.add(e.render()); }
+                    throw ViewException("view boot failed:\n" + lines.joinToString("\n"));
+                }
+            }
+
+            Array<ParseError> crossFileChecks(Map<string, Template> loaded) {
+                Array<ParseError> out = [];
+                Map<string, Collector> byName = Map();
+                for (Pair e in loaded) { byName[e.first] = collectAll(e.second); }
+                for (Pair e in loaded) {
+                    string name = e.first;
+                    Template t = e.second;
+                    Collector c = byName.at(name);
+                    for (Pair inc in c.includes) {
+                        if (!loaded.has(inc.first)) {
+                            out = out.add(ParseError(t.filePath, inc.second,
+                                "{{> " + inc.first + "}} targets an unknown template"));
+                        }
+                    }
+                    if (t.layoutName != None) {
+                        string ln = t.layoutName ?? "";
+                        if (!loaded.has(ln)) {
+                            out = out.add(ParseError(t.filePath, t.layoutLine,
+                                "{{#layout \"" + ln + "\"}} targets an unknown template"));
+                        } else {
+                            Template layoutT = loaded.at(ln);
+                            if (layoutT.layoutName != None) {
+                                out = out.add(ParseError(t.filePath, t.layoutLine,
+                                    "{{#layout \"" + ln + "\"}} targets '" + ln +
+                                    "', which itself declares a layout (layouts do not chain)"));
+                            } else {
+                                Collector lc = byName.at(ln);
+                                for (Pair be in t.blocks) {
+                                    if (!lc.yieldNames.contains(be.first)) {
+                                        out = out.add(ParseError(t.filePath, t.layoutLine,
+                                            "warning: {{#block \"" + be.first + "\"}} has no matching " +
+                                            "{{#yield \"" + be.first + "\"}} in layout '" + ln + "'"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                DfsState st = DfsState();
+                for (string start in loaded.keys()) {
+                    if (st.cycleAt == None) { dfsIncludes(start, loaded, byName, st); }
+                }
+                if (st.cycleAt != None) {
+                    string bad = st.cycleAt ?? "";
+                    out = out.add(ParseError(loaded.has(bad) ? loaded.at(bad).filePath : bad, 0,
+                        "include cycle detected involving '" + bad + "'"));
+                }
+                return out;
+            }
+
+            // §2.1 dev-mode invalidation: stat only (never read) unless mtime OR
+            // size changed; a stat-miss (file removed/renamed, or a new file may have
+            // appeared) triggers a full re-walk (§10 problem #2).
+            Template resolve(string name) {
+                string key = name.replace(".", "/");
+                if (!this.cfg.dev) {
+                    if (!this.cache.has(key)) { throw ViewException("view '" + name + "' not found"); }
+                    return this.cache.at(key);
+                } else {
+                    if (!this.cache.has(key)) {
+                        this.bootLoad();
+                        if (!this.cache.has(key)) { throw ViewException("view '" + name + "' not found"); }
+                        return this.cache.at(key);
+                    } else {
+                        Template t = this.cache.at(key);
+                        int curMtime = std::fileModified(t.filePath);
+                        int curSize = std::fileSize(t.filePath);
+                        if (curMtime < 0 || curSize < 0) {
+                            this.bootLoad();
+                            if (!this.cache.has(key)) { throw ViewException("view '" + name + "' not found (after reload)"); }
+                            return this.cache.at(key);
+                        } else if (curMtime != t.mtime || curSize != t.size) {
+                            using File fh = File(t.filePath, std::read);
+                            string src = fh.read(fh.size());
+                            Parser p = Parser(t.filePath, src);
+                            Template fresh = p.parseTemplate(t.name, t.filePath, curMtime, curSize);
+                            if (!p.errors.isEmpty()) {
+                                Array<string> lines = [];
+                                for (ParseError e in p.errors) { lines = lines.add(e.render()); }
+                                throw ViewException("view reload failed for '" + name + "':\n" + lines.joinToString("\n"));
+                            }
+                            this.cache[key] = fresh;
+                            return fresh;
+                        } else {
+                            return t;
+                        }
+                    }
+                }
+            }
+
+            // §3.3: dev = loud (throws); prod = "" + one structured warning.
+            void reportIssue(StringBuilder out, string file, int line, string msg) {
+                if (this.cfg.dev) {
+                    throw ViewException(file + ":" + line.toString() + " — " + msg);
+                } else {
+                    this.logger.warn(msg, [Log::LogField("template", file), Log::LogField("line", line.toString())]);
+                }
+            }
+
+            void missing(StringBuilder out, string file, int line, Array<string> path, Resolved r) {
+                string hint = "";
+                if (r.haveNearest && r.nearestParent.isObject()) {
+                    Map<string, JsonValue>? m = r.nearestParent.asObject();
+                    if (m != None) {
+                        Map<string, JsonValue> mm = m;
+                        Array<string> ks = mm.keys();
+                        string label = r.failedAt <= 0 ? "the root model" : ("'" + path.slice(0, r.failedAt).joinToString(".") + "'");
+                        hint = " (nearest: " + label + " is an object with keys [" + ks.joinToString(", ") + "])";
+                    }
+                }
+                this.reportIssue(out, file, line, "path '" + path.joinToString(".") + "' not found" + hint);
+            }
+
+            string renderScalar(JsonValue v) {
+                if (v.isStr())  { string? s = v.asStr(); return s ?? ""; }
+                if (v.isBool()) { bool? b = v.asBool(); return (b ?? false) ? "true" : "false"; }
+                if (v.isNum())  { float? n = v.asNum(); return (n ?? 0.0).toString(); }
+                return "";
+            }
+
+            void renderOutput(OutputNode n, Frame f, StringBuilder out) {
+                Resolved r = resolvePath(n.path, f);
+                if (!r.found) {
+                    this.missing(out, f.currentFile, n.line, n.path, r);
+                } else if (r.value.isNull()) {
+                    // "" — null is a legitimate modeled value, no warning (§3.3).
+                } else if (r.value.isArray() || r.value.isObject()) {
+                    this.reportIssue(out, f.currentFile, n.line,
+                        "path '" + n.path.joinToString(".") + "' is an array/object in output position");
+                } else {
+                    string text = this.renderScalar(r.value);
+                    out.add(n.raw ? text : escapeHtml(text));
+                }
+            }
+
+            void renderFor(ForNode n, Frame f, StringBuilder out) {
+                Resolved r = resolvePath(n.path, f);
+                if (!r.found) {
+                    // missing in test position: empty, no warning, both modes (§3.3).
+                } else if (!r.value.isArray()) {
+                    this.reportIssue(out, f.currentFile, n.line,
+                        "{{#for " + n.varName + " in " + n.path.joinToString(".") + "}} did not resolve to an array");
+                } else {
+                    Array<JsonValue>? arrOpt = r.value.asArray();
+                    Array<JsonValue> arr = arrOpt ?? [];
+                    int i = 0;
+                    while (i < arr.length()) {
+                        Array<Pair<string, JsonValue>> newLocals = f.locals.add(Pair::Of(n.varName, arr.at(i)));
+                        Frame inner = Frame(f.model, newLocals, i, f.childBlocks, f.env, f.currentFile);
+                        this.renderNodes(n.body, inner, out);
+                        i = i + 1;
+                    }
+                }
+            }
+
+            void renderPartial(IncludeNode n, Frame f, StringBuilder out) {
+                if (f.env.includeDepth >= 32) {
+                    throw ViewException(f.currentFile + ":" + n.line.toString() +
+                        " — include depth exceeded (32) — likely a recursive partial");
+                } else if (!this.cache.has(n.partialName)) {
+                    throw ViewException(f.currentFile + ":" + n.line.toString() +
+                        " — {{> " + n.partialName + "}} targets an unknown template");
+                } else {
+                    Template pt = this.resolve(n.partialName);
+                    f.env.includeDepth = f.env.includeDepth + 1;
+                    this.renderNodes(pt.body, f.withFile(pt.filePath), out);
+                    f.env.includeDepth = f.env.includeDepth - 1;
+                }
+            }
+
+            void renderNodes(Array<Node> nodes, Frame f, StringBuilder out) {
+                for (Node n in nodes) {
+                    match (n) {
+                        TextNode => { out.add(n.text); }
+                        LiteralNode => { out.add(n.raw ? n.value : escapeHtml(n.value)); }
+                        OutputNode => { this.renderOutput(n, f, out); }
+                        IfNode => {
+                            Resolved r = resolvePath(n.condPath, f);
+                            bool cond = r.found && truthy(r.value);
+                            if (cond) { this.renderNodes(n.thenNodes, f, out); } else { this.renderNodes(n.elseNodes, f, out); }
+                        }
+                        ForNode => { this.renderFor(n, f, out); }
+                        IncludeNode => { this.renderPartial(n, f, out); }
+                        YieldNode => {
+                            Array<Node>? body = f.childBlocks.atOrNone(n.blockName);
+                            this.renderNodes(body ?? [], f, out);
+                        }
+                        CsrfNode => {
+                            if (f.env.csrfTok == "") {
+                                this.reportIssue(out, f.currentFile, n.line,
+                                    "{{csrf}} used but no CSRF token is available (session/csrf middleware not installed?)");
+                            } else {
+                                out.add("<input type=\"hidden\" name=\"_csrf\" value=\"" + escapeHtml(f.env.csrfTok) + "\">");
+                            }
+                        }
+                        AssetNode => { out.add(f.env.assetUrl(n.assetPath)); }
+                        else => { throw ViewException("internal: unknown view node kind"); }
+                    }
+                }
+            }
+
+            RenderEnv buildRenderEnv(Http::Context? ctx) {
+                if (ctx == None) {
+                    return RenderEnv("", this.cfg.assetPrefix);
+                } else {
+                    Http::Context c = ctx;
+                    return RenderEnv(Auth::csrfToken(c), this.cfg.assetPrefix);
+                }
+            }
+
+            string renderNamed(string name, JsonValue model, bool asFragment, RenderEnv env) {
+                Template t = this.resolve(name);
+                StringBuilder sb = StringBuilder();
+                if (t.layoutName != None && !asFragment) {
+                    string ln = t.layoutName ?? "";
+                    Template layout = this.resolve(ln);
+                    Map<string, Array<Node>> childBlocks = Map();
+                    for (Pair e in t.blocks) { childBlocks[e.first] = e.second; }
+                    childBlocks[""] = t.body;
+                    Frame f = Frame(model, [], 0, childBlocks, env, layout.filePath);
+                    this.renderNodes(layout.body, f, sb);
+                } else {
+                    Frame f = Frame(model, [], 0, Map(), env, t.filePath);
+                    this.renderNodes(t.body, f, sb);
+                }
+                return sb.toString();
+            }
+        }
+
+        // ---- the process-wide holder (design §4.1's "bound via DI"; no runtime
+        // container is reachable from Context, so a boot-installed namespace global
+        // is the honest equivalent — see this file's header note). ----
+        Engine? installedEngine = None;
+        void install(Engine e) { installedEngine = e; }
+        Engine engineOrThrow() {
+            Engine? e = installedEngine;
+            if (e == None) {
+                throw RuntimeException("Atlantis::Views: no Engine installed — call " +
+                    "Atlantis::Views::install(Engine(cfg, logger)) at boot before rendering any view");
+            } else {
+                return e;
+            }
+        }
+    }
+}

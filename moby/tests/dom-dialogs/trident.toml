@@ -1,0 +1,8 @@
+name = "moby-dom-dialogs-test"
+entry = "main"
+sources = ["../harness/scripted_input.lev", "../harness/assert.lev", "dialogs.lev"]
+
+[[dep]]
+path = "../.."
+version = "0.2.0"
+as = "Moby"

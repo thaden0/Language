@@ -132,7 +132,12 @@ private:
     StmtPtr parseMacroDecl(Access access);         // `macro Name(params) => \`expr\`;`
     // Fragment parsers: re-lex a quasiquote's payload (with holes) into AST.
     std::vector<StmtPtr> parseStmtsFragment(SourceSpan quasi);
-    StmtPtr parseMemberFragment(SourceSpan quasi);
+    std::vector<StmtPtr> parseMemberFragment(SourceSpan quasi);
     ExprPtr parseExprFragment(SourceSpan quasi);
     std::vector<StmtPtr> parseItemsFragment(SourceSpan quasi);   // `namespace N` (§8.3)
+    // C name synthesis (techdesign-splices-positions §3): `$ident(a, b, …)` in a
+    // name-defining position. If the cursor is at `$ident (`, records the arg
+    // exprs onto `into` (nameSynthArgs) and returns true; else leaves the cursor
+    // untouched and returns false. Callers then leave `name` empty.
+    bool tryParseNameSynth(Stmt* into);
 };

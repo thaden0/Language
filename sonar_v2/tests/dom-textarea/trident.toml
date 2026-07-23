@@ -1,8 +1,0 @@
-name = "sonar-dom-textarea-test"
-entry = "main"
-sources = ["textarea.lev"]
-
-[[dep]]
-path = "../.."
-version = "0.2.0"
-as = "Sonar"
