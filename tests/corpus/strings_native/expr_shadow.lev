@@ -1,0 +1,26 @@
+// known_bugs_1.md #105 regression floor: a local/parameter named exactly
+// `expr` collides with the prelude `expr` namespace (LA-31 reification), which
+// misrouted `expr.<native>(...)` through the free-native floor table on the IR
+// and LLVM (and emit-C++) backends — `unknown native 'byteAt'` / `native floor
+// function 'byteAt'` — while the oracle stayed correct. All four engines must
+// now agree. Exercises every confirmed-affected native (byteAt, startsWith,
+// contains, endsWith, indexOf, trim) with an `expr`-named receiver, in BOTH the
+// parameter form and the plain-local form.
+class Probe {
+    string viaParam(string expr) {
+        return expr.byteAt(0).toString() + "|"
+             + expr.startsWith("ti").toString() + "|"
+             + expr.contains("tl").toString() + "|"
+             + expr.endsWith("le").toString() + "|"
+             + expr.indexOf("t").toString();
+    }
+}
+void main() {
+    Probe p = Probe();
+    console.writeln(p.viaParam("title"));
+    string expr = "  padded  ";
+    console.writeln("[" + expr.trim() + "]");
+    console.writeln(expr.byteAt(2).toString());
+    console.writeln(expr.indexOf("padded").toString());
+}
+main();

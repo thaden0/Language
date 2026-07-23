@@ -157,8 +157,11 @@ green across treewalk/ir/llvm.
 
 ---
 
-#105 [P1] found 2026-07-21 (Atlantis Track 09 views, P-probe/corpus work — build
-verified fresh against HEAD 43f3a21 before filing, per the rebuild-first policy).
+#105 [P1] fixed 2026-07-22 (agent0-bugfix-expr105) — root-cause narrative and
+regression floor appended at the END of this entry; the original filing (below)
+is preserved verbatim. found 2026-07-21 (Atlantis Track 09 views, P-probe/corpus
+work — build verified fresh against HEAD 43f3a21 before filing, per the
+rebuild-first policy).
 **[P1.2]**: the only workaround is per-callsite (rename the offending
 local/parameter), and any future track that happens to name a local or
 parameter `expr` and then calls a native method on it will independently
@@ -252,6 +255,66 @@ belt-and-suspenders leftover from chasing this down (harmless either way, and
 arguably clearer at the call sites that care about a specific byte value).
 Any future code should simply avoid naming a local/parameter `expr` until
 this is fixed at the source.
+
+**Root cause (agent0-bugfix-expr105, 2026-07-22 — the actual C++-level
+defect).** The filing agent's structural-collision hypothesis was right in
+spirit but the collision is not a temp/AST-naming scheme — it is the prelude
+namespace literally named `expr`. `prelude/expr.lev` (the LA-31 expression
+reification module, listed in `LV_PRELUDE_SEGMENTS`) opens `namespace expr {
+… }`, so `expr` is a live namespace *symbol* for every user program. In
+`src/ir/Lower.cpp`'s `lowerCall`, the Member-callee dispatch has a "legacy
+resolved-path" fast branch (it was at line ~1696) that fired whenever (a) the
+receiver is a bare Name that `namespaceSym()` resolves to a namespace and (b)
+the checker-resolved callee is an empty-body native — in which case it emits a
+free `Op::CallNativeFn` keyed by the selector text. Crucially that branch never
+verified the native actually *lives in* that namespace: it keyed off the
+RECEIVER name being a namespace, full stop. So for `expr.byteAt(0)`, where
+`byteAt` resolves to the string instance native (empty prelude body) and the
+receiver name `expr` matches the prelude namespace, the call was misrouted into
+the free-native floor table — which has no `byteAt`/`startsWith`/`contains`/
+`endsWith`/`indexOf`/`trim` entry, producing `unknown native 'byteAt'` on the
+IR interpreter (`IrInterp.cpp` `CallNativeFn`) and `native floor function
+'byteAt'` on LLVM (both backends consume the same lowered `CallNativeFn`; the
+oracle never lowers, resolving the receiver as an ordinary local, so it was
+always correct). The sibling by-name namespace branch just above it already
+carried the exact guard this one was missing — the bug #70 fix (`env`/`math`
+local shadowing a namespace) added `!findLocal(callee->a->text)` there, but the
+legacy resolved-path branch below it was left unguarded, so a receiver whose
+name is a namespace with NO matching free function (`expr` has no `byteAt`)
+skated past #70's branch and into this one. `env`/`math` didn't trip it only
+because their shadowing shape resolved differently upstream; `expr` is the name
+that has both a prelude namespace AND is a natural identifier for a string
+holding an expression, which is why the template-expanders hit it.
+
+**Fix.** One-line guard in `src/ir/Lower.cpp` `lowerCall`: the legacy
+resolved-path namespace-native branch now also requires
+`!findLocal(callee->a->text)`, so a local/parameter always shadows the
+namespace and dispatch falls through to the ordinary `receiver.method(...)`
+`CallDyn` path — identical precedent to the #70 / `console`-shadow guards. No
+codegen/ARC/assembly touched (front-end IR classification only); engine-neutral;
+the oracle path is unchanged.
+
+**Verification (red→green, all six confirmed natives × both non-oracle
+backends).** Before: `--ir` `unknown native 'byteAt'`, `--build-native` `native
+floor function 'byteAt'`; oracle `116`. After: all of oracle/`--ir`/
+`--build-native`/emit-C++ print `116` for the filing repro, and agree across
+`byteAt`/`startsWith`/`contains`/`endsWith`/`indexOf`/`trim` with an
+`expr`-named receiver in BOTH the parameter and the plain-local form. Confirmed
+no regression to genuine `expr::`-qualified use (`expr::Field(...)` construction
++ field read still resolves on all engines) and to the #70 `env`/`math` local
+shadow. The bug's practical effect — an `expr`-named local calling `.trim()`
+during **comptime** folding (the template-expander shape) — was reproduced and
+confirmed fixed on all three backends via a `comptime`-folded call into a
+function holding a `string expr` local. The Moby template-expanders
+(`moby/src/templates/expander.lev`, `moby/src/dom/templates/dom_expander.lev`)
+still spell the local `expr` and now expand correctly on `--ir`/
+`--build-native`; the `packages/atlantis/src/views/parser.lev` `exprText`
+workaround was left in place (harmless, per this entry).
+
+**Regression floor.** `tests/corpus/strings_native/expr_shadow.lev`
+(+ `.expected`), exercising every affected native with an `expr`-named receiver
+in param + local form; it rides the existing `corpus_strings_native_{treewalk,
+ir,cpp,llvm}` ctest lanes (all four green). Full ctest suite green.
 
 #95 fixed 2026-07-20 (Atlantis routing corpus SEGFAULT on LLVM). Not a Track 06
 regression and not runtime-stale: a latent value-struct ARC over-release exposed
