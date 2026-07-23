@@ -1693,7 +1693,21 @@ int Lowerer::lowerCall(Expr* e) {
             }
         }
         // (legacy resolved-path below handles shadowed cases)
-        if (e->resolved && callee->a->kind == ExprKind::Name) {
+        // known_bugs_1.md #105: a local/parameter whose name shadows a prelude
+        // namespace (`expr` — the LA-31 reification namespace — being the one
+        // that bit, but any namespace name qualifies) must NOT be treated as a
+        // namespace qualifier here. This branch fires CallNativeFn whenever the
+        // RECEIVER name is a namespace and the resolved decl is an empty-body
+        // native, WITHOUT verifying the native actually belongs to that
+        // namespace — so `expr.byteAt(0)` (byteAt = the string native, empty
+        // body) got misrouted to the free-native floor table (`unknown native
+        // 'byteAt'` on --ir / `native floor function 'byteAt'` on LLVM) instead
+        // of ordinary method dispatch. Same shadow guard the #70 fix added to
+        // the by-name namespace branch above: a local/parameter of this exact
+        // name always wins over the namespace, and dispatch falls through to
+        // the receiver.method(...) CallDyn path below.
+        if (e->resolved && callee->a->kind == ExprKind::Name &&
+            !findLocal(callee->a->text)) {
             // namespaceSym searches the block import overlays first (bug.md
             // #1), then this call's file overlay (`use NS as Alias;`, bug.md
             // #8/imports.md), then global — `sema_.global` alone sees none of
