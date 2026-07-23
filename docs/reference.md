@@ -762,6 +762,14 @@ against `this` (derived class controls order). Label + argument types select amo
 Constructor arguments may be named and constructor parameters may declare defaults.
 For a labeled construction, the tuple follows the complete label: `Box::From::<int>(value)`.
 
+A class that declares **no** constructor is still constructible: `ClassName(a, b, ...)`
+populates its data fields **positionally**, in declaration (slot) order — `FieldError("email",
+"required")`. Fewer arguments than fields leaves the trailing fields at their §3 defaults;
+zero arguments is ordinary default construction. Supplying **more** arguments than the class
+has assignable data fields is a compile error (`too many arguments to construct '...'`) — this
+also rejects `int(x)`/`string(x)`/`bool(x)` and other primitive spellings, since a primitive
+has no data fields to fill.
+
 ### 4.6 Accessors (get/set)
 ```
 get value() => value;                    // read view over the 'value' slot

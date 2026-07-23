@@ -371,6 +371,16 @@ add_test(NAME rule_splice_reject_notattr_norule  # M43 fires even with NO rules 
                  $<TARGET_FILE:leviathan>
                  "${CMAKE_SOURCE_DIR}/tests/negative/rule_splice_notattr_norule.ext"
                  "is not a declared attribute")
+# Implicit memberwise construction (bug #38) arity guard: a class that declares
+# no constructor fills its data fields positionally, but supplying MORE args
+# than it has assignable fields is now a compile error instead of silently
+# dropping the surplus and producing an engine-divergent default value
+# (int(3.9): 0 fields, 1 arg — the primitive case).
+add_test(NAME memberwise_excess_args_reject
+         COMMAND bash "${CMAKE_SOURCE_DIR}/tests/run_expr_reify_error.sh"
+                 $<TARGET_FILE:leviathan>
+                 "${CMAKE_SOURCE_DIR}/tests/negative/memberwise_excess_args.lev"
+                 "too many arguments to construct 'int'")
 # Track 04 M2-M4: stdlib string natives added AFTER the X64Gen freeze
 # (toInt/toFloat -> optional, byteAt/fromByte, concatAll — designs/
 # techdesign-04-stdlib-strings.md). Kept out of the shared tests/corpus/ dir
