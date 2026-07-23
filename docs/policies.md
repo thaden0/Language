@@ -92,6 +92,17 @@ When you're done writing the research document, move the request document to des
 
 Include all the details of the requested feature, and what you are working on that requires the feature. Include what wider things this feature would allow. Include all the requirements for both your minimum implementation as well as your maximum implementation.
 
+## Bug Files
+
+Active, unresolved bugs live in one of two files:
+
+- `known_bugs_1.md`
+- `known_bugs_2.md`
+
+These two files together are the canonical bug register. High- and low-priority bugs are dispersed evenly across both so neither file skews toward one tier; a `#N` reference in one may point at an entry in the other.
+
+`designs/sonar_v2/sonar-bugs.md` is a legacy Sonar/Recon bug log predating the two-file register above. It is not written to going forward — all new bugs, including Sonar/Recon ones, go in `known_bugs_1.md` or `known_bugs_2.md`. Once every entry in `sonar-bugs.md` is resolved, delete the file.
+
 ## Bug Numbering
 
 Parallel agent branches independently assign numbers in the known_bugs files, so the same bug can land under two different numbers on merge, or two different bugs can collide on one number.
