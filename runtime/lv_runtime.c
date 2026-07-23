@@ -2329,6 +2329,30 @@ void lvrt_idxset(LvValue* out, const LvValue* base, const LvValue* idx, const Lv
     *out = *base;   /* unknown base: return as-is (matches X64Gen::genIdxSet fallback) */
 }
 
+/* §15 destination ownership (see lv_abi.h): idxset with the value operand
+ * CONSUMED. The only path that takes ownership of the standalone copy itself
+ * is an IN-RANGE store into a BOXED array (the slot aliases the pointer at
+ * rc 0; the boxed free path vfrees elements — and the shared-COW path aliases
+ * it into the fresh array's slot the same way). Every other path either
+ * copies the record's bytes in (dense memcpy / columnar scatter / map
+ * deep-copy upsert) or stores nothing (OOB, unknown base), leaving the
+ * standalone copy dead — reclaim it. lvrt_vfree no-ops unless the operand is
+ * an rc-0 heap value struct, so a mispredicted operand degrades to plain
+ * lvrt_idxset. */
+void lvrt_idxset_move(LvValue* out, const LvValue* base, const LvValue* idx, const LvValue* val) {
+    int consumed = 0;
+    if (base->tag == LV_ARR) {
+        int64_t rawlen = lv_ld_i64(base->payload, 0);
+        if (rawlen >= 0) {   /* boxed: an in-range store transfers ownership to the slot
+                              * (same bare payload-range test lvrt_idxset applies) */
+            int64_t i = idx->payload;
+            consumed = (i >= 0 && i < rawlen);
+        }
+    }
+    lvrt_idxset(out, base, idx, val);
+    if (!consumed) lvrt_vfree(val);
+}
+
 /* ========================================================================
  * Scalar core, stringify, print, minimal IO — the entry points the LLVM
  * backend's scalar core emits (ratified into lv_abi.h at the 2026-07-05

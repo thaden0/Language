@@ -503,6 +503,19 @@ void    lvrt_arr_concatall(LvValue* out, const LvValue* arr);
 void    lvrt_map_new(LvValue* out, int64_t len);
 void    lvrt_idxget(LvValue* out, const LvValue* base, const LvValue* idx);
 void    lvrt_idxset(LvValue* out, const LvValue* base, const LvValue* idx, const LvValue* val);
+/* §15 destination ownership: lvrt_idxset with the VALUE operand CONSUMED — the
+ * caller hands over a fresh standalone value-struct copy (lowerAssign's
+ * definite `CopyVal c=1` bind) that it will never read again. Only the layout
+ * knows whether the store copies bytes (dense/columnar memcpy/scatter; map
+ * upsert deep-copies) or takes the pointer itself (boxed in-range slot), so
+ * the consume decision lives here: any path that copied the record in — or
+ * stored nothing at all (OOB / unknown base) — vfrees the dead standalone
+ * copy; an in-range boxed store transfers ownership to the slot (the array's
+ * free path vfrees elements) and must NOT free it. lvrt_vfree's tag/class/rc
+ * guards make the call a no-op whenever the operand turns out not to be an
+ * rc-0 heap value struct (arena sentinel, counted refs, primitives), so this
+ * degrades exactly to lvrt_idxset in every non-struct case. */
+void    lvrt_idxset_move(LvValue* out, const LvValue* base, const LvValue* idx, const LvValue* val);
 /* bug.md #30: map.with under the CallDyn (+1 transfer) convention. Wraps
  * lv_map_upsert (which lvrt_idxset also uses under the dk==1/IndexStore
  * convention, unchanged) and retains a fresh copy so the result crosses the

@@ -64,6 +64,7 @@ namespace llvmDetail {
         rtMapWith    = fn("lvrt_map_with", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
         rtIdxGet     = fn("lvrt_idxget", voidTy, {ptrTy, ptrTy, ptrTy});
         rtIdxSet     = fn("lvrt_idxset", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
+        rtIdxSetMove = fn("lvrt_idxset_move", voidTy, {ptrTy, ptrTy, ptrTy, ptrTy});
         // Track 05 C3: struct-recursive Map key equality (primitives by value,
         // structs field-wise, classes by identity) — shared with lvrt_idxget's
         // map branch, so "has" agrees with "at"/"[]" on the same key.

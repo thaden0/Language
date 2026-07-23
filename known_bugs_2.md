@@ -626,3 +626,85 @@ concurrently (another agent's worktree) holds the same loopback ports
 (18110 ...), which ctest's RESOURCE_LOCK cannot see across repos — that
 produced one spurious 120s hang at N=40 here. The new RUNFAIL message makes
 that failure mode diagnosable too, instead of reading as "0 sites".
+
+worktree-agent-a7c3e630889a1bf22-107 fixed 2026-07-22 (the declared dense_index_set churn XFAIL, promoted to a
+guarded green on LLVM): storing a value struct into an `Array<struct>` by index
+leaked the store's standalone heap copy on the LLVM backend — ~recBytes per
+`arr[i] = q` (64B/iteration in the repro), unbounded in a loop. Repro is the
+long-standing expected-red template itself (`tests/corpus/churn/
+dense_index_set.ext`, with `tests/corpus/churn_columnar/columnar_index_set.lev`
+as its columnar mirror): `fuzz/churn_leak.py --engine llvm` measured
+live-at-exit 7,584B at N=100 vs 52,384B at N=800 (+64.0B per churned
+iteration) while the `--mem-verify` oracle root set stayed constant at 13 —
+the textbook escaping-tier free-obligation failure (§15), output correct on
+every engine throughout. Unrelated to #73 (StoreGlobal COW self-append), #105
+(front-end top-level parsing), and #106 (verifier complexity): this is the
+IndexStore VALUE operand's destination ownership, a distinct op and a distinct
+tier.
+
+Root cause (three parties, each individually correct): `lowerAssign`
+(`src/ir/Lower.cpp`) binds a definite value-struct RHS with a fresh `CopyVal
+c=1` before the `IndexStore` — value semantics require the copy. Ownership
+(`src/ir/Ownership.cpp`) marks that copy "stored by index" — a REAL escape, so
+it routes to the heap tier at rc 0 (correctly NOT the arena: on the boxed
+edge the slot keeps the pointer past the frame). The runtime's dense path
+(`lvrt_idxset`, `runtime/lv_runtime.c`) then `memcpy`s the record's BYTES into
+the buffer (columnar: scatters the fields) and never takes ownership of the
+standalone copy — and since value structs are uncounted (retain/release
+no-op), frame-exit releaseAllRegs cannot reclaim it either. Nobody's step was
+wrong; the free obligation simply had no owner. The old XFAIL comment already
+named the missing piece: liveness at the consuming site.
+
+Fix — consumption routed through the one party that KNOWS the layout, the
+runtime (a Lower-side unconditional VFree would double-free the boxed edge,
+and arena routing would dangle it when the boxed array outlives the frame —
+both rejected for cause):
+1. `runtime/lv_runtime.c` + `lv_abi.h` — new `lvrt_idxset_move(out, base,
+   idx, val)`: `lvrt_idxset` with the value operand CONSUMED. Every path that
+   copies the record in (dense memcpy, columnar scatter, map deep-copy
+   upsert) or stores nothing (OOB, unknown base) vfrees the dead standalone
+   copy; an in-range BOXED store transfers ownership to the slot (the boxed
+   free path vfrees elements — bug #66's heap-field edge) and must not free.
+   `lvrt_vfree`'s tag/class/rc guards make the call degrade to plain
+   `lvrt_idxset` whenever the operand is not an rc-0 heap value struct.
+2. `src/backend/LlvmGenOps.cpp` (`Op::IndexStore`) — the store consumes iff
+   the value operand's unique writer is a definite `CopyVal c=1` (its dst is
+   a write-once temp read only by this store; the backwards writer scan is
+   the same pattern as `noteFreshStructResult`, conservative on any other
+   writer). Consuming stores call `rtIdxSetMove` on all three core call
+   sites and then VOID the operand register before the throw check, so
+   neither the unwind path nor frame-exit releaseAllRegs ever touches the
+   stale alias (the #95/#96/#99 borrowed-alias family). The declared-`([])`
+   setter hit path keeps today's exact fate. IR, Lower, Ownership, the
+   interpreters, and emit-C++ (shared_ptr semantics, never leaked) are all
+   byte-untouched — and the frozen X64Gen consumes byte-identical IR.
+
+Regression floor: both templates' XFAIL markers flipped per the churn net's
+XPASS protocol — `dense_index_set.ext` is now `XFAIL-ELF` (the frozen backend
+keeps its declared leak; `corpus_churn_leak_llvm` now REQUIRES flatness), and
+`columnar_index_set.lev` drops the marker entirely (`corpus_churn_leak_
+columnar_llvm` requires it). Plus a runtime-level floor: `runtime/selftest.c`
+`test_idxset_move` pins all four consume legs (dense freed / boxed in-range
+transferred not freed / boxed OOB freed / map freed) against
+`lvrt_live_bytes()` baselines.
+
+Verified: pre-fix +44,800B growth N=100->800, post-fix +0B on BOTH layouts
+(`--no-columnar` 1,184B flat; `--columnar` 928B flat), root set 13 = 13,
+output still byte-identical to the oracle; `runtime_selftest` (+ its valgrind
+twin) green including the new test; `corpus_churn_leak_llvm`,
+`corpus_churn_leak_columnar_llvm`, `corpus_churn_leak_tasks` green; full ctest
+421/424 with the 3 failures each reproduced UNCHANGED on a clean stashed HEAD
+(pre-existing, not this fix): `clone-ratchet` (a RulesClone.cpp|
+CheckerReify.cpp duplication from another track — this change itself IMPROVES
+the ratchet, LlvmGenOps 24->20), `corpus_core_aarch64_qemu` (host is missing
+/lib/ld-linux-aarch64.so.1 — environmental, loader-stage), and
+`corpus_elf_full` (frozen backend, never a gate per standing rule; X64Gen
+includes neither lv_abi.h nor lv_runtime.c, so this change's ELF blast radius
+is structurally zero). Hand probes additionally pin oracle==LLVM byte-parity
+on the boxed heap-field edge (overwrite + read-back, no over-release) and the
+Map<K,struct> twin. Residual, deliberately out of
+scope: the boxed rc==1 in-place path never vfrees an OVERWRITTEN value-struct
+element (`lv_map_upsert` does — the array path lacks the twin call), and the
+boxed shared-COW path aliases value-struct pointers into the fresh array
+(#49's map family, unfixed for arrays); both pre-date this fix and only bite
+on the #66 boxed edge.
